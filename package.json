@@ -1,0 +1,70 @@
+{
+  "name": "swipium",
+  "version": "1.0.0",
+  "private": false,
+  "description": "Swipium MCP server for simulator-based mobile QA workflows, evidence capture, app maps, and generated test suites.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "mobile-testing",
+    "qa-automation",
+    "android-emulator",
+    "ios-simulator",
+    "appium",
+    "ai-agents",
+    "test-automation",
+    "e2e-testing",
+    "react-native-testing",
+    "flutter-testing",
+    "app-map",
+    "test-suites",
+    "developer-tools"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "swipium": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "docs"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/geropalombo/swipium.git"
+  },
+  "bugs": {
+    "url": "https://github.com/geropalombo/swipium/issues"
+  },
+  "homepage": "https://github.com/geropalombo/swipium",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc && chmod +x dist/index.js",
+    "dev": "tsc -w",
+    "start": "node dist/index.js",
+    "verify": "npm run build && node dist/index.js verify",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "audit:prod": "npm audit --omit=dev --audit-level=moderate",
+    "release:check": "npm run typecheck && npm test && npm run audit:prod && npm pack --dry-run",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run build",
+    "inspector": "npm run build && npx @modelcontextprotocol/inspector node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.19.1",
+    "fast-xml-parser": "^5.8.0",
+    "yaml": "^2.9.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.7"
+  }
+}

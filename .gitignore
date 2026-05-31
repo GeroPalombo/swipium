@@ -1,0 +1,36 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# Local agent/client state and generated QA memory.
+.claude/
+.mcp.json
+.swipium/
+
+# Markdown is private by default. Track only curated operational docs.
+*.md
+*.mdx
+!README.md
+!CHANGELOG.md
+!SECURITY.md
+!CONTRIBUTING.md
+!CODE_OF_CONDUCT.md
+!SUPPORT.md
+!docs/
+!docs/README.md
+!docs/mcp-server.md
+!docs/tools.md
+!docs/assets/
+!docs/assets/swipium-lockup-ink-on-light.png
+
+# Private planning, memory, review, and AI-generated material.
+CLAUDE*.md
+MEMORY*.md
+SWIPIUM-*.md
+IMPLEMENTATION*.md
+PHASE*.md
+DESIGN.md
+THREAT_MODEL.md
+CLIENT-SETUP.md
+requirements/
