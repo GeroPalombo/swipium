@@ -284,12 +284,6 @@ Full reference: [docs/tools.md](docs/tools.md)
 - [Support](SUPPORT.md)
 - [Changelog](CHANGELOG.md)
 
-## Topics
-
-Recommended GitHub topics:
-
-`mcp`, `model-context-protocol`, `mobile-testing`, `qa-automation`, `android-emulator`, `ios-simulator`, `appium`, `ai-agents`, `test-automation`, `e2e-testing`, `react-native-testing`, `flutter-testing`, `app-map`, `test-suites`, `developer-tools`
-
 ## License
 
 MIT. See [LICENSE](LICENSE).

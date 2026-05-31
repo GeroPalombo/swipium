@@ -39,7 +39,7 @@
   "bugs": {
     "url": "https://github.com/geropalombo/swipium/issues"
   },
-  "homepage": "https://github.com/geropalombo/swipium",
+  "homepage": "https://swipium.com",
   "publishConfig": {
     "access": "public"
   },
