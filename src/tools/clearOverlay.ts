@@ -15,12 +15,31 @@ const STRATEGIES = ['auto', 'hide_keyboard', 'press_back', 'tap_outside', 'minim
 
 const center = (b: [number, number, number, number]) => ({ x: Math.round((b[0] + b[2]) / 2), y: Math.round((b[1] + b[3]) / 2) });
 
+async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await fn();
+  } catch {
+    return fallback;
+  }
+}
+
 async function tapByText(d: Driver, nodes: RawNode[], re: RegExp): Promise<boolean> {
   const n = nodes.find((x) => re.test(x.text) || re.test(x.desc));
   if (!n) return false;
   const c = center(n.bounds);
   await d.pressXY(c.x, c.y, 100);
   return true;
+}
+
+async function handleNativeAlert(d: Driver, action: 'accept' | 'dismiss'): Promise<boolean> {
+  const fn = action === 'accept' ? d.acceptAlert : d.dismissAlert;
+  if (!fn) return false;
+  try {
+    await fn.call(d);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function registerClearOverlay(server: McpServer, sessions: SessionStore): void {
@@ -64,20 +83,42 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
       const cleared: Array<{ type: string; action: string }> = [];
 
       // gather context
-      const ime = await d.imeShown();
-      const fg = await d.foregroundOwner().catch(() => 'unknown');
-      let xml = '';
-      try { xml = await d.dumpXml(); } catch { /* animated/idle-fail — proceed with what we know */ }
+      const ime = await safe(() => d.imeShown(), false);
+      const fg = await safe(() => d.foregroundOwner(), 'unknown');
+      const xml = await safe(() => d.dumpXml(), '');
       const parsedBefore = xml ? parseSnapshot(xml) : undefined;
       const nodes = parsedBefore?.allNodes ?? [];
       const treeOverlays = detectTreeOverlays(nodes, parsedBefore?.screen);
       const overlaysBefore = treeOverlays.map((o) => o.type);
       const fgOverlay = classifyForeground(session.appId, fg);
 
-      const doHideKeyboard = async () => { if (await d.imeShown()) { await d.pressKey('back'); cleared.push({ type: 'keyboard', action: 'hidden' }); } };
-      const doTapOutside = async () => { const sz = await d.screenSize(); const x = Math.round((sz?.width ?? 1080) * 0.5); const y = Math.round((sz?.height ?? 2000) * 0.08); await d.pressXY(x, y, 80); cleared.push({ type: 'unknown', action: 'tap_outside' }); };
+      const doHideKeyboard = async () => {
+        if (await safe(() => d.imeShown(), false)) {
+          await d.pressKey('back');
+          cleared.push({ type: 'keyboard', action: 'hidden' });
+        } else {
+          cleared.push({ type: 'keyboard', action: 'not_visible_or_unsupported' });
+        }
+      };
+      const doTapOutside = async () => { const sz = await safe(() => d.screenSize(), null); const x = Math.round((sz?.width ?? 1080) * 0.5); const y = Math.round((sz?.height ?? 2000) * 0.08); await d.pressXY(x, y, 80); cleared.push({ type: 'unknown', action: 'tap_outside' }); };
       const doMinimizeLogbox = async () => { const ok = await tapByText(d, nodes, /minimize/i); cleared.push({ type: 'rn_logbox', action: ok ? 'minimized' : 'minimize_not_found' }); };
       const doDismissLogbox = async () => { const ok = await tapByText(d, nodes, /dismiss/i); cleared.push({ type: 'rn_logbox', action: ok ? 'dismissed' : 'dismiss_not_found' }); };
+      const doAllowPermission = async () => {
+        if (await handleNativeAlert(d, 'accept')) {
+          cleared.push({ type: 'permission_dialog', action: 'allowed_native_alert' });
+          return;
+        }
+        const ok = await tapByText(d, nodes, /allow|while using/i);
+        cleared.push({ type: 'permission_dialog', action: ok ? 'allowed' : 'allow_not_found' });
+      };
+      const doDenyPermission = async () => {
+        if (await handleNativeAlert(d, 'dismiss')) {
+          cleared.push({ type: 'permission_dialog', action: 'denied_native_alert' });
+          return;
+        }
+        const ok = await tapByText(d, nodes, /deny|don.?t allow/i);
+        cleared.push({ type: 'permission_dialog', action: ok ? 'denied' : 'deny_not_found' });
+      };
 
       try {
         switch (strategy) {
@@ -86,8 +127,8 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
           case 'tap_outside': await doTapOutside(); break;
           case 'minimize_logbox': await doMinimizeLogbox(); break;
           case 'dismiss_logbox': await doDismissLogbox(); break;
-          case 'allow_permission': { const ok = await tapByText(d, nodes, /allow|while using/i); cleared.push({ type: 'permission_dialog', action: ok ? 'allowed' : 'allow_not_found' }); break; }
-          case 'deny_permission': { const ok = await tapByText(d, nodes, /deny|don.?t allow/i); cleared.push({ type: 'permission_dialog', action: ok ? 'denied' : 'deny_not_found' }); break; }
+          case 'allow_permission': await doAllowPermission(); break;
+          case 'deny_permission': await doDenyPermission(); break;
           case 'dismiss_toast_if_possible': cleared.push({ type: 'toast', action: 'cannot_target (toasts are separate windows; wait it out)' }); break;
           case 'auto':
           default:
@@ -105,7 +146,10 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
       await new Promise((r) => setTimeout(r, 500));
       const after = (await obstructionFor()).obstructed;
       let parsedAfter: ReturnType<typeof parseSnapshot> | undefined;
-      try { parsedAfter = parseSnapshot(await d.dumpXml()); } catch { /* keep undefined */ }
+      try {
+        const afterXml = await safe(() => d.dumpXml(), '');
+        if (afterXml) parsedAfter = parseSnapshot(afterXml);
+      } catch { /* keep undefined */ }
       const afterOverlays = parsedAfter ? detectTreeOverlays(parsedAfter.allNodes, parsedAfter.screen) : [];
       const remaining = afterOverlays.map((o) => o.type);
 

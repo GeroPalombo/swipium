@@ -130,8 +130,9 @@ export async function buildPlan(opts: BuildPlanOptions): Promise<BuildPlan> {
       case 'expo': {
         // No native android dir → expo run:android prebuilds; otherwise it reuses it.
         if (!hasFile(root, 'android')) notes.push('No android/ directory — expo run:android will prebuild it (EXPO_PREBUILD).');
+        notes.push('Expo Android local run compiles native code, installs the app, and starts Metro. First run can take several minutes; later JS/TS-only work should usually reuse the installed development build with Metro.');
         const argv = ['npx', 'expo', 'run:android', '--variant', variant];
-        return base({ build: { label: 'build + run Android (Expo)', command: argv.join(' '), argv, cwd: root }, expectedArtifactGlobs: apkGlobs });
+        return base({ build: { label: 'Expo Android local run', command: argv.join(' '), argv, cwd: root }, expectedArtifactGlobs: apkGlobs });
       }
       case 'bare-react-native':
       case 'native-android': {

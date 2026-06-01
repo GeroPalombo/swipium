@@ -1,9 +1,11 @@
 import type { Driver, NativeSelectorStrategy } from './Driver.js';
 import * as sim from '../lib/simctl.js';
 import {
+  acceptWdaAlert,
   clearWdaElement,
   createWdaSession,
   deleteWdaSession,
+  dismissWdaAlert,
   dragWdaPoint,
   findWdaElement,
   normalizeWdaSource,
@@ -12,6 +14,7 @@ import {
   tapWdaElement,
   tapWdaPoint,
   typeWdaElement,
+  typeWdaKeys,
   wdaActiveAppInfo,
   wdaScreenshot,
   wdaSessionUdidMismatch,
@@ -32,6 +35,10 @@ type SimulatorControl = Pick<typeof sim, 'launchApp' | 'terminateApp' | 'openUrl
 function tailLines(text: string, lines: number): string {
   const all = text.split(/\r?\n/);
   return all.slice(Math.max(0, all.length - lines)).join('\n');
+}
+
+function errorSummary(e: unknown): string {
+  return String((e as Error)?.message ?? e).replace(/\s+/g, ' ').slice(0, 300);
 }
 
 export class WdaDriver implements Driver {
@@ -197,8 +204,20 @@ export class WdaDriver implements Driver {
   }
   async inputText(text: string): Promise<void> {
     const sid = await this.ensureSession();
-    const el = await this.timed('find_element', () => findWdaElement(this.baseUrl, sid, 'predicate string', 'hasKeyboardFocus == 1'));
-    await this.timed('type', () => typeWdaElement(this.baseUrl, sid, el.elementId, text));
+    let focusedError: unknown;
+    try {
+      const el = await this.timed('find_element', () => findWdaElement(this.baseUrl, sid, 'predicate string', 'hasKeyboardFocus == 1'));
+      await this.timed('type', () => typeWdaElement(this.baseUrl, sid, el.elementId, text));
+      return;
+    } catch (e) {
+      focusedError = e;
+    }
+    try {
+      await this.timed('type', () => typeWdaKeys(this.baseUrl, sid, text));
+      return;
+    } catch (keysError) {
+      throw new Error(`TEXT_INPUT_UNSUPPORTED: WDA could not type into the focused input. focused-element path failed: ${errorSummary(focusedError)}; /wda/keys path failed: ${errorSummary(keysError)}`);
+    }
   }
   async clearFocusedText(): Promise<void> {
     const sid = await this.ensureSession();
@@ -215,6 +234,14 @@ export class WdaDriver implements Driver {
       return;
     }
     await this.inputText('\n');
+  }
+
+  async acceptAlert(): Promise<void> {
+    await acceptWdaAlert(this.baseUrl, await this.ensureSession());
+  }
+
+  async dismissAlert(): Promise<void> {
+    await dismissWdaAlert(this.baseUrl, await this.ensureSession());
   }
   async swipe(x1: number, y1: number, x2: number, y2: number, ms = 300): Promise<void> {
     await dragWdaPoint(this.baseUrl, await this.ensureSession(), x1, y1, x2, y2, ms / 1000);

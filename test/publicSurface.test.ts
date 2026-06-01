@@ -25,12 +25,15 @@ describe('public v1 tool surface', () => {
     const client = new Client({ name: 'surface-test', version: '0' });
 
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-    const listed = (await client.listTools()).tools.map((tool) => tool.name).sort();
+    const tools = (await client.listTools()).tools;
+    const listed = tools.map((tool) => tool.name).sort();
+    const doctor = tools.find((tool) => tool.name === 'qa_doctor') as { inputSchema?: { properties?: Record<string, unknown> } } | undefined;
     await client.close();
 
-    expect(SWIPIUM_VERSION).toBe('1.0.0');
+    expect(SWIPIUM_VERSION).toBe('1.0.1');
     expect(TOOL_COUNT).toBe(TOOL_NAMES.length);
     expect(listed).toEqual([...TOOL_NAMES].sort());
+    expect(doctor?.inputSchema?.properties?.platform).toBeTruthy();
     for (const name of forbiddenTools) expect(listed).not.toContain(name);
   });
 

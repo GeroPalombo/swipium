@@ -18,22 +18,9 @@ Website: [swipium.com](https://swipium.com)
 
 ## About
 
-Swipium is a local MCP server for mobile QA workflows. It gives agents a structured tool surface for simulator setup, UI observation, action execution, evidence capture, app-map memory, reporting, and generated test suites.
+The goal of the MCP is to give your agent a ready-to-use suite of tools so it can test your application using an emulator and real user flows, not directly against the code, with the experience of a QA. Avoid reaching TestFlight or production only to find an error that could have been caught before making the build.
 
-Swipium's mission is to help development teams and indie developers get fast feedback on applications from a usage perspective, not from a code perspective. Earlier usage feedback helps teams iterate quickly and avoid shipping production builds with issues that could have been detected before release.
-
-Swipium is intended to be used through an agent. The agent communicates with the MCP server and gets access to a QA-oriented suite of testing tools for exploration, evidence collection, app knowledge, report generation, test assets, and automation.
-
-Public v1 scope:
-
-- Android Emulator and iOS Simulator.
-- Local MCP stdio server.
-- Evidence stored as local Swipium artifacts.
-- Durable app knowledge map under the tested project.
-- Flow, test-case, suite, and automation generation from observed behavior.
-- Consent gates for mutating actions.
-- Secret redaction for credentials, tokens, OTPs, and generated sensitive values.
-
+Focused on mobile applications, for now.
 
 ## What is Swipium?
 
@@ -132,11 +119,11 @@ qa_test_this {
 
 Common workflow:
 
-1. `qa_doctor` checks local toolchain readiness.
+1. `qa_doctor` checks local toolchain readiness. Use `platform:"android"`, `platform:"ios"`, or `platform:"both"`.
 2. `qa_test_this` resolves the project, artifact, and simulator target.
 3. `qa_job_status` polls long-running work.
 4. `qa_smoke` or `qa_explore` runs the app.
-5. `qa_report` produces the evidence report.
+5. `qa_report` produces the evidence report, including separate app and coverage verdicts.
 6. `qa_app_map_read` or `qa_app_map_query` reads the durable app map.
 7. `qa_flow_generate`, `qa_suite_generate`, or `qa_automation_generate` creates reusable QA assets.
 

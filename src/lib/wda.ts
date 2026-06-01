@@ -57,9 +57,33 @@ export interface WdaProjectDiscovery {
 }
 
 const ELEMENT_KEY = 'element-6066-11e4-a52e-4f735466cecf';
+type PointTapRoute = 'modern' | 'legacy';
+const pointTapRouteBySession = new Map<string, PointTapRoute>();
+
+export class WdaHttpError extends Error {
+  readonly status: number;
+  readonly body: string;
+
+  constructor(status: number, message: string, body: string) {
+    super(`WDA HTTP ${status}: ${message}`);
+    this.name = 'WdaHttpError';
+    this.status = status;
+    this.body = body;
+  }
+}
 
 function normalizeUrl(url: string): string {
   return url.replace(/\/+$/, '');
+}
+
+function wdaRouteKey(baseUrl: string, sessionId: string, route: string): string {
+  return `${normalizeUrl(baseUrl)}:${sessionId}:${route}`;
+}
+
+function isMissingWdaRoute(e: unknown): boolean {
+  if (!(e instanceof WdaHttpError)) return false;
+  if (e.status === 404) return true;
+  return /unknown command|unknown route|unhandled endpoint|not found|unsupported/i.test(e.message);
 }
 
 async function wdaFetch<T>(baseUrl: string, path: string, init?: RequestInit): Promise<T> {
@@ -80,7 +104,7 @@ async function wdaFetch<T>(baseUrl: string, path: string, init?: RequestInit): P
       : typeof (json as { message?: unknown }).message === 'string'
         ? (json as { message: string }).message
         : body.slice(0, 200);
-    throw new Error(`WDA HTTP ${res.status}: ${msg}`);
+    throw new WdaHttpError(res.status, msg, body);
   }
   return json as T;
 }
@@ -320,12 +344,35 @@ export async function typeWdaElement(baseUrl: string, sessionId: string, element
   });
 }
 
+export async function typeWdaKeys(baseUrl: string, sessionId: string, text: string): Promise<void> {
+  await wdaFetch(baseUrl, `/session/${sessionId}/wda/keys`, {
+    method: 'POST',
+    body: JSON.stringify({ value: [...text], text }),
+  });
+}
+
 export async function clearWdaElement(baseUrl: string, sessionId: string, elementId: string): Promise<void> {
   await wdaFetch(baseUrl, `/session/${sessionId}/element/${elementId}/clear`, { method: 'POST', body: '{}' });
 }
 
 export async function tapWdaPoint(baseUrl: string, sessionId: string, x: number, y: number): Promise<void> {
-  await wdaFetch(baseUrl, `/session/${sessionId}/wda/tap/0`, { method: 'POST', body: JSON.stringify({ x, y }) });
+  const modern = `/session/${sessionId}/wda/tap`;
+  const legacy = `/session/${sessionId}/wda/tap/0`;
+  const key = wdaRouteKey(baseUrl, sessionId, 'pointTap');
+  const body = JSON.stringify({ x, y });
+  const preferred = pointTapRouteBySession.get(key);
+  if (preferred === 'legacy') {
+    await wdaFetch(baseUrl, legacy, { method: 'POST', body });
+    return;
+  }
+  try {
+    await wdaFetch(baseUrl, modern, { method: 'POST', body });
+    pointTapRouteBySession.set(key, 'modern');
+  } catch (e) {
+    if (preferred === 'modern' || !isMissingWdaRoute(e)) throw e;
+    await wdaFetch(baseUrl, legacy, { method: 'POST', body });
+    pointTapRouteBySession.set(key, 'legacy');
+  }
 }
 
 export async function dragWdaPoint(baseUrl: string, sessionId: string, x1: number, y1: number, x2: number, y2: number, duration = 0.3): Promise<void> {
@@ -341,6 +388,14 @@ export async function pressWdaHome(baseUrl: string, sessionId: string): Promise<
 
 export async function pressWdaBack(baseUrl: string, sessionId: string): Promise<void> {
   await wdaFetch(baseUrl, `/session/${sessionId}/back`, { method: 'POST', body: '{}' });
+}
+
+export async function acceptWdaAlert(baseUrl: string, sessionId: string): Promise<void> {
+  await wdaFetch(baseUrl, `/session/${sessionId}/alert/accept`, { method: 'POST', body: '{}' });
+}
+
+export async function dismissWdaAlert(baseUrl: string, sessionId: string): Promise<void> {
+  await wdaFetch(baseUrl, `/session/${sessionId}/alert/dismiss`, { method: 'POST', body: '{}' });
 }
 
 function bool(v: unknown): boolean {

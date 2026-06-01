@@ -231,6 +231,26 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   const coverage = coverageForSession(session);
   const automationBackend = automationBackendForSession(session);
   const passNotes = notes.filter((n) => n.outcome === 'pass').length;
+  const appVerdict = (() => {
+    if (nativeHealth === 'error' || appHealth === 'error' || high.some((f) => f.layer === 'app' || f.layer === 'native') || failCount > 0) {
+      const summary = topHigh ? (redact(topHigh.detail) ?? topHigh.detail) : topFailNote?.reason ? (redact(topFailNote.reason) ?? topFailNote.reason) : 'High severity app/native finding or failed workflow observed.';
+      return { status: 'BLOCKED', summary };
+    }
+    if (appHealth === 'degraded') return { status: 'PASS_WITH_WARNING', summary: 'App launched, but medium-severity app findings were observed.' };
+    return { status: 'PASS', summary: 'No high-severity app/native finding observed in this run.' };
+  })();
+  const coverageVerdict = (() => {
+    if (blockedCount > 0 || session.exploration?.state === 'blocked') {
+      return { status: 'BLOCKED', summary: topBlockedNote?.recommendedSetup ?? 'A setup or precondition blocker limited coverage.' };
+    }
+    if (!automationBackend.structured) {
+      return { status: 'PARTIAL', summary: 'Coverage was limited because the active backend is visual-only or lacks structured UI automation.' };
+    }
+    if (passNotes === 0 && !session.exploration && session.recordedActions.length === 0) {
+      return { status: 'SMOKE_ONLY', summary: 'Only launch/setup evidence was collected.' };
+    }
+    return { status: 'COVERED', summary: 'Structured smoke/workflow evidence was collected.' };
+  })();
 
   // Single product-facing QA level (Deliverable 6 / §3.11). Derived from the same evidence the
   // report already trusts: readiness labels and health. Honest by construction.
@@ -329,6 +349,8 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     appId,
     device: session.device ?? null,
     coverage,
+    appVerdict,
+    coverageVerdict,
     automationBackend,
     readiness,
     automationReadiness,
@@ -537,6 +559,8 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   const lines = [
     `Report for ${session.id} — app=${report.appId} device=${report.device}`,
     `RELEASE RISK: ${executiveSummary.risk.toUpperCase()} — ${executiveSummary.nextAction}`,
+    `App status: ${appVerdict.status} - ${appVerdict.summary}`,
+    `Coverage status: ${coverageVerdict.status} - ${coverageVerdict.summary}`,
     `PR summary:\n${prSummary.text}`,
     `backend: ${report.automationBackend.description} (${report.automationBackend.mode})`,
     `QA level: ${qaLevel.level.toUpperCase()} — ${qaLevel.rationale}${qaLevel.next ? ` · next: ${qaLevel.next} (${qaLevel.nextRequirement})` : ''}`,

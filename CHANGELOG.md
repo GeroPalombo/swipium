@@ -2,6 +2,20 @@
 
 All notable public changes to Swipium are documented here.
 
+## 1.0.1 - 2026-06-01
+
+### Fixed
+
+- Updated iOS WDA point taps to use the current `/wda/tap` route with legacy fallback.
+- Added focused typing fallback through `/wda/keys` for iOS WDA sessions.
+- Made overlay clearing tolerate unsupported driver probes and use native WDA alert actions.
+
+### Changed
+
+- Added platform-specific `qa_doctor` readiness for Android Emulator and iOS Simulator.
+- Clarified Expo Android local run planning for `npx expo run:android --variant debug`.
+- Split report output into app status and coverage status.
+
 ## 1.0.0 - 2026-05-31
 
 ### Added

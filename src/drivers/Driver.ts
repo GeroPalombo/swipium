@@ -52,6 +52,9 @@ export interface Driver {
   typeBySelector?(using: NativeSelectorStrategy, value: string, text: string): Promise<void>;
   clearBySelector?(using: NativeSelectorStrategy, value: string): Promise<void>;
   existsBySelector?(using: NativeSelectorStrategy, value: string): Promise<boolean>;
+  /** Native platform alert handling when the backend supports it, e.g. WDA on iOS. */
+  acceptAlert?(): Promise<void>;
+  dismissAlert?(): Promise<void>;
   inputText(text: string): Promise<void>;
   /** Clear the focused field (move to end, delete ~n chars in one keyevent batch). */
   clearFocusedText(approxLen?: number): Promise<void>;

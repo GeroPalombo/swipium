@@ -98,6 +98,8 @@ qa_doctor
 qa_capabilities
 ```
 
+Use `qa_doctor` with `platform:"android"`, `platform:"ios"`, or `platform:"both"` when checking platform-specific readiness.
+
 Expected v1 tool count: 42.
 
 If the client lists fewer tools, restart the MCP client. MCP clients often keep an old server process alive after package upgrades.

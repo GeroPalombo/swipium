@@ -22,6 +22,8 @@ import { resolveArtifact, type ArtifactPlatform, type ResolveResult } from '../a
 import { buildPlan, type BuildPlatform } from '../build/plan.js';
 import { adbDevices, listAvds, which, apkPackageId } from '../lib/android.js';
 import { simctlAvailable, listSimulators } from '../lib/simctl.js';
+import { checkWda } from '../lib/wda.js';
+import { loadWdaConfig } from '../lib/wdaConfig.js';
 import { planTarget, type TargetInputs, type TargetSelection, type TargetPlan } from '../core/targetPlan.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { executeBuild } from '../services/build.js';
@@ -231,8 +233,17 @@ export function registerTestThis(server: McpServer, sessions: SessionStore): voi
           if (!bp.failureCode && bp.build && bp.toolchainOk) {
             needBuild = true;
             artifactPlatform = targetPlatform as ArtifactPlatform;
-            wa(`no prebuilt artifact — will build ${targetPlatform} from source (${bp.build.command})`);
-            steps.push({ tool: 'qa_test_this', why: `No artifact found; build ${targetPlatform} from source before install`, args: { sessionId: session.id }, status: 'pending', produces: ['artifact.path', 'artifact.appId'] });
+            const expoAndroidLocalRun = scan.framework === 'expo' && targetPlatform === 'android';
+            wa(expoAndroidLocalRun
+              ? `no prebuilt APK - Expo Android local run selected (${bp.build.command}); first run can take several minutes, later JS/TS-only work should reuse Metro/dev-build caches`
+              : `no prebuilt artifact - will build ${targetPlatform} from source (${bp.build.command})`);
+            steps.push({
+              tool: 'qa_test_this',
+              why: expoAndroidLocalRun ? 'No reusable APK/dev build found; run Expo Android local build/install/Metro path' : `No artifact found; build ${targetPlatform} from source before install`,
+              args: { sessionId: session.id },
+              status: 'pending',
+              produces: ['artifact.path', 'artifact.appId'],
+            });
           } else {
             return qaFail(bp.failureCode ?? 'NO_BUILD_ARTIFACT', {
               what: `No artifact found under ${root}, and a build is not currently possible`,
@@ -291,6 +302,35 @@ export function registerTestThis(server: McpServer, sessions: SessionStore): voi
       }
       if (target.willBoot) wa(`no online ${selToPlatform[target.selected!]} target — will boot ${target.bootTarget}`);
 
+      const isAndroid = selToPlatform[target.selected!] === 'android';
+      const isIosReal = false;
+      const requiresStructuredIos =
+        !isAndroid &&
+        !isIosReal &&
+        (goalFlags.explore || goalFlags.generateSuite || goalFlags.goal === 'test_login' || goalFlags.goal === 'create_automation_suite');
+      if (requiresStructuredIos) {
+        const wdaConfig = loadWdaConfig(root);
+        const wda = await checkWda(wdaConfig.url, 1500);
+        if (!wda.reachable || !wda.ready) {
+          return qaFail('WDA_UNREACHABLE', {
+            what: `iOS ${goalFlags.goal} requires a structured WebDriverAgent backend, but WDA is not ready at ${wdaConfig.url}`,
+            nextSteps: [
+              'Run qa_wda { action:"doctor" } to inspect WDA setup.',
+              'Run qa_wda { action:"build" } and qa_wda { action:"start" }, or attach an external WDA URL.',
+              ...(appMapUri ? [`Static app map is still available: qa_app_map_read { projectRoot:"${root}" }`] : []),
+            ],
+            extra: {
+              sessionId: session.id,
+              state: 'blocked' as State,
+              goal: goalFlags.goal,
+              target,
+              wda: { config: { url: wdaConfig.url, mode: wdaConfig.mode, derivedDataPath: wdaConfig.derivedDataPath }, status: wda },
+              appMapUri,
+            },
+          });
+        }
+      }
+
       // ---- 4. auth (be effective: proceed pre-login; surface the question as optional) ----
       let optionalQuestion: ReturnType<typeof NeedsInput.credentials> | undefined;
       if (scan.likelyAuth) {
@@ -299,8 +339,6 @@ export function registerTestThis(server: McpServer, sessions: SessionStore): voi
       }
 
       // ---- 5. assemble the ordered plan ----
-      const isAndroid = selToPlatform[target.selected!] === 'android';
-      const isIosReal = false;
       // Effective installable artifact path: a converted universal APK for an .aab, else the artifact.
       const effectiveApk = art.best ? (isAab ? universalApkCachePath(root, art.best.path) : art.best.path) : undefined;
       // Milestone E: when a build is pending, the artifact does not exist yet — use SYMBOLIC refs
@@ -568,6 +606,8 @@ async function runExecutePipeline(sessions: SessionStore, session: Session, job:
     const reportProg = startProgress(sessions, session, job, 'reporting', { statusText: 'Generating the session report.' });
     let reportUri: string | undefined;
     let manifestUri: string | undefined;
+    let appVerdict: { status: string; summary: string } | undefined;
+    let coverageVerdict: { status: string; summary: string } | undefined;
     const suiteOpt = suiteForReport
       ? { generated: !suiteForReport.skipped, skippedReason: suiteForReport.skippedReason, name: suiteForReport.name, written: suiteForReport.written, compiledFlows: suiteForReport.compiledFlows, suiteRunnable: suiteForReport.suiteRunnable, readinessLabels: suiteForReport.readinessLabels }
       : undefined;
@@ -578,6 +618,8 @@ async function runExecutePipeline(sessions: SessionStore, session: Session, job:
       reportUri = r.reportUri;
       manifestUri = r.manifestUri;
       if (!artifacts.includes(reportUri)) artifacts.push(reportUri);
+      appVerdict = (r.report as { appVerdict?: { status: string; summary: string } }).appVerdict;
+      coverageVerdict = (r.report as { coverageVerdict?: { status: string; summary: string } }).coverageVerdict;
     } catch (e) {
       log('warn', 'test_this report generation failed', { err: String(e) });
     }
@@ -605,6 +647,7 @@ async function runExecutePipeline(sessions: SessionStore, session: Session, job:
       workaroundsAttempted: session.workarounds,
       artifactChoice: a.artifactChoice,
       targetChoice: a.targetChoice,
+      verdicts: { ...(appVerdict ? { app: appVerdict } : {}), ...(coverageVerdict ? { coverage: coverageVerdict } : {}) },
       blockers: state === 'completed' || !failureCode ? [] : [typedBlockerFromCode(failureCode)],
       reportUri: reportUri ?? null,
       nextRecommendedAction,

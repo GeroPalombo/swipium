@@ -1,6 +1,6 @@
 {
   "name": "swipium",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": false,
   "description": "Swipium MCP server for simulator-based mobile QA workflows, evidence capture, app maps, and generated test suites.",
   "keywords": [

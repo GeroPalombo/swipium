@@ -77,6 +77,8 @@ export interface ReportData {
     };
   } | null;
   executiveSummary: { risk: string; reasons: string[]; nextAction: string };
+  appVerdict?: { status: string; summary: string };
+  coverageVerdict?: { status: string; summary: string };
   nativeHealth: string;
   appHealth: string;
   findings: ReportFinding[];
@@ -368,6 +370,11 @@ export function toMarkdown(r: ReportData): string {
   L.push('```');
   L.push('');
   L.push(`**Release risk: ${RISK_BADGE[r.executiveSummary.risk] ?? r.executiveSummary.risk.toUpperCase()}**`);
+  if (r.appVerdict || r.coverageVerdict) {
+    L.push('');
+    if (r.appVerdict) L.push(`**App status:** ${r.appVerdict.status} - ${r.appVerdict.summary}`);
+    if (r.coverageVerdict) L.push(`**Coverage status:** ${r.coverageVerdict.status} - ${r.coverageVerdict.summary}`);
+  }
   L.push('');
   L.push(`**Next action:** ${r.executiveSummary.nextAction}`);
   if (r.executiveSummary.reasons.length) {

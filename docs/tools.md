@@ -23,7 +23,7 @@ Use these tools to verify the local environment, create sessions, and prepare si
 
 | Tool | What it does | Use when |
 | --- | --- | --- |
-| `qa_doctor` | Checks Node, Android tooling, emulator availability, AVDs, and stale-client symptoms. | Before the first run or when setup fails. |
+| `qa_doctor` | Checks Node, Android Emulator readiness, iOS Simulator readiness, WDA status, and stale-client symptoms. Accepts `platform:"android"`, `"ios"`, or `"both"`. | Before the first run or when setup fails. |
 | `qa_start_session` | Opens a project QA session with budget, response mode, fixtures, and sensitive mode. | Running lower-level tools directly instead of `qa_test_this`. |
 | `qa_detect_context` | Detects framework, project readiness, artifacts, devices, and likely blockers. | The agent needs a preflight view before selecting a path. |
 | `qa_plan` | Produces a safe workflow plan before acting. | The user asks for a plan or the agent needs a low-risk next step. |
@@ -54,7 +54,7 @@ Use these tools to run broader QA workflows and produce reports.
 | --- | --- | --- |
 | `qa_smoke` | Runs launch smoke, baseline health, screenshot evidence, and saved flows. | The app is prepared and the agent needs a deterministic smoke pass. |
 | `qa_explore` | Performs bounded guided exploration, builds a screen graph, and records evidence. | The agent needs to discover reachable workflows or collect runtime app-map data. |
-| `qa_report` | Generates a session report with findings, blockers, evidence, mutations, workarounds, and next actions. | A run should be summarized or exported. |
+| `qa_report` | Generates a session report with findings, blockers, evidence, mutations, workarounds, next actions, and separate app and coverage verdicts. | A run should be summarized or exported. |
 
 ## App Map
 

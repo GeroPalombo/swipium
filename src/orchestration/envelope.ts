@@ -50,6 +50,10 @@ export interface TerminalEnvelope {
   workaroundsAttempted: string[];
   artifactChoice: ChoiceExplanation | null;
   targetChoice: ChoiceExplanation | null;
+  verdicts?: {
+    app?: { status: string; summary: string };
+    coverage?: { status: string; summary: string };
+  };
   blockers: TypedBlocker[];
   reportUri: string | null;
   nextRecommendedAction: NextRecommendedAction | null;
@@ -64,6 +68,7 @@ export interface EnvelopeInput {
   workaroundsAttempted?: string[];
   artifactChoice?: ChoiceExplanation | null;
   targetChoice?: ChoiceExplanation | null;
+  verdicts?: TerminalEnvelope['verdicts'];
   blockers?: TypedBlocker[];
   reportUri?: string | null;
   nextRecommendedAction?: NextRecommendedAction | null;
@@ -106,6 +111,7 @@ export function buildTerminalEnvelope(input: EnvelopeInput): TerminalEnvelope {
     workaroundsAttempted: input.workaroundsAttempted ?? [],
     artifactChoice: input.artifactChoice ?? null,
     targetChoice: input.targetChoice ?? null,
+    ...(input.verdicts ? { verdicts: input.verdicts } : {}),
     blockers: input.blockers ?? [],
     reportUri: input.reportUri ?? null,
     nextRecommendedAction: input.nextRecommendedAction ?? null,
