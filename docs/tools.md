@@ -1,6 +1,6 @@
 # Tool Reference
 
-Swipium exposes 59 public MCP tools. The intended default entry point is `qa_test_this`.
+Swipium exposes 83 public MCP tools. The intended default entry point is `qa_test_this`.
 
 ## Start
 
@@ -16,6 +16,7 @@ Use these tools to orient the agent, start autopilot work, poll jobs, handle blo
 | `qa_explain_blocker` | Explains a typed blocker, likely owner, and recovery path. | A run stops with a blocker and the user needs a concise explanation. |
 | `qa_continue_from_blocker` | Resumes after user input and registers secret values for redaction. | A blocker asks for credentials, OTP, target choice, or approval data. |
 | `qa_get_artifact` | Fetches artifact metadata or contents by `swipium://` URI. | A report, screenshot, dump, log, or generated file must be read. |
+| `qa_job_cancel` | Cancels a running job and aborts its spawned children. | A long-running job must be stopped early. |
 
 ## Setup
 
@@ -63,6 +64,10 @@ Use these tools to observe the UI, act on it, collect evidence, and record resul
 | `qa_assert_visual` | Captures a visual assertion with evidence. | The agent needs to document that a visual condition is true or false. |
 | `qa_visual` | Runs local visual operations: baseline capture, regression diff, image-target matching with tappable coordinates, and optional OCR. | A screen is visual-only or needs pixel-level regression checks. |
 | `qa_visual_find_text` | Locates on-screen text with OCR and returns structured regions with coordinate-space conversion. | A target has visible text but no structured selector. |
+| `qa_locator_suggest` | Scores each element's locator durability and grades automation readiness. | The agent needs to know which controls need testIDs before generating automation. |
+| `qa_input_capabilities` | Reports backend text-entry limits: ASCII, Unicode, clipboard, and WDA typing frequency. | Typing fails or behaves oddly and the agent needs the backend's input limits. |
+| `qa_wait` | Waits without a shell for `device_online`, `metro_ready`, or `job_done`. | The agent needs to block on a condition without raw `adb`/`sleep`. |
+| `qa_idling_status` | Reads app-declared idling hooks or label-heuristic settling before automation. | The agent needs to know the app has settled before acting. |
 
 ## State
 
@@ -106,11 +111,51 @@ Use these tools to create, validate, run, and compile reusable test assets.
 | Tool | What it does | Use when |
 | --- | --- | --- |
 | `qa_flow_check` | Parses and statically validates a Swipium flow. | A flow file should be checked before execution. |
+| `qa_flow_plan` | Plans a flow against backend capabilities without executing it. | A flow should be checked for feasibility before a run. |
 | `qa_flow_run` | Executes a Swipium flow against a prepared simulator session. | A saved flow needs to run against the app. |
 | `qa_flow_generate` | Generates a flow from recorded actions. | A manual or exploratory run should become a reusable flow. |
+| `qa_flow_repair` | Suggests or patches a stronger locator for a failed flow step from the current screen. | A flow step fails on a brittle locator. |
 | `qa_suite_generate` | Generates a POM-style suite from recorded behavior. | The run should become a structured test suite. |
 | `qa_suite_compile` | Compiles a generated suite into runnable Swipium flows. | A generated suite needs executable flow output. |
+| `qa_suite_lint` | Lints generated page objects for brittle, coordinate-only, or dynamic locators. | A generated suite needs a durability check. |
+| `qa_pom_generate` | Generates page objects and a locator audit from recorded actions. | A run should produce reusable page objects. |
 | `qa_testcase_generate` | Generates test-case documentation from recorded behavior. | The run should produce human-readable test cases and steps. |
+
+## Persistent Test Suite
+
+Use these tools to grow and maintain a canonical test suite that persists across runs in `.swipium/test-suite.json`.
+
+| Tool | What it does | Use when |
+| --- | --- | --- |
+| `qa_test_suite_read` | Reads the canonical suite, filtered by functionality or status, as summary, json, or markdown. | The agent needs the durable suite without re-deriving it. |
+| `qa_test_suite_update` | Merges cases into the persistent suite, deduping by feature, objective, and steps. | A run produced cases to fold into the suite. |
+| `qa_test_suite_generate` | Generates or refreshes canonical cases from a recorded run and exploration. | The suite needs to be (re)built from observed behavior. |
+| `qa_test_suite_export` | Exports the persistent suite to markdown, a yaml directory, json, or junit. | The suite must be shared or fed to CI. |
+| `qa_test_suite_lint` | Validates the suite for missing expected/actual, stale map links, and duplicate ids. | The suite must be trusted before a release sign-off. |
+
+## Maestro Interop
+
+Use these tools to exchange flows with the Maestro ecosystem.
+
+| Tool | What it does | Use when |
+| --- | --- | --- |
+| `qa_maestro_import` | Imports supported Maestro YAML commands into a Swipium Flow V2. | An existing Maestro flow should run under Swipium. |
+| `qa_maestro_export` | Exports a Swipium Flow V2 to Maestro YAML with portability grades. | A Swipium flow should be shared as Maestro YAML. |
+
+## Issue Memory and Mobile Audit
+
+Use these tools for a durable, per-project issue ledger and executable mobile-QA audit profiles. The ledger lives in `.swipium/issues-log.jsonl`; fingerprints let later runs detect regressions of previously fixed issues.
+
+| Tool | What it does | Use when |
+| --- | --- | --- |
+| `qa_issue_log` | Lists the durable issue ledger with counts, recurrence candidates, and linked evidence. | The agent needs the project's known issues. |
+| `qa_issue_history` | Shows the append-only event trail for one issue. | An issue's lifecycle needs auditing. |
+| `qa_issue_mark_fixed` | Records a fix (date, commit, version, how-fixed) so future runs detect regressions. | A reported issue has been resolved. |
+| `qa_issue_triage` | Changes an issue's category, severity, or owner, or appends a note. | An issue needs reclassification. |
+| `qa_issue_suppress` | Suppresses known noise with a reason and expiration; it stays visible as known-noise. | A recurring non-bug should stop dominating reports. |
+| `qa_issue_verify_fixed` | Links passing test or audit evidence to a fixed issue. | A report should honestly claim an issue was verified this run. |
+| `qa_issue_metrics` | Summarizes issue trends: opened, fixed, reopened, verified, aging, and reopen rate. | The user wants issue quality trends. |
+| `qa_mobile_audit` | Plans or executes a named mobile-QA profile (smoke, account_cycle, store_compliance, resilience, release_gate). | A structured, repeatable audit is needed; execution records issues and evidence. |
 
 ## First Run
 

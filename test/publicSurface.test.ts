@@ -11,10 +11,11 @@ const forbiddenTools = [
   'qa_ios_real_doctor',
   'qa_prepare_ios_real_target',
   'qa_certification',
-  'qa_mobile_audit',
   'qa_appium',
-  'qa_maestro_import',
-  'qa_maestro_export',
+  'qa_automation_run',
+  'qa_device_matrix',
+  'qa_run_matrix',
+  'qa_ci',
   'qa_assert_ai_visual',
 ];
 
@@ -30,7 +31,7 @@ describe('public tool surface', () => {
     const doctor = tools.find((tool) => tool.name === 'qa_doctor') as { inputSchema?: { properties?: Record<string, unknown> } } | undefined;
     await client.close();
 
-    expect(SWIPIUM_VERSION).toBe('1.1.0');
+    expect(SWIPIUM_VERSION).toBe('1.2.0');
     expect(TOOL_COUNT).toBe(TOOL_NAMES.length);
     expect(listed).toEqual([...TOOL_NAMES].sort());
     expect(doctor?.inputSchema?.properties?.platform).toBeTruthy();

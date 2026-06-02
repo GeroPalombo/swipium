@@ -1,4 +1,4 @@
-// qa_suite_generate / qa_testcase_generate / qa_suite_compile.
+// qa_pom_generate / qa_suite_generate / qa_testcase_generate / qa_suite_lint (roadmap §6 / §7 / §12).
 //
 // These turn the actions recorded during a session (qa_act) into a MAINTAINABLE POM suite under
 // .swipium/ — page objects (selectors), tests (reference elements by name), a suite, a test-case
@@ -13,6 +13,7 @@ import { qaOk, qaError } from '../lib/result.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { generatePom, type GeneratedFile, type PomResult } from '../suite/pom.js';
 import { generateTestCases } from '../suite/testcase.js';
+import { lintSuitePages } from '../suite/lint.js';
 import { compileSuite } from '../suite/compile.js';
 import { parseFlow } from '../flows/schema.js';
 import { runFlow } from '../flows/run.js';
@@ -114,6 +115,36 @@ function pomFor(session: Session, name?: string): { pom: PomResult; flowName: st
 }
 
 export function registerSuite(server: McpServer, sessions: SessionStore): void {
+  // ---- qa_pom_generate ----
+  server.registerTool(
+    'qa_pom_generate',
+    {
+      title: 'Generate page objects',
+      description:
+        'Generate Screen/Page Object Model files from the actions recorded this session: one page object per screen with named elements (selectors hoisted out of tests), plus a locator audit (durable vs brittle, with app-code remediation). Pass save:true to write under .swipium/pages + .swipium/locators. Use qa_suite_generate for the full suite (pages + tests + suite + test cases).',
+      inputSchema: {
+        sessionId: z.string(),
+        name: z.string().optional(),
+        save: z.boolean().optional(),
+      },
+    },
+    async ({ sessionId, name, save }) => {
+      const session = sessions.get(sessionId);
+      if (!session) return qaError({ what: `Unknown sessionId ${sessionId}`, changedState: false, retrySafe: true, nextSteps: ['Call qa_start_session first.'] });
+      const noActions = requireActions(session);
+      if (noActions) return noActions;
+
+      const { pom } = pomFor(session, name);
+      const pageFiles = pom.files.filter((f) => f.path.startsWith('pages/') || f.path.startsWith('locators/'));
+      const written = save ? writeFiles(session, pageFiles) : [];
+      const summary =
+        `Generated ${pom.pages.length} page object(s): ${pom.pages.map((p) => p.name).join(', ')}\n` +
+        `locator audit: ${pom.audit.durable} durable / ${pom.audit.semi} semi / ${pom.audit.brittle} brittle (${pom.audit.brittlePct}% brittle)` +
+        (save ? `\nsaved ${written.length} files under .swipium/` : `\n(not saved — pass save:true)`);
+      return qaOk({ pages: pom.pages, audit: pom.audit, files: pageFiles, written }, summary);
+    },
+  );
+
   // ---- qa_suite_generate ----
   server.registerTool(
     'qa_suite_generate',
@@ -424,4 +455,32 @@ export function registerSuite(server: McpServer, sessions: SessionStore): void {
     },
   );
 
+  // ---- qa_suite_lint ----
+  server.registerTool(
+    'qa_suite_lint',
+    {
+      title: 'Lint the generated suite',
+      description:
+        'Lint the page objects under .swipium/pages for durability problems: missing durable locators (coordinate-only), copy/locale-fragile text selectors, and dynamic-looking selectors. Reports each with the page/element and the app-code fix. Use after qa_suite_generate, before committing or wiring CI.',
+      inputSchema: { sessionId: z.string().optional(), projectRoot: z.string().optional() },
+    },
+    async ({ sessionId, projectRoot }) => {
+      let root: string | undefined;
+      if (sessionId) root = sessions.get(sessionId)?.root;
+      root = root ?? projectRoot;
+      if (!root) return qaError({ what: 'No project root', changedState: false, retrySafe: true, nextSteps: ['Pass sessionId or projectRoot.'] });
+
+      const findings = lintSuitePages(root);
+      if (!findings.exists) {
+        return qaError({ what: 'No .swipium/pages to lint', changedState: false, retrySafe: true, nextSteps: ['Generate a suite first: qa_suite_generate.'] });
+      }
+      const errors = findings.items.filter((f) => f.severity === 'error');
+      const summary =
+        `Linted ${findings.pageCount} page object(s): ${findings.items.length} issue(s) (${errors.length} brittle).\n` +
+        (findings.items.length
+          ? findings.items.slice(0, 20).map((i) => `  ${i.severity === 'error' ? '✗' : '⚠'} ${i.page}.${i.element}: ${i.message}`).join('\n')
+          : '  ✓ all locators are durable.');
+      return qaOk({ pageCount: findings.pageCount, items: findings.items }, summary);
+    },
+  );
 }

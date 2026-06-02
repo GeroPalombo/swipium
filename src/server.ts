@@ -43,6 +43,15 @@ import { registerFirstRun } from './tools/firstRun.js';
 import { registerAutomationGenerate } from './tools/automationGenerate.js';
 import { registerAgentTools } from './tools/agent.js';
 import { registerAppMap, resolveAppMapRoot, readAppMapResource } from './tools/appMap.js';
+import { registerIssues } from './tools/issues.js';
+import { registerTestSuite } from './tools/testSuite.js';
+import { registerFlowRepair } from './tools/flowRepair.js';
+import { registerLocator } from './tools/locator.js';
+import { registerWait } from './tools/wait.js';
+import { registerIdling } from './tools/idling.js';
+import { registerInputCapabilities } from './tools/inputCapabilities.js';
+import { registerMaestro } from './tools/maestro.js';
+import { registerMobileAudit } from './tools/mobileAudit.js';
 import { registerPrompts } from './prompts/index.js';
 import { log } from './lib/logger.js';
 import { runWithResponseMode } from './lib/result.js';
@@ -135,6 +144,17 @@ export function createServer(): ServerContext {
   registerAutomationGenerate(server, sessions);
   registerAgentTools(server, sessions);
   registerAppMap(server, sessions);
+  // Durable QA memory + repeatable assets (v3)
+  registerIssues(server, sessions);
+  registerMobileAudit(server, sessions);
+  registerTestSuite(server, sessions);
+  registerFlowRepair(server, sessions);
+  registerMaestro(server, sessions);
+  // Agent-efficiency helpers (v3)
+  registerLocator(server, sessions);
+  registerWait(server, sessions);
+  registerIdling(server, sessions);
+  registerInputCapabilities(server, sessions);
 
   // Tool surface is now fully registered. Freeze its content fingerprint.
   setSchemaHash(computeSchemaHash(surface));

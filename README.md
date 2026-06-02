@@ -236,27 +236,33 @@ After setup, verify that the client lists `qa_test_this`, `qa_capabilities`, and
 
 ## Tool Docs
 
-Swipium exposes 59 public MCP tools. Start with `qa_test_this` for low-context requests.
+Swipium exposes 83 public MCP tools. Start with `qa_test_this` for low-context requests.
 
 Full reference: [docs/tools.md](docs/tools.md)
 
-New in 1.1.0 — 17 additional tools, all backward compatible:
+New in 1.2.0 — 24 additional tools, all backward compatible:
 
-- **Device and app environment parity** (no raw `adb`/`simctl`): `qa_device_info`, `qa_permissions`, `qa_orientation`, `qa_geolocation`, `qa_network`, `qa_metro`, `qa_app_control`, `qa_screen_info`, `qa_screen_record`. Mutating actions are consent-gated and recorded; network changes auto-restore at report end.
-- **Local-first visual intelligence**: `qa_visual` (baseline, regression diff, image-target matching with tappable coordinates, optional OCR) and `qa_visual_find_text` (OCR text location with coordinate-space conversion).
-- **Seeded state**: `qa_seed`, `qa_state_prepare`, `qa_state_verify`, `qa_state_teardown` — create and verify a reproducible precondition instead of only reporting it as missing.
-- **Report history**: `qa_report_compare` (diff a run against a baseline) and `qa_run_history` (pass rate, failures, flaky flows, confidence calibration across local runs).
+- **Durable issue memory**: `qa_issue_log`, `qa_issue_history`, `qa_issue_mark_fixed`, `qa_issue_triage`, `qa_issue_suppress`, `qa_issue_verify_fixed`, `qa_issue_metrics`, plus `qa_mobile_audit` (named, repeatable QA profiles). Fingerprints let later runs detect regressions of previously fixed issues.
+- **Persistent test suite**: `qa_test_suite_read`, `qa_test_suite_update`, `qa_test_suite_generate`, `qa_test_suite_export`, `qa_test_suite_lint` — a canonical suite that grows across runs.
+- **Flow system and suite quality**: `qa_flow_plan`, `qa_flow_repair`, `qa_suite_lint`, `qa_pom_generate`.
+- **Maestro interop**: `qa_maestro_import`, `qa_maestro_export`.
+- **Agent-efficiency helpers**: `qa_locator_suggest`, `qa_input_capabilities`, `qa_wait`, `qa_idling_status`, `qa_job_cancel`.
+
+Earlier, 1.1.0 added device-parity, local-first visual, seeded-state, and report-history tools.
 
 | Group | Tools |
 | --- | --- |
-| Start | `qa_agent_brief`, `qa_capabilities`, `qa_test_this`, `qa_job_status`, `qa_status`, `qa_explain_blocker`, `qa_continue_from_blocker`, `qa_get_artifact` |
+| Start | `qa_agent_brief`, `qa_capabilities`, `qa_test_this`, `qa_job_status`, `qa_job_cancel`, `qa_status`, `qa_explain_blocker`, `qa_continue_from_blocker`, `qa_get_artifact` |
 | Setup | `qa_doctor`, `qa_start_session`, `qa_detect_context`, `qa_plan`, `qa_prepare_target`, `qa_prepare_ios_target`, `qa_ios`, `qa_wda` |
 | Device | `qa_device_info`, `qa_permissions`, `qa_orientation`, `qa_geolocation`, `qa_network`, `qa_metro`, `qa_app_control`, `qa_screen_info`, `qa_screen_record` |
-| Drive | `qa_snapshot`, `qa_act`, `qa_clear_overlay`, `qa_check_health`, `qa_screenshot`, `qa_note`, `qa_assert_visual`, `qa_visual`, `qa_visual_find_text` |
+| Drive | `qa_snapshot`, `qa_act`, `qa_clear_overlay`, `qa_check_health`, `qa_screenshot`, `qa_note`, `qa_assert_visual`, `qa_visual`, `qa_visual_find_text`, `qa_locator_suggest`, `qa_input_capabilities`, `qa_wait`, `qa_idling_status` |
 | State | `qa_seed`, `qa_state_prepare`, `qa_state_verify`, `qa_state_teardown` |
 | Run | `qa_smoke`, `qa_explore`, `qa_report`, `qa_report_compare`, `qa_run_history` |
 | App map | `qa_app_map_build`, `qa_app_map_read`, `qa_app_map_query`, `qa_app_map_feature_scope`, `qa_app_map_validate` |
-| Flows and suites | `qa_flow_check`, `qa_flow_run`, `qa_flow_generate`, `qa_suite_generate`, `qa_suite_compile`, `qa_testcase_generate` |
+| Flows and suites | `qa_flow_check`, `qa_flow_plan`, `qa_flow_run`, `qa_flow_generate`, `qa_flow_repair`, `qa_suite_generate`, `qa_suite_compile`, `qa_suite_lint`, `qa_pom_generate`, `qa_testcase_generate` |
+| Test suite | `qa_test_suite_read`, `qa_test_suite_update`, `qa_test_suite_generate`, `qa_test_suite_export`, `qa_test_suite_lint` |
+| Interop | `qa_maestro_import`, `qa_maestro_export` |
+| Issues | `qa_issue_log`, `qa_issue_history`, `qa_issue_mark_fixed`, `qa_issue_triage`, `qa_issue_suppress`, `qa_issue_verify_fixed`, `qa_issue_metrics`, `qa_mobile_audit` |
 | First run | `qa_first_run_plan`, `qa_first_run_continue` |
 | Automation | `qa_automation_plan`, `qa_automation_generate`, `qa_automation_validate` |
 

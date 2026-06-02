@@ -16,9 +16,10 @@ export const CAPABILITY_GROUPS: CapabilityGroup[] = [
     purpose: 'Start a simulator QA run and recover from blockers.',
     tools: [
       { name: 'qa_agent_brief', summary: 'Brief for agent orchestration: first call, polling, report fetch, and blocker rules.' },
-      { name: 'qa_capabilities', summary: 'Grouped overview of the public v1 tool surface.' },
+      { name: 'qa_capabilities', summary: 'Grouped overview of the public tool surface.' },
       { name: 'qa_test_this', summary: 'Autopilot for "test it": resolve, prepare, smoke, explore, report, and optional suite output.' },
       { name: 'qa_job_status', summary: 'Poll long-running jobs started by macro tools.' },
+      { name: 'qa_job_cancel', summary: 'Cancel a running job; aborts spawned children.' },
       { name: 'qa_status', summary: 'Compact session status and current next action.' },
       { name: 'qa_explain_blocker', summary: 'Explain a typed blocker and the owner of the fix.' },
       { name: 'qa_continue_from_blocker', summary: 'Resume after user input, with secret redaction.' },
@@ -67,6 +68,10 @@ export const CAPABILITY_GROUPS: CapabilityGroup[] = [
       { name: 'qa_assert_visual', summary: 'Capture a visual assertion with evidence.' },
       { name: 'qa_visual', summary: 'Local visual ops: baseline / diff (regression) / find_image (tappable coords) / ocr (optional).' },
       { name: 'qa_visual_find_text', summary: 'OCR text locator with structured regions + coordinate-space conversion.' },
+      { name: 'qa_locator_suggest', summary: "Score each element's locator durability and grade automation readiness (which controls need testIDs)." },
+      { name: 'qa_input_capabilities', summary: 'Backend text-entry limits: ASCII, Unicode, clipboard, WDA typing frequency.' },
+      { name: 'qa_wait', summary: 'Non-shell wait for device_online / metro_ready / job_done.' },
+      { name: 'qa_idling_status', summary: 'Read app-declared idling hooks or label-heuristic settling before automation.' },
     ],
   },
   {
@@ -103,14 +108,51 @@ export const CAPABILITY_GROUPS: CapabilityGroup[] = [
   },
   {
     group: 'flows',
-    purpose: 'Create and run durable simulator flows and test suites.',
+    purpose: 'Create, plan, run, and repair durable simulator flows and POM suites.',
     tools: [
       { name: 'qa_flow_check', summary: 'Parse and statically validate a Swipium flow.' },
+      { name: 'qa_flow_plan', summary: 'Plan a flow against backend capabilities without executing it.' },
       { name: 'qa_flow_run', summary: 'Execute a flow against a prepared simulator session.' },
       { name: 'qa_flow_generate', summary: 'Generate a flow from recorded actions.' },
+      { name: 'qa_flow_repair', summary: 'Suggest or patch a stronger locator for a failed flow step from the current screen.' },
       { name: 'qa_suite_generate', summary: 'Generate a POM-style suite from recorded actions.' },
       { name: 'qa_suite_compile', summary: 'Compile a generated suite into runnable flows.' },
+      { name: 'qa_suite_lint', summary: 'Lint generated page objects for brittle/coordinate-only/dynamic locators.' },
+      { name: 'qa_pom_generate', summary: 'Generate page objects and a locator audit from recorded actions.' },
       { name: 'qa_testcase_generate', summary: 'Generate test case documentation from recorded behavior.' },
+    ],
+  },
+  {
+    group: 'test-suite',
+    purpose: 'Grow and maintain a canonical, persistent test suite across runs (.swipium/test-suite.json).',
+    tools: [
+      { name: 'qa_test_suite_read', summary: 'Read the canonical suite: filter by functionality/status; summary/json/markdown.' },
+      { name: 'qa_test_suite_update', summary: 'Merge cases into the persistent suite (dedupe by feature+objective+steps).' },
+      { name: 'qa_test_suite_generate', summary: 'Generate or refresh canonical cases from a recorded run and exploration.' },
+      { name: 'qa_test_suite_export', summary: 'Export the persistent suite to markdown, yaml dir, json, or junit.' },
+      { name: 'qa_test_suite_lint', summary: 'Validate the suite: missing expected/actual, stale map links, duplicate ids.' },
+    ],
+  },
+  {
+    group: 'interop',
+    purpose: 'Exchange flows with the Maestro ecosystem.',
+    tools: [
+      { name: 'qa_maestro_import', summary: 'Import supported Maestro YAML commands into Swipium Flow V2.' },
+      { name: 'qa_maestro_export', summary: 'Export Swipium Flow V2 to Maestro YAML with portability grades.' },
+    ],
+  },
+  {
+    group: 'issues',
+    purpose: 'Durable issue memory and executable mobile-QA audit profiles.',
+    tools: [
+      { name: 'qa_issue_log', summary: 'List the durable project issue ledger: records, counts, recurrence, linked evidence.' },
+      { name: 'qa_issue_history', summary: 'Append-only event trail for one issue.' },
+      { name: 'qa_issue_mark_fixed', summary: 'Record a fix so future runs detect regressions via the same fingerprint.' },
+      { name: 'qa_issue_triage', summary: "Change an issue's category/severity/owner or add a note (append-only)." },
+      { name: 'qa_issue_suppress', summary: 'Suppress known noise with a reason/expiration; stays visible under known-noise.' },
+      { name: 'qa_issue_verify_fixed', summary: 'Link passing evidence to a FIXED issue so reports can claim it was verified.' },
+      { name: 'qa_issue_metrics', summary: 'Issue quality trends: opened/fixed/reopened/verified, aging, reopen rate.' },
+      { name: 'qa_mobile_audit', summary: 'Plan or execute a named mobile-QA profile (smoke / account_cycle / store_compliance / resilience / release_gate).' },
     ],
   },
   {
@@ -139,7 +181,7 @@ export function registerCapabilities(server: McpServer, _sessions: SessionStore)
     'qa_capabilities',
     {
       title: 'List Swipium capabilities',
-      description: 'Return the public Swipium v1 tools grouped by purpose with short summaries.',
+      description: 'Return the public Swipium tools grouped by purpose with short summaries.',
       inputSchema: {
         group: z.enum(groupNames).optional().describe('Return only this group.'),
       },
@@ -147,7 +189,7 @@ export function registerCapabilities(server: McpServer, _sessions: SessionStore)
     async ({ group }) => {
       const groups = group ? CAPABILITY_GROUPS.filter((g) => g.group === group) : CAPABILITY_GROUPS;
       const summary =
-        `Swipium v${SWIPIUM_VERSION}: ${TOOL_COUNT} public v1 tools in ${CAPABILITY_GROUPS.length} groups.\n` +
+        `Swipium v${SWIPIUM_VERSION}: ${TOOL_COUNT} public tools in ${CAPABILITY_GROUPS.length} groups.\n` +
         groups
           .map((g) => `\n[${g.group}] ${g.purpose}\n` + g.tools.map((t) => `  - ${t.name}: ${t.summary}`).join('\n'))
           .join('\n') +

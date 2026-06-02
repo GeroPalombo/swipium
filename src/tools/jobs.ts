@@ -1,4 +1,4 @@
-// qa_job_status — poll a long-running job (boot/install).
+// qa_job_status / qa_job_cancel — poll or cancel a long-running job (boot/install).
 // Lets a client reconnect after a tool-call timeout instead of restarting the work.
 
 import { z } from 'zod';
@@ -28,4 +28,18 @@ export function registerJobs(server: McpServer, sessions: SessionStore): void {
     },
   );
 
+  server.registerTool(
+    'qa_job_cancel',
+    {
+      title: 'Cancel a job',
+      description: 'Cancel a running job; aborts its spawned child processes.',
+      inputSchema: { sessionId: z.string(), jobId: z.string() },
+    },
+    async ({ sessionId, jobId }) => {
+      const session = sessions.get(sessionId);
+      if (!session) return qaError({ what: `Unknown sessionId ${sessionId}`, changedState: false, retrySafe: true, nextSteps: ['Call qa_start_session first.'] });
+      const ok = sessions.cancelJob(session, jobId);
+      return qaOk({ jobId, cancelled: ok }, ok ? `cancelled ${jobId}` : `job ${jobId} not running (already finished or unknown)`);
+    },
+  );
 }

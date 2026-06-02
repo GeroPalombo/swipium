@@ -1,4 +1,4 @@
-// qa_flow_check + qa_flow_run.
+// qa_flow_check + qa_flow_run (PHASE3-PLAN §3.4) — turn exploration into repeatable QA.
 // Flows live as .swipium/flows/*.yaml. check = parse + static validation (no device).
 // run = the orchestrator (src/flows/run.ts), reporting the exact failing step + evidence.
 
@@ -20,7 +20,15 @@ import { displayArgv } from '../lib/commandTemplate.js';
 import { GitScopeForbiddenError } from '../lib/spawn.js';
 import { configuredOcrCommand } from '../visual/ocr.js';
 import { resolveMaskProvider, resolveVisualProvider } from '../visual/provider.js';
+import { backendCapabilities, backendForDriverKind, type AppiumSessionHints } from '../automation/capabilities.js';
+import { compileAutomationPlan } from '../automation/plan.js';
+import { buildReadiness } from '../automation/report.js';
+import type { AutomationBackend } from '../automation/types.js';
 import type { SessionStore } from '../session/store.js';
+
+const ALL_BACKENDS: AutomationBackend[] = ['android-direct', 'ios-raw-simulator', 'ios-wda', 'appium-uiautomator2', 'appium-xcuitest'];
+
+const STATUS_ICON: Record<string, string> = { ready: '✅', candidate: '🟡', blocked: '⛔' };
 
 /** Resolve a flow's YAML from explicit text, an absolute/relative path, or a name under .swipium/flows. */
 function loadFlowSource(root: string | undefined, flow?: string, flowYaml?: string): { yamlText?: string; source?: string; error?: string } {
@@ -192,6 +200,80 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
         { valid: true, source: src.source, name: parsed.name, appId: parsed.appId ?? null, mode: parsed.mode, budgetProfile: parsed.budgetProfile ?? null, stepCount: parsed.steps.length, setupCount: parsed.setup.length, teardownCount: parsed.teardown.length, fixtures: parsed.fixtures, warnings, lintFindings },
         `✅ flow "${parsed.name}" is valid — ${parsed.steps.length} steps (mode=${parsed.mode}${parsed.setup.length ? `, ${parsed.setup.length} setup` : ''}${parsed.teardown.length ? `, ${parsed.teardown.length} teardown` : ''})${warnings.length ? `\nwarnings:\n - ${warnings.join('\n - ')}` : ''}`,
       );
+    },
+  );
+
+  server.registerTool(
+    'qa_flow_plan',
+    {
+      title: 'Plan a flow for a backend',
+      description:
+        'Compile a Swipium flow into a deterministic, backend-specific automation plan WITHOUT touching a device (Automation Kernel V2). For each backend it answers: can this flow run, which exact selectors/gestures/waits will it use, and what to fix if it cannot. Each step is classified native | supported_with_fallback | visual_only | unsupported, with the exact missing capability and a concrete next step named for anything blocked. Returns structured data plus a natural-language message a coding agent can repeat to the user (ready | candidate | blocked). Provide `flow` (name/path) or `flowYaml`. Without `backend`, it plans across Android DirectDriver, iOS raw simulator, iOS WDA, Appium UiAutomator2, and Appium XCUITest; with a sessionId it also reports the attached backend.',
+      inputSchema: {
+        sessionId: z.string().optional(),
+        flow: z.string().optional().describe('Flow name under .swipium/flows, or a path to a .yaml file.'),
+        flowYaml: z.string().optional().describe('Inline flow YAML (instead of a file).'),
+        backend: z.enum(['android-direct', 'ios-raw-simulator', 'ios-wda', 'appium-uiautomator2', 'appium-xcuitest']).optional().describe('Plan only for this backend. Omit to plan across all five (the pre-run "can this run on Android and iOS?" answer).'),
+        appium: z
+          .object({
+            automationName: z.string().optional(),
+            platformName: z.string().optional(),
+            webviewContextsAvailable: z.boolean().optional(),
+          })
+          .optional()
+          .describe('Appium session hints that refine the Appium backend capability picture (driver family, WebView contexts).'),
+      },
+    },
+    async ({ sessionId, flow, flowYaml, backend, appium }) => {
+      const session = sessionId ? sessions.get(sessionId) : undefined;
+      const root = session?.root;
+      const src = loadFlowSource(root, flow, flowYaml);
+      if (src.error) return qaError({ what: src.error, changedState: false, retrySafe: true, nextSteps: ['Pass an existing flow name/path or inline flowYaml.'] });
+
+      const { flow: parsed, errors } = parseFlow(src.yamlText!);
+      if (errors.length || !parsed) {
+        return qaError(
+          { what: `Flow is invalid (${errors.length} error${errors.length === 1 ? '' : 's'}) — run qa_flow_check`, changedState: false, retrySafe: true, nextSteps: ['Fix the listed errors and re-plan.'] },
+          { source: src.source, errors },
+        );
+      }
+
+      const appiumHints: AppiumSessionHints | undefined = appium ? { ...appium } : undefined;
+      const attachedBackend = session?.driver?.kind ? backendForDriverKind(session.driver.kind, appiumHints) : undefined;
+
+      // Which backends to plan for: an explicit one, else all concrete backends (so the answer covers
+      // Android + iOS even with no device attached — the pre-run "can this run?" product question).
+      const targets: AutomationBackend[] = backend ? [backend] : [...ALL_BACKENDS];
+      if (attachedBackend && attachedBackend !== 'unknown' && !targets.includes(attachedBackend)) targets.unshift(attachedBackend);
+
+      const plans = targets.map((b) => {
+        const caps = backendCapabilities(b, appiumHints);
+        const plan = compileAutomationPlan(parsed, caps);
+        const readiness = buildReadiness(plan);
+        return {
+          backend: b,
+          attached: b === attachedBackend,
+          status: readiness.status,
+          headline: readiness.headline,
+          executable: plan.executable,
+          supportedSteps: readiness.supportedSteps,
+          unsupportedSteps: readiness.unsupportedSteps,
+          fallbackUsed: readiness.fallbackUsed,
+          agentMessage: readiness.agentMessage,
+          developerMessage: readiness.developerMessage,
+          blockers: readiness.blockers,
+          warnings: readiness.warnings,
+          steps: plan.steps.map((s) => ({ index: s.index, kind: s.action.kind, target: s.action.note, support: s.support, reason: s.reason, requiredCapability: s.requiredCapability })),
+        };
+      });
+
+      const summaryLines = plans.map((p) => {
+        const head = `${STATUS_ICON[p.status] ?? '•'} ${p.backend}${p.attached ? ' (attached)' : ''}: ${p.status} — ${p.supportedSteps} supported, ${p.unsupportedSteps} unsupported`;
+        return `${head}\n   ${p.agentMessage}`;
+      });
+      const summary = `flow "${parsed.name}" — automation plan across ${plans.length} backend(s):\n${summaryLines.join('\n')}`;
+
+      return qaOk({ flow: parsed.name, appId: parsed.appId ?? null, mode: parsed.mode, source: src.source, plans }, summary);
     },
   );
 

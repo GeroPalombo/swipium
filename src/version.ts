@@ -1,13 +1,14 @@
 // Single source of truth for the Swipium version and the public tool surface. Used by the
 // server identity, qa_doctor / qa_start_session, qa_capabilities, and `swipium verify`.
 
-export const SWIPIUM_VERSION = '1.1.0';
+export const SWIPIUM_VERSION = '1.2.0';
 
 export const TOOL_NAMES = [
   'qa_agent_brief',
   'qa_capabilities',
   'qa_test_this',
   'qa_job_status',
+  'qa_job_cancel',
   'qa_status',
   'qa_explain_blocker',
   'qa_continue_from_blocker',
@@ -40,6 +41,11 @@ export const TOOL_NAMES = [
   // Visual intelligence (Phase 8, local-first OCR + coordinate audit)
   'qa_visual',
   'qa_visual_find_text',
+  // Agent-efficiency helpers (Phase 7)
+  'qa_locator_suggest',
+  'qa_wait',
+  'qa_idling_status',
+  'qa_input_capabilities',
   'qa_smoke',
   'qa_explore',
   'qa_report',
@@ -56,17 +62,40 @@ export const TOOL_NAMES = [
   'qa_app_map_query',
   'qa_app_map_feature_scope',
   'qa_app_map_validate',
+  // Repeatable flow system (Phase 4)
   'qa_flow_check',
+  'qa_flow_plan',
   'qa_flow_run',
   'qa_flow_generate',
+  'qa_flow_repair',
+  // Persistent test suite + POM (REQ-06)
   'qa_suite_generate',
   'qa_suite_compile',
+  'qa_suite_lint',
+  'qa_pom_generate',
   'qa_testcase_generate',
+  'qa_test_suite_read',
+  'qa_test_suite_update',
+  'qa_test_suite_generate',
+  'qa_test_suite_export',
+  'qa_test_suite_lint',
   'qa_first_run_plan',
   'qa_first_run_continue',
   'qa_automation_plan',
   'qa_automation_generate',
   'qa_automation_validate',
+  // Maestro interop
+  'qa_maestro_import',
+  'qa_maestro_export',
+  // Durable issue memory + executable mobile audit (REQ-07/08)
+  'qa_issue_log',
+  'qa_issue_history',
+  'qa_issue_mark_fixed',
+  'qa_issue_triage',
+  'qa_issue_suppress',
+  'qa_issue_verify_fixed',
+  'qa_issue_metrics',
+  'qa_mobile_audit',
 ] as const;
 
 export const TOOL_COUNT = TOOL_NAMES.length;
@@ -86,5 +115,5 @@ export const PROMPT_COUNT = PROMPT_NAMES.length;
 /** Shown when a client may be running an older build than what's installed on disk. */
 export const STALE_CLIENT_HINT =
   `Swipium v${SWIPIUM_VERSION} exposes ${TOOL_COUNT} tools + ${PROMPT_COUNT} prompts. If your MCP client lists fewer ` +
-  `(e.g. qa_device_info / qa_permissions / qa_visual / qa_seed / qa_run_history missing), it is running a server ` +
+  `(e.g. qa_issue_log / qa_test_suite_read / qa_mobile_audit / qa_maestro_export / qa_flow_repair missing), it is running a server ` +
   `spawned before the upgrade. Restart the client to reload Swipium.`;
