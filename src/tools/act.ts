@@ -17,8 +17,10 @@ import { getDriver } from '../session/attach.js';
 import { resolveTarget, setsEqual } from '../core/target.js';
 import { recordableNativeSelector, recordableTap } from '../flows/generate.js';
 import { classifyFlowDriverError } from '../flows/run.js';
-import type { RecordedAction, SessionStore } from '../session/store.js';
-import type { NativeSelectorStrategy } from '../drivers/Driver.js';
+import { structuredSignature } from '../explore/signatures.js';
+import type { RecordedAction, Session, SessionStore } from '../session/store.js';
+import type { RawNode } from '../snapshot/parse.js';
+import type { NativeSelectorStrategy, SnapshotElement } from '../drivers/Driver.js';
 
 interface NativeSelector {
   using: NativeSelectorStrategy;
@@ -29,6 +31,24 @@ function nativeSelectorFor(selector?: string): NativeSelector | null {
   const m = selector?.match(/^(accessibility id|name|predicate string|class chain)\s*=\s*(.+)$/i);
   if (!m) return null;
   return { using: m[1].toLowerCase() as NativeSelectorStrategy, value: m[2] };
+}
+
+function screenTitleFromNodes(nodes: RawNode[]): string | undefined {
+  if (!nodes.length) return undefined;
+  const height = nodes[0].bounds[3] || 0;
+  const topBand = height ? height * 0.28 : Number.POSITIVE_INFINITY;
+  const candidates = nodes
+    .filter((n) => n.text && n.text.trim().length >= 2 && n.text.trim().length <= 40 && !n.clickable)
+    .sort((a, b) => a.bounds[1] - b.bounds[1]);
+  const header = candidates.find((n) => n.bounds[1] <= topBand) ?? candidates[0];
+  return header?.text?.trim() || undefined;
+}
+
+function recordingScreenContext(session: Session): { screen?: string; screenSig?: string } {
+  const nodes = session.lastSnapshot?.allNodes;
+  if (!nodes?.length) return {};
+  const els = nodes.map((n) => ({ id: n.id, label: n.desc, text: n.text } as unknown as SnapshotElement));
+  return { screen: screenTitleFromNodes(nodes), screenSig: structuredSignature(els) };
 }
 
 function recordableNativeTarget(session: Parameters<typeof recordableNativeSelector>[0], native: NativeSelector): Omit<RecordedAction, 'at' | 'action'> {
@@ -393,7 +413,10 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
       sessions.bump(session, 'actions');
       // Record the action into the IR for qa_flow_generate (the action definitely happened here;
       // recorded now so a later post-snapshot failure doesn't lose the step).
-      if (toRecord) sessions.addRecordedAction(session, { at: Date.now(), ...toRecord });
+      if (toRecord) {
+        const sc = recordingScreenContext(session);
+        sessions.addRecordedAction(session, { at: Date.now(), ...sc, ...toRecord });
+      }
 
       // Post-action observation is wrapped so a settle/dump/parse failure (e.g. the
       // looping-animation case) returns a Swipium-shaped result, never a raw MCP error.

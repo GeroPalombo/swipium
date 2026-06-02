@@ -150,7 +150,8 @@ export interface RecordedAction {
   url?: string;
   assertion?: string;
   exportability: Exportability;
-  screen?: string; // foreground owner when recorded (for "needs testID on screen X")
+  screen?: string; // visible screen title or foreground owner when recorded
+  screenSig?: string; // stable per-screen signature used by generated POM suites
   warning?: string;
   provenance?: SelectorProvenance;
 }

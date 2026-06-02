@@ -2,6 +2,21 @@
 
 All notable public changes to Swipium are documented here.
 
+## Unreleased
+
+### Fixed
+
+- Fixed default iOS text entry so replace-mode typing clears focused fields with current WebDriverAgent attributes and falls back to keyboard deletion when needed.
+- Fixed `qa_test_this` build handling so successful Expo iOS builds are not reported as app build failures when artifact resolution needs follow-up.
+- Fixed `qa_prepare_ios_target` so structured iOS mode is reported only after a WebDriverAgent session is created and attached to the run.
+- Fixed report verdicts so Swipium tool limitations do not block the app status; they are reported under coverage and tool status.
+
+### Changed
+
+- Added exploration diagnostics for visible action-like text that is not exposed as clickable or editable.
+- Improved app-map queries by indexing visible copy from source files.
+- Improved generated POM suites by segmenting recorded actions by screen identity.
+
 ## 1.0.1 - 2026-06-01
 
 ### Fixed

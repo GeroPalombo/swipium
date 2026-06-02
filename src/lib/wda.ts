@@ -355,6 +355,25 @@ export async function clearWdaElement(baseUrl: string, sessionId: string, elemen
   await wdaFetch(baseUrl, `/session/${sessionId}/element/${elementId}/clear`, { method: 'POST', body: '{}' });
 }
 
+export const WDA_FOCUSED_PREDICATES = ['focused == 1', 'wdFocused == 1', 'hasKeyboardFocus == 1'] as const;
+
+export async function findFocusedWdaElement(baseUrl: string, sessionId: string): Promise<WdaElementRef> {
+  let lastErr: unknown;
+  for (const predicate of WDA_FOCUSED_PREDICATES) {
+    try {
+      return await findWdaElement(baseUrl, sessionId, 'predicate string', predicate);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw new Error(`No keyboard-focused element found after trying ${WDA_FOCUSED_PREDICATES.join(', ')}: ${String((lastErr as Error)?.message ?? lastErr)}`);
+}
+
+export async function clearWdaFocusedByKeys(baseUrl: string, sessionId: string, approxLen = 40): Promise<void> {
+  const count = Math.min(Math.max(approxLen + 2, 1), 200);
+  await typeWdaKeys(baseUrl, sessionId, '\b'.repeat(count));
+}
+
 export async function tapWdaPoint(baseUrl: string, sessionId: string, x: number, y: number): Promise<void> {
   const modern = `/session/${sessionId}/wda/tap`;
   const legacy = `/session/${sessionId}/wda/tap/0`;

@@ -6,7 +6,8 @@
 import { existsSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { SimctlDriver } from '../drivers/SimctlDriver.js';
-import { checkWda } from '../lib/wda.js';
+import { WdaDriver } from '../drivers/WdaDriver.js';
+import { checkWda, createWdaSession, wdaSessionUdidMismatch } from '../lib/wda.js';
 import { loadWdaConfig } from '../lib/wdaConfig.js';
 import { appBuildDestination } from '../ios/signing.js';
 import * as sim from '../lib/simctl.js';
@@ -34,6 +35,8 @@ export interface PrepareIosResult {
   launched?: boolean;
   mode?: 'structured' | 'visual-fallback';
   wda?: { reachable: boolean; url?: string };
+  wdaSessionId?: string;
+  requiresAttach?: boolean;
   resultText?: string;
 }
 
@@ -174,11 +177,37 @@ export async function prepareIos(sessions: SessionStore, session: Session, args:
   const attach: WdaMode = args.attachWda ?? 'auto';
   let mode: 'structured' | 'visual-fallback' = 'visual-fallback';
   let wda: { reachable: boolean; url?: string } | undefined;
+  let wdaSessionId: string | undefined;
+  let requiresAttach = false;
   if (attach !== 'skip') {
     const status = await checkWda(wdaUrl, 1500).catch(() => ({ reachable: false }));
     wda = { reachable: !!status.reachable, url: wdaUrl };
     if (status.reachable) {
-      mode = 'structured';
+      try {
+        const sessionOptions = { bundleId: bundleId ?? undefined, udid: pick.udid, capabilities: wdaCfg?.capabilities, settings: wdaCfg?.settings };
+        const created = await createWdaSession(wdaUrl, sessionOptions);
+        const mismatched = wdaSessionUdidMismatch(created.capabilities, pick.udid);
+        if (mismatched) throw new Error(`WDA reported device ${mismatched}, but this session targets ${pick.udid}.`);
+        session.driver = new WdaDriver(wdaUrl, { ...sessionOptions, sessionId: created.sessionId });
+        session.device = pick.udid;
+        sessions.addEnvChange(session, `wda attach ${wdaUrl} ${pick.udid}`);
+        sessions.recordMutation(session, {
+          tool: 'qa_prepare_ios_target',
+          action: 'wda_attach',
+          risk: 'low',
+          target: { webDriverAgentUrl: wdaUrl, udid: pick.udid, bundleId: bundleId ?? null, wdaSessionId: created.sessionId },
+          consent: { required: false, approved: true },
+          status: 'executed',
+        });
+        mode = 'structured';
+        wdaSessionId = created.sessionId;
+      } catch (e) {
+        if (attach === 'required') {
+          return { ok: false, failureCode: 'WDA_SESSION_FAILED', error: `WDA is reachable at ${wdaUrl} but session creation failed: ${String(e)}. Confirm WDA is paired with ${pick.name} and the app bundle id is installed, then retry.`, udid: pick.udid, name: pick.name, bundleId, installed, launched, wda };
+        }
+        requiresAttach = true;
+        sessions.addWorkaround(session, `WDA reachable but session attach failed (${String(e)}). iOS verification is visual-only until qa_wda attach succeeds`);
+      }
     } else if (attach === 'required') {
       return { ok: false, failureCode: 'WDA_UNREACHABLE', error: `WDA required but unreachable at ${wdaUrl}. Start WebDriverAgent (qa_wda) then retry.`, udid: pick.udid, name: pick.name, bundleId, installed, launched };
     } else {
@@ -188,8 +217,9 @@ export async function prepareIos(sessions: SessionStore, session: Session, args:
   session.mode = mode === 'structured' ? 'structured' : 'visual-fallback';
   sessions.persist(session);
 
+  const nextHint = requiresAttach ? ' (WDA reachable, run qa_wda attach to enable structured snapshot and action tools)' : '';
   return {
-    ok: true, udid: pick.udid, name: pick.name, bundleId, installed, launched, mode, wda,
-    resultText: `${launched ? '✅' : '⚠️'} iOS ${pick.name}${bundleId ? ` / ${bundleId}` : ''} — ${mode === 'structured' ? 'WDA structured' : 'visual-only'}${installed ? ' (installed)' : ''}.`,
+    ok: true, udid: pick.udid, name: pick.name, bundleId, installed, launched, mode, wda, wdaSessionId, requiresAttach,
+    resultText: `${launched ? 'ready' : 'launched=false'} iOS ${pick.name}${bundleId ? ` / ${bundleId}` : ''}: ${mode === 'structured' ? 'WDA structured' : 'visual-only'}${installed ? ' (installed)' : ''}${nextHint}.`,
   };
 }

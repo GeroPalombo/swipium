@@ -2,7 +2,7 @@
 // graph, and tests, returning RANKED results with provenance, confidence, source files,
 // screens, and a recommended next Swipium tool call. Pure + deterministic so it is unit-testable.
 
-import { scoreFile, type CodeIndex } from './codeIndex.js';
+import { fileMatchDimensions, scoreFile, type CodeIndex } from './codeIndex.js';
 import type { AppKnowledgeMap } from './schema.js';
 
 export type QueryIntent = 'feature' | 'screen' | 'code' | 'test' | 'freeform';
@@ -57,6 +57,15 @@ export function queryAppMap(
   const wantsScreen = intent === 'screen' || intent === 'freeform';
   const wantsCode = intent === 'code' || intent === 'freeform';
   const wantsTest = intent === 'test' || intent === 'freeform';
+  const textTokensByFile = new Map<string, Set<string>>();
+  for (const f of codeIndex?.files ?? []) {
+    if (f.textTokens?.length) textTokensByFile.set(f.file, new Set(f.textTokens));
+  }
+  const fileTextHits = (file: string): number => {
+    const tokens = textTokensByFile.get(file);
+    if (!tokens) return 0;
+    return ts.filter((t) => tokens.has(t)).length;
+  };
 
   if (wantsFeature) {
     for (const f of map.features) {
@@ -84,15 +93,20 @@ export function queryAppMap(
   if (wantsScreen) {
     for (const s of map.staticTopology.screens) {
       const hay = `${s.name} ${s.route ?? ''} ${s.sourceFiles.join(' ')} ${s.reasons.join(' ')}`;
-      const score = termHits(hay, ts) * 2;
+      const nameRouteHits = termHits(hay, ts);
+      const visibleHits = s.sourceFiles.reduce((sum, f) => sum + fileTextHits(f), 0);
+      const score = nameRouteHits * 2 + visibleHits * 2;
       if (score <= 0) continue;
+      const provenance = ['code_scan'];
+      if (nameRouteHits > 0) provenance.push('route/name');
+      if (visibleHits > 0) provenance.push('visible_text');
       results.push({
         type: 'screen',
         id: s.id,
         title: s.name,
         score,
         confidence: s.confidence,
-        provenance: ['code_scan'],
+        provenance,
         sourceFiles: s.sourceFiles.slice(0, 8),
         screens: [s.id],
         recommendedNextTool: { tool: 'qa_explore', args: { goal: `reach the ${s.name} screen` }, why: 'Exercise this screen at runtime to confirm + capture locators' },
@@ -124,7 +138,7 @@ export function queryAppMap(
         id: file.file,
         title: file.file,
         score,
-        provenance: ['code_scan'],
+        provenance: ['code_scan', ...fileMatchDimensions(file, ts)],
         sourceFiles: [file.file],
         screens: [],
         recommendedNextTool: { tool: 'qa_app_map_query', args: { query: opts.query, intent: 'feature' }, why: 'Pivot from this file to the feature(s) it backs' },

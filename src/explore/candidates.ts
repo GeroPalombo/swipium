@@ -81,6 +81,30 @@ export function rankCandidates(elements: SnapshotElement[], opts: RankOptions = 
   return out.sort((a, b) => b.score - a.score);
 }
 
+const ACTION_LIKE_TEXT = /\b(continue|begin|start|started|next|skip|done|submit|confirm|cancel|allow|deny|accept|decline|get started|sign\s?up|sign\s?in|log\s?in|log\s?out|sign\s?out|register|join|subscribe|upgrade|unlock|buy|purchase|checkout|select|choose|create|save|send|share|retry|try again|finish|proceed|got it|continue with|let'?s go)\b/i;
+
+export interface SkippedActionLike {
+  ref: string;
+  visibleText?: string;
+  role: string;
+  bounds: { x: number; y: number; w: number; h: number };
+  clickable: boolean;
+}
+
+export function actionLikeNonInteractive(elements: SnapshotElement[]): SkippedActionLike[] {
+  const out: SkippedActionLike[] = [];
+  for (const e of elements) {
+    const editable = /EditText|Text[-_ ]?Field|TextInput|SearchView/i.test(e.role) || e.secure;
+    if (e.clickable || editable) continue;
+    const text = (e.text ?? e.label ?? '').trim();
+    if (!text) continue;
+    const wordCount = text.split(/\s+/).length;
+    if (!ACTION_LIKE_TEXT.test(text) && wordCount > 4) continue;
+    out.push({ ref: e.ref, visibleText: text, role: e.role, bounds: bounds(e), clickable: !!e.clickable });
+  }
+  return out;
+}
+
 /** Locator-readiness grade for a screen (Phase 3.3 §9.4) — drives the report's testability advice. */
 export function locatorQuality(elements: SnapshotElement[]): { grade: 'A' | 'B' | 'C' | 'D'; missingStableLocators: number; coordinateOnlyTargets: number } {
   const actionable = elements.filter((e) => e.clickable);

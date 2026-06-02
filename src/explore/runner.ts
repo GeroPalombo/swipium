@@ -10,7 +10,7 @@ import { checkHealth } from '../oracle/health.js';
 import { recordHealthFindings } from '../oracle/record.js';
 import { ExploreGraph, type ScreenNode, type EdgeOutcome } from './graph.js';
 import { structuredSignature, visualSignature } from './signatures.js';
-import { rankCandidates, locatorQuality, type RankedCandidate } from './candidates.js';
+import { actionLikeNonInteractive, rankCandidates, locatorQuality, type RankedCandidate, type SkippedActionLike } from './candidates.js';
 import { allowedUnder, allowsControlledLogout, type SafeMode } from './policy.js';
 import { FEATURE_KEYS, coverageClaimsFrom, estimateFeatureCoverage, inferAppDomain, proposeTasks, reflectExploration } from './planner.js';
 import { scorePromotionCandidates, type SuitePromotionCandidate } from './suite.js';
@@ -65,6 +65,16 @@ export interface ExploreOptions {
   accountCycle?: { enabled: boolean; disposableAccount: boolean };
 }
 
+export interface TestabilityBlocker {
+  screen: string;
+  visibleText?: string;
+  role: string;
+  bounds: { x: number; y: number; w: number; h: number };
+  clickable: boolean;
+  recommendation: string;
+  manualCandidate: { x: number; y: number };
+}
+
 export interface ExploreSummary {
   screensVisited: number;
   actionsTried: number;
@@ -76,6 +86,7 @@ export interface ExploreSummary {
   featureCoverage: Record<(typeof FEATURE_KEYS)[number], string>;
   destructiveCandidates: number;
   promotedSuiteCandidates: number;
+  testabilityBlockers: TestabilityBlocker[];
 }
 
 export interface ExploreResult {
@@ -222,9 +233,11 @@ export async function runExplore(sessions: SessionStore, session: Session, drive
     featureCoverage: Object.create(null),
     destructiveCandidates: 0,
     promotedSuiteCandidates: 0,
+    testabilityBlockers: [],
   };
   const exploredPerScreen = new Map<string, Set<string>>(); // nodeId → explored signatureKeys
   const skippedNotedScreens = new Set<string>();
+  const testabilityNotedScreens = new Set<string>();
   const destructiveCandidates = new Map<string, DestructiveCandidateSummary>();
   let lastNodeId: string | undefined;
   let consecutiveNoChange = 0;
@@ -235,7 +248,7 @@ export async function runExplore(sessions: SessionStore, session: Session, drive
     sessions.addNote(session, { at: Date.now(), ...(n as object) } as Parameters<SessionStore['addNote']>[1]);
 
   /** Observe the current screen → a graph node (structured or visual-only). */
-  const observe = async (): Promise<{ node: ScreenNode; isNew: boolean; candidates: RankedCandidate[]; visual: boolean; authWall: boolean }> => {
+  const observe = async (): Promise<{ node: ScreenNode; isNew: boolean; candidates: RankedCandidate[]; visual: boolean; authWall: boolean; actionLikeSkipped: SkippedActionLike[] }> => {
     const foreground = await driver.foregroundOwner().catch(() => 'unknown');
     let xml = '';
     let elements: ReturnType<typeof parseSnapshot>['elements'] = [];
@@ -275,12 +288,14 @@ export async function runExplore(sessions: SessionStore, session: Session, drive
     const ctxSig = { foreground, keyboardShown: false };
     let signature: string;
     let candidates: RankedCandidate[] = [];
+    let actionLikeSkipped: SkippedActionLike[] = [];
     if (visual) {
       const size = (await driver.screenSize().catch(() => null)) ?? { width: 0, height: 0 };
       signature = png ? visualSignature(png, size, ctxSig) : `visual:noshot:${foreground}`;
     } else {
       signature = structuredSignature(elements, ctxSig);
       candidates = rankCandidates(elements, { includeTextEntry: opts.includeTextEntry });
+      if (candidates.length === 0) actionLikeSkipped = actionLikeNonInteractive(elements);
     }
 
     const { node, isNew } = graph.upsert({
@@ -303,7 +318,7 @@ export async function runExplore(sessions: SessionStore, session: Session, drive
     if (visual && isNew) {
       note({ workflow: 'guided_exploration', outcome: 'pass', category: undefined, reason: `visual-only screen "${foreground}" — verified by screenshot`, verifiedVisually: true, method: 'visual', artifactUris: screenshotUri ? [screenshotUri] : undefined });
     }
-    return { node, isNew, candidates, visual, authWall };
+    return { node, isNew, candidates, visual, authWall, actionLikeSkipped };
   };
 
   const allowedCandidate = (candidate: RankedCandidate, node: ScreenNode): boolean => {
@@ -404,6 +419,28 @@ export async function runExplore(sessions: SessionStore, session: Session, drive
     }
 
     if (!pick) {
+      if (obs.actionLikeSkipped.length && !testabilityNotedScreens.has(obs.node.id)) {
+        testabilityNotedScreens.add(obs.node.id);
+        for (const s of obs.actionLikeSkipped.slice(0, 8)) {
+          summary.testabilityBlockers.push({
+            screen: obs.node.title ?? 'unknown',
+            visibleText: s.visibleText,
+            role: s.role,
+            bounds: s.bounds,
+            clickable: s.clickable,
+            recommendation: `"${s.visibleText}" looks tappable but the UI tree marks it non-interactive. Add accessibilityRole="button" and a stable testID or accessibility identifier.`,
+            manualCandidate: { x: Math.round(s.bounds.x + s.bounds.w / 2), y: Math.round(s.bounds.y + s.bounds.h / 2) },
+          });
+        }
+        note({
+          workflow: 'guided_exploration',
+          outcome: 'blocked',
+          category: 'mcp_limitation',
+          reason: `No safe actionable elements on "${obs.node.title}". ${obs.actionLikeSkipped.length} visible action-like text element(s) are not clickable in the UI tree.`,
+          missingPrecondition: 'tappable controls with accessibilityRole and testID',
+          recommendedSetup: `Add accessibilityRole="button" and a stable testID to primary buttons such as "${obs.actionLikeSkipped[0].visibleText}".`,
+        });
+      }
       // Nothing safe+new here. Go back to keep exploring; if we're at the root with nothing, stop.
       if (lastNodeId && obs.node.id !== graph.rootId && depth > 1) {
         await driver.pressKey('back').catch(() => {});

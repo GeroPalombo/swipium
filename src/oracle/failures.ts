@@ -124,6 +124,7 @@ export type FailureCode =
   // --- roadmap §10: build-from-source ---
   | 'BUILD_COMMAND_UNAVAILABLE'
   | 'BUILD_FAILED'
+  | 'BUILD_ARTIFACT_UNRESOLVED_AFTER_SUCCESS'
   | 'BUILD_TIMED_OUT'
   | 'DEPENDENCY_INSTALL_REQUIRED'
   | 'EXPO_PREBUILD_REQUIRED'
@@ -269,6 +270,7 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
   // --- roadmap §10: build-from-source ---
   BUILD_COMMAND_UNAVAILABLE: { bucket: 'environment', severity: 'high', retrySafe: true, owner: 'environment', summary: 'No build command is available for this framework/platform', recovery: 'Install the required toolchain (Gradle/Xcode/Flutter/Expo CLI) or provide a prebuilt artifact.' },
   BUILD_FAILED: { bucket: 'environment', severity: 'high', retrySafe: false, owner: 'app', selfFixable: false, summary: 'Build from source failed', recovery: 'Open the build log artifact, fix the compile/config error, then re-run the build. A build failure is NOT a test failure.' },
+  BUILD_ARTIFACT_UNRESOLVED_AFTER_SUCCESS: { bucket: 'environment', severity: 'high', retrySafe: true, owner: 'swipium', selfFixable: true, summary: 'Build succeeded but Swipium could not resolve the produced app', recovery: 'The build command succeeded. This is an artifact-resolution gap, not an app build failure. Pass an explicit artifact path, or for Expo iOS point Swipium at the .app under Xcode DerivedData.' },
   BUILD_TIMED_OUT: { bucket: 'environment', severity: 'high', retrySafe: true, owner: 'environment', summary: 'Build exceeded its time budget', recovery: 'Increase the build timeout, warm caches, or build once manually then re-run Swipium against the artifact.' },
   DEPENDENCY_INSTALL_REQUIRED: { bucket: 'environment', severity: 'medium', retrySafe: true, owner: 'environment', summary: 'Dependencies must be installed before building', recovery: 'Run the project install step (npm/yarn/pnpm install, pod install, flutter pub get), then re-run the build.' },
   EXPO_PREBUILD_REQUIRED: { bucket: 'environment', severity: 'medium', retrySafe: true, owner: 'swipium', selfFixable: true, summary: 'Expo project has no native android/ios directories', recovery: 'Run `npx expo prebuild` (or build with `npx expo run:*` which prebuilds) before a native build.' },

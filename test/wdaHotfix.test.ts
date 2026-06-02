@@ -14,7 +14,15 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
   return body ? JSON.parse(body) as Record<string, unknown> : {};
 }
 
-async function startFakeWda(opts: { pointTap?: 'modern' | 'legacy' | 'modern-500'; elementLookup?: 'ok' | 'not-found'; keys?: 'ok' | 'error' } = {}) {
+async function startFakeWda(
+  opts: {
+    pointTap?: 'modern' | 'legacy' | 'modern-500';
+    elementLookup?: 'ok' | 'not-found';
+    focusPredicate?: 'modern' | 'none';
+    clear?: 'ok' | 'error';
+    keys?: 'ok' | 'error';
+  } = {},
+) {
   const calls: string[] = [];
   const requests: Array<{ method: string; url: string; body: Record<string, unknown> }> = [];
   async function record(req: IncomingMessage, method: string, url: string) {
@@ -39,11 +47,30 @@ async function startFakeWda(opts: { pointTap?: 'modern' | 'legacy' | 'modern-500
     }
     if (method === 'POST' && url === '/session/wda-session-1/element') {
       if (opts.elementLookup === 'not-found') return fail(req, res, method, url, 404, 'no such element');
-      await record(req, method, url);
+      const body = await record(req, method, url);
+      if (body.using === 'predicate string') {
+        const value = String(body.value ?? '');
+        if (opts.focusPredicate === 'none') {
+          res.statusCode = 404;
+          res.end(JSON.stringify({ value: { message: 'no focused element' } }));
+          return;
+        }
+        if (opts.focusPredicate === 'modern' && !/^focused == 1$|^wdFocused == 1$/.test(value)) {
+          res.statusCode = 404;
+          res.end(JSON.stringify({ value: { message: 'unknown attribute' } }));
+          return;
+        }
+      }
       res.end(JSON.stringify({ value: { 'element-6066-11e4-a52e-4f735466cecf': 'element-1' } }));
       return;
     }
     if (method === 'POST' && url === '/session/wda-session-1/element/element-1/value') {
+      await record(req, method, url);
+      res.end(JSON.stringify({ value: null }));
+      return;
+    }
+    if (method === 'POST' && url === '/session/wda-session-1/element/element-1/clear') {
+      if (opts.clear === 'error') return fail(req, res, method, url, 500, 'clear failed');
       await record(req, method, url);
       res.end(JSON.stringify({ value: null }));
       return;
@@ -76,7 +103,7 @@ async function startFakeWda(opts: { pointTap?: 'modern' | 'legacy' | 'modern-500
   return { url: `http://127.0.0.1:${addr.port}`, close: () => new Promise<void>((resolve) => server.close(() => resolve())), calls, requests };
 }
 
-describe('WDA v1 hotfixes', () => {
+describe('WDA v1 compatibility fixes', () => {
   it('uses modern point tap and falls back to legacy only for missing-route responses', async () => {
     const modern = await startFakeWda();
     try {
@@ -116,6 +143,38 @@ describe('WDA v1 hotfixes', () => {
       await expect(new WdaDriver(failing.url, { udid: 'SIM-1' }).inputText('hello')).rejects.toThrow(/TEXT_INPUT_UNSUPPORTED/);
     } finally {
       await failing.close();
+    }
+  });
+
+  it('uses modern focused-field predicates for iOS replace-mode clearing', async () => {
+    const fake = await startFakeWda({ focusPredicate: 'modern' });
+    try {
+      const driver = new WdaDriver(fake.url, { udid: 'SIM-1' });
+      await driver.clearFocusedText(8);
+      await driver.inputText('QA Tester');
+
+      const predicateValues = fake.requests
+        .filter((r) => r.url === '/session/wda-session-1/element' && r.body.using === 'predicate string')
+        .map((r) => r.body.value);
+      expect(predicateValues).toEqual(['focused == 1', 'focused == 1']);
+      expect(fake.calls).toContain('POST /session/wda-session-1/element/element-1/clear');
+      expect(fake.requests).toContainEqual(expect.objectContaining({
+        url: '/session/wda-session-1/element/element-1/value',
+        body: { value: [...'QA Tester'], text: 'QA Tester' },
+      }));
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it('falls back to keyboard backspaces when focused clear is unavailable', async () => {
+    const fake = await startFakeWda({ focusPredicate: 'none' });
+    try {
+      await new WdaDriver(fake.url, { udid: 'SIM-1' }).clearFocusedText(4);
+      const keys = fake.requests.find((r) => r.url === '/session/wda-session-1/wda/keys');
+      expect(keys?.body.text).toBe('\b'.repeat(6));
+    } finally {
+      await fake.close();
     }
   });
 });

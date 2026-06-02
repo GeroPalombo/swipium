@@ -79,6 +79,7 @@ export interface ReportData {
   executiveSummary: { risk: string; reasons: string[]; nextAction: string };
   appVerdict?: { status: string; summary: string };
   coverageVerdict?: { status: string; summary: string };
+  toolVerdict?: { status: string; summary: string };
   nativeHealth: string;
   appHealth: string;
   findings: ReportFinding[];
@@ -370,10 +371,11 @@ export function toMarkdown(r: ReportData): string {
   L.push('```');
   L.push('');
   L.push(`**Release risk: ${RISK_BADGE[r.executiveSummary.risk] ?? r.executiveSummary.risk.toUpperCase()}**`);
-  if (r.appVerdict || r.coverageVerdict) {
+  if (r.appVerdict || r.coverageVerdict || r.toolVerdict) {
     L.push('');
     if (r.appVerdict) L.push(`**App status:** ${r.appVerdict.status} - ${r.appVerdict.summary}`);
     if (r.coverageVerdict) L.push(`**Coverage status:** ${r.coverageVerdict.status} - ${r.coverageVerdict.summary}`);
+    if (r.toolVerdict) L.push(`**Tool status:** ${r.toolVerdict.status} - ${r.toolVerdict.summary}`);
   }
   L.push('');
   L.push(`**Next action:** ${r.executiveSummary.nextAction}`);

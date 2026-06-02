@@ -183,20 +183,24 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   const dominantBucket = ALL_BUCKETS.filter((b) => bucketCounts[b] > 0).sort((x, y) => bucketCounts[y] - bucketCounts[x])[0] ?? null;
   const failureBuckets = { counts: bucketCounts, total: totalFailures, classifiedPct: totalFailures ? Math.round((classified / totalFailures) * 100) : 100, dominant: dominantBucket, examples: bucketExamples };
 
-  const failCount = outcomeTally.fail ?? 0;
   const blockedCount = outcomeTally.blocked ?? 0;
+  const APP_OWNED_FAIL_CATEGORIES = new Set(['app_bug', 'other']);
+  const appFailNotes = notes.filter((n) => n.outcome === 'fail' && (n.category == null || APP_OWNED_FAIL_CATEGORIES.has(n.category)));
+  const appFailCount = appFailNotes.length;
+  const toolLimitationNotes = notes.filter((n) => (n.outcome === 'fail' || n.outcome === 'blocked') && n.category === 'mcp_limitation');
+  const toolLimitationFailCount = toolLimitationNotes.filter((n) => n.outcome === 'fail').length;
   const topHigh = high[0];
-  const topFailNote = notes.find((n) => n.outcome === 'fail');
+  const topAppFailNote = appFailNotes[0];
   const topBlockedNote = notes.find((n) => n.outcome === 'blocked');
   const executiveSummary = releaseAssessment({
     nativeHealth,
     appHealth,
     highSeverityCount: high.length,
-    failCount,
-    blockedCount,
+    failCount: appFailCount,
+    blockedCount: blockedCount + toolLimitationFailCount,
     overrideCount: session.envChanges.filter((c) => /OVERRIDE|GUARDRAIL|acknowledgeBundleRisk|allowLaunchWithoutMetro/i.test(c)).length,
     topHighFinding: topHigh ? redact(topHigh.detail) : undefined,
-    topFail: topFailNote ? { workflow: topFailNote.workflow, reason: topFailNote.reason ? redact(topFailNote.reason) : undefined } : undefined,
+    topFail: topAppFailNote ? { workflow: topAppFailNote.workflow, reason: topAppFailNote.reason ? redact(topAppFailNote.reason) : undefined } : undefined,
     topBlocked: topBlockedNote ? { workflow: topBlockedNote.workflow, recommendedSetup: topBlockedNote.recommendedSetup } : undefined,
   });
 
@@ -232,16 +236,18 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   const automationBackend = automationBackendForSession(session);
   const passNotes = notes.filter((n) => n.outcome === 'pass').length;
   const appVerdict = (() => {
-    if (nativeHealth === 'error' || appHealth === 'error' || high.some((f) => f.layer === 'app' || f.layer === 'native') || failCount > 0) {
-      const summary = topHigh ? (redact(topHigh.detail) ?? topHigh.detail) : topFailNote?.reason ? (redact(topFailNote.reason) ?? topFailNote.reason) : 'High severity app/native finding or failed workflow observed.';
+    if (nativeHealth === 'error' || appHealth === 'error' || high.some((f) => f.layer === 'app' || f.layer === 'native') || appFailCount > 0) {
+      const summary = topHigh ? (redact(topHigh.detail) ?? topHigh.detail) : topAppFailNote?.reason ? (redact(topAppFailNote.reason) ?? topAppFailNote.reason) : 'High severity app/native finding or failed app workflow observed.';
       return { status: 'BLOCKED', summary };
     }
     if (appHealth === 'degraded') return { status: 'PASS_WITH_WARNING', summary: 'App launched, but medium-severity app findings were observed.' };
     return { status: 'PASS', summary: 'No high-severity app/native finding observed in this run.' };
   })();
   const coverageVerdict = (() => {
-    if (blockedCount > 0 || session.exploration?.state === 'blocked') {
-      return { status: 'BLOCKED', summary: topBlockedNote?.recommendedSetup ?? 'A setup or precondition blocker limited coverage.' };
+    if (blockedCount > 0 || toolLimitationNotes.length > 0 || session.exploration?.state === 'blocked') {
+      const summary = topBlockedNote?.recommendedSetup
+        ?? (toolLimitationNotes.length ? `A Swipium/tool limitation blocked ${toolLimitationNotes.length} workflow(s); see toolVerdict.` : 'A setup or precondition blocker limited coverage.');
+      return { status: 'BLOCKED', summary };
     }
     if (!automationBackend.structured) {
       return { status: 'PARTIAL', summary: 'Coverage was limited because the active backend is visual-only or lacks structured UI automation.' };
@@ -250,6 +256,14 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
       return { status: 'SMOKE_ONLY', summary: 'Only launch/setup evidence was collected.' };
     }
     return { status: 'COVERED', summary: 'Structured smoke/workflow evidence was collected.' };
+  })();
+  const toolVerdict = (() => {
+    if (toolLimitationNotes.length === 0) return { status: 'PASS', summary: 'No Swipium/MCP limitations recorded in this run.' };
+    const first = toolLimitationNotes[0];
+    return {
+      status: 'BLOCKED',
+      summary: `${toolLimitationNotes.length} workflow(s) limited by Swipium/MCP capabilities (for example ${first.workflow}${first.reason ? `: ${redact(first.reason) ?? first.reason}` : ''}). These are tool limitations, not app defects.`,
+    };
   })();
 
   // Single product-facing QA level (Deliverable 6 / §3.11). Derived from the same evidence the
@@ -351,6 +365,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     coverage,
     appVerdict,
     coverageVerdict,
+    toolVerdict,
     automationBackend,
     readiness,
     automationReadiness,
@@ -561,6 +576,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     `RELEASE RISK: ${executiveSummary.risk.toUpperCase()} — ${executiveSummary.nextAction}`,
     `App status: ${appVerdict.status} - ${appVerdict.summary}`,
     `Coverage status: ${coverageVerdict.status} - ${coverageVerdict.summary}`,
+    `Tool status: ${toolVerdict.status} - ${toolVerdict.summary}`,
     `PR summary:\n${prSummary.text}`,
     `backend: ${report.automationBackend.description} (${report.automationBackend.mode})`,
     `QA level: ${qaLevel.level.toUpperCase()} — ${qaLevel.rationale}${qaLevel.next ? ` · next: ${qaLevel.next} (${qaLevel.nextRequirement})` : ''}`,

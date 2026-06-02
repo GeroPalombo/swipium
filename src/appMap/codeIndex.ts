@@ -10,6 +10,7 @@ export interface CodeSymbolFile {
   file: string; // relative path
   symbols: string[]; // exported/declared names (components, classes, functions, structs)
   tokens: string[]; // de-duped lowercase identifier tokens (capped)
+  textTokens?: string[]; // de-duped visible copy tokens from string literals and JSX/XML text
 }
 
 export interface CodeIndex {
@@ -37,7 +38,7 @@ function extractSymbols(text: string): string[] {
   return [...out].slice(0, 60);
 }
 
-function tokenize(text: string): string[] {
+function tokenize(text: string, limit = 40): string[] {
   const counts = new Map<string, number>();
   for (const m of text.matchAll(/[A-Za-z][A-Za-z0-9]{2,}/g)) {
     // split camelCase into sub-words so "WeatherAnalysisScreen" matches "weather"/"analysis"
@@ -45,7 +46,17 @@ function tokenize(text: string): string[] {
     const parts = word.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/\s+/);
     for (const p of parts) if (p.length >= 3) counts.set(p, (counts.get(p) ?? 0) + 1);
   }
-  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40).map(([t]) => t);
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([t]) => t);
+}
+
+function extractVisibleText(text: string): string {
+  const chunks: string[] = [];
+  for (const m of text.matchAll(/"([^"\\]{2,200})"|'([^'\\]{2,200})'|`([^`\\$]{2,200})`/g)) {
+    const s = m[1] ?? m[2] ?? m[3];
+    if (s && !s.includes('/') && !s.startsWith('@') && !s.startsWith('.')) chunks.push(s);
+  }
+  for (const m of text.matchAll(/>([^<>{}\n]{2,200})</g)) chunks.push(m[1]);
+  return chunks.join(' ');
 }
 
 const STOP = new Set(['const', 'export', 'import', 'function', 'return', 'class', 'this', 'from', 'react', 'native', 'string', 'number', 'void', 'null', 'undefined', 'true', 'false', 'async', 'await']);
@@ -60,21 +71,38 @@ export function buildCodeIndex(root: string, files: string[], generatedAt: strin
     if (!text || text.length > 400_000) continue;
     const symbols = extractSymbols(text);
     const tokens = tokenize(text).filter((t) => !STOP.has(t));
-    if (!symbols.length && !tokens.length) continue;
-    out.push({ file: relPath, symbols, tokens });
+    const textTokens = tokenize(extractVisibleText(text), 160).filter((t) => !STOP.has(t));
+    if (!symbols.length && !tokens.length && !textTokens.length) continue;
+    out.push({ file: relPath, symbols, tokens, ...(textTokens.length ? { textTokens } : {}) });
     if (out.length >= 2000) break;
   }
   return { schemaVersion: 1, generatedAt, files: out };
 }
 
-/** Score a file against query terms (symbol hits weigh more than token hits). */
+/** Score a file against query terms. */
 export function scoreFile(entry: CodeSymbolFile, terms: string[]): number {
   let score = 0;
   const symLower = entry.symbols.map((s) => s.toLowerCase());
+  const textTokens = entry.textTokens ?? [];
   for (const t of terms) {
     if (symLower.some((s) => s.includes(t))) score += 3;
     if (entry.tokens.includes(t)) score += 1;
     if (entry.file.toLowerCase().includes(t)) score += 2;
+    if (textTokens.includes(t)) score += 2;
   }
   return score;
+}
+
+export function fileMatchDimensions(entry: CodeSymbolFile, terms: string[]): string[] {
+  const dims = new Set<string>();
+  const symLower = entry.symbols.map((s) => s.toLowerCase());
+  const textTokens = entry.textTokens ?? [];
+  const fileLower = entry.file.toLowerCase();
+  for (const t of terms) {
+    if (symLower.some((s) => s.includes(t))) dims.add('component_name');
+    if (entry.tokens.includes(t)) dims.add('identifier');
+    if (fileLower.includes(t)) dims.add('file_name');
+    if (textTokens.includes(t)) dims.add('visible_text');
+  }
+  return [...dims];
 }

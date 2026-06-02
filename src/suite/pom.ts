@@ -149,25 +149,40 @@ function auditCodeFor(el: { selectorKind: string }): LocatorAuditCode | undefine
  */
 export function generatePom(
   actions: RecordedAction[],
-  opts: { name: string; appId?: string; budgetProfile?: string },
+  opts: { name: string; appId?: string; budgetProfile?: string; screenLabels?: Record<string, string> },
 ): PomResult {
-  // 1. segment into pages by contiguous screen.
+  // 1. segment into pages by recorded screen identity. This keeps signup, onboarding, paywall,
+  // and home actions in separate page objects even when the foreground owner is the same app.
   const pages: PomPage[] = [];
   const usedPageNames = new Set<string>();
-  const pageByScreen = new Map<string, PomPage>();
+  const pageByKey = new Map<string, PomPage>();
+  let unknownRun = 0;
+  let prevKey = '';
 
-  const pageFor = (screen: string | undefined): PomPage => {
-    const key = screen ?? '__unknown__';
-    const existing = pageByScreen.get(key);
+  const segmentKey = (a: RecordedAction): string => {
+    const known = a.screenSig ?? (a.screen?.trim() ? `title:${a.screen.trim().toLowerCase()}` : undefined);
+    if (known) {
+      prevKey = known;
+      return known;
+    }
+    if (!prevKey.startsWith('__unknown__')) unknownRun++;
+    prevKey = `__unknown__${unknownRun}`;
+    return prevKey;
+  };
+
+  const pageFor = (a: RecordedAction): PomPage => {
+    const key = segmentKey(a);
+    const existing = pageByKey.get(key);
     if (existing) return existing;
-    let name = pageNameFromScreen(screen, pages.length);
+    const staticLabel = opts.screenLabels?.[key];
+    let name = staticLabel ? `${pascal(staticLabel)}Page` : pageNameFromScreen(a.screen, pages.length);
     let n = 2;
     const baseName = name;
     while (usedPageNames.has(name)) name = `${baseName.replace(/Page$/, '')}${n++}Page`;
     usedPageNames.add(name);
-    const page: PomPage = { name, screen, elements: [] };
+    const page: PomPage = { name, screen: a.screen, elements: [] };
     pages.push(page);
-    pageByScreen.set(key, page);
+    pageByKey.set(key, page);
     return page;
   };
 
@@ -203,7 +218,7 @@ export function generatePom(
   };
 
   for (const a of actions) {
-    const page = pageFor(a.screen);
+    const page = pageFor(a);
     switch (a.action) {
       case 'tap':
       case 'clear': {

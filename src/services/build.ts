@@ -78,10 +78,23 @@ export async function executeBuild(sessions: SessionStore, session: Session, pla
     sessions.milestone(session, 'build_end');
 
     const logUri = sessions.saveArtifact(session, 'logs', logName, logBuf, 'text/plain', 'build log (success)');
-    const resolved = await resolveArtifact({ projectRoot: session.root, platform: plan.platform, requireInstallableOn: plan.platform === 'android' ? 'android-emulator' : 'ios-simulator' });
+    const resolved = await resolveArtifact({
+      projectRoot: session.root,
+      platform: plan.platform,
+      requireInstallableOn: plan.platform === 'android' ? 'android-emulator' : 'ios-simulator',
+      allowOutsideRoot: true,
+    });
     if (aborted()) return { ok: false, aborted: true };
     if (!resolved.best) {
-      return { ok: true, artifact: null, logUri, warning: 'Build succeeded but no artifact was resolved at the expected location.', searchedLocations: resolved.searchedLocations };
+      return {
+        ok: true,
+        artifact: null,
+        logUri,
+        failureCode: 'BUILD_ARTIFACT_UNRESOLVED_AFTER_SUCCESS',
+        owner: 'swipium',
+        warning: 'Build succeeded but no installable artifact was resolved.',
+        searchedLocations: resolved.searchedLocations,
+      };
     }
     return { ok: true, artifact: resolved.best, logUri };
   } catch (e) {

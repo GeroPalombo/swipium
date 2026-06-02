@@ -608,6 +608,7 @@ async function runExecutePipeline(sessions: SessionStore, session: Session, job:
     let manifestUri: string | undefined;
     let appVerdict: { status: string; summary: string } | undefined;
     let coverageVerdict: { status: string; summary: string } | undefined;
+    let toolVerdict: { status: string; summary: string } | undefined;
     const suiteOpt = suiteForReport
       ? { generated: !suiteForReport.skipped, skippedReason: suiteForReport.skippedReason, name: suiteForReport.name, written: suiteForReport.written, compiledFlows: suiteForReport.compiledFlows, suiteRunnable: suiteForReport.suiteRunnable, readinessLabels: suiteForReport.readinessLabels }
       : undefined;
@@ -620,6 +621,7 @@ async function runExecutePipeline(sessions: SessionStore, session: Session, job:
       if (!artifacts.includes(reportUri)) artifacts.push(reportUri);
       appVerdict = (r.report as { appVerdict?: { status: string; summary: string } }).appVerdict;
       coverageVerdict = (r.report as { coverageVerdict?: { status: string; summary: string } }).coverageVerdict;
+      toolVerdict = (r.report as { toolVerdict?: { status: string; summary: string } }).toolVerdict;
     } catch (e) {
       log('warn', 'test_this report generation failed', { err: String(e) });
     }
@@ -647,7 +649,7 @@ async function runExecutePipeline(sessions: SessionStore, session: Session, job:
       workaroundsAttempted: session.workarounds,
       artifactChoice: a.artifactChoice,
       targetChoice: a.targetChoice,
-      verdicts: { ...(appVerdict ? { app: appVerdict } : {}), ...(coverageVerdict ? { coverage: coverageVerdict } : {}) },
+      verdicts: { ...(appVerdict ? { app: appVerdict } : {}), ...(coverageVerdict ? { coverage: coverageVerdict } : {}), ...(toolVerdict ? { tool: toolVerdict } : {}) },
       blockers: state === 'completed' || !failureCode ? [] : [typedBlockerFromCode(failureCode)],
       reportUri: reportUri ?? null,
       nextRecommendedAction,
@@ -684,8 +686,14 @@ async function runExecutePipeline(sessions: SessionStore, session: Session, job:
       const res = await executeBuild(sessions, session, plan, { signal, onProgress: (p) => prog.event(p, { statusText: `Building: ${p}` }) });
       if (res.logUri) artifacts.push(res.logUri);
       if (signal?.aborted) return;
-      if (!res.ok || !res.artifact) {
-        return await finish('blocked', res.failureCode ?? 'BUILD_FAILED', `❌ Build failed (${res.failureCode}). A build failure is NOT a test failure. Log: ${res.logUri ?? 'n/a'}`, { buildLog: res.logUri });
+      if (!res.ok) {
+        const code = res.failureCode ?? 'BUILD_FAILED';
+        return await finish('blocked', code, `Build failed (${code}). A build failure is not a test failure. Log: ${res.logUri ?? 'n/a'}`, { buildLog: res.logUri });
+      }
+      if (!res.artifact) {
+        const code = res.failureCode ?? 'BUILD_ARTIFACT_UNRESOLVED_AFTER_SUCCESS';
+        const searched = res.searchedLocations?.length ? ` Searched: ${res.searchedLocations.slice(0, 6).join(', ')}` : '';
+        return await finish('blocked', code, `Build succeeded, but Swipium could not resolve the produced ${a.isAndroid ? 'APK' : 'simulator app'}. This is not an app build failure. Log: ${res.logUri ?? 'n/a'}.${searched}`, { buildLog: res.logUri });
       }
       prog.done('Build complete.');
       if (a.isAndroid) apkPath = res.artifact.path;

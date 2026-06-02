@@ -53,6 +53,7 @@ export interface TerminalEnvelope {
   verdicts?: {
     app?: { status: string; summary: string };
     coverage?: { status: string; summary: string };
+    tool?: { status: string; summary: string };
   };
   blockers: TypedBlocker[];
   reportUri: string | null;

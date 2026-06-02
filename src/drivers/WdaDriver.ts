@@ -3,10 +3,12 @@ import * as sim from '../lib/simctl.js';
 import {
   acceptWdaAlert,
   clearWdaElement,
+  clearWdaFocusedByKeys,
   createWdaSession,
   deleteWdaSession,
   dismissWdaAlert,
   dragWdaPoint,
+  findFocusedWdaElement,
   findWdaElement,
   normalizeWdaSource,
   pressWdaBack,
@@ -206,7 +208,7 @@ export class WdaDriver implements Driver {
     const sid = await this.ensureSession();
     let focusedError: unknown;
     try {
-      const el = await this.timed('find_element', () => findWdaElement(this.baseUrl, sid, 'predicate string', 'hasKeyboardFocus == 1'));
+      const el = await this.timed('find_element', () => findFocusedWdaElement(this.baseUrl, sid));
       await this.timed('type', () => typeWdaElement(this.baseUrl, sid, el.elementId, text));
       return;
     } catch (e) {
@@ -219,10 +221,21 @@ export class WdaDriver implements Driver {
       throw new Error(`TEXT_INPUT_UNSUPPORTED: WDA could not type into the focused input. focused-element path failed: ${errorSummary(focusedError)}; /wda/keys path failed: ${errorSummary(keysError)}`);
     }
   }
-  async clearFocusedText(): Promise<void> {
+  async clearFocusedText(approxLen = 40): Promise<void> {
     const sid = await this.ensureSession();
-    const el = await this.timed('find_element', () => findWdaElement(this.baseUrl, sid, 'predicate string', 'hasKeyboardFocus == 1'));
-    await this.timed('clear', () => clearWdaElement(this.baseUrl, sid, el.elementId));
+    let clearError: unknown;
+    try {
+      const el = await this.timed('find_element', () => findFocusedWdaElement(this.baseUrl, sid));
+      await this.timed('clear', () => clearWdaElement(this.baseUrl, sid, el.elementId));
+      return;
+    } catch (e) {
+      clearError = e;
+    }
+    try {
+      await this.timed('clear', () => clearWdaFocusedByKeys(this.baseUrl, sid, approxLen));
+    } catch (keysError) {
+      throw new Error(`TEXT_INPUT_UNSUPPORTED: WDA could not clear the focused field. element-clear path failed: ${errorSummary(clearError)}; keyboard-backspace path failed: ${errorSummary(keysError)}`);
+    }
   }
   async pressKey(key: 'back' | 'home' | 'enter'): Promise<void> {
     if (key === 'home') {
