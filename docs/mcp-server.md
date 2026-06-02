@@ -100,7 +100,7 @@ qa_capabilities
 
 Use `qa_doctor` with `platform:"android"`, `platform:"ios"`, or `platform:"both"` when checking platform-specific readiness.
 
-Expected v1 tool count: 42.
+Expected v2 tool count: 59.
 
 If the client lists fewer tools, restart the MCP client. MCP clients often keep an old server process alive after package upgrades.
 
@@ -128,10 +128,10 @@ The consent result includes a `consentId`. Re-call the same tool with `approve: 
 
 ## Simulator Scope
 
-Public v1 supports:
+Public scope supports:
 
 - Android Emulator.
 - iOS Simulator.
 - Optional WebDriverAgent for structured iOS simulator automation.
 
-Public v1 does not support real-device execution.
+The public build does not support real-device execution.

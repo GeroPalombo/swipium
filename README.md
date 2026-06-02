@@ -236,16 +236,25 @@ After setup, verify that the client lists `qa_test_this`, `qa_capabilities`, and
 
 ## Tool Docs
 
-Swipium v1 exposes 42 public MCP tools. Start with `qa_test_this` for low-context requests.
+Swipium exposes 59 public MCP tools. Start with `qa_test_this` for low-context requests.
 
 Full reference: [docs/tools.md](docs/tools.md)
+
+New in 1.1.0 — 17 additional tools, all backward compatible:
+
+- **Device and app environment parity** (no raw `adb`/`simctl`): `qa_device_info`, `qa_permissions`, `qa_orientation`, `qa_geolocation`, `qa_network`, `qa_metro`, `qa_app_control`, `qa_screen_info`, `qa_screen_record`. Mutating actions are consent-gated and recorded; network changes auto-restore at report end.
+- **Local-first visual intelligence**: `qa_visual` (baseline, regression diff, image-target matching with tappable coordinates, optional OCR) and `qa_visual_find_text` (OCR text location with coordinate-space conversion).
+- **Seeded state**: `qa_seed`, `qa_state_prepare`, `qa_state_verify`, `qa_state_teardown` — create and verify a reproducible precondition instead of only reporting it as missing.
+- **Report history**: `qa_report_compare` (diff a run against a baseline) and `qa_run_history` (pass rate, failures, flaky flows, confidence calibration across local runs).
 
 | Group | Tools |
 | --- | --- |
 | Start | `qa_agent_brief`, `qa_capabilities`, `qa_test_this`, `qa_job_status`, `qa_status`, `qa_explain_blocker`, `qa_continue_from_blocker`, `qa_get_artifact` |
 | Setup | `qa_doctor`, `qa_start_session`, `qa_detect_context`, `qa_plan`, `qa_prepare_target`, `qa_prepare_ios_target`, `qa_ios`, `qa_wda` |
-| Drive | `qa_snapshot`, `qa_act`, `qa_clear_overlay`, `qa_check_health`, `qa_screenshot`, `qa_note`, `qa_assert_visual` |
-| Run | `qa_smoke`, `qa_explore`, `qa_report` |
+| Device | `qa_device_info`, `qa_permissions`, `qa_orientation`, `qa_geolocation`, `qa_network`, `qa_metro`, `qa_app_control`, `qa_screen_info`, `qa_screen_record` |
+| Drive | `qa_snapshot`, `qa_act`, `qa_clear_overlay`, `qa_check_health`, `qa_screenshot`, `qa_note`, `qa_assert_visual`, `qa_visual`, `qa_visual_find_text` |
+| State | `qa_seed`, `qa_state_prepare`, `qa_state_verify`, `qa_state_teardown` |
+| Run | `qa_smoke`, `qa_explore`, `qa_report`, `qa_report_compare`, `qa_run_history` |
 | App map | `qa_app_map_build`, `qa_app_map_read`, `qa_app_map_query`, `qa_app_map_feature_scope`, `qa_app_map_validate` |
 | Flows and suites | `qa_flow_check`, `qa_flow_run`, `qa_flow_generate`, `qa_suite_generate`, `qa_suite_compile`, `qa_testcase_generate` |
 | First run | `qa_first_run_plan`, `qa_first_run_continue` |
@@ -254,7 +263,7 @@ Full reference: [docs/tools.md](docs/tools.md)
 ## Why Swipium?
 
 - Agent-native: exposes QA work as MCP tools with structured outputs.
-- Simulator-first: focuses v1 on Android Emulator and iOS Simulator reliability.
+- Simulator-first: focuses on Android Emulator and iOS Simulator reliability.
 - Evidence-first: screenshots, logs, reports, dumps, and artifacts are stored and linked.
 - App memory: the app map preserves screens, features, test cases, flows, and coverage context.
 - Practical consent: mutating actions are gated instead of hidden behind agent text.

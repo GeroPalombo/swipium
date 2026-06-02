@@ -12,8 +12,18 @@ import { registerScreenshot } from './tools/screenshot.js';
 import { registerSnapshot } from './tools/snapshot.js';
 import { registerAct } from './tools/act.js';
 import { registerCheckHealth } from './tools/health.js';
-import { restoreAllNetwork } from './tools/network.js';
-import { stopAllRecordings } from './tools/screenRecord.js';
+import { registerNetwork, restoreAllNetwork } from './tools/network.js';
+import { registerScreenRecord, stopAllRecordings } from './tools/screenRecord.js';
+import { registerDevice } from './tools/device.js';
+import { registerPermissions } from './tools/permissions.js';
+import { registerMetro, stopAllMetro } from './tools/metro.js';
+import { registerAppControl } from './tools/appControl.js';
+import { registerScreenInfo } from './tools/screenInfo.js';
+import { registerVisual } from './tools/visual.js';
+import { registerVisualText } from './tools/visualText.js';
+import { registerSeed } from './tools/seed.js';
+import { registerState } from './tools/state.js';
+import { registerHistory } from './tools/history.js';
 import { registerIos } from './tools/ios.js';
 import { registerWda } from './tools/wda.js';
 import { registerClearOverlay } from './tools/clearOverlay.js';
@@ -86,12 +96,26 @@ export function createServer(): ServerContext {
   registerPrepareTarget(server, sessions);
   registerIos(server, sessions);
   registerWda(server, sessions);
+  // Device / app environment parity (Phase 5)
+  registerDevice(server, sessions);
+  registerPermissions(server, sessions);
+  registerNetwork(server, sessions);
+  registerMetro(server, sessions);
+  registerAppControl(server, sessions);
+  registerScreenInfo(server, sessions);
+  registerScreenRecord(server, sessions);
   // Observation / action / oracle
   registerScreenshot(server, sessions);
   registerSnapshot(server, sessions);
   registerAct(server, sessions);
   registerClearOverlay(server, sessions);
   registerCheckHealth(server, sessions);
+  // Visual intelligence (Phase 8, local-first)
+  registerVisual(server, sessions);
+  registerVisualText(server, sessions);
+  // Seeded state (Phase 9)
+  registerSeed(server, sessions);
+  registerState(server, sessions);
   // Jobs / artifacts / reporting (M6)
   registerJobs(server, sessions);
   registerGetArtifact(server, sessions);
@@ -101,6 +125,8 @@ export function createServer(): ServerContext {
   registerFlowGenerate(server, sessions);
   registerSmoke(server, sessions);
   registerReport(server, sessions);
+  // Report 2.0: history + comparison (Phase 10)
+  registerHistory(server, sessions);
   registerTestThis(server, sessions);
   registerPrepareIosTarget(server, sessions);
   registerSuite(server, sessions);
@@ -179,6 +205,7 @@ export async function startServer(): Promise<void> {
     try {
       await restoreAllNetwork(sessions);
       await stopAllRecordings(); // don't leave a device screen-recording after we exit
+      await stopAllMetro(sessions); // don't leave a node bundler holding :8081 after we exit
       log('info', 'shutdown: restore done');
     } catch (e) {
       log('warn', 'shutdown: restore failed', { err: String(e) });

@@ -1,6 +1,6 @@
 # Tool Reference
 
-Swipium v1 exposes 42 public MCP tools. The intended default entry point is `qa_test_this`.
+Swipium exposes 59 public MCP tools. The intended default entry point is `qa_test_this`.
 
 ## Start
 
@@ -9,7 +9,7 @@ Use these tools to orient the agent, start autopilot work, poll jobs, handle blo
 | Tool | What it does | Use when |
 | --- | --- | --- |
 | `qa_agent_brief` | Returns the recommended orchestration rules for agents. | The agent needs the correct first call, polling behavior, report behavior, or blocker handling rules. |
-| `qa_capabilities` | Lists the public v1 tool surface grouped by purpose. | The agent or user needs to discover available Swipium capabilities. |
+| `qa_capabilities` | Lists the public tool surface grouped by purpose. | The agent or user needs to discover available Swipium capabilities. |
 | `qa_test_this` | Autopilot for "test it": resolves the project, finds or builds an artifact, prepares a simulator, runs smoke or exploration, reports results, and can generate suite output. | The user gives a low-context request such as "test this app". |
 | `qa_job_status` | Polls a long-running job started by `qa_test_this` or prepare tools. | A tool returns a `jobId` with status `running`. |
 | `qa_status` | Returns compact session status and recommended next action. | The agent needs to recover context during a session. |
@@ -32,6 +32,22 @@ Use these tools to verify the local environment, create sessions, and prepare si
 | `qa_ios` | Runs iOS Simulator lifecycle operations such as boot, install, launch, screenshot, logs, privacy reset, and erase. | Direct iOS simulator control is needed. |
 | `qa_wda` | Checks, builds, or starts WebDriverAgent for structured iOS simulator automation. | iOS needs structured UI tree access instead of visual-only checks. |
 
+## Device
+
+Use these tools to inspect and control the device and app environment without raw `adb` or `simctl`. Mutating actions are consent-gated and recorded as environment changes; network changes are auto-restored at report end.
+
+| Tool | What it does | Use when |
+| --- | --- | --- |
+| `qa_device_info` | Reports model, SDK, ABIs, locale, screen, orientation, and installed apps (read-only). | The agent needs device context before testing. |
+| `qa_permissions` | Lists, grants, or revokes runtime permissions. Revoke is consent-gated. | A flow needs a known permission state. |
+| `qa_orientation` | Sets portrait, landscape, or auto orientation. | A screen must be tested in a specific orientation. |
+| `qa_geolocation` | Spoofs a GPS location on the emulator. Consent-gated. | Testing map or location-aware screens. |
+| `qa_network` | Reports, sets offline/online, or restores airplane-mode state. Consent-gated and auto-restored. | Testing offline behavior or network errors. |
+| `qa_metro` | Reports, starts, stops, or diagnoses the RN/Expo Metro bundler with RedBox detection. | A debug RN/Expo build needs Metro. |
+| `qa_app_control` | Runs launch, foreground, background, force_stop, restart, clear_data, or fresh_start. Destructive actions are guarded. | The app lifecycle must be controlled directly. |
+| `qa_screen_info` | Reports screen width, height, density, orientation, mode, and coordinate landmarks. | Coordinate-space context is needed for visual work. |
+| `qa_screen_record` | Records a screen video to an mp4 artifact (start/stop). Consent-gated with sensitive-screen warnings. | A run needs a video of the reproduction. |
+
 ## Drive
 
 Use these tools to observe the UI, act on it, collect evidence, and record results.
@@ -45,6 +61,19 @@ Use these tools to observe the UI, act on it, collect evidence, and record resul
 | `qa_screenshot` | Captures a screenshot artifact with coordinate-space metadata. | Visual evidence is required. |
 | `qa_note` | Records a structured QA outcome in the session. | The agent needs to log pass, fail, blocked, skipped, or finding details. |
 | `qa_assert_visual` | Captures a visual assertion with evidence. | The agent needs to document that a visual condition is true or false. |
+| `qa_visual` | Runs local visual operations: baseline capture, regression diff, image-target matching with tappable coordinates, and optional OCR. | A screen is visual-only or needs pixel-level regression checks. |
+| `qa_visual_find_text` | Locates on-screen text with OCR and returns structured regions with coordinate-space conversion. | A target has visible text but no structured selector. |
+
+## State
+
+Use these tools to create and verify reproducible preconditions instead of only reporting them as missing. All mutating seed and state actions are consent-gated and recorded.
+
+| Tool | What it does | Use when |
+| --- | --- | --- |
+| `qa_seed` | Creates a declared precondition via a fixture seed using a deeplink, script, or API hook. Consent-gated. | A workflow is blocked by missing test data. |
+| `qa_state_prepare` | Prepares a reproducible state profile: reset, launch, seed, and verify a ledger. | A test needs a known starting state. |
+| `qa_state_verify` | Verifies a state profile without treating setup drift as an app bug. | The precondition must be confirmed before testing. |
+| `qa_state_teardown` | Runs state-profile teardown and restores declared environment state. | A run must leave the environment clean. |
 
 ## Run
 
@@ -55,6 +84,8 @@ Use these tools to run broader QA workflows and produce reports.
 | `qa_smoke` | Runs launch smoke, baseline health, screenshot evidence, and saved flows. | The app is prepared and the agent needs a deterministic smoke pass. |
 | `qa_explore` | Performs bounded guided exploration, builds a screen graph, and records evidence. | The agent needs to discover reachable workflows or collect runtime app-map data. |
 | `qa_report` | Generates a session report with findings, blockers, evidence, mutations, workarounds, next actions, and separate app and coverage verdicts. | A run should be summarized or exported. |
+| `qa_report_compare` | Compares the current `report.json` against a baseline report. | A run should be checked for regression against a known-good report. |
+| `qa_run_history` | Summarizes local run history with pass rate, failures, flaky flows, and confidence calibration. | The user wants trends across runs, not a single report. |
 
 ## App Map
 
@@ -99,6 +130,39 @@ Use these tools to generate and validate automation code from Swipium evidence.
 | `qa_automation_plan` | Plans generated JS, TS, or Python Appium automation from project profile and recorded actions. | The user asks to automate the tested behavior. |
 | `qa_automation_generate` | Generates an Appium POM suite from recorded actions and validates it. | The run should produce automation code. |
 | `qa_automation_validate` | Validates generated automation code without a device. | Generated files need checks for secrets, durability, capabilities, syntax, and empty files. |
+
+## Detailed Reference: Device, Visual, State, and History Tools
+
+Technical detail for the tools added alongside the device-parity, visual-intelligence, seeded-state, and reporting phases. All take a `sessionId` from `qa_start_session` (except `qa_report_compare`, which is filesystem-only). Mutating actions accept `consentId` + `approve` and are recorded in the report's mutation ledger.
+
+### Device and app environment
+
+- **`qa_device_info`** — read-only Android introspection. *Inputs:* `listPackages?`, `packageFilter?`. *Outputs:* `props` (manufacturer, model, SDK, release, ABIs, locale, timezone), `screen` (`width`/`height`/`density`), `orientation`/`rotation`/`autoRotate`, `installedThirdPartyCount`, optional `packages[]`. No consent.
+- **`qa_orientation`** — set rotation. *Inputs:* `orientation: portrait | landscape | auto`. *Outputs:* resulting `orientation`/`rotation`/`autoRotate`. Non-destructive; logged as an environment change.
+- **`qa_geolocation`** — spoof GPS via `adb emu geo fix <lng> <lat>`. *Inputs:* `lat`, `lng` (decimal degrees). *Outputs:* `{ lat, lng, set }`. Consent-gated (medium). Emulator/`direct` backend only; iOS and real devices return `BACKEND_UNSUPPORTED`.
+- **`qa_permissions`** — runtime permission control. *Inputs:* `action: list | grant | revoke`, `package?` (default session `appId`), `permission?` (`android.permission.*`, required for grant/revoke). *Outputs:* `granted[]`/`denied[]` (list) or `{ package, permission, action }`. `list` is read-only; `grant` is consent-gated low (it can mask a permission-prompt bug); `revoke` is consent-gated medium (can break app state).
+- **`qa_network`** — offline/online via `cmd connectivity airplane-mode` (Android 11+). *Inputs:* `action: status | offline | online | restore`. *Outputs:* `network` (`online`/`offline`), `restoreAvailable`. `offline`/`online` consent-gated (medium); the original airplane state is recorded on first change and auto-restored at `qa_report`, on `restore`, and on server shutdown.
+- **`qa_metro`** — RN/Expo Metro lifecycle. *Inputs:* `action: status | diagnose | start | stop`. *Outputs:* `framework`, `metroListening`, `reverseSet`, `serving`, `ready`, `metroPid`, plus `redBox` + `recovery[]` (+ logcat artifact) for `diagnose`. `start` is consent-gated (low): it runs `adb reverse tcp:8081 tcp:8081` and spawns Metro (`npx expo start --dev-client` or `npx react-native start`) detached, logging to an artifact and tracking the PID; `stop` signals the whole process group.
+- **`qa_app_control`** — app lifecycle. *Inputs:* `action: launch | foreground | background | force_stop | restart | clear_data | fresh_start`, `acknowledgeBundleRisk?`. *Outputs:* `packageName`, `action`, `processKilled`, `foreground`, `foregroundIsApp`. `clear_data`/`fresh_start` are destructive → consent-gated (high); on debug RN/Expo builds they additionally require `acknowledgeBundleRisk:true` because a data wipe can remove the cached JS bundle.
+- **`qa_screen_info`** — coordinate-space metadata for visual-fallback work. *Outputs:* `screen` (`width`/`height`/`density`), `orientation`, session `mode`, `latestScreenshot`, named `landmarks` and `bands` (device pixels, origin top-left), `counters`, `budget`. Read-only.
+- **`qa_screen_record`** — screen video. *Inputs:* `action: start | status | stop`, `save?: always | on_failure`, `failed?`. *Outputs:* `recording`/`capturing`/`autoStopped`, `seconds`, and on stop a `uri` (mp4 artifact) + `bytes`. Consent-gated (medium); refused on sensitive sessions. Android uses `adb screenrecord --time-limit 180`; iOS uses `simctl io recordVideo`. One recording per session.
+
+### Visual intelligence (local-first)
+
+- **`qa_visual`** — deterministic visual ops + regression. *Inputs:* `action: baseline | diff | find_image | ocr`, `name?` (baseline/diff), `template?` (find_image PNG path), `threshold?` (diff, default 0.02), `minScore?` (find_image, default 0.85), `force?`. *Outputs:* always include `coordinateSpace` (screenshot↔device scale); `diff` adds `changedRatio`/`pass`/`changedBoxDevice`; `find_image` adds `devicePoint`. `baseline`/`diff`/`find_image` are local and need no consent; `ocr` is consent-gated and requires a configured `ocrCommand`. Withheld when a secure (password/OTP) field is on screen unless `force:true`.
+- **`qa_visual_find_text`** — OCR text locator. *Inputs:* `query`, `minConfidence?` (default 0.8). *Outputs:* `found`, matched `region` (text/confidence/bbox), `devicePoint`, `coordinateSpace`. Consent-gated (the screenshot is passed to the configured local OCR provider); requires `ocrCommand` returning JSON regions.
+
+### Seeded state
+
+- **`qa_seed`** — create a declared precondition. *Inputs:* `fixture` (must declare a `seed`: `deeplink | script | api`). *Outputs:* `{ fixture, type, seeded, warnings[] }`. Consent-gated; risk scales by type (`script` high, `api` medium, `deeplink` low). Git commands are refused (`GIT_SCOPE_FORBIDDEN`); a failed seed is reported as a SETUP failure (`missing_test_data`), never an app bug.
+- **`qa_state_prepare`** — apply a state profile as one transaction. *Inputs:* `profile` (`.swipium/state/<name>.yaml` or inline YAML). *Outputs:* a state `ledger` + `ledgerUri`. Consent-gated when it mutates (reset/launch/seed); refuses debug-bundle-loss resets unless acknowledged.
+- **`qa_state_verify`** — confirm a profile's declared checks (e.g. `assertVisible`). *Inputs:* `profile`. *Outputs:* verification `ledger`. Non-mutating; failures are setup/state blockers, not app-test failures.
+- **`qa_state_teardown`** — run profile teardown. *Inputs:* `profile`. *Outputs:* teardown `ledger`. Consent-gated when it mutates; restores declared state such as `networkOnline` and runs fixture cleanup hooks.
+
+### Report history
+
+- **`qa_report_compare`** — diff two reports. *Inputs:* `current`, `baseline` (paths to `report.json`), `trendRoot?`. *Outputs:* new/fixed failures, changed screenshots, outcome changes, runtime regression, optional flake status, and a `summary`. Filesystem-only — no session or device.
+- **`qa_run_history`** — local trend summary. *Inputs:* `sessionId?` or `projectRoot?`. *Outputs:* report count, per-flow `passRate`, median/average runtime, top failures, flaky flows, confidence calibration, and slowest steps. Reads `.swipium/runs/**/report.json` (and legacy `.swipium/ci/**`).
 
 ## Recommended Entry Points
 

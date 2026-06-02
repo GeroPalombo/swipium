@@ -40,6 +40,21 @@ export const CAPABILITY_GROUPS: CapabilityGroup[] = [
     ],
   },
   {
+    group: 'device',
+    purpose: 'Inspect and control the device/app environment without raw adb or simctl.',
+    tools: [
+      { name: 'qa_device_info', summary: 'Model/SDK/ABIs/locale/screen/orientation + installed apps (read-only).' },
+      { name: 'qa_permissions', summary: 'list / grant / revoke runtime permissions (revoke consent-gated).' },
+      { name: 'qa_orientation', summary: 'Set portrait / landscape / auto (logged).' },
+      { name: 'qa_geolocation', summary: 'Spoof GPS location (emulator; consent-gated) for map/location apps.' },
+      { name: 'qa_network', summary: 'airplane-mode status/offline/online/restore (consent-gated; auto-restored).' },
+      { name: 'qa_metro', summary: 'RN/Expo Metro status/start/stop/diagnose (RedBox detection + logcat).' },
+      { name: 'qa_app_control', summary: 'launch/foreground/background/force_stop/restart/clear_data/fresh_start.' },
+      { name: 'qa_screen_info', summary: 'Screen w/h/density, orientation, mode, counters, coordinate landmarks.' },
+      { name: 'qa_screen_record', summary: 'Record a screen video to an mp4 artifact (start/stop; consent-gated).' },
+    ],
+  },
+  {
     group: 'drive',
     purpose: 'Observe, act, and make deterministic health assertions.',
     tools: [
@@ -50,6 +65,18 @@ export const CAPABILITY_GROUPS: CapabilityGroup[] = [
       { name: 'qa_screenshot', summary: 'Capture a screenshot artifact.' },
       { name: 'qa_note', summary: 'Record a structured QA outcome.' },
       { name: 'qa_assert_visual', summary: 'Capture a visual assertion with evidence.' },
+      { name: 'qa_visual', summary: 'Local visual ops: baseline / diff (regression) / find_image (tappable coords) / ocr (optional).' },
+      { name: 'qa_visual_find_text', summary: 'OCR text locator with structured regions + coordinate-space conversion.' },
+    ],
+  },
+  {
+    group: 'state',
+    purpose: 'Create and verify reproducible preconditions instead of reporting them as missing.',
+    tools: [
+      { name: 'qa_seed', summary: 'Create a declared precondition via a fixture seed (deeplink/script/api; consent-gated).' },
+      { name: 'qa_state_prepare', summary: 'Prepare a reproducible state profile: reset, launch, seed, verify ledger.' },
+      { name: 'qa_state_verify', summary: 'Verify a state profile without treating setup drift as an app bug.' },
+      { name: 'qa_state_teardown', summary: 'Run state-profile teardown and restore declared environment state.' },
     ],
   },
   {
@@ -59,6 +86,8 @@ export const CAPABILITY_GROUPS: CapabilityGroup[] = [
       { name: 'qa_smoke', summary: 'Run launch smoke and saved flows.' },
       { name: 'qa_explore', summary: 'Guided simulator exploration with evidence and graph output.' },
       { name: 'qa_report', summary: 'Summarize findings, blockers, evidence, and next actions.' },
+      { name: 'qa_report_compare', summary: 'Compare current report.json against a baseline report.json.' },
+      { name: 'qa_run_history', summary: 'Summarize local run history, pass rate, failures, flaky flows, and confidence calibration.' },
     ],
   },
   {

@@ -34,6 +34,24 @@ export function registerPrompts(server: McpServer): void {
   );
 
   server.registerPrompt(
+    'swipium_guardrail_validation',
+    {
+      title: 'Validate safety guardrails',
+      description: 'Confirm Swipium refuses an unsafe destructive action (bundle-loss) on a debug RN/Expo build.',
+      argsSchema: { projectRoot: z.string().optional() },
+    },
+    ({ projectRoot }) =>
+      userText(
+        `Validate Swipium's destructive-action guardrails (do NOT override them).\n\n` +
+          `1. qa_start_session${projectRoot ? ` { projectRoot: "${projectRoot}", ` : ' { '}profile: "guardrail" }.\n` +
+          `2. qa_plan — confirm fresh_start appears under UNSAFE with reason bundle_cache_loss for a debug RN/Expo build.\n` +
+          `3. qa_prepare_target to get the app running.\n` +
+          `4. Attempt qa_app_control { action: "fresh_start" } WITHOUT acknowledgeBundleRisk — expect a refusal (bundle_cache_loss), not execution.\n` +
+          `5. qa_report and confirm destructiveGuardrail shows the action was refused, not executed. Report PASS only if it was refused.`,
+      ),
+  );
+
+  server.registerPrompt(
     'swipium_full_smoke',
     {
       title: 'Run a full smoke test',

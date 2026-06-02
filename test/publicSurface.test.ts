@@ -18,8 +18,8 @@ const forbiddenTools = [
   'qa_assert_ai_visual',
 ];
 
-describe('public v1 tool surface', () => {
-  it('exposes only the documented v1 tools', async () => {
+describe('public tool surface', () => {
+  it('exposes only the documented tools', async () => {
     const { server } = createServer();
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: 'surface-test', version: '0' });
@@ -30,7 +30,7 @@ describe('public v1 tool surface', () => {
     const doctor = tools.find((tool) => tool.name === 'qa_doctor') as { inputSchema?: { properties?: Record<string, unknown> } } | undefined;
     await client.close();
 
-    expect(SWIPIUM_VERSION).toBe('1.0.1');
+    expect(SWIPIUM_VERSION).toBe('1.1.0');
     expect(TOOL_COUNT).toBe(TOOL_NAMES.length);
     expect(listed).toEqual([...TOOL_NAMES].sort());
     expect(doctor?.inputSchema?.properties?.platform).toBeTruthy();
