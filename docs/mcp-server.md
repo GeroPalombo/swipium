@@ -100,7 +100,7 @@ qa_capabilities
 
 Use `qa_doctor` with `platform:"android"`, `platform:"ios"`, or `platform:"both"` when checking platform-specific readiness.
 
-Expected tool count: 83.
+Expected tool count: 91.
 
 If the client lists fewer tools, restart the MCP client. MCP clients often keep an old server process alive after package upgrades.
 

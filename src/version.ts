@@ -1,7 +1,7 @@
 // Single source of truth for the Swipium version and the public tool surface. Used by the
 // server identity, qa_doctor / qa_start_session, qa_capabilities, and `swipium verify`.
 
-export const SWIPIUM_VERSION = '1.2.0';
+export const SWIPIUM_VERSION = '1.3.0';
 
 export const TOOL_NAMES = [
   'qa_agent_brief',
@@ -21,6 +21,12 @@ export const TOOL_NAMES = [
   'qa_prepare_ios_target',
   'qa_ios',
   'qa_wda',
+  // Local build + artifact resolution (REQ "test this app")
+  'qa_resolve_target',
+  'qa_resolve_artifact',
+  'qa_build_plan',
+  'qa_build',
+  'qa_bundletool',
   // Device / app environment parity (Phase 5)
   'qa_device_info',
   'qa_permissions',
@@ -62,6 +68,10 @@ export const TOOL_NAMES = [
   'qa_app_map_query',
   'qa_app_map_feature_scope',
   'qa_app_map_validate',
+  // Feature-focused testing (REQ-03: "test the X feature")
+  'qa_feature_scope',
+  'qa_feature_test_plan',
+  'qa_test_feature',
   // Repeatable flow system (Phase 4)
   'qa_flow_check',
   'qa_flow_plan',
@@ -115,5 +125,5 @@ export const PROMPT_COUNT = PROMPT_NAMES.length;
 /** Shown when a client may be running an older build than what's installed on disk. */
 export const STALE_CLIENT_HINT =
   `Swipium v${SWIPIUM_VERSION} exposes ${TOOL_COUNT} tools + ${PROMPT_COUNT} prompts. If your MCP client lists fewer ` +
-  `(e.g. qa_issue_log / qa_test_suite_read / qa_mobile_audit / qa_maestro_export / qa_flow_repair missing), it is running a server ` +
+  `(e.g. qa_test_feature / qa_feature_scope / qa_build / qa_resolve_target / qa_bundletool missing), it is running a server ` +
   `spawned before the upgrade. Restart the client to reload Swipium.`;

@@ -41,6 +41,17 @@ export const CAPABILITY_GROUPS: CapabilityGroup[] = [
     ],
   },
   {
+    group: 'build',
+    purpose: 'Resolve a device and an installable artifact, or build one from source locally.',
+    tools: [
+      { name: 'qa_resolve_target', summary: 'Pick the best device/simulator (online > boot; honors platform/device).' },
+      { name: 'qa_resolve_artifact', summary: 'Find the best installable .apk/.aab/.ipa/.app and explain where it looked.' },
+      { name: 'qa_build_plan', summary: 'Propose exact build commands per framework/platform (side-effect free).' },
+      { name: 'qa_build', summary: 'Build from source (consent-gated job); captures a log and re-resolves the artifact.' },
+      { name: 'qa_bundletool', summary: 'Convert an .aab to an installable APK (universal or device-specific set).' },
+    ],
+  },
+  {
     group: 'device',
     purpose: 'Inspect and control the device/app environment without raw adb or simctl.',
     tools: [
@@ -104,6 +115,15 @@ export const CAPABILITY_GROUPS: CapabilityGroup[] = [
       { name: 'qa_app_map_query', summary: 'Search screens, features, tests, and code links.' },
       { name: 'qa_app_map_feature_scope', summary: 'Resolve a feature query to a focused test scope.' },
       { name: 'qa_app_map_validate', summary: 'Validate schema, provenance, and map links.' },
+    ],
+  },
+  {
+    group: 'feature',
+    purpose: 'Test a specific feature by name, backed by the app knowledge map.',
+    tools: [
+      { name: 'qa_feature_scope', summary: 'Map a natural-language feature to code/screens/routes/runtime/tests + objective + strategy (read-only).' },
+      { name: 'qa_feature_test_plan', summary: 'Feature test plan: scope + objective + generated cases + fixtures + automation readiness (read-only).' },
+      { name: 'qa_test_feature', summary: 'Focused feature test: scope, targeted exploration toward the feature, record cases, update the map and report.' },
     ],
   },
   {

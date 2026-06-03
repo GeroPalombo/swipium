@@ -1,6 +1,10 @@
-// Bootstrap a prepared simulator session for the public v1 automation generator. Reuses the same
-// resolver/planner/prepare path as qa_test_this, with the same consent gate. When a supported
-// simulator target or artifact is not available, it returns a typed preparation blocker.
+// SWIPIUM-REQ-03 Fix Group 4 — bootstrap a prepared device session for qa_test_feature execute/
+// interactive when no prepared session exists. Reuses the SAME resolver/planner/prepare path as
+// qa_test_this (resolveArtifact → planTarget → prepareAndroid/prepareIos), with the SAME consent
+// gate so the high-level feature tool is never less safe than the lower-level prepare tools. When a
+// device/artifact is not available it returns a typed, actionable target-preparation blocker that
+// routes to qa_test_this; the complex lanes (build-from-source, .aab convert, real iOS) are routed
+// to qa_test_this rather than duplicated here.
 
 import { existsSync, readFileSync } from 'node:fs';
 import { sep } from 'node:path';
@@ -58,7 +62,7 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
     result: qaError(
       {
         what, changedState: false, retrySafe: true, failureCode,
-        nextSteps: [...extraSteps, `Or run qa_test_this { projectRoot:"${root}", mode:"execute" } to prepare a simulator with consent, then retry qa_automation_generate.`],
+        nextSteps: [...extraSteps, `Or run qa_test_this { projectRoot:"${root}", mode:"execute" } to prepare a device with consent, then qa_test_feature { sessionId:"${session.id}", feature:"${a.feature}", mode:"execute" }.`],
       },
       { sessionId: session.id },
     ),
@@ -68,12 +72,12 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
   const art = await resolveArtifact({ projectRoot: root, platform: a.platform ?? 'any' });
   if (!art.best) {
     return routeToTestThis('NO_BUILD_ARTIFACT', `No installable artifact under ${root} to test "${a.feature}".`, [
-      'Build the app artifact, then retry.',
+      'Build it: qa_build_plan → qa_build.',
       `Searched: ${art.searchedLocations.slice(0, 5).join('; ') || '(root only)'}.`,
     ]);
   }
   if (art.best.type === 'aab') {
-    return routeToTestThis('AAB_NEEDS_BUNDLETOOL', 'Only a .aab is present. Convert it to an installable APK first.', [`AAB path: ${art.best.path}`]);
+    return routeToTestThis('AAB_NEEDS_BUNDLETOOL', 'Only a .aab is present — convert it to an installable APK first.', [`Convert: qa_bundletool { aab:"${art.best.path}" }.`]);
   }
 
   // ---- target (same planner as qa_test_this) ----
@@ -106,7 +110,7 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
     };
   }
   if (target.selected === 'ios-real') {
-    return routeToTestThis('IPA_INSTALL_UNSUPPORTED', 'This artifact installs only on a real iOS device. Real-device workflows are outside the public v1 scope.');
+    return routeToTestThis('IPA_INSTALL_UNSUPPORTED', 'This artifact installs only on a real iOS device (signing/provisioning required).', ['Use qa_prepare_ios_real_target.']);
   }
 
   const isAndroid = SEL_TO_PLATFORM[target.selected!] === 'android';
@@ -130,7 +134,7 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
   if (preflight.consentRequired) {
     const gate = consumeConsent(a.consentId, a.approve, { action: 'test_this_plan', affects: preflight.consentAffects });
     if (!gate.approved) {
-      a.sessions.recordMutation(session, { tool: 'qa_automation_generate', action: 'test_this_plan', risk: preflight.risk, target: preflight.consentAffects, consent: { required: true, approved: false }, status: 'requested' });
+      a.sessions.recordMutation(session, { tool: 'qa_test_feature', action: 'test_this_plan', risk: preflight.risk, target: preflight.consentAffects, consent: { required: true, approved: false }, status: 'requested' });
       return {
         ok: false,
         result: requireConsent({
@@ -140,7 +144,7 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
       };
     }
     mutationConsent = { required: true, consentId: a.consentId, approved: true };
-    a.sessions.recordMutation(session, { tool: 'qa_automation_generate', action: 'test_this_plan', risk: preflight.risk, target: preflight.consentAffects, consent: mutationConsent, status: 'approved' });
+    a.sessions.recordMutation(session, { tool: 'qa_test_feature', action: 'test_this_plan', risk: preflight.risk, target: preflight.consentAffects, consent: mutationConsent, status: 'approved' });
   }
 
   // ---- prepare (boot/install/launch) ----
@@ -166,6 +170,6 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
   }
 
   const { driver } = await getDriver(session);
-  if (!driver) return { ok: false, result: qaError({ what: 'No driver bound after device preparation.', changedState: true, retrySafe: true, failureCode: 'NO_DEVICE', nextSteps: ['Run qa_test_this { mode:"execute" } to prepare a simulator, then retry qa_automation_generate with that sessionId.'] }, { sessionId: session.id }) };
+  if (!driver) return { ok: false, result: qaError({ what: 'No driver bound after device preparation.', changedState: true, retrySafe: true, failureCode: 'NO_DEVICE', nextSteps: ['Run qa_test_this { mode:"execute" } to prepare a device, then qa_test_feature with that sessionId.'] }, { sessionId: session.id }) };
   return { ok: true, session, driver };
 }

@@ -52,6 +52,11 @@ import { registerIdling } from './tools/idling.js';
 import { registerInputCapabilities } from './tools/inputCapabilities.js';
 import { registerMaestro } from './tools/maestro.js';
 import { registerMobileAudit } from './tools/mobileAudit.js';
+import { registerFeatureTesting } from './tools/featureTesting.js';
+import { registerResolveArtifact } from './tools/resolveArtifact.js';
+import { registerResolveTarget } from './tools/resolveTarget.js';
+import { registerBuild } from './tools/build.js';
+import { registerBundletool } from './tools/bundletool.js';
 import { registerPrompts } from './prompts/index.js';
 import { log } from './lib/logger.js';
 import { runWithResponseMode } from './lib/result.js';
@@ -150,6 +155,12 @@ export function createServer(): ServerContext {
   registerTestSuite(server, sessions);
   registerFlowRepair(server, sessions);
   registerMaestro(server, sessions);
+  // Feature-focused testing + local build/artifact resolution (v4)
+  registerFeatureTesting(server, sessions);
+  registerResolveArtifact(server, sessions);
+  registerResolveTarget(server, sessions);
+  registerBuild(server, sessions);
+  registerBundletool(server, sessions);
   // Agent-efficiency helpers (v3)
   registerLocator(server, sessions);
   registerWait(server, sessions);

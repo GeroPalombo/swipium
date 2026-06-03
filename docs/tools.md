@@ -1,6 +1,6 @@
 # Tool Reference
 
-Swipium exposes 83 public MCP tools. The intended default entry point is `qa_test_this`.
+Swipium exposes 91 public MCP tools. The intended default entry point is `qa_test_this`.
 
 ## Start
 
@@ -32,6 +32,18 @@ Use these tools to verify the local environment, create sessions, and prepare si
 | `qa_prepare_ios_target` | Boots an iOS Simulator, installs a simulator `.app` when provided, launches a bundle id, and reports visual or WDA mode. | Testing iOS on a simulator. |
 | `qa_ios` | Runs iOS Simulator lifecycle operations such as boot, install, launch, screenshot, logs, privacy reset, and erase. | Direct iOS simulator control is needed. |
 | `qa_wda` | Checks, builds, or starts WebDriverAgent for structured iOS simulator automation. | iOS needs structured UI tree access instead of visual-only checks. |
+
+## Build
+
+Use these tools to resolve a device and an installable artifact, or build one from source locally. `qa_build` is consent-gated; the others are side-effect free.
+
+| Tool | What it does | Use when |
+| --- | --- | --- |
+| `qa_resolve_target` | Picks the best device or simulator (prefers online over needing a boot; honors a requested platform or device). | The agent needs to choose where to run. |
+| `qa_resolve_artifact` | Finds the best installable `.apk`/`.aab`/`.ipa`/`.app` and explains where it looked. | An artifact path is unknown or ambiguous. |
+| `qa_build_plan` | Proposes the exact build commands per framework and platform without running them. | The agent needs to know how the app would be built. |
+| `qa_build` | Builds from source as a consent-gated job, captures a build log, and re-resolves the artifact. | No reusable artifact exists and the project must be compiled. |
+| `qa_bundletool` | Converts an `.aab` to an installable APK: a universal `.apk` or a device-specific APK set. | Only an Android App Bundle is available. |
 
 ## Device
 
@@ -103,6 +115,16 @@ Use these tools to build and read Swipium's durable app knowledge map.
 | `qa_app_map_query` | Searches features, screens, tests, and code links with ranked results. | The user asks about a feature, screen, or test surface. |
 | `qa_app_map_feature_scope` | Resolves a feature query or feature id into focused testing scope and recommended plan. | The agent needs to test a specific feature. |
 | `qa_app_map_validate` | Validates schema, provenance, links, duplicate ids, impossible states, and stale fingerprints. | The map must be trusted before feature-focused testing. |
+
+## Feature Testing
+
+Use these tools to test a specific feature by name, backed by the app knowledge map.
+
+| Tool | What it does | Use when |
+| --- | --- | --- |
+| `qa_feature_scope` | Maps a natural-language feature ("weather analysis") to code, screens, routes, runtime, and tests, plus an objective and strategy. Read-only. | The user names a feature and the agent needs its scope. |
+| `qa_feature_test_plan` | Produces a feature test plan: scope, objective, generated cases, fixtures, automation readiness, and an execution plan. Read-only. | A feature needs a concrete test plan before running. |
+| `qa_test_feature` | Runs a focused feature test: scope, targeted exploration toward the feature, recorded cases, then updates the feature map and report. | The user asks to test a specific feature. |
 
 ## Flows and Suites
 
@@ -176,9 +198,9 @@ Use these tools to generate and validate automation code from Swipium evidence.
 | `qa_automation_generate` | Generates an Appium POM suite from recorded actions and validates it. | The run should produce automation code. |
 | `qa_automation_validate` | Validates generated automation code without a device. | Generated files need checks for secrets, durability, capabilities, syntax, and empty files. |
 
-## Detailed Reference: Device, Visual, State, and History Tools
+## Detailed Reference: Device, Visual, State, History, Build, and Feature Tools
 
-Technical detail for the tools added alongside the device-parity, visual-intelligence, seeded-state, and reporting phases. All take a `sessionId` from `qa_start_session` (except `qa_report_compare`, which is filesystem-only). Mutating actions accept `consentId` + `approve` and are recorded in the report's mutation ledger.
+Technical detail for the tools added alongside the device-parity, visual-intelligence, seeded-state, reporting, build, and feature-testing phases. Most take a `sessionId` from `qa_start_session`; the build, artifact, and read-only feature tools also accept a `projectRoot` so they work before a session exists. Mutating actions accept `consentId` + `approve` and are recorded in the report's mutation ledger.
 
 ### Device and app environment
 
@@ -209,6 +231,20 @@ Technical detail for the tools added alongside the device-parity, visual-intelli
 - **`qa_report_compare`** — diff two reports. *Inputs:* `current`, `baseline` (paths to `report.json`), `trendRoot?`. *Outputs:* new/fixed failures, changed screenshots, outcome changes, runtime regression, optional flake status, and a `summary`. Filesystem-only — no session or device.
 - **`qa_run_history`** — local trend summary. *Inputs:* `sessionId?` or `projectRoot?`. *Outputs:* report count, per-flow `passRate`, median/average runtime, top failures, flaky flows, confidence calibration, and slowest steps. Reads `.swipium/runs/**/report.json` (and legacy `.swipium/ci/**`).
 
+### Build and artifact resolution
+
+- **`qa_resolve_target`** — choose the best device or simulator, deterministically and side-effect free. *Inputs:* `sessionId?`, `projectRoot?`, `platform?` (`android`/`ios`), `device?` (name/serial/udid), `preferRealDevice?`. *Outputs:* `selection` (kind + id), a human `reason`, `alternatives[]`, `preconditions` (e.g. WDA/signing), and `willBoot`. Does not boot anything — `qa_prepare_target`/`qa_ios` do that.
+- **`qa_resolve_artifact`** — find the best installable artifact and explain the search. *Inputs:* `sessionId?`, `projectRoot?`, `platform?` (`android`/`ios`/`any`), `buildType?` (`debug`/`release`/`any`), `path?` (explicit artifact), `allowOutsideRoot?`, `requireInstallableOn?` (`android-emulator`/`android-real`/`ios-simulator`/`ios-real`). *Outputs:* the resolved `.apk`/`.aab`/`.ipa`/`.app` and its type; on failure, the exact globs searched plus a `qa_build_plan` → `qa_build` next step. Read-only.
+- **`qa_build_plan`** — propose exact build commands without running them. *Inputs:* `sessionId?`, `projectRoot?`, `platform` (`android`/`ios`), `variant?` (`debug`/`release`). *Outputs:* detected `framework`, the exact build commands, the expected artifact path, and a cost estimate. Returns a typed error when no supported framework (Expo, bare React Native, native Android/iOS, Flutter) is detected. Side-effect free.
+- **`qa_build`** — build from source as a consent-gated job. *Inputs:* `sessionId` (required), `platform` (`android`/`ios`), `variant?`, `timeoutMs?`, `consentId?`/`approve?`. *Outputs:* a `jobId` to poll with `qa_job_status`; on completion a build-log artifact and the re-resolved artifact path. Consent-gated (it compiles the app).
+- **`qa_bundletool`** — convert an Android App Bundle to an installable APK. *Inputs:* `sessionId` (required), `aab?` (default: the best `.aab` under the project), `force?`, `connectedDevice?` (device-specific APK set vs a universal APK), `install?` (also run `install-apks`), `deviceId?`, `consentId?`/`approve?`. *Outputs:* the generated APK or APK-set path. `install` is consent-gated because it installs app code on a device/emulator.
+
+### Feature-focused testing
+
+- **`qa_feature_scope`** — map a natural-language feature to the app, read-only. *Inputs:* `feature` (required, e.g. "weather analysis"), `sessionId?` (adds runtime screen-graph evidence), `projectRoot?` (static code scope), `platform?`, `includeCode?` (default true), `limit?`. *Outputs:* ranked `candidates` each tagged by `source` (`code`/`screen`/`route`/`runtime`/`test`) with confidence, plus a test `objective` and `strategy`. No consent. Returns `found:false` with guidance when nothing matches.
+- **`qa_feature_test_plan`** — generate a full feature test plan, read-only. *Inputs:* `feature` (required), `sessionId?`/`projectRoot?`, `platform?`, `creativity?` (`conservative`=happy path; `standard` (default)=+validation/empty/error; `creative`=+boundary/offline/interruption; `adversarial`=+destructive), `allowAdversarial?`, `includeCode?`, `limit?`. *Outputs:* a `plan` with scope, objective, generated `cases`, `fixtures`, automation readiness, and an execution plan. Adversarial cases are consent-gated at execution time.
+- **`qa_test_feature`** — run a focused test toward a named feature. *Inputs:* `feature` (required), `sessionId` (required), `mode?` (`plan` (default) / `execute` (focused run as a job) / `interactive` (run until the first question)), `platform?`, `device?`, `creativity?`, `allowAdversarial?`, `maxScreens?`, `maxActions?`, `timeoutMs?`, `generateCases?`, `consentId?`/`approve?`. *Outputs:* in `plan` mode the scope + cases; in `execute` mode a `jobId` whose run performs targeted exploration toward the feature, records cases, updates the feature map, and emits a report. `execute`/`interactive` are consent-gated.
+
 ## Recommended Entry Points
 
 | User intent | First tool |
@@ -222,6 +258,8 @@ Technical detail for the tools added alongside the device-parity, visual-intelli
 | "Explore the app" | `qa_explore` |
 | "Generate report" | `qa_report` |
 | "Read app memory" | `qa_app_map_read` |
+| "Test the X feature" | `qa_test_feature` |
+| "Find/build an artifact" | `qa_resolve_artifact` / `qa_build` |
 | "Create a flow" | `qa_flow_generate` |
 | "Generate automation" | `qa_automation_plan` |
 
