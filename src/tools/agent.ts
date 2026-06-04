@@ -125,6 +125,22 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
     },
   );
 
+  // ---- qa_next_best_action ----
+  server.registerTool(
+    'qa_next_best_action',
+    {
+      title: 'What should I call next?',
+      description: 'Given the current session state, returns the single best next tool to call (with args) and why — so an agent does not have to reason out the orchestration sequence. Deterministic, read-only. Pass `goal` to bias the first call toward a specific autopilot intent.',
+      inputSchema: { sessionId: z.string(), goal: z.enum(['smoke', 'explore', 'create_automation_suite', 'release_gate', 'test_login', 'reproduce_bug']).optional() },
+    },
+    async ({ sessionId, goal }) => {
+      const s = sessions.get(sessionId);
+      if (!s) return qaError({ what: `Unknown sessionId ${sessionId}`, changedState: false, retrySafe: true, nextSteps: ['Call qa_start_session first.'] });
+      const next = nextBestAction(s, goal);
+      return qaOk({ nextBestAction: next }, `→ ${next.tool} ${JSON.stringify(next.args)} — ${next.why}`);
+    },
+  );
+
   // ---- qa_explain_blocker ----
   server.registerTool(
     'qa_explain_blocker',

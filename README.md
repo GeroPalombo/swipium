@@ -236,27 +236,28 @@ After setup, verify that the client lists `qa_test_this`, `qa_capabilities`, and
 
 ## Tool Docs
 
-Swipium exposes 91 public MCP tools. Start with `qa_test_this` for low-context requests.
+Swipium exposes 95 public MCP tools. Start with `qa_test_this` for low-context requests.
 
 Full reference: [docs/tools.md](docs/tools.md)
 
-New in 1.3.0 — 8 additional tools, all backward compatible:
+New in 1.4.0 — 4 additional tools, all backward compatible:
 
-- **Feature-focused testing**: `qa_feature_scope`, `qa_feature_test_plan`, `qa_test_feature` — test a specific feature by name ("the login flow"), backed by the app knowledge map.
-- **Local build and artifact resolution**: `qa_resolve_target`, `qa_resolve_artifact`, `qa_build_plan`, `qa_build`, `qa_bundletool` — pick a device, find or build an installable artifact, and convert an `.aab` to an installable APK.
+- **`qa_inspect`** — return the full attributes of a single `@eN` element from the latest snapshot, without dumping the whole tree.
+- **`qa_next_best_action`** — a deterministic recommendation of the single best next tool to call (with args) and why.
+- **`qa_app_map_update`** / **`qa_app_map_diff`** — targeted provenance-tracked app-map updates, and a diff between two map snapshots.
 
-Earlier releases added device-parity, local-first visual, seeded-state, report-history (1.1.0) and durable issue memory, persistent test suite, flow plan/repair, Maestro interop, and agent helpers (1.2.0).
+Earlier releases added device-parity, local-first visual, seeded-state, report-history (1.1.0); durable issue memory, persistent test suite, flow plan/repair, Maestro interop, agent helpers (1.2.0); and feature-focused testing plus local build/artifact resolution (1.3.0).
 
 | Group | Tools |
 | --- | --- |
-| Start | `qa_agent_brief`, `qa_capabilities`, `qa_test_this`, `qa_job_status`, `qa_job_cancel`, `qa_status`, `qa_explain_blocker`, `qa_continue_from_blocker`, `qa_get_artifact` |
+| Start | `qa_agent_brief`, `qa_capabilities`, `qa_test_this`, `qa_job_status`, `qa_job_cancel`, `qa_status`, `qa_explain_blocker`, `qa_continue_from_blocker`, `qa_next_best_action`, `qa_get_artifact` |
 | Setup | `qa_doctor`, `qa_start_session`, `qa_detect_context`, `qa_plan`, `qa_prepare_target`, `qa_prepare_ios_target`, `qa_ios`, `qa_wda` |
 | Build | `qa_resolve_target`, `qa_resolve_artifact`, `qa_build_plan`, `qa_build`, `qa_bundletool` |
 | Device | `qa_device_info`, `qa_permissions`, `qa_orientation`, `qa_geolocation`, `qa_network`, `qa_metro`, `qa_app_control`, `qa_screen_info`, `qa_screen_record` |
-| Drive | `qa_snapshot`, `qa_act`, `qa_clear_overlay`, `qa_check_health`, `qa_screenshot`, `qa_note`, `qa_assert_visual`, `qa_visual`, `qa_visual_find_text`, `qa_locator_suggest`, `qa_input_capabilities`, `qa_wait`, `qa_idling_status` |
+| Drive | `qa_snapshot`, `qa_inspect`, `qa_act`, `qa_clear_overlay`, `qa_check_health`, `qa_screenshot`, `qa_note`, `qa_assert_visual`, `qa_visual`, `qa_visual_find_text`, `qa_locator_suggest`, `qa_input_capabilities`, `qa_wait`, `qa_idling_status` |
 | State | `qa_seed`, `qa_state_prepare`, `qa_state_verify`, `qa_state_teardown` |
 | Run | `qa_smoke`, `qa_explore`, `qa_report`, `qa_report_compare`, `qa_run_history` |
-| App map | `qa_app_map_build`, `qa_app_map_read`, `qa_app_map_query`, `qa_app_map_feature_scope`, `qa_app_map_validate` |
+| App map | `qa_app_map_build`, `qa_app_map_read`, `qa_app_map_query`, `qa_app_map_update`, `qa_app_map_diff`, `qa_app_map_feature_scope`, `qa_app_map_validate` |
 | Feature | `qa_feature_scope`, `qa_feature_test_plan`, `qa_test_feature` |
 | Flows and suites | `qa_flow_check`, `qa_flow_plan`, `qa_flow_run`, `qa_flow_generate`, `qa_flow_repair`, `qa_suite_generate`, `qa_suite_compile`, `qa_suite_lint`, `qa_pom_generate`, `qa_testcase_generate` |
 | Test suite | `qa_test_suite_read`, `qa_test_suite_update`, `qa_test_suite_generate`, `qa_test_suite_export`, `qa_test_suite_lint` |

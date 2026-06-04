@@ -6,7 +6,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { qaOk, qaError } from '../lib/result.js';
 import { parseSnapshot, signature, renderElements } from '../snapshot/parse.js';
 import { presentElements } from '../snapshot/present.js';
-import { makeRedactor } from '../lib/redact.js';
+import { makeRedactor, isSecureNode } from '../lib/redact.js';
 import { detectTreeOverlays, classifyForeground } from '../snapshot/overlays.js';
 import { detectAuthScreen } from '../oracle/auth.js';
 import { getDriver, REHYDRATE_NOTE } from '../session/attach.js';
@@ -139,6 +139,55 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
           ...(diffPayload ? { diff: diffPayload } : {}),
         },
         `${header}\n\n${rendered}${diffText}`,
+      );
+    },
+  );
+
+  server.registerTool(
+    'qa_inspect',
+    {
+      title: 'Inspect one element',
+      description:
+        'Return the full attributes (class, resource-id, content-desc, text, bounds, all flags) of a single @eN ref from the most recent qa_snapshot. Use this instead of dumping the whole tree.',
+      inputSchema: { sessionId: z.string(), ref: z.string().describe('e.g. "@e3"') },
+    },
+    async ({ sessionId, ref }) => {
+      const session = sessions.get(sessionId);
+      const node = session?.lastSnapshot?.fullByRef.get(ref);
+      if (!session || !node) {
+        return qaError({
+          what: `No element ${ref} in the latest snapshot`,
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Run qa_snapshot first; refs invalidate after navigation.'],
+        });
+      }
+      // Sensitive-mode: a secure field's value is masked; otherwise scrub known secrets.
+      const secure = isSecureNode(node);
+      const redact = makeRedactor(session.secrets);
+      const m = (v: string) => (secure && v ? '«secure»' : redact(v) ?? '');
+      const maskedAttrs: Record<string, string> = {};
+      for (const [k, v] of Object.entries(node.attrs)) {
+        maskedAttrs[k] = (k === 'text' || k === 'content-desc') ? m(v) : v;
+      }
+      return qaOk(
+        {
+          ref,
+          secure,
+          class: node.cls,
+          id: node.id || null,
+          contentDesc: m(node.desc) || null,
+          text: m(node.text) || null,
+          bounds: node.bounds,
+          clickable: node.clickable,
+          longClickable: node.longClickable,
+          scrollable: node.scrollable,
+          focusable: node.focusable,
+          focused: node.focused,
+          enabled: node.enabled,
+          attrs: maskedAttrs,
+        },
+        `${ref}: ${node.cls} id=${node.id || '∅'}${secure ? ' [secure]' : ''} desc=${JSON.stringify(m(node.desc))} text=${JSON.stringify(m(node.text))} bounds=${JSON.stringify(node.bounds)}`,
       );
     },
   );

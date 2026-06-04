@@ -31,7 +31,7 @@ describe('public tool surface', () => {
     const doctor = tools.find((tool) => tool.name === 'qa_doctor') as { inputSchema?: { properties?: Record<string, unknown> } } | undefined;
     await client.close();
 
-    expect(SWIPIUM_VERSION).toBe('1.3.0');
+    expect(SWIPIUM_VERSION).toBe('1.4.0');
     expect(TOOL_COUNT).toBe(TOOL_NAMES.length);
     expect(listed).toEqual([...TOOL_NAMES].sort());
     expect(doctor?.inputSchema?.properties?.platform).toBeTruthy();

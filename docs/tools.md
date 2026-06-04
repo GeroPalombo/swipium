@@ -1,6 +1,6 @@
 # Tool Reference
 
-Swipium exposes 91 public MCP tools. The intended default entry point is `qa_test_this`.
+Swipium exposes 95 public MCP tools. The intended default entry point is `qa_test_this`.
 
 ## Start
 
@@ -15,6 +15,7 @@ Use these tools to orient the agent, start autopilot work, poll jobs, handle blo
 | `qa_status` | Returns compact session status and recommended next action. | The agent needs to recover context during a session. |
 | `qa_explain_blocker` | Explains a typed blocker, likely owner, and recovery path. | A run stops with a blocker and the user needs a concise explanation. |
 | `qa_continue_from_blocker` | Resumes after user input and registers secret values for redaction. | A blocker asks for credentials, OTP, target choice, or approval data. |
+| `qa_next_best_action` | Returns the single best next tool to call (with args) and why, deterministically. | The agent wants the orchestration sequence decided for it. |
 | `qa_get_artifact` | Fetches artifact metadata or contents by `swipium://` URI. | A report, screenshot, dump, log, or generated file must be read. |
 | `qa_job_cancel` | Cancels a running job and aborts its spawned children. | A long-running job must be stopped early. |
 
@@ -68,6 +69,7 @@ Use these tools to observe the UI, act on it, collect evidence, and record resul
 | Tool | What it does | Use when |
 | --- | --- | --- |
 | `qa_snapshot` | Captures compact structured UI elements where the backend supports it. | The agent needs selectors, visible text, or UI state. |
+| `qa_inspect` | Returns the full attributes of a single `@eN` element from the latest snapshot. | One element's details are needed without dumping the whole tree. |
 | `qa_act` | Taps, types, clears, swipes, scrolls, presses keys, opens URLs, waits, and observes after action. | The agent needs to drive the app step by step. |
 | `qa_clear_overlay` | Attempts to dismiss common overlays blocking a target. | Popups, permissions, modals, or sheets block the next action. |
 | `qa_check_health` | Checks foreground app status, crash signals, ANR, error boundaries, and native health. | The agent needs to distinguish app bugs from environment issues. |
@@ -114,6 +116,8 @@ Use these tools to build and read Swipium's durable app knowledge map.
 | `qa_app_map_read` | Reads compact app-map sections such as features, screens, auth, automation, or test suite. | The agent needs app context without flooding the transcript. |
 | `qa_app_map_query` | Searches features, screens, tests, and code links with ranked results. | The user asks about a feature, screen, or test surface. |
 | `qa_app_map_feature_scope` | Resolves a feature query or feature id into focused testing scope and recommended plan. | The agent needs to test a specific feature. |
+| `qa_app_map_update` | Applies targeted, provenance-tracked updates (note, test cases, automation suite, environment, feature coverage) without a full rebuild. | The map needs a small correction or annotation. |
+| `qa_app_map_diff` | Diffs two app-map snapshots: screen, coverage, locator-readiness, and stale-test changes plus new untested code. | The agent needs to see what changed between two map snapshots. |
 | `qa_app_map_validate` | Validates schema, provenance, links, duplicate ids, impossible states, and stale fingerprints. | The map must be trusted before feature-focused testing. |
 
 ## Feature Testing
@@ -244,6 +248,13 @@ Technical detail for the tools added alongside the device-parity, visual-intelli
 - **`qa_feature_scope`** — map a natural-language feature to the app, read-only. *Inputs:* `feature` (required, e.g. "weather analysis"), `sessionId?` (adds runtime screen-graph evidence), `projectRoot?` (static code scope), `platform?`, `includeCode?` (default true), `limit?`. *Outputs:* ranked `candidates` each tagged by `source` (`code`/`screen`/`route`/`runtime`/`test`) with confidence, plus a test `objective` and `strategy`. No consent. Returns `found:false` with guidance when nothing matches.
 - **`qa_feature_test_plan`** — generate a full feature test plan, read-only. *Inputs:* `feature` (required), `sessionId?`/`projectRoot?`, `platform?`, `creativity?` (`conservative`=happy path; `standard` (default)=+validation/empty/error; `creative`=+boundary/offline/interruption; `adversarial`=+destructive), `allowAdversarial?`, `includeCode?`, `limit?`. *Outputs:* a `plan` with scope, objective, generated `cases`, `fixtures`, automation readiness, and an execution plan. Adversarial cases are consent-gated at execution time.
 - **`qa_test_feature`** — run a focused test toward a named feature. *Inputs:* `feature` (required), `sessionId` (required), `mode?` (`plan` (default) / `execute` (focused run as a job) / `interactive` (run until the first question)), `platform?`, `device?`, `creativity?`, `allowAdversarial?`, `maxScreens?`, `maxActions?`, `timeoutMs?`, `generateCases?`, `consentId?`/`approve?`. *Outputs:* in `plan` mode the scope + cases; in `execute` mode a `jobId` whose run performs targeted exploration toward the feature, records cases, updates the feature map, and emits a report. `execute`/`interactive` are consent-gated.
+
+### App-map maintenance and agent helpers
+
+- **`qa_inspect`** — full attributes of one element. *Inputs:* `sessionId`, `ref` (e.g. `@e3`). *Outputs:* `class`, `id`, `contentDesc`, `text`, `bounds`, the interaction flags (`clickable`/`scrollable`/`focused`/`enabled`/…), and the raw `attrs`. Secret values are redacted and a secure field's value is masked as `«secure»`. Read-only; refs come from the most recent `qa_snapshot` and invalidate after navigation.
+- **`qa_next_best_action`** — deterministic next-step recommendation. *Inputs:* `sessionId`, `goal?` (`smoke`/`explore`/`create_automation_suite`/`release_gate`/`test_login`/`reproduce_bug`). *Outputs:* `nextBestAction` (the `tool`, suggested `args`, and `why`). Read-only.
+- **`qa_app_map_update`** — targeted, provenance-tracked map edits. *Inputs:* `projectRoot?`/`sessionId?` plus any of `note`, `testCases[]`, `automationSuite`, `environment`, `featureCoverage`. *Outputs:* `applied[]` and the `appMapUri`. Recomputes confidence and coverage and persists. Requires an existing map (`qa_app_map_build` first).
+- **`qa_app_map_diff`** — diff two map snapshots. *Inputs:* `projectRoot?`/`sessionId?`, `baseline?` and `current?` (paths; default: latest history snapshot vs the current map). *Outputs:* added/removed/changed screens, feature-coverage changes, locator-readiness changes, stale test cases, new untested code areas, and a `summary`. Read-only.
 
 ## Recommended Entry Points
 

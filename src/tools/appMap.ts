@@ -10,7 +10,10 @@ import { qaOk, qaError } from '../lib/result.js';
 import { resolveProjectRoot } from '../context/projectRoot.js';
 import { buildAppMap, summarizeMap, type BuildMode } from '../appMap/build.js';
 import { queryAppMap } from '../appMap/query.js';
-import { loadAppMap, loadCodeIndex, validateAppMap, appMapResourceUri, appMapPath, projectId } from '../appMap/store.js';
+import { loadAppMap, loadCodeIndex, saveAppMap, saveIndexes, validateAppMap, appMapResourceUri, appMapPath, projectId } from '../appMap/store.js';
+import { addProvenance, makeProvenance, recomputeConfidence } from '../appMap/provenance.js';
+import { diffAppMaps } from '../appMap/diff.js';
+import { migrateAppMap } from '../appMap/migrations.js';
 import { rememberProject, lookupRoot } from '../appMap/projectRegistry.js';
 import { detectFramework } from '../context/detect.js';
 import type { AppKnowledgeMap, ProjectIdentity } from '../appMap/schema.js';
@@ -316,6 +319,125 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
         `${v.ok ? '✅' : '❌'} app map ${v.ok ? 'valid' : 'INVALID'} — ${v.errors} error(s), ${v.warnings} warning(s)\n` +
         v.issues.slice(0, 12).map((i) => `  ${i.severity === 'error' ? '✗' : '⚠'} ${i.code}: ${i.detail}`).join('\n');
       return qaOk({ valid: v.ok, errors: v.errors, warnings: v.warnings, issues: v.issues, appMapUri: appMapResourceUri(root) }, text);
+    },
+  );
+
+  // ----------------------------------------------------------------- update
+  server.registerTool(
+    'qa_app_map_update',
+    {
+      title: 'Update the app knowledge map',
+      description:
+        "Apply targeted, provenance-tracked updates to the app map without a full rebuild: attach a user note, add test cases, link an automation suite to feature/screen ids, set the app environment, or override a feature's coverage. Recomputes confidence + coverage and persists.",
+      inputSchema: {
+        projectRoot: z.string().optional(),
+        sessionId: z.string().optional(),
+        note: z.string().optional().describe('A free-text user note added with user_note provenance.'),
+        testCases: z.array(z.object({ id: z.string(), title: z.string(), featureId: z.string().optional(), screenId: z.string().optional(), status: z.string().optional(), source: z.string().optional(), stale: z.boolean().optional() })).optional(),
+        automationSuite: z.object({ name: z.string(), path: z.string(), framework: z.string().optional(), linkedFeatureIds: z.array(z.string()).optional(), linkedScreenIds: z.array(z.string()).optional() }).optional(),
+        environment: z.string().optional().describe("App environment, e.g. 'test' | 'staging'."),
+        featureCoverage: z.object({ featureId: z.string(), coverage: z.enum(['none', 'partial', 'covered']) }).optional(),
+      },
+      outputSchema: { ok: z.boolean(), appMapUri: z.string().optional(), applied: z.array(z.string()).optional() },
+    },
+    async ({ projectRoot, sessionId, note, testCases, automationSuite, environment, featureCoverage }) => {
+      const { root, hint } = await rootFor(server, sessions, { projectRoot, sessionId });
+      if (!root) return qaError({ what: 'Could not resolve a project root', changedState: false, retrySafe: true, nextSteps: ['Pass projectRoot or sessionId.'], clientHint: hint });
+      remember(root);
+      const map = readExistingMap(root);
+      if (!map) return qaError({ what: 'No app map yet', changedState: false, retrySafe: true, nextSteps: ['Run qa_app_map_build first.'], failureCode: 'NO_APP_MAP' });
+      const at = nowIso();
+      const applied: string[] = [];
+
+      if (note) {
+        addProvenance(map, makeProvenance('user_note', at, note, { targetType: 'map' }));
+        applied.push('note');
+      }
+      if (testCases?.length) {
+        for (const c of testCases) {
+          const existing = map.testSuite.cases.find((x) => x.id === c.id);
+          if (existing) Object.assign(existing, c);
+          else map.testSuite.cases.push(c);
+        }
+        addProvenance(map, makeProvenance('test_case', at, `${testCases.length} test case(s) registered`, { targetType: 'test' }));
+        applied.push(`testCases(${testCases.length})`);
+      }
+      if (automationSuite) {
+        const existing = map.automation.suites.find((s) => s.path === automationSuite.path);
+        if (existing) Object.assign(existing, automationSuite);
+        else map.automation.suites.push(automationSuite);
+        addProvenance(map, makeProvenance('test_case', at, `Automation suite ${automationSuite.name} linked`, { targetType: 'test', refs: [automationSuite.path] }));
+        applied.push('automationSuite');
+      }
+      if (environment) {
+        map.appIdentity.environment = environment;
+        applied.push('environment');
+      }
+      if (featureCoverage) {
+        const f = map.features.find((x) => x.id === featureCoverage.featureId);
+        if (!f) return qaError({ what: `Unknown featureId ${featureCoverage.featureId}`, changedState: false, retrySafe: true, nextSteps: ['List ids with qa_app_map_read { section:"features" }.'] });
+        f.testCoverage = featureCoverage.coverage;
+        addProvenance(map, makeProvenance('user_note', at, `coverage(${f.id})=${featureCoverage.coverage}`, { targetType: 'feature', targetId: f.id }));
+        applied.push('featureCoverage');
+      }
+
+      if (!applied.length) return qaError({ what: 'No update fields provided', changedState: false, retrySafe: true, nextSteps: ['Pass at least one of: note, testCases, automationSuite, environment, featureCoverage.'] });
+
+      map.updatedAt = at;
+      map.coverage.staleTests = map.testSuite.cases.filter((c) => c.stale).length;
+      recomputeConfidence(map);
+      const save = saveAppMap(root, map);
+      saveIndexes(root, loadCodeIndex(root), map.features);
+      return qaOk({ appMapUri: save.resourceUri, applied }, `app map updated: ${applied.join(', ')}\nappMapUri: ${save.resourceUri}`);
+    },
+  );
+
+  // ------------------------------------------------------------------- diff
+  server.registerTool(
+    'qa_app_map_diff',
+    {
+      title: 'Diff two app map snapshots',
+      description:
+        'Compare two App Knowledge Map snapshots and report added/removed/changed screens, feature coverage changes, locator-readiness changes, stale test cases, and new untested code areas. With no paths, compares the most recent history snapshot (baseline) against the current map.',
+      inputSchema: {
+        projectRoot: z.string().optional(),
+        sessionId: z.string().optional(),
+        baseline: z.string().optional().describe('Path to a baseline app-map.json (or history snapshot). Defaults to the latest history snapshot.'),
+        current: z.string().optional().describe('Path to the current app-map.json. Defaults to .swipium/app-map.json.'),
+      },
+      outputSchema: { ok: z.boolean(), summary: z.string().optional() },
+    },
+    async ({ projectRoot, sessionId, baseline, current }) => {
+      const { root, hint } = await rootFor(server, sessions, { projectRoot, sessionId });
+      if (!root) return qaError({ what: 'Could not resolve a project root', changedState: false, retrySafe: true, nextSteps: ['Pass projectRoot or sessionId.'], clientHint: hint });
+      remember(root);
+      const readMap = (p: string): AppKnowledgeMap | null => {
+        if (!existsSync(p)) return null;
+        try {
+          const raw = JSON.parse(readFileSync(p, 'utf8'));
+          return migrateAppMap(raw, fallbackProject(root), nowIso()).map;
+        } catch {
+          return null;
+        }
+      };
+      const currentMap = current ? readMap(current) : readExistingMap(root);
+      if (!currentMap) return qaError({ what: 'No current app map to diff', changedState: false, retrySafe: true, nextSteps: ['Run qa_app_map_build first, or pass current=.'], failureCode: 'NO_APP_MAP' });
+      let baselineMap: AppKnowledgeMap | null = baseline ? readMap(baseline) : null;
+      if (!baselineMap && !baseline) {
+        const { appMapHistoryDir } = await import('../appMap/store.js');
+        const dir = appMapHistoryDir(root);
+        try {
+          const { readdirSync } = await import('node:fs');
+          const snaps = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.json')).sort() : [];
+          const prev = snaps.length >= 2 ? snaps[snaps.length - 2] : snaps[0];
+          if (prev) baselineMap = readMap(`${dir}/${prev}`);
+        } catch {
+          /* none */
+        }
+      }
+      if (!baselineMap) return qaError({ what: 'No baseline snapshot available to diff against', changedState: false, retrySafe: true, nextSteps: ['Build the map at least twice, or pass baseline=path-to-app-map.json.'] });
+      const diff = diffAppMaps(baselineMap, currentMap);
+      return qaOk({ ...diff, appMapUri: appMapResourceUri(root) }, `app map diff: ${diff.summary}`);
     },
   );
 }
