@@ -36,7 +36,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/geropalombo/swipium.git"
+    "url": "https://github.com/GeroPalombo/swipium"
   },
   "bugs": {
     "url": "https://github.com/geropalombo/swipium/issues"
