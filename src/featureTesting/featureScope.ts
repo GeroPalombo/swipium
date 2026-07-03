@@ -4,7 +4,7 @@
 // them into feature candidates, and return the best-supported FeatureScope plus disambiguation when
 // genuinely-different features tie. No device, no filesystem, no LLM: deterministic and unit-testable.
 
-import type { FeatureIndex, SourceSymbol, RouteRef, SourceFileEntry, SymbolKind } from '../appMap/featureIndex.js';
+import type { FeatureIndex, SymbolKind } from '../appMap/featureIndex.js';
 import { normalizeQuery, termsAreUnrelated, type NormalizedQuery } from './synonyms.js';
 
 export type ScopeSource = 'symbol' | 'route' | 'file' | 'runtime' | 'test';
@@ -125,7 +125,13 @@ const CORE_W = 1.0;
 const SYN_W = 0.4;
 const KIND_WEIGHT: Record<ScopeSource, number> = { symbol: 1.0, route: 1.0, runtime: 0.9, test: 0.6, file: 0.45 };
 const SYMBOL_KIND_WEIGHT: Record<SymbolKind, number> = {
-  screen: 1.0, service: 0.85, hook: 0.7, component: 0.7, function: 0.55, class: 0.6, constant: 0.5,
+  screen: 1.0,
+  service: 0.85,
+  hook: 0.7,
+  component: 0.7,
+  function: 0.55,
+  class: 0.6,
+  constant: 0.5,
 };
 const EXACT_BONUS = 0.8; // an item whose tokens contain every core term
 
@@ -174,7 +180,10 @@ interface ScoredMatch extends SourceMatch {
 }
 
 function slug(terms: string[]): string {
-  const base = terms.join('-').replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+  const base = terms
+    .join('-')
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
   return `feat-${base || 'unknown'}`.slice(0, 64);
 }
 
@@ -183,10 +192,38 @@ function titleCase(terms: string[]): string {
 }
 
 // state-changing / risky vocab used for strategy + risk derivation
-const STATEFUL_TERMS = new Set(['create', 'add', 'new', 'edit', 'update', 'save', 'checkout', 'pay', 'purchase', 'order', 'subscribe', 'submit', 'send', 'post', 'upload', 'book']);
+const STATEFUL_TERMS = new Set([
+  'create',
+  'add',
+  'new',
+  'edit',
+  'update',
+  'save',
+  'checkout',
+  'pay',
+  'purchase',
+  'order',
+  'subscribe',
+  'submit',
+  'send',
+  'post',
+  'upload',
+  'book',
+]);
 const DESTRUCTIVE_TERMS = new Set(['delete', 'remove', 'destroy', 'clear', 'wipe', 'cancel', 'logout', 'deactivate']);
 const PAYMENT_TERMS = new Set(['checkout', 'payment', 'pay', 'purchase', 'order', 'subscribe', 'billing']);
-const AUTH_TERMS = new Set(['auth', 'login', 'signin', 'logon', 'authentication', 'credentials', 'password', 'account', 'register', 'signup']);
+const AUTH_TERMS = new Set([
+  'auth',
+  'login',
+  'signin',
+  'logon',
+  'authentication',
+  'credentials',
+  'password',
+  'account',
+  'register',
+  'signup',
+]);
 
 function collectMatches(input: FeatureScopeInput, q: NormalizedQuery): ScoredMatch[] {
   const out: ScoredMatch[] = [];
@@ -196,12 +233,29 @@ function collectMatches(input: FeatureScopeInput, q: NormalizedQuery): ScoredMat
   for (const s of input.index.symbols) {
     const h = hits(s.tokens, q);
     const score = baseScore(h, q, s.tokens) * KIND_WEIGHT.symbol * SYMBOL_KIND_WEIGHT[s.kind];
-    push({ source: 'symbol', name: s.name, file: s.file, line: s.line, kind: s.kind, matchedTerms: [...h.matched, ...h.synMatched], score, tokens: s.tokens });
+    push({
+      source: 'symbol',
+      name: s.name,
+      file: s.file,
+      line: s.line,
+      kind: s.kind,
+      matchedTerms: [...h.matched, ...h.synMatched],
+      score,
+      tokens: s.tokens,
+    });
   }
   for (const r of input.index.routes) {
     const h = hits(r.tokens, q);
     const score = baseScore(h, q, r.tokens) * KIND_WEIGHT.route;
-    push({ source: 'route', name: r.route, file: r.file, line: r.line, matchedTerms: [...h.matched, ...h.synMatched], score, tokens: r.tokens });
+    push({
+      source: 'route',
+      name: r.route,
+      file: r.file,
+      line: r.line,
+      matchedTerms: [...h.matched, ...h.synMatched],
+      score,
+      tokens: r.tokens,
+    });
   }
   for (const f of input.index.files) {
     const h = hits(f.tokens, q);
@@ -212,7 +266,15 @@ function collectMatches(input: FeatureScopeInput, q: NormalizedQuery): ScoredMat
     const tokens = [...tokenizeLoose(n.title), ...tokenizeLoose(n.route), ...tokenizeLoose(n.text)];
     const h = hits(tokens, q);
     const score = baseScore(h, q, tokens) * KIND_WEIGHT.runtime;
-    push({ source: 'runtime', name: n.title || n.route || n.id, file: undefined, kind: 'runtime_node', matchedTerms: [...h.matched, ...h.synMatched], score, tokens });
+    push({
+      source: 'runtime',
+      name: n.title || n.route || n.id,
+      file: undefined,
+      kind: 'runtime_node',
+      matchedTerms: [...h.matched, ...h.synMatched],
+      score,
+      tokens,
+    });
     // carry the node id on `line`-less match via name; id kept for screen extraction below
     if (score > 0) (out[out.length - 1] as ScoredMatch & { runtimeId?: string }).runtimeId = n.id;
   }
@@ -273,10 +335,26 @@ function cluster(matches: ScoredMatch[], q: NormalizedQuery): Cluster[] {
 function deriveRisks(terms: Set<string>): FeatureRisk[] {
   const risks: FeatureRisk[] = [];
   const has = (set: Set<string>) => [...terms].some((t) => set.has(t));
-  if (has(DESTRUCTIVE_TERMS)) risks.push({ risk: 'destructive actions present', level: 'high', rationale: 'Feature vocabulary includes delete/remove/cancel — requires disposable state and explicit consent.' });
-  if (has(PAYMENT_TERMS)) risks.push({ risk: 'real-money / purchase path', level: 'high', rationale: 'Payment/checkout flows can charge real accounts — use a sandbox/test fixture.' });
-  if (has(AUTH_TERMS)) risks.push({ risk: 'authentication gate', level: 'medium', rationale: 'Likely blocked behind login — needs test credentials to exercise fully.' });
-  if (!risks.length) risks.push({ risk: 'low-risk read/navigation', level: 'low', rationale: 'No destructive/payment/auth vocabulary detected in scope.' });
+  if (has(DESTRUCTIVE_TERMS))
+    risks.push({
+      risk: 'destructive actions present',
+      level: 'high',
+      rationale: 'Feature vocabulary includes delete/remove/cancel — requires disposable state and explicit consent.',
+    });
+  if (has(PAYMENT_TERMS))
+    risks.push({
+      risk: 'real-money / purchase path',
+      level: 'high',
+      rationale: 'Payment/checkout flows can charge real accounts — use a sandbox/test fixture.',
+    });
+  if (has(AUTH_TERMS))
+    risks.push({
+      risk: 'authentication gate',
+      level: 'medium',
+      rationale: 'Likely blocked behind login — needs test credentials to exercise fully.',
+    });
+  if (!risks.length)
+    risks.push({ risk: 'low-risk read/navigation', level: 'low', rationale: 'No destructive/payment/auth vocabulary detected in scope.' });
   return risks;
 }
 
@@ -333,16 +411,23 @@ function buildScope(c: Cluster, q: NormalizedQuery, input: FeatureScopeInput, ma
   }
 
   // fixture/credential data dependencies inferred from feature vocabulary
-  if ([...c.terms].some((t) => AUTH_TERMS.has(t))) dataDependencies.push({ name: 'test credentials', kind: 'fixture', evidence: 'auth vocabulary in scope' });
-  if ([...c.terms].some((t) => PAYMENT_TERMS.has(t))) dataDependencies.push({ name: 'sandbox payment method', kind: 'fixture', evidence: 'payment vocabulary in scope' });
+  if ([...c.terms].some((t) => AUTH_TERMS.has(t)))
+    dataDependencies.push({ name: 'test credentials', kind: 'fixture', evidence: 'auth vocabulary in scope' });
+  if ([...c.terms].some((t) => PAYMENT_TERMS.has(t)))
+    dataDependencies.push({ name: 'sandbox payment method', kind: 'fixture', evidence: 'payment vocabulary in scope' });
 
   const confidence = maxScore > 0 ? Math.min(1, c.score / maxScore) : 0;
   const risks = deriveRisks(c.terms);
   const strategy = deriveStrategy(c.terms, runtimeScreens.length > 0, staticScreens.length > 0, confidence);
 
   const coverageGaps: CoverageGap[] = [];
-  if (!runtimeScreens.length) coverageGaps.push({ area: 'runtime', reason: 'No runtime screen has been observed for this feature yet — run a focused exploration.' });
-  if (!staticScreens.length) coverageGaps.push({ area: 'static', reason: 'No screen/route component matched in source — the static index may be incomplete or the feature is named differently.' });
+  if (!runtimeScreens.length)
+    coverageGaps.push({ area: 'runtime', reason: 'No runtime screen has been observed for this feature yet — run a focused exploration.' });
+  if (!staticScreens.length)
+    coverageGaps.push({
+      area: 'static',
+      reason: 'No screen/route component matched in source — the static index may be incomplete or the feature is named differently.',
+    });
   if (!existingTests.length) coverageGaps.push({ area: 'tests', reason: 'No existing test/flow covers this feature — generate cases.' });
 
   const objective = `Validate the "${title}" feature${input.platform ? ` on ${input.platform}` : ''}: reach its entry point, exercise the primary path, and verify the expected outcome.`;
@@ -435,7 +520,11 @@ export function buildFeatureScope(input: FeatureScopeInput): FeatureScopeResult 
       risks: [{ risk: 'feature not located', level: 'medium', rationale: 'No matching code symbols, routes, runtime screens, or tests.' }],
       existingTests: [],
       coverageGaps: [
-        { area: 'map', reason: 'Feature not present in the current map — run an initial qa_test_this/qa_explore to grow coverage, or refine the feature name.' },
+        {
+          area: 'map',
+          reason:
+            'Feature not present in the current map — run an initial qa_test_this/qa_explore to grow coverage, or refine the feature name.',
+        },
       ],
       recommendedStrategy: 'manual_blocked',
       matchedTerms: [],
@@ -463,7 +552,13 @@ export function buildFeatureScope(input: FeatureScopeInput): FeatureScopeResult 
     const a = scopes[0];
     const b = scopes[1];
     const close = b.confidence >= a.confidence * 0.75 && a.confidence > 0;
-    if (close && termsAreUnrelated(a.matchedTerms.filter((t) => q.coreTerms.includes(t)), b.matchedTerms.filter((t) => q.coreTerms.includes(t)))) {
+    if (
+      close &&
+      termsAreUnrelated(
+        a.matchedTerms.filter((t) => q.coreTerms.includes(t)),
+        b.matchedTerms.filter((t) => q.coreTerms.includes(t)),
+      )
+    ) {
       needsInput = {
         question: `"${input.query}" matched more than one distinct feature. Which one should Swipium test?`,
         options: scopes.slice(0, 4).map((s) => `${s.title} (${Math.round(s.confidence * 100)}%)`),

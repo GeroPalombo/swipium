@@ -202,14 +202,23 @@ export class ExploreGraph {
 
   /** Human-readable Markdown summary of the graph. */
   toMarkdown(generatedAt: string): string {
-    const out: string[] = [`# Exploration Screen Graph`, ``, `Generated: ${generatedAt} · platform: ${this.platform} · ${this.nodes.size} screens / ${this.edges.length} actions`, ``];
+    const out: string[] = [
+      `# Exploration Screen Graph`,
+      ``,
+      `Generated: ${generatedAt} · platform: ${this.platform} · ${this.nodes.size} screens / ${this.edges.length} actions`,
+      ``,
+    ];
     for (const n of this.allNodes()) {
       out.push(
         `## ${n.id}${n.title ? ` — ${n.title}` : ''} (${n.mode})`,
         `- signature: \`${n.signature}\``,
         `- health: native ${n.health.native} · app ${n.health.app}${n.authState ? ` · auth ${n.authState}` : ''}`,
         ...(n.visualOnlyReason ? [`- visual-only: ${n.visualOnlyReason}`] : []),
-        ...(n.locatorQuality ? [`- locator readiness: ${n.locatorQuality.grade} (${n.locatorQuality.missingStableLocators} missing stable, ${n.locatorQuality.coordinateOnlyTargets} coordinate-only)`] : []),
+        ...(n.locatorQuality
+          ? [
+              `- locator readiness: ${n.locatorQuality.grade} (${n.locatorQuality.missingStableLocators} missing stable, ${n.locatorQuality.coordinateOnlyTargets} coordinate-only)`,
+            ]
+          : []),
         ...(n.screenshotUri ? [`- screenshot: ${n.screenshotUri}`] : []),
         `- elements: ${n.elements.length} (${n.elements.filter((e) => e.risk === 'safe').length} safe, ${n.elements.filter((e) => e.risk === 'destructive').length} destructive)`,
         ``,

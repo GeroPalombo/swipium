@@ -6,7 +6,8 @@ import type { SnapshotElement } from '../drivers/Driver.js';
 import { classifyRisk } from './policy.js';
 import type { ExploreElement, LocatorInfo } from './graph.js';
 
-const NAV = /\b(home|tab|menu|settings?|search|explore|discover|profile|account|back|next|map|list|history|notifications?|messages?|dashboard|library|feed|overview)\b/i;
+const NAV =
+  /\b(home|tab|menu|settings?|search|explore|discover|profile|account|back|next|map|list|history|notifications?|messages?|dashboard|library|feed|overview)\b/i;
 
 function locatorFor(e: SnapshotElement): LocatorInfo {
   if (e.id) return { strategy: 'id', value: e.id, durability: 'high' };
@@ -57,7 +58,11 @@ export function rankCandidates(elements: SnapshotElement[], opts: RankOptions = 
     if (editable && !opts.includeTextEntry) continue; // no blind typing without a value source
     if (!e.clickable && !editable) continue; // only actionable elements
     const locator = locatorFor(e);
-    const { risk, reason, riskClass, stepUp, requiresTwoStepConfirmation } = classifyRisk({ label: e.text || e.label, id: e.id, role: e.role });
+    const { risk, reason, riskClass, stepUp, requiresTwoStepConfirmation } = classifyRisk({
+      label: e.text || e.label,
+      id: e.id,
+      role: e.role,
+    });
     const b = bounds(e);
     const signatureKey = `${actionType}:${locator.strategy}:${locator.value}`;
     if (explored.has(signatureKey)) continue;
@@ -81,7 +86,8 @@ export function rankCandidates(elements: SnapshotElement[], opts: RankOptions = 
   return out.sort((a, b) => b.score - a.score);
 }
 
-const ACTION_LIKE_TEXT = /\b(continue|begin|start|started|next|skip|done|submit|confirm|cancel|allow|deny|accept|decline|get started|sign\s?up|sign\s?in|log\s?in|log\s?out|sign\s?out|register|join|subscribe|upgrade|unlock|buy|purchase|checkout|select|choose|create|save|send|share|retry|try again|finish|proceed|got it|continue with|let'?s go)\b/i;
+const ACTION_LIKE_TEXT =
+  /\b(continue|begin|start|started|next|skip|done|submit|confirm|cancel|allow|deny|accept|decline|get started|sign\s?up|sign\s?in|log\s?in|log\s?out|sign\s?out|register|join|subscribe|upgrade|unlock|buy|purchase|checkout|select|choose|create|save|send|share|retry|try again|finish|proceed|got it|continue with|let'?s go)\b/i;
 
 export interface SkippedActionLike {
   ref: string;
@@ -106,7 +112,11 @@ export function actionLikeNonInteractive(elements: SnapshotElement[]): SkippedAc
 }
 
 /** Locator-readiness grade for a screen (Phase 3.3 §9.4) — drives the report's testability advice. */
-export function locatorQuality(elements: SnapshotElement[]): { grade: 'A' | 'B' | 'C' | 'D'; missingStableLocators: number; coordinateOnlyTargets: number } {
+export function locatorQuality(elements: SnapshotElement[]): {
+  grade: 'A' | 'B' | 'C' | 'D';
+  missingStableLocators: number;
+  coordinateOnlyTargets: number;
+} {
   const actionable = elements.filter((e) => e.clickable);
   if (actionable.length === 0) return { grade: 'A', missingStableLocators: 0, coordinateOnlyTargets: 0 };
   let stable = 0;

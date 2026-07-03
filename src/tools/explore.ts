@@ -48,12 +48,13 @@ function promotedActionsFor(session: Session, graph: ExploreGraph, promotions: S
     const edge = edges.find((e) => e.from === from && e.to === to && e.outcome === 'changed_screen');
     const locatorValue = edge?.action.locator?.value;
     if (!edge || typeof locatorValue !== 'string') continue;
-    const idx = session.recordedActions.findIndex((a, actionIdx) => (
-      !used.has(actionIdx) &&
-      a.action === edge.action.type &&
-      a.selector === locatorValue &&
-      a.provenance?.originalScreenSignature === edge.preActionState
-    ));
+    const idx = session.recordedActions.findIndex(
+      (a, actionIdx) =>
+        !used.has(actionIdx) &&
+        a.action === edge.action.type &&
+        a.selector === locatorValue &&
+        a.provenance?.originalScreenSignature === edge.preActionState,
+    );
     if (idx >= 0) {
       used.add(idx);
       actions.push(session.recordedActions[idx]);
@@ -68,7 +69,7 @@ export function registerExplore(server: McpServer, sessions: SessionStore): void
     {
       title: 'Guided exploration',
       description:
-        'Explore a launched app like a practical QA engineer: bounded, safe-by-default crawl that observes screens, ranks safe actions, taps them, checks health after each, and builds a SCREEN GRAPH (JSON + Markdown artifacts). Skips destructive actions (delete/pay/send/logout) in strict mode; verifies map/canvas screens visually with qa_assert_visual; stops with NeedsInput on an auth wall when credentials are missing. Records durable taps so qa_suite_generate can promote paths. Runs as a JOB — the terminal state (completed/blocked) + graphUri are in the job result (poll qa_job_status). Requires a prepared device (qa_test_this / qa_prepare_target first).',
+        'Explore a launched app like a practical QA engineer: bounded, safe-by-default crawl that observes screens, ranks safe actions, taps them, checks health after each, and builds a SCREEN GRAPH (JSON + Markdown artifacts). Skips destructive actions (delete/pay/send/logout) in strict mode; verifies map/canvas screens visually with qa_assert_visual; stops with NeedsInput on an auth wall when credentials are missing. Records durable taps so qa_generate target:"suite" can promote paths. Runs as a JOB — the terminal state (completed/blocked) + graphUri are in the job result (poll qa_job_status). Requires a prepared device (qa_test_this / qa_prepare_target first).',
       inputSchema: {
         sessionId: z.string(),
         goal: z.string().optional().describe('Optional natural-language focus (e.g. "exercise the main tabs").'),
@@ -76,8 +77,18 @@ export function registerExplore(server: McpServer, sessions: SessionStore): void
         maxActions: z.number().optional().describe('Max actions to try (default 20).'),
         maxScreens: z.number().optional().describe('Max distinct screens to visit (default 12).'),
         maxDurationMs: z.number().optional(),
-        strategy: z.enum(['crawl', 'task_planner', 'hybrid']).optional().describe('crawl (default): deterministic screen crawl; task_planner: infer semantic QA tasks before acting; hybrid: task planning plus crawl.'),
-        safeMode: z.enum(['strict', 'balanced', 'dry_run_destructive', 'approved_destructive_candidate', 'approved_destructive']).optional().describe('strict (default): safe actions only; balanced: unknown-risk allowed; dry_run_destructive: discover/list destructive candidates without tapping; approved_destructive_candidate: allow exactly one candidate-bound destructive action. approved_destructive is deprecated and refused.'),
+        strategy: z
+          .enum(['crawl', 'task_planner', 'hybrid'])
+          .optional()
+          .describe(
+            'crawl (default): deterministic screen crawl; task_planner: infer semantic QA tasks before acting; hybrid: task planning plus crawl.',
+          ),
+        safeMode: z
+          .enum(['strict', 'balanced', 'dry_run_destructive', 'approved_destructive_candidate', 'approved_destructive'])
+          .optional()
+          .describe(
+            'strict (default): safe actions only; balanced: unknown-risk allowed; dry_run_destructive: discover/list destructive candidates without tapping; approved_destructive_candidate: allow exactly one candidate-bound destructive action. approved_destructive is deprecated and refused.',
+          ),
         destructiveCandidate: z
           .object({
             screenSignature: z.string(),
@@ -87,26 +98,70 @@ export function registerExplore(server: McpServer, sessions: SessionStore): void
             riskClass: z.string().optional(),
           })
           .optional()
-          .describe('Exact candidate returned by a dry_run_destructive exploration. Required with safeMode approved_destructive_candidate.'),
-        confirmHighImpact: z.boolean().optional().describe('Required true for high-impact destructive candidates such as payment, send/share, permission change, account delete, or bulk delete.'),
+          .describe(
+            'Exact candidate returned by a dry_run_destructive exploration. Required with safeMode approved_destructive_candidate.',
+          ),
+        confirmHighImpact: z
+          .boolean()
+          .optional()
+          .describe(
+            'Required true for high-impact destructive candidates such as payment, send/share, permission change, account delete, or bulk delete.',
+          ),
         generateSuite: z.boolean().optional().describe('After exploration, score promotable paths and include suite-promotion guidance.'),
         includeTextEntry: z.boolean().optional().describe('Allow typing into fields (only with a value source — default false).'),
-        stopOnAuth: z.boolean().optional().describe('Return NeedsInput when an auth wall blocks exploration and credentials are missing (default true).'),
+        stopOnAuth: z
+          .boolean()
+          .optional()
+          .describe('Return NeedsInput when an auth wall blocks exploration and credentials are missing (default true).'),
         accountCycle: z
           .boolean()
           .optional()
-          .describe('SWIPIUM-REQ-07 controlled account-cycle workflow: on a DISPOSABLE generated account, permit LOGOUT (and only logout) as an expected step; delete/pay/send stay refused. Requires allowGeneratedData. Off by default.'),
-        allowGeneratedData: z.boolean().optional().describe('Allow safe generated disposable-account data (test/staging) — required to use accountCycle.'),
+          .describe(
+            'SWIPIUM-REQ-07 controlled account-cycle workflow: on a DISPOSABLE generated account, permit LOGOUT (and only logout) as an expected step; delete/pay/send stay refused. Requires allowGeneratedData. Off by default.',
+          ),
+        allowGeneratedData: z
+          .boolean()
+          .optional()
+          .describe('Allow safe generated disposable-account data (test/staging) — required to use accountCycle.'),
         consentId: z.string().optional(),
         approve: z.boolean().optional(),
       },
     },
-    async ({ sessionId, goal, depth, maxActions, maxScreens, maxDurationMs, strategy, safeMode, destructiveCandidate, confirmHighImpact, generateSuite, includeTextEntry, stopOnAuth, accountCycle, allowGeneratedData, consentId, approve }) => {
+    async ({
+      sessionId,
+      goal,
+      depth,
+      maxActions,
+      maxScreens,
+      maxDurationMs,
+      strategy,
+      safeMode,
+      destructiveCandidate,
+      confirmHighImpact,
+      generateSuite,
+      includeTextEntry,
+      stopOnAuth,
+      accountCycle,
+      allowGeneratedData,
+      consentId,
+      approve,
+    }) => {
       const session = sessions.get(sessionId);
-      if (!session) return qaError({ what: `Unknown sessionId ${sessionId}`, changedState: false, retrySafe: true, nextSteps: ['Call qa_start_session first.'] });
+      if (!session)
+        return qaError({
+          what: `Unknown sessionId ${sessionId}`,
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Call qa_start_session first.'],
+        });
       const { driver } = await getDriver(session);
       if (!driver) {
-        return qaError({ what: 'No device attached to this session', changedState: false, retrySafe: true, nextSteps: ['Prepare a device first: qa_test_this { mode:"execute" } or qa_prepare_target, then qa_explore.'] });
+        return qaError({
+          what: 'No device attached to this session',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Prepare a device first: qa_test_this { mode:"execute" } or qa_prepare_target, then qa_explore.'],
+        });
       }
 
       if (safeMode === 'approved_destructive') {
@@ -115,7 +170,9 @@ export function registerExplore(server: McpServer, sessions: SessionStore): void
           changedState: false,
           retrySafe: false,
           failureCode: 'DESTRUCTIVE_REFUSED',
-          nextSteps: ['Run qa_explore with safeMode:"dry_run_destructive" to discover candidates, then approve one exact candidate with safeMode:"approved_destructive_candidate" and disposable test state.'],
+          nextSteps: [
+            'Run qa_explore with safeMode:"dry_run_destructive" to discover candidates, then approve one exact candidate with safeMode:"approved_destructive_candidate" and disposable test state.',
+          ],
         });
       }
 
@@ -127,7 +184,9 @@ export function registerExplore(server: McpServer, sessions: SessionStore): void
             changedState: false,
             retrySafe: false,
             failureCode: 'DESTRUCTIVE_REFUSED',
-            nextSteps: ['Run safeMode:"dry_run_destructive" first and copy one candidate signature/screen/locator into destructiveCandidate.'],
+            nextSteps: [
+              'Run safeMode:"dry_run_destructive" first and copy one candidate signature/screen/locator into destructiveCandidate.',
+            ],
           });
         }
         if (!hasDisposableState(session)) {
@@ -145,7 +204,9 @@ export function registerExplore(server: McpServer, sessions: SessionStore): void
             changedState: false,
             retrySafe: false,
             failureCode: 'DESTRUCTIVE_REFUSED',
-            nextSteps: ['Re-run with confirmHighImpact:true only if this is disposable test state and the action can be safely verified or rolled back.'],
+            nextSteps: [
+              'Re-run with confirmHighImpact:true only if this is disposable test state and the action can be safely verified or rolled back.',
+            ],
           });
         }
         const approval = {
@@ -186,7 +247,10 @@ export function registerExplore(server: McpServer, sessions: SessionStore): void
               'This approval is single-use, expires quickly, and requires disposable test state.',
           });
         }
-        sessions.addEnvChange(session, `CONSENT destructive candidate ${destructiveCandidate.candidateSignature} on ${destructiveCandidate.screenSignature}`);
+        sessions.addEnvChange(
+          session,
+          `CONSENT destructive candidate ${destructiveCandidate.candidateSignature} on ${destructiveCandidate.screenSignature}`,
+        );
         sessions.recordMutation(session, {
           tool: 'qa_explore',
           action: 'destructive_ui_candidate',
@@ -200,7 +264,21 @@ export function registerExplore(server: McpServer, sessions: SessionStore): void
 
       const accountCycleCtx = accountCycle ? { enabled: true, disposableAccount: allowGeneratedData === true } : undefined;
       const job = sessions.createJob(session, 'explore');
-      void runExploreJob(sessions, session, job, { goal, depth, maxActions, maxScreens, maxDurationMs, strategy, safeMode, destructiveApproval, generateSuite, includeTextEntry, stopOnAuth, accountCycle: accountCycleCtx, allowGeneratedData });
+      void runExploreJob(sessions, session, job, {
+        goal,
+        depth,
+        maxActions,
+        maxScreens,
+        maxDurationMs,
+        strategy,
+        safeMode,
+        destructiveApproval,
+        generateSuite,
+        includeTextEntry,
+        stopOnAuth,
+        accountCycle: accountCycleCtx,
+        allowGeneratedData,
+      });
       return qaOk(
         { sessionId: session.id, state: 'running', jobId: job.jobId, kind: job.kind },
         `🧭 guided exploration started as job ${job.jobId}. Poll qa_job_status { sessionId:"${session.id}", jobId:"${job.jobId}" } for the screen graph + terminal state.`,
@@ -217,7 +295,10 @@ async function runExploreJob(
 ): Promise<void> {
   const signal = sessions.abortSignal(session, job.jobId);
   const upd = (patch: Partial<JobRecord>) => sessions.updateJobIfRunning(session, job, patch);
-  const prog = startProgress(sessions, session, job, 'exploring', { statusText: 'Exploring the app safely.', nextExpected: 'Build a screen graph.' });
+  const prog = startProgress(sessions, session, job, 'exploring', {
+    statusText: 'Exploring the app safely.',
+    nextExpected: 'Build a screen graph.',
+  });
   try {
     const { driver } = await getDriver(session);
     if (!driver) {
@@ -231,8 +312,22 @@ async function runExploreJob(
     const at = Date.now();
     const generatedAt = new Date(at).toISOString();
     const serializedGraph = res.graph.serialize(generatedAt);
-    const graphUri = sessions.saveArtifact(session, 'explore', `graph-${at}.json`, JSON.stringify(serializedGraph, null, 2), 'application/json', 'exploration screen graph');
-    const graphMdUri = sessions.saveArtifact(session, 'explore', `graph-${at}.md`, res.graph.toMarkdown(new Date(at).toISOString()), 'text/markdown', 'exploration screen graph (readable)');
+    const graphUri = sessions.saveArtifact(
+      session,
+      'explore',
+      `graph-${at}.json`,
+      JSON.stringify(serializedGraph, null, 2),
+      'application/json',
+      'exploration screen graph',
+    );
+    const graphMdUri = sessions.saveArtifact(
+      session,
+      'explore',
+      `graph-${at}.md`,
+      res.graph.toMarkdown(new Date(at).toISOString()),
+      'text/markdown',
+      'exploration screen graph (readable)',
+    );
     const historyPath = appendExploreMemory(session.root, session.appId, {
       appId: session.appId ?? 'unknown-app',
       sessionId: session.id,
@@ -254,30 +349,57 @@ async function runExploreJob(
         ? generateAndCompileSuite(sessions, session, { name: 'explore-promoted', actions: promotedActions, save: true, compile: true })
         : {
             skipped: true,
-            skippedReason: res.suitePromotion.some((p) => p.status === 'promote') ? 'promoted path did not map to recorded replay actions' : 'no promoted exploration path met the replay threshold',
-            recommendation: 'Review suitePromotion reasons, improve locator readiness, then run qa_suite_generate after replayable actions are recorded.',
+            skippedReason: res.suitePromotion.some((p) => p.status === 'promote')
+              ? 'promoted path did not map to recorded replay actions'
+              : 'no promoted exploration path met the replay threshold',
+            recommendation:
+              'Review suitePromotion reasons, improve locator readiness, then run qa_generate target:"suite" after replayable actions are recorded.',
             written: [],
             compiledFlows: [],
             suiteRunnable: false,
             readinessLabels: [],
           }
       : undefined;
-    const record: ExplorationRecord = { at, graphUri, graphMdUri, state: res.state, stoppedReason: res.stoppedReason, summary: res.summary };
+    const record: ExplorationRecord = {
+      at,
+      graphUri,
+      graphMdUri,
+      state: res.state,
+      stoppedReason: res.stoppedReason,
+      summary: res.summary,
+    };
     sessions.setExploration(session, record);
     // SWIPIUM-REQ-01: merge this exploration into the durable App Knowledge Map by default. Best-effort
     // — a map failure must never fail the exploration job.
     try {
-      buildAppMap(session.root, { mode: 'runtime_merge', at: generatedAt, sessionId: session.id, exploreGraph: serializedGraph, persist: true });
+      buildAppMap(session.root, {
+        mode: 'runtime_merge',
+        at: generatedAt,
+        sessionId: session.id,
+        exploreGraph: serializedGraph,
+        persist: true,
+      });
     } catch (e) {
       log('warn', 'app map merge after explore failed', { jobId: job.jobId, err: String(e) });
     }
     // Fix 9: keep the persistent suite current directly after exploration — don't wait for a later
     // qa_report. Best-effort: a suite-merge failure is a warning, never an exploration failure.
-    const suiteMerge = mergeFromExploration(session.root, record, { source: 'exploration', now: generatedAt, runId: `explore-${at}`, sourceUri: graphUri, appId: session.appId, sessionId: session.id });
+    const suiteMerge = mergeFromExploration(session.root, record, {
+      source: 'exploration',
+      now: generatedAt,
+      runId: `explore-${at}`,
+      sourceUri: graphUri,
+      appId: session.appId,
+      sessionId: session.id,
+    });
     prog.done(`explored ${res.summary.screensVisited} screens`);
 
     const nextRecommendedAction = res.needsInput
-      ? { tool: 'qa_continue_from_blocker', args: { sessionId: session.id, kind: 'credentials' }, why: 'Provide credentials to explore authenticated screens' }
+      ? {
+          tool: 'qa_continue_from_blocker',
+          args: { sessionId: session.id, kind: 'credentials' },
+          why: 'Provide credentials to explore authenticated screens',
+        }
       : { tool: 'qa_report', args: { sessionId: session.id }, why: 'Summarize the exploration with the screen graph' };
 
     upd({

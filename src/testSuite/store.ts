@@ -139,7 +139,16 @@ export function suiteDelta(suite: TestSuiteFile, result: MergeResult): SuiteDelt
     if (!c) continue;
     if (c.actualResult.status === 'fail') failed.push(id);
     if (c.actualResult.status === 'blocked' || c.status === 'blocked') blocked.push(id);
-    if (result.created.includes(id) ? c.automation.status === 'automated' || c.automation.status === 'partial' : false) newlyAutomated.push(id);
+    if (result.created.includes(id) ? c.automation.status === 'automated' || c.automation.status === 'partial' : false)
+      newlyAutomated.push(id);
   }
-  return { totalCases: suite.cases.length, created: result.created, updated: result.updated, deprecated: result.deprecated, failed, blocked, newlyAutomated };
+  return {
+    totalCases: suite.cases.length,
+    created: result.created,
+    updated: result.updated,
+    deprecated: result.deprecated,
+    failed,
+    blocked,
+    newlyAutomated,
+  };
 }

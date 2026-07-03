@@ -43,7 +43,12 @@ export interface BuildExecCtx {
   timeoutMs?: number;
 }
 
-export async function executeBuild(sessions: SessionStore, session: Session, plan: BuildPlan, ctx: BuildExecCtx = {}): Promise<BuildExecResult> {
+export async function executeBuild(
+  sessions: SessionStore,
+  session: Session,
+  plan: BuildPlan,
+  ctx: BuildExecCtx = {},
+): Promise<BuildExecResult> {
   const { signal } = ctx;
   const aborted = () => signal?.aborted ?? false;
   const progress = (t: string) => ctx.onProgress?.(t);
@@ -69,8 +74,14 @@ export async function executeBuild(sessions: SessionStore, session: Session, pla
         const a = analyzeBuildFailure({ step, log: r.stdout + r.stderr, timedOut: r.timedOut });
         const logUri = sessions.saveArtifact(session, 'logs', logName, logBuf, 'text/plain', `failed build log (${a.failureCode})`);
         return {
-          ok: false, failureCode: a.failureCode, step: step.label, logUri,
-          tail: a.relevantTail, owner: a.owner, fix: a.fix, signal: a.signal,
+          ok: false,
+          failureCode: a.failureCode,
+          step: step.label,
+          logUri,
+          tail: a.relevantTail,
+          owner: a.owner,
+          fix: a.fix,
+          signal: a.signal,
           error: `${a.reason} — ${step.label} exited ${r.code}${r.timedOut ? ' (timed out)' : ''}`,
         };
       }

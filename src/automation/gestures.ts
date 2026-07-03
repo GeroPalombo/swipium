@@ -49,7 +49,11 @@ export function gestureSupport(gesture: GestureIR, caps: BackendCapabilities): G
     return { supported: false, requiredCapability: String(capKey), reason: `${gesture.kind} is not supported on ${caps.backend}.` };
   }
   if ((gesture.kind === 'tap' || gesture.kind === 'swipe') && !caps.screenshot && !caps.structuredTree) {
-    return { supported: false, requiredCapability: 'screenshot', reason: `${gesture.kind} needs at least coordinate/screenshot support on ${caps.backend}.` };
+    return {
+      supported: false,
+      requiredCapability: 'screenshot',
+      reason: `${gesture.kind} needs at least coordinate/screenshot support on ${caps.backend}.`,
+    };
   }
   return { supported: true, reason: `${gesture.kind} is supported on ${caps.backend}.` };
 }

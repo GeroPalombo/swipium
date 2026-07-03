@@ -72,31 +72,66 @@ export function planInputForField(session: Session, req: InputRequirement, ctx: 
   //    for fixture-declared generators, which is the intended behavior).
   const fixture = resolveFixtureValue(session, req.label, req.locator?.value, { role: req.field });
   if (fixture) {
-    return { decision: 'fixture', value: fixture.value, varName: fixture.varName, secret: fixture.secret, source: 'fixture', generator: fixture.generator, field };
+    return {
+      decision: 'fixture',
+      value: fixture.value,
+      varName: fixture.varName,
+      secret: fixture.secret,
+      source: 'fixture',
+      generator: fixture.generator,
+      field,
+    };
   }
 
   // OTP is never invented — only a real provider or a secure input may supply it.
   if (field === 'otp') {
-    return { decision: 'needs_input', kind: 'otp_or_manual_verification', reason: 'a one-time code is required and cannot be generated', field };
+    return {
+      decision: 'needs_input',
+      kind: 'otp_or_manual_verification',
+      reason: 'a one-time code is required and cannot be generated',
+      field,
+    };
   }
 
   // 3. Built-in safe generator, gated on the generated-account decision + policy field opt-ins.
   if (ctx.generationAllowed) {
     const gen = generateFieldValue(field, ctx.policy, { timestamp: ctx.timestamp, index: ctx.index });
     if (gen) {
-      return { decision: 'generator', value: gen.value, varName: generatorVarName(field), secret: gen.secret, source: 'generator', generator: gen.generator, record: true, field };
+      return {
+        decision: 'generator',
+        value: gen.value,
+        varName: generatorVarName(field),
+        secret: gen.secret,
+        source: 'generator',
+        generator: gen.generator,
+        record: true,
+        field,
+      };
     }
     // generation allowed but this field is not safely generatable (phone/dob without opt-in).
     if (req.required) {
-      return { decision: 'needs_input', kind: 'create_test_data', reason: `field "${req.label ?? field}" cannot be safely generated under the current policy`, field };
+      return {
+        decision: 'needs_input',
+        kind: 'create_test_data',
+        reason: `field "${req.label ?? field}" cannot be safely generated under the current policy`,
+        field,
+      };
     }
     return { decision: 'skip', reason: `optional field "${req.label ?? field}" left blank (not safely generatable)`, field };
   }
 
   // 4 / 5. No safe value available.
   if (req.required) {
-    const kind: NeedsInputKind = field === 'email' || field === 'username' || field === 'password' || field === 'confirm_password' ? 'credentials' : 'create_test_data';
-    return { decision: 'needs_input', kind, reason: `required field "${req.label ?? field}" has no safe value and generation is not allowed here`, field };
+    const kind: NeedsInputKind =
+      field === 'email' || field === 'username' || field === 'password' || field === 'confirm_password'
+        ? 'credentials'
+        : 'create_test_data';
+    return {
+      decision: 'needs_input',
+      kind,
+      reason: `required field "${req.label ?? field}" has no safe value and generation is not allowed here`,
+      field,
+    };
   }
   return { decision: 'skip', reason: `optional field "${req.label ?? field}" skipped — no value source and generation not allowed`, field };
 }

@@ -16,6 +16,7 @@ import { METRO_PORT, metroReadiness } from '../lib/metroState.js';
 import { parseSnapshot } from '../snapshot/parse.js';
 import { detectRedBox } from '../snapshot/overlays.js';
 import { getDriver, resolveDevice, bindDevice } from '../session/attach.js';
+import { registerManagedProcess, unregisterManagedProcess } from '../session/processRegistry.js';
 import type { SessionStore } from '../session/store.js';
 
 /** True if `pid` is a live process whose command looks like a Metro/Expo/RN bundler. Guards
@@ -58,12 +59,9 @@ export async function stopAllMetro(sessions: SessionStore): Promise<void> {
     const pid = session.metroPid;
     if (!pid) continue;
     if (metroProcessLooksAlive(pid)) killMetroGroup(pid);
+    unregisterManagedProcess(pid);
     session.metroPid = undefined;
-    try {
-      sessions.persist(session);
-    } catch {
-      /* ignore */
-    }
+    sessions.persist(session); // logs its own failures to stderr
   }
 }
 
@@ -89,12 +87,23 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
     },
     async ({ sessionId, action, consentId, approve }) => {
       const session = sessions.get(sessionId);
-      if (!session) return qaError({ what: `Unknown sessionId ${sessionId}`, changedState: false, retrySafe: true, nextSteps: ['Call qa_start_session first.'] });
+      if (!session)
+        return qaError({
+          what: `Unknown sessionId ${sessionId}`,
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Call qa_start_session first.'],
+        });
       // Centralized device resolution (P0.1/P0.3): use the session device, else the single
       // online one (bind it), else ask / guide — never a circular "no device" dead end.
       const dev = await resolveDevice(session);
       if (dev.needSelection && action !== 'status') {
-        return qaError({ what: 'Multiple devices online — choose one', changedState: false, retrySafe: true, nextSteps: [`Re-run qa_prepare_target with device="<serial>". Online: ${dev.available.join(', ')}`] });
+        return qaError({
+          what: 'Multiple devices online — choose one',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: [`Re-run qa_prepare_target with device="<serial>". Online: ${dev.available.join(', ')}`],
+        });
       }
       const serial = dev.effective;
       if (serial && !session.device) bindDevice(session, serial); // self-bind single online device
@@ -105,11 +114,27 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
       const reverseSet = rd.reverseSet;
 
       if (action === 'status') {
-        const deviceHint = serial ? '' : '\n⚠ No device bound — adb reverse needs one. Call qa_prepare_target first (it binds the device), then qa_metro.';
+        const deviceHint = serial
+          ? ''
+          : '\n⚠ No device bound — adb reverse needs one. Call qa_prepare_target first (it binds the device), then qa_metro.';
         return qaOk(
-          { framework: fw, metroListening: listening, reverseSet, serving: rd.serving, ready: rd.ready, port: METRO_PORT, sessionDevice: dev.sessionDevice ?? null, availableDevices: dev.available, device: serial ?? null, metroPid: session.metroPid ?? null, needsDevice: !serial },
+          {
+            framework: fw,
+            metroListening: listening,
+            reverseSet,
+            serving: rd.serving,
+            ready: rd.ready,
+            port: METRO_PORT,
+            sessionDevice: dev.sessionDevice ?? null,
+            availableDevices: dev.available,
+            device: serial ?? null,
+            metroPid: session.metroPid ?? null,
+            needsDevice: !serial,
+          },
           `framework=${fw} metro:${METRO_PORT}=${listening ? 'listening' : 'down'} serving=${rd.serving} adb-reverse=${serial ? (reverseSet ? 'set' : 'unset') : 'n/a (no device)'} device=${serial ?? 'none'} online=[${dev.available.join(',')}]${session.metroPid ? ` pid=${session.metroPid}` : ''}` +
-            (rd.ready ? '\nReady — debug bundle can load.' : deviceHint || '\nNot fully ready — run qa_metro action="start" (or qa_metro diagnose).'),
+            (rd.ready
+              ? '\nReady — debug bundle can load.'
+              : deviceHint || '\nNot fully ready — run qa_metro action="start" (or qa_metro diagnose).'),
         );
       }
 
@@ -129,10 +154,16 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
         }
         const recovery: string[] = [];
         let requiresReinstall = false;
-        if (!serial) recovery.push(dev.needSelection ? `Multiple devices online — re-run qa_prepare_target device="<serial>". Online: ${dev.available.join(', ')}` : 'No device online — boot one via qa_prepare_target (it boots + sets reverse), then retry.');
+        if (!serial)
+          recovery.push(
+            dev.needSelection
+              ? `Multiple devices online — re-run qa_prepare_target device="<serial>". Online: ${dev.available.join(', ')}`
+              : 'No device online — boot one via qa_prepare_target (it boots + sets reverse), then retry.',
+          );
         if (!listening) recovery.push('Start Metro: qa_metro action="start".');
         if (serial && listening && !reverseSet) recovery.push('Set reverse: qa_metro action="start" (sets adb reverse).');
-        if (listening && !rd.serving) recovery.push('Metro is up but not serving the bundle yet — wait ~10s for the first transform, then retry.');
+        if (listening && !rd.serving)
+          recovery.push('Metro is up but not serving the bundle yet — wait ~10s for the first transform, then retry.');
         if (redbox.unableToLoadScript) {
           requiresReinstall = true;
           recovery.push(
@@ -144,7 +175,17 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
         if (rd.ready && !redbox.present) recovery.push('Metro ready and no RedBox — the bundle should load.');
 
         return qaOk(
-          { framework: fw, ...rd, sessionDevice: dev.sessionDevice ?? null, availableDevices: dev.available, device: serial ?? null, redBox: redbox, requiresReinstall, logcatUri: logUri ?? null, recovery },
+          {
+            framework: fw,
+            ...rd,
+            sessionDevice: dev.sessionDevice ?? null,
+            availableDevices: dev.available,
+            device: serial ?? null,
+            redBox: redbox,
+            requiresReinstall,
+            logcatUri: logUri ?? null,
+            recovery,
+          },
           `framework=${fw} | metro listening=${rd.listening} serving=${rd.serving} reverse=${reverseSet} ready=${rd.ready}\n` +
             `redbox=${redbox.present ? (redbox.unableToLoadScript ? 'UNABLE-TO-LOAD-SCRIPT' : 'present') : 'none'}${requiresReinstall ? ' ⚠ requires reinstall/rebuild' : ''}\n` +
             `recovery:\n - ${recovery.join('\n - ') || '(none — looks healthy)'}` +
@@ -170,6 +211,7 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
           }
         }
         const had = session.metroPid;
+        unregisterManagedProcess(had);
         session.metroPid = undefined;
         sessions.persist(session);
         sessions.recordMutation(session, {
@@ -180,7 +222,12 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
           consent: { required: false, approved: true },
           status: 'restored',
         });
-        return qaOk({ stopped: killed, pid: had ?? null, reverseRemoved: !!serial }, had ? `Stopped Metro pid ${had}${killed ? '' : ' (was already gone)'}; removed adb reverse.` : 'No Swipium-started Metro to stop (it may have been started externally).');
+        return qaOk(
+          { stopped: killed, pid: had ?? null, reverseRemoved: !!serial },
+          had
+            ? `Stopped Metro pid ${had}${killed ? '' : ' (was already gone)'}; removed adb reverse.`
+            : 'No Swipium-started Metro to stop (it may have been started externally).',
+        );
       }
 
       // action === 'start' — `serial` is the single online device (auto-bound) or a session
@@ -196,7 +243,10 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
         });
       }
       if (listening && reverseSet) {
-        return qaOk({ framework: fw, metroListening: true, reverseSet: true, alreadyRunning: true }, 'Metro already listening and adb reverse already set — nothing to do.');
+        return qaOk(
+          { framework: fw, metroListening: true, reverseSet: true, alreadyRunning: true },
+          'Metro already listening and adb reverse already set — nothing to do.',
+        );
       }
       const { cmd, args } = metroCommand(fw);
       const cmdStr = `adb -s ${serial} reverse tcp:${METRO_PORT} tcp:${METRO_PORT} && (cd ${session.root} && ${cmd} ${args.join(' ')})`;
@@ -240,7 +290,13 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
           status: 'blocked',
           detail: String(e),
         });
-        return qaError({ what: `adb reverse failed: ${String(e)}`, commandAttempted: `adb -s ${serial} reverse tcp:${METRO_PORT} tcp:${METRO_PORT}`, changedState: true, retrySafe: true, nextSteps: ['Check the device is online.'] });
+        return qaError({
+          what: `adb reverse failed: ${String(e)}`,
+          commandAttempted: `adb -s ${serial} reverse tcp:${METRO_PORT} tcp:${METRO_PORT}`,
+          changedState: true,
+          retrySafe: true,
+          nextSteps: ['Check the device is online.'],
+        });
       }
       // Register the artifact (creates the empty file) BEFORE opening the append fd, so we
       // don't truncate a live log. saveArtifact writes to <dir>/metro/metro.log.
@@ -251,7 +307,9 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
       child.unref();
       closeSync(fd); // child inherited the fd; the parent must not keep it open (review #2)
       session.metroPid = child.pid;
-      sessions.persist(session);
+      registerManagedProcess(child.pid, 'metro', session.id); // reapable if this server crashes
+      sessions.persistNow(session); // the pid must hit disk before a crash for reload/reap to see it
+
       sessions.recordMutation(session, {
         tool: 'qa_metro',
         action: 'start_metro',

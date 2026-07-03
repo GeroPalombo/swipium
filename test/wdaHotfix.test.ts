@@ -11,7 +11,7 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
   const chunks: Buffer[] = [];
   for await (const c of req) chunks.push(Buffer.from(c as Buffer));
   const body = Buffer.concat(chunks).toString('utf8');
-  return body ? JSON.parse(body) as Record<string, unknown> : {};
+  return body ? (JSON.parse(body) as Record<string, unknown>) : {};
 }
 
 async function startFakeWda(
@@ -100,7 +100,12 @@ async function startFakeWda(
   await once(server, 'listening');
   const addr = server.address();
   if (!addr || typeof addr === 'string') throw new Error('no server address');
-  return { url: `http://127.0.0.1:${addr.port}`, close: () => new Promise<void>((resolve) => server.close(() => resolve())), calls, requests };
+  return {
+    url: `http://127.0.0.1:${addr.port}`,
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    calls,
+    requests,
+  };
 }
 
 describe('WDA v1 compatibility fixes', () => {
@@ -130,10 +135,12 @@ describe('WDA v1 compatibility fixes', () => {
     const fake = await startFakeWda({ elementLookup: 'not-found' });
     try {
       await new WdaDriver(fake.url, { udid: 'SIM-1' }).inputText('hello@example.com');
-      expect(fake.requests).toContainEqual(expect.objectContaining({
-        url: '/session/wda-session-1/wda/keys',
-        body: { value: [...'hello@example.com'], text: 'hello@example.com' },
-      }));
+      expect(fake.requests).toContainEqual(
+        expect.objectContaining({
+          url: '/session/wda-session-1/wda/keys',
+          body: { value: [...'hello@example.com'], text: 'hello@example.com' },
+        }),
+      );
     } finally {
       await fake.close();
     }
@@ -158,10 +165,12 @@ describe('WDA v1 compatibility fixes', () => {
         .map((r) => r.body.value);
       expect(predicateValues).toEqual(['focused == 1', 'focused == 1']);
       expect(fake.calls).toContain('POST /session/wda-session-1/element/element-1/clear');
-      expect(fake.requests).toContainEqual(expect.objectContaining({
-        url: '/session/wda-session-1/element/element-1/value',
-        body: { value: [...'QA Tester'], text: 'QA Tester' },
-      }));
+      expect(fake.requests).toContainEqual(
+        expect.objectContaining({
+          url: '/session/wda-session-1/element/element-1/value',
+          body: { value: [...'QA Tester'], text: 'QA Tester' },
+        }),
+      );
     } finally {
       await fake.close();
     }

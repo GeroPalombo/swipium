@@ -37,7 +37,10 @@ export function buildAppMapIssueSummary(records: IssueRecord[], now: string): Ap
 
   // Release impact rolls up non-suppressed, non-fixed, real-defect/gate/compliance records.
   const impacts = records
-    .filter((r) => r.state !== 'suppressed' && r.state !== 'expected_environment_noise' && r.state !== 'fixed' && r.category !== 'environment_noise')
+    .filter(
+      (r) =>
+        r.state !== 'suppressed' && r.state !== 'expected_environment_noise' && r.state !== 'fixed' && r.category !== 'environment_noise',
+    )
     .map((r) => defaultReleaseImpact(r.category, r.severity));
 
   const ids = (rs: IssueRecord[]) => rs.map((r) => r.issueId);
@@ -143,7 +146,11 @@ export function issueAssociations(root: string, map: AppKnowledgeMap): Map<strin
  * Attach derived issue summaries to the map's screens + features from the issue ledger. Clears stale
  * summaries when an issue no longer maps to a node. The map keeps only counts + ids.
  */
-export function applyIssueSummariesToAppMap(map: AppKnowledgeMap, root: string, now: string): { screensWithIssues: number; featuresWithIssues: number } {
+export function applyIssueSummariesToAppMap(
+  map: AppKnowledgeMap,
+  root: string,
+  now: string,
+): { screensWithIssues: number; featuresWithIssues: number } {
   const index = getIndex(root, now, map.appIdentity?.androidPackage ?? undefined);
   const byId = new Map(index.records.map((r) => [r.issueId, r]));
   if (index.records.length === 0) {
@@ -199,18 +206,4 @@ export function applyIssueSummariesToAppMap(map: AppKnowledgeMap, root: string, 
     featuresWithIssues++;
   }
   return { screensWithIssues, featuresWithIssues };
-}
-
-/** Structural validation for a persisted AppMapIssueSummary (best-effort; returns error strings). */
-export function validateIssueSummary(s: unknown, where: string): string[] {
-  const errs: string[] = [];
-  if (s == null) return errs;
-  if (typeof s !== 'object') return [`${where}: issueSummary is not an object`];
-  const o = s as Record<string, unknown>;
-  const arrays = ['openIssueIds', 'recurringIssueIds', 'hardGateIssueIds', 'storeComplianceIssueIds', 'knownNoiseIssueIds', 'improvementIssueIds', 'fixedIssueIds', 'topIssueIds'];
-  for (const k of arrays) if (o[k] != null && !Array.isArray(o[k])) errs.push(`${where}.${k} must be an array`);
-  if (o.counts != null && typeof o.counts !== 'object') errs.push(`${where}.counts must be an object`);
-  if (o.releaseImpact != null && !['block', 'warn', 'pass'].includes(o.releaseImpact as string)) errs.push(`${where}.releaseImpact invalid`);
-  if (o.updatedAt != null && typeof o.updatedAt !== 'string') errs.push(`${where}.updatedAt must be a string`);
-  return errs;
 }

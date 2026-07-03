@@ -9,15 +9,7 @@ export const TEST_SUITE_SCHEMA_VERSION = 1 as const;
 
 export type CasePriority = 'P0' | 'P1' | 'P2' | 'P3';
 export type CaseType =
-  | 'smoke'
-  | 'functional'
-  | 'regression'
-  | 'negative'
-  | 'edge'
-  | 'accessibility'
-  | 'visual'
-  | 'performance'
-  | 'security';
+  'smoke' | 'functional' | 'regression' | 'negative' | 'edge' | 'accessibility' | 'visual' | 'performance' | 'security';
 export type CreativityLevel = 'conservative' | 'standard' | 'creative' | 'adversarial';
 export type CasePlatform = 'android' | 'ios';
 export type CaseStatus = 'active' | 'draft' | 'deprecated' | 'blocked' | 'manual_only';
@@ -169,7 +161,17 @@ export interface TestSuiteFile {
 }
 
 export const PRIORITIES: CasePriority[] = ['P0', 'P1', 'P2', 'P3'];
-export const CASE_TYPES: CaseType[] = ['smoke', 'functional', 'regression', 'negative', 'edge', 'accessibility', 'visual', 'performance', 'security'];
+export const CASE_TYPES: CaseType[] = [
+  'smoke',
+  'functional',
+  'regression',
+  'negative',
+  'edge',
+  'accessibility',
+  'visual',
+  'performance',
+  'security',
+];
 export const CREATIVITY_LEVELS: CreativityLevel[] = ['conservative', 'standard', 'creative', 'adversarial'];
 export const CASE_STATUSES: CaseStatus[] = ['active', 'draft', 'deprecated', 'blocked', 'manual_only'];
 export const ACTUAL_STATUSES: ActualStatus[] = ['pass', 'fail', 'blocked', 'skipped', 'not_run'];
@@ -177,15 +179,7 @@ export const AUTOMATION_STATUSES: AutomationStatus[] = ['automated', 'partial', 
 export const LOCATOR_READINESS: LocatorReadiness[] = ['A', 'B', 'C', 'D'];
 
 /** Fields populated by generation; everything else is curated/manual and never overwritten silently. */
-export const GENERATED_FIELDS = [
-  'steps',
-  'expectedResult',
-  'automation',
-  'mapLinks',
-  'preconditions',
-  'fixtures',
-  'testData',
-] as const;
+export const GENERATED_FIELDS = ['steps', 'expectedResult', 'automation', 'mapLinks', 'preconditions', 'fixtures', 'testData'] as const;
 
 export function emptySuite(appId?: string, now = new Date().toISOString()): TestSuiteFile {
   return { schemaVersion: TEST_SUITE_SCHEMA_VERSION, updatedAt: now, appId, cases: [], retiredIds: [] };
@@ -206,7 +200,12 @@ export function functionalitySlug(functionality: string): string {
 export function idPrefix(functionality: string): string {
   const slug = functionalitySlug(functionality);
   const token = slug.split('-')[0] || 'gen';
-  return token.replace(/[^a-z0-9]/g, '').slice(0, 10).toUpperCase() || 'GEN';
+  return (
+    token
+      .replace(/[^a-z0-9]/g, '')
+      .slice(0, 10)
+      .toUpperCase() || 'GEN'
+  );
 }
 
 /** A normalized identity key for de-duplication: feature + objective + ordered (action→target) steps. */

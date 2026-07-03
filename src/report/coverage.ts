@@ -25,7 +25,6 @@ export function coverageForSession(session: Pick<Session, 'device' | 'driver'>):
 }
 
 export function automationBackendForSession(session: Pick<Session, 'device' | 'driver'>): AutomationBackendReport {
-  const device = session.device ?? session.driver?.currentDevice?.();
   const kind = driverKind(session.driver);
   if (kind === 'direct') {
     return {

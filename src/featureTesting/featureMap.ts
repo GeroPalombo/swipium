@@ -40,7 +40,12 @@ export interface FeatureMap {
 }
 
 function safeName(value: string): string {
-  return value.trim().replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 120) || 'unknown-app';
+  return (
+    value
+      .trim()
+      .replace(/[^a-zA-Z0-9._-]+/g, '_')
+      .slice(0, 120) || 'unknown-app'
+  );
 }
 
 /** Cache dir — under `.swipium/cache/` to make its disposable/derived status explicit (Fix 11). */

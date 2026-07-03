@@ -68,7 +68,10 @@ function uniq<T>(...lists: T[][]): T[] {
 }
 
 /** Decide the surviving automation link: never regress readiness/status; union assets. */
-function mergeAutomation(existing: CanonicalTestCase['automation'], incoming: CanonicalTestCase['automation']): CanonicalTestCase['automation'] {
+function mergeAutomation(
+  existing: CanonicalTestCase['automation'],
+  incoming: CanonicalTestCase['automation'],
+): CanonicalTestCase['automation'] {
   const better = AUTOMATION_RANK[incoming.status] >= AUTOMATION_RANK[existing.status] ? incoming : existing;
   return {
     status: better.status,
@@ -94,7 +97,12 @@ function runRefFrom(c: CanonicalTestCase, opts: MergeOptions): TestRunRef | null
 }
 
 /** Update an existing case in place (returns a new object), recording conflicts for protected fields. */
-function applyUpdate(existing: CanonicalTestCase, incoming: CanonicalTestCase, opts: MergeOptions, conflicts: MergeConflict[]): CanonicalTestCase {
+function applyUpdate(
+  existing: CanonicalTestCase,
+  incoming: CanonicalTestCase,
+  opts: MergeOptions,
+  conflicts: MergeConflict[],
+): CanonicalTestCase {
   const protect = !!existing.manuallyEdited && opts.mode !== 'replace_generated';
   const next: CanonicalTestCase = { ...existing };
 
@@ -136,7 +144,10 @@ function applyUpdate(existing: CanonicalTestCase, incoming: CanonicalTestCase, o
   const run = runRefFrom(incoming, opts);
   if (run) next.history = [...existing.history, run];
 
-  next.provenance = [...existing.provenance, { source: opts.source, at: opts.now, sourceUri: opts.sourceUri, fields: GENERATED_FIELDS.slice() }];
+  next.provenance = [
+    ...existing.provenance,
+    { source: opts.source, at: opts.now, sourceUri: opts.sourceUri, fields: GENERATED_FIELDS.slice() },
+  ];
   next.updatedAt = opts.now;
   return next;
 }
@@ -215,7 +226,10 @@ export function mergeCases(suite: TestSuiteFile, incoming: CanonicalTestCase[], 
       if (!live.has(c.featureId)) {
         c.status = 'deprecated';
         c.updatedAt = opts.now;
-        c.provenance = [...c.provenance, { source: opts.source, at: opts.now, note: 'auto-deprecated: linked feature no longer in app map' }];
+        c.provenance = [
+          ...c.provenance,
+          { source: opts.source, at: opts.now, note: 'auto-deprecated: linked feature no longer in app map' },
+        ];
         deprecated.push(c.id);
         retiredIds.add(c.id);
       }

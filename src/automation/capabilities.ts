@@ -93,10 +93,7 @@ function base(backend: AutomationBackend): BackendCapabilities {
 }
 
 /** Map a Swipium Driver.kind (+ optional Appium session) to an automation backend identity. */
-export function backendForDriverKind(
-  kind: 'direct' | 'remote' | 'simulator' | 'wda',
-  session?: AppiumSessionHints,
-): AutomationBackend {
+export function backendForDriverKind(kind: 'direct' | 'remote' | 'simulator' | 'wda', session?: AppiumSessionHints): AutomationBackend {
   switch (kind) {
     case 'direct':
       return 'android-direct';
@@ -118,7 +115,8 @@ export function appiumBackendFromSession(session?: AppiumSessionHints): Automati
   if (name.includes('xcuitest') || platform.includes('ios')) return 'appium-xcuitest';
   // Android: infer UiAutomator2 from the driver name OR from Android platform evidence alone
   // (espresso also implies an Android session).
-  if (name.includes('uiautomator2') || name.includes('espresso') || name.includes('android') || platform.includes('android')) return 'appium-uiautomator2';
+  if (name.includes('uiautomator2') || name.includes('espresso') || name.includes('android') || platform.includes('android'))
+    return 'appium-uiautomator2';
   // Without driver/session evidence we cannot claim a concrete Appium driver family.
   return 'unknown';
 }
@@ -130,12 +128,30 @@ export function backendCapabilities(backend: AutomationBackend, session?: Appium
       // Android DirectDriver via adb + UI Automator dump: resource-id / text / accessibility tree,
       // ascii text input, basic gestures. No WebView context switching, no app-declared idle proof.
       Object.assign(c, {
-        install: true, launch: true, terminate: true, openUrl: true, screenshot: true, logs: true,
-        structuredTree: true, nativeSelectors: true, resourceId: true, accessibilityId: true,
-        textSelector: true, textInputAscii: true, textInputUnicode: false, clearText: true,
-        longPress: true, doubleTap: true, scrollUntilVisible: true, pinch: false, drag: true,
-        systemAlerts: true, appDeclaredIdling: false, screenRecording: true,
-        visualFallback: true, ocrFallback: true,
+        install: true,
+        launch: true,
+        terminate: true,
+        openUrl: true,
+        screenshot: true,
+        logs: true,
+        structuredTree: true,
+        nativeSelectors: true,
+        resourceId: true,
+        accessibilityId: true,
+        textSelector: true,
+        textInputAscii: true,
+        textInputUnicode: false,
+        clearText: true,
+        longPress: true,
+        doubleTap: true,
+        scrollUntilVisible: true,
+        pinch: false,
+        drag: true,
+        systemAlerts: true,
+        appDeclaredIdling: false,
+        screenRecording: true,
+        visualFallback: true,
+        ocrFallback: true,
       });
       c.notes.push('Unicode text input is not safe on adb input; use a fixture-provided ASCII value or a stronger backend.');
       c.notes.push('No WebView context switching on the Android direct backend; attach Appium UiAutomator2 for hybrid contexts.');
@@ -143,50 +159,122 @@ export function backendCapabilities(backend: AutomationBackend, session?: Appium
     case 'ios-raw-simulator':
       // simctl lifecycle + screenshot + deep links + visual/OCR only. NO structured taps/selectors.
       Object.assign(c, {
-        install: true, launch: true, terminate: true, openUrl: true, screenshot: true, logs: true,
-        structuredTree: false, nativeSelectors: false, screenRecording: true,
-        visualFallback: true, ocrFallback: true,
+        install: true,
+        launch: true,
+        terminate: true,
+        openUrl: true,
+        screenshot: true,
+        logs: true,
+        structuredTree: false,
+        nativeSelectors: false,
+        screenRecording: true,
+        visualFallback: true,
+        ocrFallback: true,
       });
       c.notes.push('iOS raw simulator cannot run structured taps; attach WDA or Appium XCUITest for selector-based automation.');
       return c;
     case 'ios-wda':
       // WebDriverAgent / XCTest: accessibility id / name / predicate / class-chain, idle settings.
       Object.assign(c, {
-        install: true, launch: true, terminate: true, openUrl: true, screenshot: true, logs: true,
-        structuredTree: true, nativeSelectors: true, accessibilityId: true, iosPredicate: true,
-        iosClassChain: true, textSelector: true, textInputAscii: true, textInputUnicode: true,
-        clearText: true, longPress: true, doubleTap: true, scrollUntilVisible: true, pinch: false,
-        drag: true, systemAlerts: true, wdaIdling: true, screenRecording: true,
-        visualFallback: true, ocrFallback: true,
+        install: true,
+        launch: true,
+        terminate: true,
+        openUrl: true,
+        screenshot: true,
+        logs: true,
+        structuredTree: true,
+        nativeSelectors: true,
+        accessibilityId: true,
+        iosPredicate: true,
+        iosClassChain: true,
+        textSelector: true,
+        textInputAscii: true,
+        textInputUnicode: true,
+        clearText: true,
+        longPress: true,
+        doubleTap: true,
+        scrollUntilVisible: true,
+        pinch: false,
+        drag: true,
+        systemAlerts: true,
+        wdaIdling: true,
+        screenRecording: true,
+        visualFallback: true,
+        ocrFallback: true,
       });
       c.notes.push('iOS resource-id selectors do not exist; use accessibility id / name / predicate / class chain.');
       c.notes.push('Pinch/zoom is capability-gated until a tested WDA/Appium implementation exists.');
       return c;
     case 'appium-uiautomator2':
       Object.assign(c, {
-        install: true, launch: true, terminate: true, openUrl: true, screenshot: true, logs: true,
-        structuredTree: true, nativeSelectors: true, resourceId: true, accessibilityId: true,
-        textSelector: true, textInputAscii: true, textInputUnicode: true, clearText: true,
-        longPress: true, doubleTap: true, scrollUntilVisible: true, pinch: true, drag: true,
-        systemAlerts: true, appDeclaredIdling: false, screenRecording: true,
-        visualFallback: true, ocrFallback: true,
+        install: true,
+        launch: true,
+        terminate: true,
+        openUrl: true,
+        screenshot: true,
+        logs: true,
+        structuredTree: true,
+        nativeSelectors: true,
+        resourceId: true,
+        accessibilityId: true,
+        textSelector: true,
+        textInputAscii: true,
+        textInputUnicode: true,
+        clearText: true,
+        longPress: true,
+        doubleTap: true,
+        scrollUntilVisible: true,
+        pinch: true,
+        drag: true,
+        systemAlerts: true,
+        appDeclaredIdling: false,
+        screenRecording: true,
+        visualFallback: true,
+        ocrFallback: true,
         // Web/hybrid potential is only claimed when the live session reports contexts.
         webviewContexts: session?.webviewContextsAvailable === true,
       });
-      if (!c.webviewContexts) c.notes.push('WebView contexts only available when the Appium session reports a non-native context; not claimed without session evidence.');
+      if (!c.webviewContexts)
+        c.notes.push(
+          'WebView contexts only available when the Appium session reports a non-native context; not claimed without session evidence.',
+        );
       return c;
     case 'appium-xcuitest':
       Object.assign(c, {
-        install: true, launch: true, terminate: true, openUrl: true, screenshot: true, logs: true,
-        structuredTree: true, nativeSelectors: true, accessibilityId: true, iosPredicate: true,
-        iosClassChain: true, textSelector: true, textInputAscii: true, textInputUnicode: true,
-        clearText: true, longPress: true, doubleTap: true, scrollUntilVisible: true, pinch: true,
-        drag: true, systemAlerts: true, wdaIdling: true, screenRecording: true,
-        visualFallback: true, ocrFallback: true,
+        install: true,
+        launch: true,
+        terminate: true,
+        openUrl: true,
+        screenshot: true,
+        logs: true,
+        structuredTree: true,
+        nativeSelectors: true,
+        accessibilityId: true,
+        iosPredicate: true,
+        iosClassChain: true,
+        textSelector: true,
+        textInputAscii: true,
+        textInputUnicode: true,
+        clearText: true,
+        longPress: true,
+        doubleTap: true,
+        scrollUntilVisible: true,
+        pinch: true,
+        drag: true,
+        systemAlerts: true,
+        wdaIdling: true,
+        screenRecording: true,
+        visualFallback: true,
+        ocrFallback: true,
         webviewContexts: session?.webviewContextsAvailable === true,
       });
-      c.notes.push('XCUITest sessions expose WDA settings (snapshot depth, waitForIdleTimeout, reduceMotion); bind automation evidence to them.');
-      if (!c.webviewContexts) c.notes.push('WebView contexts only available when the Appium session reports a non-native context; not claimed without session evidence.');
+      c.notes.push(
+        'XCUITest sessions expose WDA settings (snapshot depth, waitForIdleTimeout, reduceMotion); bind automation evidence to them.',
+      );
+      if (!c.webviewContexts)
+        c.notes.push(
+          'WebView contexts only available when the Appium session reports a non-native context; not claimed without session evidence.',
+        );
       return c;
     case 'unknown':
     default:

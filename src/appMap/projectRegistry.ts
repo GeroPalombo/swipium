@@ -7,6 +7,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { log } from '../lib/logger.js';
 import { projectId, appMapPath } from './store.js';
 
 export interface ProjectRegistryEntry {
@@ -68,8 +69,13 @@ export function rememberProject(root: string, info: { packageName?: string | nul
     };
     mkdirSync(registryDir(), { recursive: true });
     writeFileSync(registryPath(), JSON.stringify(reg, null, 2));
-  } catch {
-    /* best-effort: the in-memory + session fallbacks still work this process */
+  } catch (e) {
+    // In-memory + session fallbacks still work this process, but app-map resource URIs for this
+    // project will NOT resolve after a restart — surface that instead of losing it silently.
+    log('warn', 'failed to persist project registry (~/.swipium/projects.json) — app-map URIs will not survive a restart', {
+      root,
+      err: String(e),
+    });
   }
 }
 

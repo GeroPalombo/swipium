@@ -94,7 +94,10 @@ export class DirectDriver implements Driver {
       const out = r.stdout;
       if (!grep) return out;
       const re = new RegExp(grep, 'i');
-      return out.split('\n').filter((l) => re.test(l)).join('\n');
+      return out
+        .split('\n')
+        .filter((l) => re.test(l))
+        .join('\n');
     } catch {
       return '';
     }
@@ -121,7 +124,11 @@ export class DirectDriver implements Driver {
 
   async launchAppWithArgs(pkg: string, args: Record<string, unknown>): Promise<void> {
     const resolved = await this.adb(['shell', 'cmd', 'package', 'resolve-activity', '--brief', pkg], { timeoutMs: 8000 });
-    const component = resolved.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).at(-1);
+    const component = resolved.stdout
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .at(-1);
     if (!component || !component.includes('/')) throw new Error(`Could not resolve launch activity for ${pkg}`);
     const extras: string[] = [];
     for (const [key, value] of Object.entries(args)) {
@@ -140,9 +147,7 @@ export class DirectDriver implements Driver {
   async foregroundOwner(): Promise<string> {
     // Parse the currently focused window/activity. Works across recent Android versions.
     const r = await this.adb(['shell', 'dumpsys', 'activity', 'activities']);
-    const m =
-      r.stdout.match(/mResumedActivity:.*\{[^}]*\s([^\s/]+\/[^\s}]+)/) ||
-      r.stdout.match(/mCurrentFocus=.*\s([^\s/]+\/[^\s}]+)/);
+    const m = r.stdout.match(/mResumedActivity:.*\{[^}]*\s([^\s/]+\/[^\s}]+)/) || r.stdout.match(/mCurrentFocus=.*\s([^\s/]+\/[^\s}]+)/);
     return m?.[1] ?? 'unknown';
   }
 
@@ -208,9 +213,13 @@ export class DirectDriver implements Driver {
 
   async swipe(x1: number, y1: number, x2: number, y2: number, ms = 300): Promise<void> {
     await this.adb([
-      'shell', 'input', 'swipe',
-      String(Math.round(x1)), String(Math.round(y1)),
-      String(Math.round(x2)), String(Math.round(y2)),
+      'shell',
+      'input',
+      'swipe',
+      String(Math.round(x1)),
+      String(Math.round(y1)),
+      String(Math.round(x2)),
+      String(Math.round(y2)),
       String(ms),
     ]);
   }

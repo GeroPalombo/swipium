@@ -29,7 +29,7 @@ export interface FlowStepResult {
   kind: string;
   summary: string;
   ok: boolean;
-  durationSec?: number;
+  durationMs?: number;
   detail?: string;
   failureCode?: FailureCode;
   screenshotUri?: string;
@@ -45,7 +45,7 @@ export interface FlowRunResult {
   steps: FlowStepResult[];
   nativeHealth?: string;
   appHealth?: string;
-  durationSec: number;
+  durationMs: number;
   counters: Session['counters'];
 }
 
@@ -55,11 +55,22 @@ const FALLBACK_SWIPE: Record<string, [number, number, number, number]> = {
   left: [800, 1100, 200, 1100],
   right: [200, 1100, 800, 1100],
 };
-const AREA_ANCHOR: Record<SwipeArea, [number, number]> = { center: [0.5, 0.5], top: [0.5, 0.3], bottom: [0.5, 0.7], left: [0.3, 0.5], right: [0.7, 0.5] };
+const AREA_ANCHOR: Record<SwipeArea, [number, number]> = {
+  center: [0.5, 0.5],
+  top: [0.5, 0.3],
+  bottom: [0.5, 0.7],
+  left: [0.3, 0.5],
+  right: [0.7, 0.5],
+};
 const SECRET_VAR_NAME = /pass|secret|token|otp|pin|cvv|key/i;
 
 /** Device-relative swipe vector (fractions of the screen), falling back to fixed coords if no size. */
-function swipeVector(size: { width: number; height: number } | null, dir: 'up' | 'down' | 'left' | 'right', area: SwipeArea = 'center', distance = 0.6): [number, number, number, number] {
+function swipeVector(
+  size: { width: number; height: number } | null,
+  dir: 'up' | 'down' | 'left' | 'right',
+  area: SwipeArea = 'center',
+  distance = 0.6,
+): [number, number, number, number] {
   if (!size) return FALLBACK_SWIPE[dir];
   const [ax, ay] = AREA_ANCHOR[area];
   const cx = size.width * ax;
@@ -79,32 +90,58 @@ function swipeVector(size: { width: number; height: number } | null, dir: 'up' |
 
 function describe(step: FlowStep): string {
   switch (step.kind) {
-    case 'tap': return `tap ${step.selector}`;
-    case 'tapAt': return `tapAt ${step.x},${step.y}`;
-    case 'tapImage': return `tapImage ${step.template}`;
-    case 'tapOcrText': return `tapOcrText ${JSON.stringify(step.query)}`;
-    case 'inputText': return `inputText${step.into ? ` into "${step.into}"` : ''} ${step.secret ? '«secret»' : JSON.stringify(step.value)}`;
-    case 'assertVisible': return `assertVisible ${JSON.stringify(step.query)}`;
-    case 'assertNotVisible': return `assertNotVisible ${JSON.stringify(step.query)}`;
-    case 'assertImage': return `assertImage ${step.template}`;
-    case 'assertOcrText': return `assertOcrText ${JSON.stringify(step.query)}`;
-    case 'assertVisual': return `assertVisual ${JSON.stringify(step.description)}`;
-    case 'assertDiff': return `assertDiff ${step.baseline}`;
-    case 'swipe': return `swipe ${step.direction}${step.area ? `@${step.area}` : ''}`;
-    case 'scrollTo': return `scrollTo ${JSON.stringify(step.query)}`;
-    case 'press': return `press ${step.key}`;
-    case 'openUrl': return `openUrl ${step.url}`;
-    case 'wait': return step.ms != null ? `wait ${step.ms}ms` : `wait for ${JSON.stringify(step.query)}`;
-    case 'waitForIdle': return 'waitForIdle';
-    case 'waitForVisible': return `waitForVisible ${JSON.stringify(step.query)}`;
-    case 'clearOverlay': return 'clearOverlay';
-    case 'networkOffline': return 'networkOffline';
-    case 'networkOnline': return 'networkOnline';
-    case 'restartApp': return 'restartApp';
-    case 'seed': return `seed ${step.fixture}`;
-    case 'note': return `note(${step.outcome}) ${JSON.stringify(step.reason)}`;
-    case 'screenshot': return 'screenshot';
-    case 'prepareTarget': return 'prepareTarget';
+    case 'tap':
+      return `tap ${step.selector}`;
+    case 'tapAt':
+      return `tapAt ${step.x},${step.y}`;
+    case 'tapImage':
+      return `tapImage ${step.template}`;
+    case 'tapOcrText':
+      return `tapOcrText ${JSON.stringify(step.query)}`;
+    case 'inputText':
+      return `inputText${step.into ? ` into "${step.into}"` : ''} ${step.secret ? '«secret»' : JSON.stringify(step.value)}`;
+    case 'assertVisible':
+      return `assertVisible ${JSON.stringify(step.query)}`;
+    case 'assertNotVisible':
+      return `assertNotVisible ${JSON.stringify(step.query)}`;
+    case 'assertImage':
+      return `assertImage ${step.template}`;
+    case 'assertOcrText':
+      return `assertOcrText ${JSON.stringify(step.query)}`;
+    case 'assertVisual':
+      return `assertVisual ${JSON.stringify(step.description)}`;
+    case 'assertDiff':
+      return `assertDiff ${step.baseline}`;
+    case 'swipe':
+      return `swipe ${step.direction}${step.area ? `@${step.area}` : ''}`;
+    case 'scrollTo':
+      return `scrollTo ${JSON.stringify(step.query)}`;
+    case 'press':
+      return `press ${step.key}`;
+    case 'openUrl':
+      return `openUrl ${step.url}`;
+    case 'wait':
+      return step.ms != null ? `wait ${step.ms}ms` : `wait for ${JSON.stringify(step.query)}`;
+    case 'waitForIdle':
+      return 'waitForIdle';
+    case 'waitForVisible':
+      return `waitForVisible ${JSON.stringify(step.query)}`;
+    case 'clearOverlay':
+      return 'clearOverlay';
+    case 'networkOffline':
+      return 'networkOffline';
+    case 'networkOnline':
+      return 'networkOnline';
+    case 'restartApp':
+      return 'restartApp';
+    case 'seed':
+      return `seed ${step.fixture}`;
+    case 'note':
+      return `note(${step.outcome}) ${JSON.stringify(step.reason)}`;
+    case 'screenshot':
+      return 'screenshot';
+    case 'prepareTarget':
+      return 'prepareTarget';
   }
 }
 
@@ -115,7 +152,9 @@ async function snapshot(session: Session, d: Driver) {
 }
 function visible(parsed: { allNodes: { text: string; desc: string; id: string }[] }, query: string): boolean {
   const q = query.toLowerCase();
-  return parsed.allNodes.some((n) => n.text?.toLowerCase().includes(q) || n.desc?.toLowerCase().includes(q) || n.id?.toLowerCase().includes(q));
+  return parsed.allNodes.some(
+    (n) => n.text?.toLowerCase().includes(q) || n.desc?.toLowerCase().includes(q) || n.id?.toLowerCase().includes(q),
+  );
 }
 
 interface NativeSelector {
@@ -135,16 +174,19 @@ function resourceIdSelector(selector: string): string | null {
 
 function provenanceForStep(flow: Flow, stepIndex: number, kind: string): FlowProvenanceEntry | undefined {
   const oneBased = stepIndex + 1;
-  return (flow.provenance ?? []).find((entry) => (
-    entry.generatedStepIndex === oneBased &&
-    (!entry.generatedKind || entry.generatedKind === kind || (kind === 'wait' && entry.generatedKind === 'waitForVisible'))
-  ));
+  return (flow.provenance ?? []).find(
+    (entry) =>
+      entry.generatedStepIndex === oneBased &&
+      (!entry.generatedKind || entry.generatedKind === kind || (kind === 'wait' && entry.generatedKind === 'waitForVisible')),
+  );
 }
 
 function targetHintsFromProvenance(provenance?: FlowProvenanceEntry): Partial<Target> {
   if (!provenance) return {};
   return {
-    packageName: provenance.resourceId?.includes(':id/') ? provenance.resourceId.slice(0, provenance.resourceId.indexOf(':id/')) : undefined,
+    packageName: provenance.resourceId?.includes(':id/')
+      ? provenance.resourceId.slice(0, provenance.resourceId.indexOf(':id/'))
+      : undefined,
     className: provenance.className ?? provenance.elementRole,
     textHint: provenance.text ?? provenance.accessibilityLabel,
     boundsHint: provenance.boundsBucket,
@@ -165,7 +207,8 @@ async function nativeVisible(d: Driver, selector: string): Promise<boolean | nul
   const native = nativeSelectorFor(selector);
   if (!native) return null;
   if (!d.existsBySelector) {
-    if (native.using !== 'accessibility id' && native.using !== 'name') throw new Error(`${native.using} selectors require backend-native selector support`);
+    if (native.using !== 'accessibility id' && native.using !== 'name')
+      throw new Error(`${native.using} selectors require backend-native selector support`);
     return null;
   }
   return d.existsBySelector(native.using, native.value);
@@ -184,10 +227,9 @@ function flowScreenSignature(parsed: Awaited<ReturnType<typeof snapshot>>): stri
   return createHash('sha1').update(sigs.sort().join('\n')).digest('hex').slice(0, 16);
 }
 
-function narrowRawResourceMatches<T extends { cls: string; text: string; desc: string; bounds: [number, number, number, number]; attrs?: Record<string, string> }>(
-  matches: T[],
-  provenance?: FlowProvenanceEntry,
-): T[] {
+function narrowRawResourceMatches<
+  T extends { cls: string; text: string; desc: string; bounds: [number, number, number, number]; attrs?: Record<string, string> },
+>(matches: T[], provenance?: FlowProvenanceEntry): T[] {
   let narrowed = matches;
   const tryNarrow = (fn: (node: T) => boolean) => {
     const next = narrowed.filter(fn);
@@ -216,15 +258,28 @@ function narrowRawResourceMatches<T extends { cls: string; text: string; desc: s
   return narrowed;
 }
 
-async function resourceIdVisibility(session: Session, d: Driver, id: string, provenance?: FlowProvenanceEntry): Promise<{ visible: boolean; ambiguous?: boolean; detail?: string }> {
+async function resourceIdVisibility(
+  session: Session,
+  d: Driver,
+  id: string,
+  provenance?: FlowProvenanceEntry,
+): Promise<{ visible: boolean; ambiguous?: boolean; detail?: string }> {
   const parsed = await snapshot(session, d);
   const matches = parsed.allNodes.filter((node) => resourceIdMatches(undefined, node.id, id));
   const screenMismatch = provenance?.originalScreenSignature && flowScreenSignature(parsed) !== provenance.originalScreenSignature;
-  if (!matches.length) return { visible: false, detail: `resource-id "${id}" not visible${screenMismatch ? ' (recorded screen signature differs from current screen)' : ''}` };
+  if (!matches.length)
+    return {
+      visible: false,
+      detail: `resource-id "${id}" not visible${screenMismatch ? ' (recorded screen signature differs from current screen)' : ''}`,
+    };
   const narrowed = matches.length > 1 ? narrowRawResourceMatches(matches, provenance) : matches;
   if (narrowed.length > 1) {
     const labels = narrowed.map((node, index) => `${index + 1}:${node.cls}:${node.text || node.desc || node.id || 'unlabeled'}`).join(', ');
-    return { visible: true, ambiguous: true, detail: `AMBIGUOUS_SELECTOR: resource-id ${id} matched ${narrowed.length} visible nodes (${labels}); add text/class/bounds hints or a unique testID${screenMismatch ? ' (recorded screen signature differs from current screen)' : ''}.` };
+    return {
+      visible: true,
+      ambiguous: true,
+      detail: `AMBIGUOUS_SELECTOR: resource-id ${id} matched ${narrowed.length} visible nodes (${labels}); add text/class/bounds hints or a unique testID${screenMismatch ? ' (recorded screen signature differs from current screen)' : ''}.`,
+    };
   }
   const node = narrowed[0];
   return { visible: node.enabled !== false && node.bounds[2] > node.bounds[0] && node.bounds[3] > node.bounds[1] };
@@ -238,9 +293,15 @@ interface StepOutcome {
 
 export function classifyFlowDriverError(error: unknown, fallback: FailureCode = 'UNKNOWN'): FailureCode {
   const msg = String((error as Error)?.message ?? error);
-  if (/not hittable|not hit.?point|not visible.*hittable|is not enabled|element.*obscured|other element.*would receive/i.test(msg)) return 'ELEMENT_NOT_HITTABLE';
+  if (/not hittable|not hit.?point|not visible.*hittable|is not enabled|element.*obscured|other element.*would receive/i.test(msg))
+    return 'ELEMENT_NOT_HITTABLE';
   if (/stale element|stale.*reference|element.*no longer|invalid element/i.test(msg)) return 'STALE_REF';
-  if (/invalid selector|invalid locator|unsupported locator|unsupported selector|locator strategy.*(invalid|unsupported)|selector strategy.*(invalid|unsupported)|predicate.*parse|class chain.*parse/i.test(msg)) return 'INVALID_SELECTOR';
+  if (
+    /invalid selector|invalid locator|unsupported locator|unsupported selector|locator strategy.*(invalid|unsupported)|selector strategy.*(invalid|unsupported)|predicate.*parse|class chain.*parse/i.test(
+      msg,
+    )
+  )
+    return 'INVALID_SELECTOR';
   if (/AMBIGUOUS_SELECTOR|ambiguous selector|matched \d+ elements/i.test(msg)) return 'AMBIGUOUS_SELECTOR';
   if (/keyboard.*cover|keyboard.*obstruct|covered by keyboard/i.test(msg)) return 'KEYBOARD_OBSTRUCTION';
   if (/animation.*idle|idle.*animation|cannot become idle because of animation/i.test(msg)) return 'ANIMATION_IDLE_BLOCKED';
@@ -248,12 +309,14 @@ export function classifyFlowDriverError(error: unknown, fallback: FailureCode = 
   if (/wda.*not idle|xctest.*idle|app.*not idle/i.test(msg)) return 'WDA_APP_NOT_IDLE';
   if (/xpath/i.test(msg)) return 'WDA_XPATH_REFUSED';
   if (/main thread|event loop.*blocked/i.test(msg)) return 'WDA_MAIN_THREAD_BUSY';
-  if (/hierarchy.*(large|too deep)|snapshot.*too deep|snapshot.*exceeded.*depth|depth.*snapshot|exceeded.*snapshot/i.test(msg)) return 'WDA_HIERARCHY_TOO_LARGE';
+  if (/hierarchy.*(large|too deep)|snapshot.*too deep|snapshot.*exceeded.*depth|depth.*snapshot|exceeded.*snapshot/i.test(msg))
+    return 'WDA_HIERARCHY_TOO_LARGE';
   if (/source.*slow|page source.*slow/i.test(msg)) return 'WDA_SOURCE_SLOW';
   if (/snapshot|source|dump|hierarchy/i.test(msg)) return 'SNAPSHOT_FAILED';
   if (/webview|web view|context unavailable/i.test(msg)) return 'WEBVIEW_UNAVAILABLE';
   if (/no such element|element.*not found|could not resolve element|unable to locate|not visible/i.test(msg)) return 'ELEMENT_NOT_FOUND';
-  if (/WDA HTTP|session not created|invalid session|did not return a sessionId|failed to create.*session/i.test(msg)) return 'WDA_SESSION_FAILED';
+  if (/WDA HTTP|session not created|invalid session|did not return a sessionId|failed to create.*session/i.test(msg))
+    return 'WDA_SESSION_FAILED';
   if (/ECONNREFUSED|fetch failed|timed out|aborted|network|socket|unreachable/i.test(msg)) return 'WDA_UNREACHABLE';
   return fallback;
 }
@@ -284,7 +347,11 @@ export async function runFlow(
     }
     return resolved;
   };
-  const unresolved = (missing: string[]): StepOutcome => ({ ok: false, detail: `unresolved variable(s): ${missing.join(', ')}`, failureCode: 'MISSING_FIXTURE' });
+  const unresolved = (missing: string[]): StepOutcome => ({
+    ok: false,
+    detail: `unresolved variable(s): ${missing.join(', ')}`,
+    failureCode: 'MISSING_FIXTURE',
+  });
   const shown = (value: string): string => makeRedactor(session.secrets)(value) ?? value;
 
   const recordFlowMutation = (
@@ -357,7 +424,11 @@ export async function runFlow(
           return { ok: true };
         }
         if (native && native.using !== 'accessibility id' && native.using !== 'name') {
-          return { ok: false, detail: `${native.using} selectors require backend-native selector support`, failureCode: 'BACKEND_UNSUPPORTED' };
+          return {
+            ok: false,
+            detail: `${native.using} selectors require backend-native selector support`,
+            failureCode: 'BACKEND_UNSUPPORTED',
+          };
         }
         const t = await resolveTarget(session, targetForTapSelector(selector, provenance));
         if ('error' in t) return { ok: false, detail: t.error, failureCode: classifyFlowDriverError(t.error, 'ELEMENT_NOT_FOUND') };
@@ -383,7 +454,12 @@ export async function runFlow(
         const resolved = resolveFlowText(step.query);
         if (resolved.missing.length) return unresolved(resolved.missing);
         const query = resolved.out;
-        if (session.sensitive) return { ok: false, detail: 'Sensitive mode refuses OCR visual text search because it would pass a screenshot to an external provider', failureCode: 'UNSAFE_ACTION_REFUSED' };
+        if (session.sensitive)
+          return {
+            ok: false,
+            detail: 'Sensitive mode refuses OCR visual text search because it would pass a screenshot to an external provider',
+            failureCode: 'UNSAFE_ACTION_REFUSED',
+          };
         const command = configuredOcrCommand(session.root);
         if (!command) return { ok: false, detail: 'OCR command is not configured', failureCode: 'VISUAL_ONLY_SCREEN' };
         const hit = findOcrRegion(await runOcr(d, session.root, command), query, step.minConfidence ?? 0.8);
@@ -396,8 +472,13 @@ export async function runFlow(
       case 'inputText': {
         const { out, missing } = resolveFlowText(step.value);
         if (missing.length) return { ok: false, detail: `unresolved variable(s): ${missing.join(', ')}`, failureCode: 'MISSING_FIXTURE' };
+        // eslint-disable-next-line no-control-regex -- intentional: detect non-ASCII (outside \x00-\x7F) before adb text input
         if (d.kind === 'direct' && /[^\x00-\x7F]/.test(out)) {
-          return { ok: false, detail: 'Android DirectDriver text entry is ASCII-safe only for generated replay values', failureCode: 'TEXT_INPUT_UNSUPPORTED' };
+          return {
+            ok: false,
+            detail: 'Android DirectDriver text entry is ASCII-safe only for generated replay values',
+            failureCode: 'TEXT_INPUT_UNSUPPORTED',
+          };
         }
         if (step.into) {
           const into = resolveFlowText(step.into);
@@ -415,11 +496,20 @@ export async function runFlow(
             return { ok: true };
           }
           if (native && native.using !== 'accessibility id' && native.using !== 'name') {
-            return { ok: false, detail: `${native.using} selectors require backend-native selector support`, failureCode: 'BACKEND_UNSUPPORTED' };
+            return {
+              ok: false,
+              detail: `${native.using} selectors require backend-native selector support`,
+              failureCode: 'BACKEND_UNSUPPORTED',
+            };
           }
           // selector-bound: focus the named field first (no reliance on existing focus)
           const t = await resolveTarget(session, targetForTapSelector(into.out, provenance));
-          if ('error' in t) return { ok: false, detail: `field "${shown(into.out)}": ${t.error}`, failureCode: classifyFlowDriverError(t.error, 'ELEMENT_NOT_FOUND') };
+          if ('error' in t)
+            return {
+              ok: false,
+              detail: `field "${shown(into.out)}": ${t.error}`,
+              failureCode: classifyFlowDriverError(t.error, 'ELEMENT_NOT_FOUND'),
+            };
           await d.tapXY(t.x, t.y);
           await new Promise((r) => setTimeout(r, 600));
           await d.clearFocusedText(t.textLen);
@@ -435,7 +525,8 @@ export async function runFlow(
         const query = resolved.out;
         try {
           const native = await nativeVisible(d, query);
-          if (native != null) return native ? { ok: true } : { ok: false, detail: `"${shown(query)}" not visible`, failureCode: 'ASSERTION_FAILED' };
+          if (native != null)
+            return native ? { ok: true } : { ok: false, detail: `"${shown(query)}" not visible`, failureCode: 'ASSERTION_FAILED' };
         } catch (e) {
           return { ok: false, detail: String((e as Error).message ?? e), failureCode: 'BACKEND_UNSUPPORTED' };
         }
@@ -443,7 +534,9 @@ export async function runFlow(
         if (id) {
           const visibleById = await resourceIdVisibility(session, d, id, provenance);
           if (visibleById.ambiguous) return { ok: false, detail: visibleById.detail, failureCode: 'AMBIGUOUS_SELECTOR' };
-          return visibleById.visible ? { ok: true } : { ok: false, detail: visibleById.detail ?? `"${shown(query)}" not visible`, failureCode: 'ASSERTION_FAILED' };
+          return visibleById.visible
+            ? { ok: true }
+            : { ok: false, detail: visibleById.detail ?? `"${shown(query)}" not visible`, failureCode: 'ASSERTION_FAILED' };
         }
         const ok = visible(await snapshot(session, d), fallbackVisibleQuery(query));
         return ok ? { ok } : { ok, detail: `"${shown(query)}" not visible`, failureCode: 'ASSERTION_FAILED' };
@@ -454,7 +547,10 @@ export async function runFlow(
         const query = resolved.out;
         try {
           const native = await nativeVisible(d, query);
-          if (native != null) return !native ? { ok: true } : { ok: false, detail: `"${shown(query)}" unexpectedly visible`, failureCode: 'ASSERTION_FAILED' };
+          if (native != null)
+            return !native
+              ? { ok: true }
+              : { ok: false, detail: `"${shown(query)}" unexpectedly visible`, failureCode: 'ASSERTION_FAILED' };
         } catch (e) {
           return { ok: false, detail: String((e as Error).message ?? e), failureCode: 'BACKEND_UNSUPPORTED' };
         }
@@ -462,7 +558,9 @@ export async function runFlow(
         if (id) {
           const visibleById = await resourceIdVisibility(session, d, id, provenance);
           if (visibleById.ambiguous) return { ok: false, detail: visibleById.detail, failureCode: 'AMBIGUOUS_SELECTOR' };
-          return !visibleById.visible ? { ok: true } : { ok: false, detail: `"${shown(query)}" unexpectedly visible`, failureCode: 'ASSERTION_FAILED' };
+          return !visibleById.visible
+            ? { ok: true }
+            : { ok: false, detail: `"${shown(query)}" unexpectedly visible`, failureCode: 'ASSERTION_FAILED' };
         }
         const ok = !visible(await snapshot(session, d), fallbackVisibleQuery(query));
         return ok ? { ok } : { ok, detail: `"${shown(query)}" unexpectedly visible`, failureCode: 'ASSERTION_FAILED' };
@@ -471,13 +569,20 @@ export async function runFlow(
         const tplPath = isAbsolute(step.template) ? step.template : join(session.root, step.template);
         if (!existsSync(tplPath)) return { ok: false, detail: `template not found: ${tplPath}`, failureCode: 'ASSERTION_FAILED' };
         const m = findTemplate(await d.screenshot(), readFileSync(tplPath), step.minScore ?? 0.85);
-        return m.found ? { ok: true } : { ok: false, detail: `image "${step.template}" not visible (best score ${m.score})`, failureCode: 'ASSERTION_FAILED' };
+        return m.found
+          ? { ok: true }
+          : { ok: false, detail: `image "${step.template}" not visible (best score ${m.score})`, failureCode: 'ASSERTION_FAILED' };
       }
       case 'assertOcrText': {
         const resolved = resolveFlowText(step.query);
         if (resolved.missing.length) return unresolved(resolved.missing);
         const query = resolved.out;
-        if (session.sensitive) return { ok: false, detail: 'Sensitive mode refuses OCR visual text assertion because it would pass a screenshot to an external provider', failureCode: 'UNSAFE_ACTION_REFUSED' };
+        if (session.sensitive)
+          return {
+            ok: false,
+            detail: 'Sensitive mode refuses OCR visual text assertion because it would pass a screenshot to an external provider',
+            failureCode: 'UNSAFE_ACTION_REFUSED',
+          };
         const command = configuredOcrCommand(session.root);
         if (!command) return { ok: false, detail: 'OCR command is not configured', failureCode: 'VISUAL_ONLY_SCREEN' };
         const hit = findOcrRegion(await runOcr(d, session.root, command), query, step.minConfidence ?? 0.8);
@@ -486,17 +591,41 @@ export async function runFlow(
       case 'assertVisual': {
         // human-readable visual checkpoint: capture evidence + record a visual note; passes.
         const png = await d.screenshot();
-        const uri = sessions.saveArtifact(session, 'screenshot', `flow-visual-${Date.now()}.png`, png, 'image/png', `visual checkpoint: ${step.description}`);
+        const uri = sessions.saveArtifact(
+          session,
+          'screenshot',
+          `flow-visual-${Date.now()}.png`,
+          png,
+          'image/png',
+          `visual checkpoint: ${step.description}`,
+        );
         sessions.bump(session, 'screenshots');
-        sessions.addNote(session, { at: Date.now(), workflow: `${flow.name}:visual`, outcome: 'pass', reason: step.description, method: 'visual', verifiedVisually: true, artifactUris: [uri] });
+        sessions.addNote(session, {
+          at: Date.now(),
+          workflow: `${flow.name}:visual`,
+          outcome: 'pass',
+          reason: step.description,
+          method: 'visual',
+          verifiedVisually: true,
+          artifactUris: [uri],
+        });
         return { ok: true };
       }
       case 'assertDiff': {
         const basePath = join(session.root, '.swipium', 'baselines', `${step.baseline}.png`);
-        if (!existsSync(basePath)) return { ok: false, detail: `no baseline "${step.baseline}" (create a visual baseline first)`, failureCode: 'MISSING_FIXTURE' };
+        if (!existsSync(basePath))
+          return { ok: false, detail: `no baseline "${step.baseline}" (create a visual baseline first)`, failureCode: 'MISSING_FIXTURE' };
         const res = imageDiff(readFileSync(basePath), await d.screenshot());
         const tol = step.threshold ?? 0.02;
-        return res.comparable && res.ratio <= tol ? { ok: true } : { ok: false, detail: res.comparable ? `${(res.ratio * 100).toFixed(2)}% changed > ${(tol * 100).toFixed(1)}%` : `not comparable: ${res.reason}`, failureCode: 'ASSERTION_FAILED' };
+        return res.comparable && res.ratio <= tol
+          ? { ok: true }
+          : {
+              ok: false,
+              detail: res.comparable
+                ? `${(res.ratio * 100).toFixed(2)}% changed > ${(tol * 100).toFixed(1)}%`
+                : `not comparable: ${res.reason}`,
+              failureCode: 'ASSERTION_FAILED',
+            };
       }
       case 'swipe': {
         const v = swipeVector(screenSize, step.direction, step.area, step.distance);
@@ -561,7 +690,7 @@ export async function runFlow(
         const resolved = resolveFlowText(rawQuery);
         if (resolved.missing.length) return unresolved(resolved.missing);
         const query = resolved.out;
-        const deadline = Date.now() + (step.kind === 'waitForVisible' ? step.timeoutMs ?? timeoutMs : timeoutMs);
+        const deadline = Date.now() + (step.kind === 'waitForVisible' ? (step.timeoutMs ?? timeoutMs) : timeoutMs);
         const waitStarted = Date.now();
         while (Date.now() < deadline) {
           try {
@@ -637,11 +766,31 @@ export async function runFlow(
         const r = await executeSeed(sessions, session, d, step.fixture, fixture.seed);
         const risk: MutationRecord['risk'] = fixture.seed.type === 'script' ? 'high' : fixture.seed.type === 'api' ? 'medium' : 'low';
         if (!r.ok) {
-          sessions.addNote(session, { at: Date.now(), workflow: `seed:${step.fixture}`, outcome: 'blocked', category: 'missing_test_data', reason: `seed failed: ${r.detail}`, requiredState: fixture.requiredState, recommendedSetup: fixture.recommendedSetup });
-          recordFlowMutation('flow_seed_state', risk, { stepKind: step.kind, fixture: step.fixture, seedType: fixture.seed.type }, 'blocked', r.detail);
+          sessions.addNote(session, {
+            at: Date.now(),
+            workflow: `seed:${step.fixture}`,
+            outcome: 'blocked',
+            category: 'missing_test_data',
+            reason: `seed failed: ${r.detail}`,
+            requiredState: fixture.requiredState,
+            recommendedSetup: fixture.recommendedSetup,
+          });
+          recordFlowMutation(
+            'flow_seed_state',
+            risk,
+            { stepKind: step.kind, fixture: step.fixture, seedType: fixture.seed.type },
+            'blocked',
+            r.detail,
+          );
           return { ok: false, detail: `seed "${step.fixture}" failed: ${r.detail}`, failureCode: 'SEED_FAILED' };
         }
-        recordFlowMutation('flow_seed_state', risk, { stepKind: step.kind, fixture: step.fixture, seedType: fixture.seed.type }, 'executed', r.warnings.join(' ') || undefined);
+        recordFlowMutation(
+          'flow_seed_state',
+          risk,
+          { stepKind: step.kind, fixture: step.fixture, seedType: fixture.seed.type },
+          'executed',
+          r.warnings.join(' ') || undefined,
+        );
         return { ok: true };
       }
       case 'note':
@@ -671,7 +820,7 @@ export async function runFlow(
       reason,
       failureCode,
       steps,
-      durationSec: Math.round(elapsedMs / 100) / 10,
+      durationMs: Math.round(elapsedMs),
       counters: session.counters,
     };
   };
@@ -684,8 +833,10 @@ export async function runFlow(
       const summary = describe(step);
       const budget = sessions.budgetStop(session);
       if (budget && phase !== 'teardown') {
-        steps.push({ index, phase, kind: step.kind, summary, ok: false, durationSec: 0, detail: budget });
-        passed = false; failedAtStep = index; reason = `budget: ${budget}`;
+        steps.push({ index, phase, kind: step.kind, summary, ok: false, durationMs: 0, detail: budget });
+        passed = false;
+        failedAtStep = index;
+        reason = `budget: ${budget}`;
         return index;
       }
       let outcome: StepOutcome;
@@ -695,14 +846,35 @@ export async function runFlow(
       } catch (e) {
         outcome = { ok: false, detail: String(e), failureCode: classifyFlowDriverError(e) };
       }
-      const rec: FlowStepResult = { index, phase, kind: step.kind, summary, ok: outcome.ok, durationSec: Math.round((Date.now() - stepStarted) / 100) / 10, detail: outcome.detail, failureCode: outcome.failureCode };
+      const rec: FlowStepResult = {
+        index,
+        phase,
+        kind: step.kind,
+        summary,
+        ok: outcome.ok,
+        durationMs: Math.round(Date.now() - stepStarted),
+        detail: outcome.detail,
+        failureCode: outcome.failureCode,
+      };
       steps.push(rec);
       if (!outcome.ok && failFast) {
-        passed = false; failedAtStep = index; reason = outcome.detail ?? 'step failed'; failureCode = outcome.failureCode;
+        passed = false;
+        failedAtStep = index;
+        reason = outcome.detail ?? 'step failed';
+        failureCode = outcome.failureCode;
         try {
           const png = await d.screenshot();
-          rec.screenshotUri = sessions.saveArtifact(session, 'screenshot', `flow-fail-${index}-${Date.now()}.png`, png, 'image/png', `flow ${flow.name} failed at step ${index}: ${summary}`);
-        } catch { /* best-effort */ }
+          rec.screenshotUri = sessions.saveArtifact(
+            session,
+            'screenshot',
+            `flow-fail-${index}-${Date.now()}.png`,
+            png,
+            'image/png',
+            `flow ${flow.name} failed at step ${index}: ${summary}`,
+          );
+        } catch {
+          /* best-effort */
+        }
         return index;
       }
     }

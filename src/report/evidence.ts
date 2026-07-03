@@ -58,7 +58,8 @@ export function evidenceKindForNote(note: EvidenceNote): EvidenceKind {
   if (note.evidenceKind === 'structured_locator' || note.method === 'structured') return 'structured_locator';
   if (note.evidenceKind === 'ai_visual_evidence') return 'ai_visual_evidence';
   if (note.evidenceKind === 'ocr_locator' || note.evidenceKind === 'ocr_text' || note.method === 'ocr') return 'ocr_locator';
-  if (note.evidenceKind === 'visual_match' || note.method === 'visual' || note.verifiedVisually) return isAiVisualWorkflow(note.workflow) ? 'ai_visual_evidence' : 'visual_match';
+  if (note.evidenceKind === 'visual_match' || note.method === 'visual' || note.verifiedVisually)
+    return isAiVisualWorkflow(note.workflow) ? 'ai_visual_evidence' : 'visual_match';
   if (isAiVisualWorkflow(note.workflow)) return 'ai_visual_evidence';
   return 'manual_review';
 }

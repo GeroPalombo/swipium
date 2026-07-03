@@ -135,7 +135,10 @@ export async function openUrl(udid: string, url: string): Promise<void> {
 export function simulatorLogArgs(udid: string, opts: { last?: string; bundleId?: string } = {}): string[] {
   const args = ['simctl', 'spawn', udid, 'log', 'show', '--style', 'compact', '--last', opts.last ?? '5m'];
   if (opts.bundleId) {
-    args.push('--predicate', `eventMessage CONTAINS[c] "${opts.bundleId}" OR processImagePath CONTAINS[c] "${opts.bundleId}" OR subsystem CONTAINS[c] "${opts.bundleId}"`);
+    args.push(
+      '--predicate',
+      `eventMessage CONTAINS[c] "${opts.bundleId}" OR processImagePath CONTAINS[c] "${opts.bundleId}" OR subsystem CONTAINS[c] "${opts.bundleId}"`,
+    );
   }
   return args;
 }

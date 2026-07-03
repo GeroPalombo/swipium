@@ -5,6 +5,7 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { run } from './spawn.js';
+import { registerManagedProcess } from '../session/processRegistry.js';
 import type { FailureCode } from '../oracle/failures.js';
 
 const MIN_APK_BYTES = 1024 * 1024;
@@ -74,6 +75,9 @@ export function bootEmulator(avd: string, headless = true): ChildProcess {
   if (headless) args.push('-no-window'); // omit for a visible window (local supervised QA)
   const child = spawn('emulator', args, { detached: true, stdio: 'ignore' });
   child.unref();
+  // Tracked for crash visibility only: the orphan reaper ADOPTS emulators (never kills them),
+  // since an orphaned emulator stays booted and remains usable via adb for the next run.
+  registerManagedProcess(child.pid, 'emulator');
   return child;
 }
 
@@ -96,7 +100,11 @@ export async function deviceFreeDataBytes(serial: string): Promise<number | null
 export async function deviceAbis(serial: string): Promise<string[]> {
   try {
     const r = await run('adb', ['-s', serial, 'shell', 'getprop', 'ro.product.cpu.abilist'], { timeoutMs: 5000 });
-    return r.stdout.trim().split(',').map((s) => s.trim()).filter(Boolean);
+    return r.stdout
+      .trim()
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
   } catch {
     return [];
   }
@@ -176,8 +184,18 @@ export function minSdkCompatible(apkMinSdk: number | null, deviceApiLevel: numbe
  */
 export function classifyAndroidInstallError(message: string): FailureCode {
   const m = message;
-  if (/INSTALL_FAILED_UPDATE_INCOMPATIBLE|INCONSISTENT_CERTIFICATES|signatures do not match|INSTALL_FAILED_SHARED_USER_INCOMPATIBLE|DUPLICATE_PACKAGE/i.test(m)) return 'ANDROID_SIGNATURE_CONFLICT';
-  if (/INSTALL_FAILED_VERSION_DOWNGRADE|INSTALL_FAILED_OLDER_SDK|INSTALL_FAILED_DEPRECATED_SDK_VERSION|requires (?:a )?newer (?:sdk|version)|requires .*API level/i.test(m)) return 'ANDROID_MIN_SDK_INCOMPATIBLE';
+  if (
+    /INSTALL_FAILED_UPDATE_INCOMPATIBLE|INCONSISTENT_CERTIFICATES|signatures do not match|INSTALL_FAILED_SHARED_USER_INCOMPATIBLE|DUPLICATE_PACKAGE/i.test(
+      m,
+    )
+  )
+    return 'ANDROID_SIGNATURE_CONFLICT';
+  if (
+    /INSTALL_FAILED_VERSION_DOWNGRADE|INSTALL_FAILED_OLDER_SDK|INSTALL_FAILED_DEPRECATED_SDK_VERSION|requires (?:a )?newer (?:sdk|version)|requires .*API level/i.test(
+      m,
+    )
+  )
+    return 'ANDROID_MIN_SDK_INCOMPATIBLE';
   if (/INSTALL_FAILED_NO_MATCHING_ABIS|no matching abis|INSTALL_FAILED_CPU_ABI_INCOMPATIBLE/i.test(m)) return 'APK_ARCH_INCOMPATIBLE';
   if (/INSTALL_FAILED_INSUFFICIENT_STORAGE|not enough space|no space left/i.test(m)) return 'INSTALL_FAILED';
   return 'INSTALL_FAILED';

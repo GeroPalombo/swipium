@@ -75,7 +75,9 @@ function norm(value?: string): string {
 function applyResourceIdHints<T extends { text?: string; label?: string; role?: string; bounds: [number, number, number, number] }>(
   candidates: T[],
   target: Target,
-  rawFor: (candidate: T) => { id?: string; cls?: string; text?: string; desc?: string; bounds?: [number, number, number, number] } | undefined,
+  rawFor: (
+    candidate: T,
+  ) => { id?: string; cls?: string; text?: string; desc?: string; bounds?: [number, number, number, number] } | undefined,
 ): T[] {
   let narrowed = candidates;
   const tryNarrow = (fn: (candidate: T) => boolean) => {
@@ -126,19 +128,22 @@ export async function resolveTarget(session: Session, target?: Target): Promise<
           return resourceIdMatches(e.id, raw?.id, target.id!);
         })
       : [];
-    const textCands = !target.id && t
-      ? parsed.elements.filter((e) => e.text?.toLowerCase().includes(t) || e.label?.toLowerCase().includes(t))
-      : [];
+    const textCands =
+      !target.id && t ? parsed.elements.filter((e) => e.text?.toLowerCase().includes(t) || e.label?.toLowerCase().includes(t)) : [];
     let cands = target.id ? idCands : textCands;
     if (target.id && cands.length > 1 && target.index == null) {
       cands = applyResourceIdHints(cands, target, (candidate) => parsed.fullByRef.get(candidate.ref));
     }
     if (!cands.length) {
-      return { error: `No element matched selector ${JSON.stringify(target)}${screenMismatch ? ' (recorded screen signature differs from current screen)' : ''}.` };
+      return {
+        error: `No element matched selector ${JSON.stringify(target)}${screenMismatch ? ' (recorded screen signature differs from current screen)' : ''}.`,
+      };
     }
     if (target.id && cands.length > 1 && target.index == null) {
       const labels = cands.map((e) => `${e.ref}:${e.role}:${e.text ?? e.label ?? e.id ?? 'unlabeled'}`).join(', ');
-      return { error: `AMBIGUOUS_SELECTOR: resource-id ${target.id} matched ${cands.length} elements (${labels}); add text/class/bounds hints or an explicit index${screenMismatch ? ' (recorded screen signature differs from current screen)' : ''}.` };
+      return {
+        error: `AMBIGUOUS_SELECTOR: resource-id ${target.id} matched ${cands.length} elements (${labels}); add text/class/bounds hints or an explicit index${screenMismatch ? ' (recorded screen signature differs from current screen)' : ''}.`,
+      };
     }
     const el = cands[target.index ?? 0] ?? cands[0];
     return { ...center(el.bounds), via: `selector(${el.ref})`, ref: el.ref, textLen: el.text?.length, secure: el.secure };

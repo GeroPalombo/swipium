@@ -91,39 +91,60 @@ function normalizeStep(raw: unknown, i: number, errors: string[]): FlowStep | nu
   const obj = (x: unknown): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x);
 
   switch (k) {
-    case 'prepareTarget': return { kind: 'prepareTarget' };
-    case 'restartApp': return { kind: 'restartApp' };
-    case 'clearOverlay': return { kind: 'clearOverlay' };
-    case 'waitForIdle': return { kind: 'waitForIdle', timeoutMs: typeof v === 'number' ? v : undefined };
-    case 'tap': return str(v) ? { kind: 'tap', selector: v } : err('tap needs a string selector.');
+    case 'prepareTarget':
+      return { kind: 'prepareTarget' };
+    case 'restartApp':
+      return { kind: 'restartApp' };
+    case 'clearOverlay':
+      return { kind: 'clearOverlay' };
+    case 'waitForIdle':
+      return { kind: 'waitForIdle', timeoutMs: typeof v === 'number' ? v : undefined };
+    case 'tap':
+      return str(v) ? { kind: 'tap', selector: v } : err('tap needs a string selector.');
     case 'tapAt':
-      return Array.isArray(v) && v.length === 2 && v.every((n) => typeof n === 'number') ? { kind: 'tapAt', x: v[0] as number, y: v[1] as number } : err('tapAt needs [x, y].');
+      return Array.isArray(v) && v.length === 2 && v.every((n) => typeof n === 'number')
+        ? { kind: 'tapAt', x: v[0] as number, y: v[1] as number }
+        : err('tapAt needs [x, y].');
     case 'tapImage':
       if (str(v)) return { kind: 'tapImage', template: v };
-      if (obj(v) && str(v.template)) return { kind: 'tapImage', template: v.template, minScore: typeof v.minScore === 'number' ? v.minScore : undefined };
+      if (obj(v) && str(v.template))
+        return { kind: 'tapImage', template: v.template, minScore: typeof v.minScore === 'number' ? v.minScore : undefined };
       return err('tapImage needs a template path (or { template, minScore }).');
     case 'tapOcrText':
       if (str(v)) return { kind: 'tapOcrText', query: v };
-      if (obj(v) && str(v.text)) return { kind: 'tapOcrText', query: v.text, minConfidence: typeof v.minConfidence === 'number' ? v.minConfidence : undefined };
+      if (obj(v) && str(v.text))
+        return { kind: 'tapOcrText', query: v.text, minConfidence: typeof v.minConfidence === 'number' ? v.minConfidence : undefined };
       return err('tapOcrText needs text, or { text, minConfidence }.');
     case 'inputText':
       if (str(v)) return { kind: 'inputText', value: v, secret: looksSecret(v) };
-      if (obj(v) && str(v.text)) return { kind: 'inputText', value: v.text, secret: typeof v.secret === 'boolean' ? v.secret : looksSecret(v.text), into: str(v.into) ? v.into : undefined };
+      if (obj(v) && str(v.text))
+        return {
+          kind: 'inputText',
+          value: v.text,
+          secret: typeof v.secret === 'boolean' ? v.secret : looksSecret(v.text),
+          into: str(v.into) ? v.into : undefined,
+        };
       return err('inputText needs a string, or { into, text, secret? }.');
-    case 'assertVisible': return str(v) ? { kind: 'assertVisible', query: v } : err('assertVisible needs a string.');
-    case 'assertNotVisible': return str(v) ? { kind: 'assertNotVisible', query: v } : err('assertNotVisible needs a string.');
+    case 'assertVisible':
+      return str(v) ? { kind: 'assertVisible', query: v } : err('assertVisible needs a string.');
+    case 'assertNotVisible':
+      return str(v) ? { kind: 'assertNotVisible', query: v } : err('assertNotVisible needs a string.');
     case 'assertImage':
       if (str(v)) return { kind: 'assertImage', template: v };
-      if (obj(v) && str(v.template)) return { kind: 'assertImage', template: v.template, minScore: typeof v.minScore === 'number' ? v.minScore : undefined };
+      if (obj(v) && str(v.template))
+        return { kind: 'assertImage', template: v.template, minScore: typeof v.minScore === 'number' ? v.minScore : undefined };
       return err('assertImage needs a template path (or { template, minScore }).');
     case 'assertOcrText':
       if (str(v)) return { kind: 'assertOcrText', query: v };
-      if (obj(v) && str(v.text)) return { kind: 'assertOcrText', query: v.text, minConfidence: typeof v.minConfidence === 'number' ? v.minConfidence : undefined };
+      if (obj(v) && str(v.text))
+        return { kind: 'assertOcrText', query: v.text, minConfidence: typeof v.minConfidence === 'number' ? v.minConfidence : undefined };
       return err('assertOcrText needs text, or { text, minConfidence }.');
-    case 'assertVisual': return str(v) ? { kind: 'assertVisual', description: v } : err('assertVisual needs a description string.');
+    case 'assertVisual':
+      return str(v) ? { kind: 'assertVisual', description: v } : err('assertVisual needs a description string.');
     case 'assertDiff':
       if (str(v)) return { kind: 'assertDiff', baseline: v };
-      if (obj(v) && str(v.baseline)) return { kind: 'assertDiff', baseline: v.baseline, threshold: typeof v.threshold === 'number' ? v.threshold : undefined };
+      if (obj(v) && str(v.baseline))
+        return { kind: 'assertDiff', baseline: v.baseline, threshold: typeof v.threshold === 'number' ? v.threshold : undefined };
       return err('assertDiff needs a baseline name (or { baseline, threshold }).');
     case 'swipe':
       if (DIRECTIONS.includes(v as never)) return { kind: 'swipe', direction: v as 'up' };
@@ -133,20 +154,31 @@ function normalizeStep(raw: unknown, i: number, errors: string[]): FlowStep | nu
         return { kind: 'swipe', direction: v.direction as 'up', area, distance };
       }
       return err(`swipe needs a direction (${DIRECTIONS.join('/')}) or { direction, area?, distance? }.`);
-    case 'scrollTo': return str(v) ? { kind: 'scrollTo', query: v } : err('scrollTo needs a string.');
-    case 'press': return KEYS.includes(v as never) ? { kind: 'press', key: v as 'back' } : err(`press needs one of ${KEYS.join('/')}.`);
-    case 'openUrl': return str(v) ? { kind: 'openUrl', url: v } : err('openUrl needs a string url.');
+    case 'scrollTo':
+      return str(v) ? { kind: 'scrollTo', query: v } : err('scrollTo needs a string.');
+    case 'press':
+      return KEYS.includes(v as never) ? { kind: 'press', key: v as 'back' } : err(`press needs one of ${KEYS.join('/')}.`);
+    case 'openUrl':
+      return str(v) ? { kind: 'openUrl', url: v } : err('openUrl needs a string url.');
     case 'waitForVisible':
       if (str(v)) return { kind: 'waitForVisible', query: v };
-      if (obj(v) && (str(v.text) || str(v.id) || str(v['accessibility id']))) return { kind: 'waitForVisible', query: (v.text ?? (v.id ? `id=${v.id}` : `accessibility id=${v['accessibility id']}`)) as string, timeoutMs: typeof v.timeoutMs === 'number' ? v.timeoutMs : undefined };
+      if (obj(v) && (str(v.text) || str(v.id) || str(v['accessibility id'])))
+        return {
+          kind: 'waitForVisible',
+          query: (v.text ?? (v.id ? `id=${v.id}` : `accessibility id=${v['accessibility id']}`)) as string,
+          timeoutMs: typeof v.timeoutMs === 'number' ? v.timeoutMs : undefined,
+        };
       return err('waitForVisible needs a string (or { text|id|"accessibility id", timeoutMs }).');
     case 'wait':
       if (typeof v === 'number') return { kind: 'wait', ms: v };
       if (obj(v) && (str(v.text) || str(v.id))) return { kind: 'wait', query: (v.text ?? v.id) as string };
       return err('wait needs ms (number) or { text|id }.');
-    case 'networkOffline': return { kind: 'networkOffline' };
-    case 'networkOnline': return { kind: 'networkOnline' };
-    case 'seed': return str(v) ? { kind: 'seed', fixture: v } : err('seed needs a fixture name.');
+    case 'networkOffline':
+      return { kind: 'networkOffline' };
+    case 'networkOnline':
+      return { kind: 'networkOnline' };
+    case 'seed':
+      return str(v) ? { kind: 'seed', fixture: v } : err('seed needs a fixture name.');
     case 'note':
       if (str(v)) return { kind: 'note', outcome: 'pass', reason: v };
       if (obj(v) && str(v.reason)) {
@@ -154,8 +186,10 @@ function normalizeStep(raw: unknown, i: number, errors: string[]): FlowStep | nu
         return { kind: 'note', outcome, reason: v.reason };
       }
       return err('note needs a string, or { outcome?, reason }.');
-    case 'screenshot': return { kind: 'screenshot', reason: str(v) ? v : undefined };
-    default: return err(`unknown action "${k}".`);
+    case 'screenshot':
+      return { kind: 'screenshot', reason: str(v) ? v : undefined };
+    default:
+      return err(`unknown action "${k}".`);
   }
 }
 
@@ -185,16 +219,17 @@ function normalizeVisualProvenance(raw: unknown): SelectorProvenance['visual'] |
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   const v = raw as Record<string, unknown>;
   const crop = v.screenshotCrop;
-  const screenshotCrop = crop && typeof crop === 'object' && !Array.isArray(crop)
-    ? (() => {
-        const c = crop as Record<string, unknown>;
-        const x = maybeNumber(c.x);
-        const y = maybeNumber(c.y);
-        const width = maybeNumber(c.width);
-        const height = maybeNumber(c.height);
-        return x != null && y != null && width != null && height != null ? { x, y, width, height } : undefined;
-      })()
-    : undefined;
+  const screenshotCrop =
+    crop && typeof crop === 'object' && !Array.isArray(crop)
+      ? (() => {
+          const c = crop as Record<string, unknown>;
+          const x = maybeNumber(c.x);
+          const y = maybeNumber(c.y);
+          const width = maybeNumber(c.width);
+          const height = maybeNumber(c.height);
+          return x != null && y != null && width != null && height != null ? { x, y, width, height } : undefined;
+        })()
+      : undefined;
   const out: NonNullable<SelectorProvenance['visual']> = {
     screenshotCrop,
     ocrText: maybeString(v.ocrText),
@@ -248,7 +283,8 @@ export function parseFlow(yamlText: string): ParseResult {
   if (d.appId != null && typeof d.appId !== 'string') errors.push('`appId` must be a string.');
   if (d.budgetProfile != null && typeof d.budgetProfile !== 'string') errors.push('`budgetProfile` must be a string.');
   const mode: FlowMode = d.mode === 'visual' || d.mode === 'auto' ? d.mode : 'structured';
-  if (d.mode != null && !['structured', 'visual', 'auto'].includes(d.mode as string)) errors.push('`mode` must be structured | visual | auto.');
+  if (d.mode != null && !['structured', 'visual', 'auto'].includes(d.mode as string))
+    errors.push('`mode` must be structured | visual | auto.');
 
   const setup = normalizeStepList(d.setup, 'setup', errors);
   const teardown = normalizeStepList(d.teardown, 'teardown', errors);
@@ -258,7 +294,17 @@ export function parseFlow(yamlText: string): ParseResult {
 
   if (errors.length) return { errors };
   return {
-    flow: { name: d.name as string, appId: d.appId as string | undefined, budgetProfile: d.budgetProfile as string | undefined, mode, fixtures, setup, teardown, steps, provenance },
+    flow: {
+      name: d.name as string,
+      appId: d.appId as string | undefined,
+      budgetProfile: d.budgetProfile as string | undefined,
+      mode,
+      fixtures,
+      setup,
+      teardown,
+      steps,
+      provenance,
+    },
     errors: [],
   };
 }

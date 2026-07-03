@@ -11,7 +11,23 @@ export interface RunResult {
   timedOut: boolean;
 }
 
+/** Default kill timer for spawned commands (2 minutes). A stuck `adb`/`xcodebuild` would
+ * otherwise hang the single-threaded server forever. Long-running call sites (builds,
+ * emulator boot, AAB conversion) must pass an explicit generous `timeoutMs` — or opt out
+ * entirely with `timeoutMs: 0` (or `Infinity`). */
+export const DEFAULT_SPAWN_TIMEOUT_MS = 120_000;
+
+/** Resolve the caller's `timeoutMs` to the effective kill-timer delay.
+ *  undefined → DEFAULT_SPAWN_TIMEOUT_MS; 0 / negative / Infinity → no timeout (opt-out). */
+function effectiveTimeoutMs(timeoutMs: number | undefined): number | undefined {
+  if (timeoutMs === undefined) return DEFAULT_SPAWN_TIMEOUT_MS;
+  if (timeoutMs <= 0 || !Number.isFinite(timeoutMs)) return undefined;
+  return timeoutMs;
+}
+
 export interface RunOptions {
+  /** Kill timer in ms. Omitted → DEFAULT_SPAWN_TIMEOUT_MS (120s). Pass 0 (or Infinity) to
+   * explicitly disable the timeout for a legitimately unbounded command. */
   timeoutMs?: number;
   signal?: AbortSignal;
   cwd?: string;
@@ -41,13 +57,14 @@ function isShell(command: string): boolean {
 function shellCommandPayload(command: string, args: string[]): string | null {
   if (!isShell(command)) return null;
   const shell = executableName(command);
-  const cIndex = args.findIndex((arg) => (
-    arg === '-c'
-    || arg === '/c'
-    || arg === '/C'
-    || arg.toLowerCase() === '-command'
-    || (['sh', 'bash', 'zsh', 'fish'].includes(shell) && /^-[A-Za-z]*c[A-Za-z]*$/.test(arg))
-  ));
+  const cIndex = args.findIndex(
+    (arg) =>
+      arg === '-c' ||
+      arg === '/c' ||
+      arg === '/C' ||
+      arg.toLowerCase() === '-command' ||
+      (['sh', 'bash', 'zsh', 'fish'].includes(shell) && /^-[A-Za-z]*c[A-Za-z]*$/.test(arg)),
+  );
   return cIndex >= 0 && typeof args[cIndex + 1] === 'string' ? args[cIndex + 1] : null;
 }
 
@@ -85,6 +102,8 @@ export function assertNoGitScope(command: string, args: string[] = []): void {
   if (bad) throw new GitScopeForbiddenError(bad);
 }
 
+/** Run a command from an argv array. `opts.timeoutMs` defaults to DEFAULT_SPAWN_TIMEOUT_MS
+ * (120s) when omitted; pass `timeoutMs: 0` (or `Infinity`) to disable the kill timer. */
 export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise<RunResult> {
   try {
     assertNoGitScope(cmd, args);
@@ -97,11 +116,12 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
     let stderr = '';
     let timedOut = false;
 
-    const timer = opts.timeoutMs
+    const timeoutMs = effectiveTimeoutMs(opts.timeoutMs);
+    const timer = timeoutMs
       ? setTimeout(() => {
           timedOut = true;
           child.kill('SIGKILL');
-        }, opts.timeoutMs)
+        }, timeoutMs)
       : undefined;
 
     child.stdout.on('data', (d) => (stdout += d.toString()));
@@ -116,9 +136,7 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
       if (timer) clearTimeout(timer);
       const result: RunResult = { code, stdout, stderr, timedOut };
       if (opts.rejectOnNonZero && code !== 0) {
-        reject(
-          new Error(`\`${cmd} ${args.join(' ')}\` exited ${code}${timedOut ? ' (timed out)' : ''}: ${stderr.trim()}`),
-        );
+        reject(new Error(`\`${cmd} ${args.join(' ')}\` exited ${code}${timedOut ? ' (timed out)' : ''}: ${stderr.trim()}`));
         return;
       }
       resolve(result);
@@ -138,7 +156,8 @@ export interface BinaryRunResult {
   timedOut: boolean;
 }
 
-/** Like run(), but collects stdout as raw bytes (for screenshots etc.). */
+/** Like run(), but collects stdout as raw bytes (for screenshots etc.). Same timeout
+ * convention: omitted → DEFAULT_SPAWN_TIMEOUT_MS (120s); 0 / Infinity → disabled. */
 export function runBinary(cmd: string, args: string[], opts: RunOptions = {}): Promise<BinaryRunResult> {
   try {
     assertNoGitScope(cmd, args);
@@ -150,11 +169,12 @@ export function runBinary(cmd: string, args: string[], opts: RunOptions = {}): P
     const chunks: Buffer[] = [];
     let stderr = '';
     let timedOut = false;
-    const timer = opts.timeoutMs
+    const timeoutMs = effectiveTimeoutMs(opts.timeoutMs);
+    const timer = timeoutMs
       ? setTimeout(() => {
           timedOut = true;
           child.kill('SIGKILL');
-        }, opts.timeoutMs)
+        }, timeoutMs)
       : undefined;
     child.stdout.on('data', (d: Buffer) => chunks.push(d));
     child.stderr.on('data', (d) => (stderr += d.toString()));

@@ -54,7 +54,10 @@ export interface AutomationReadinessStandard {
   prComments: Array<{ severity: 'blocker' | 'warning' | 'info'; body: string }>;
 }
 
-export function readinessForSession(session: Session, opts: { suiteRunnable?: boolean; suiteReplayed?: boolean; ciReady?: boolean } = {}): ReadinessLabel[] {
+export function readinessForSession(
+  session: Session,
+  opts: { suiteRunnable?: boolean; suiteReplayed?: boolean; ciReady?: boolean } = {},
+): ReadinessLabel[] {
   const labels: ReadinessLabel[] = [];
   const artifacts = session.artifacts ?? [];
   const notes = session.notes ?? [];
@@ -101,7 +104,9 @@ function locatorCoverage(actions: RecordedAction[]): AutomationReadinessStandard
   const byKind: Record<string, number> = {};
   for (const a of items) byKind[a.selectorKind ?? 'none'] = (byKind[a.selectorKind ?? 'none'] ?? 0) + 1;
   const durableActions = items.filter((a) => a.selectorKind === 'accessibility_id' || a.selectorKind === 'resource_id').length;
-  const nativeFallbackActions = items.filter((a) => a.selectorKind === 'name' || a.selectorKind === 'predicate' || a.selectorKind === 'class_chain').length;
+  const nativeFallbackActions = items.filter(
+    (a) => a.selectorKind === 'name' || a.selectorKind === 'predicate' || a.selectorKind === 'class_chain',
+  ).length;
   const textActions = items.filter((a) => a.selectorKind === 'text').length;
   const coordinateActions = items.filter((a) => !a.selectorKind || a.selectorKind === 'coords').length;
   return {
@@ -142,8 +147,10 @@ function findingFix(f: FindingRecord): string {
 
 function actionFix(a: RecordedAction): string | undefined {
   const where = a.screen ? ` on ${a.screen}` : '';
-  if (!a.selectorKind || a.selectorKind === 'coords') return `Add a testID/accessibilityIdentifier for coordinate-only ${a.action}${where}.`;
-  if (a.selectorKind === 'text') return `Promote text selector "${a.selector ?? 'unknown'}"${where} to a durable testID/accessibilityIdentifier.`;
+  if (!a.selectorKind || a.selectorKind === 'coords')
+    return `Add a testID/accessibilityIdentifier for coordinate-only ${a.action}${where}.`;
+  if (a.selectorKind === 'text')
+    return `Promote text selector "${a.selector ?? 'unknown'}"${where} to a durable testID/accessibilityIdentifier.`;
   if (a.selectorKind === 'name') return `Promote iOS name selector "${a.selector ?? 'unknown'}"${where} to accessibilityIdentifier.`;
   return undefined;
 }
@@ -154,30 +161,40 @@ function screenGrades(actions: RecordedAction[]): AutomationReadinessStandard['s
     const screen = action.screen ?? 'unknown_screen';
     groups.set(screen, [...(groups.get(screen) ?? []), action]);
   }
-  return [...groups.entries()].map(([screen, group]) => {
-    const c = locatorCoverage(group);
-    const score = Math.round(c.durablePct * 0.8 + c.nativeOrDurablePct * 0.2);
-    return {
-      screen,
-      grade: gradeFromScore(score),
-      score,
-      actionCount: group.length,
-      durableLocatorPct: c.durablePct,
-      weakActions: c.textActions + c.coordinateActions,
-      fixes: uniqueTop(group.map(actionFix).filter((x): x is string => !!x), 5),
-    };
-  }).sort((a, b) => a.grade.localeCompare(b.grade) || b.actionCount - a.actionCount);
+  return [...groups.entries()]
+    .map(([screen, group]) => {
+      const c = locatorCoverage(group);
+      const score = Math.round(c.durablePct * 0.8 + c.nativeOrDurablePct * 0.2);
+      return {
+        screen,
+        grade: gradeFromScore(score),
+        score,
+        actionCount: group.length,
+        durableLocatorPct: c.durablePct,
+        weakActions: c.textActions + c.coordinateActions,
+        fixes: uniqueTop(
+          group.map(actionFix).filter((x): x is string => !!x),
+          5,
+        ),
+      };
+    })
+    .sort((a, b) => a.grade.localeCompare(b.grade) || b.actionCount - a.actionCount);
 }
 
 function workflowGrades(notes: TestNote[], durablePct: number): AutomationReadinessStandard['workflowGrades'] {
   if (!notes.length) {
-    return [{
-      workflow: 'recorded_session',
-      grade: gradeFromOutcome('unknown', false, durablePct),
-      outcome: 'unknown',
-      evidence: 'none',
-      fix: durablePct < 80 ? 'Record qa_note outcomes and promote weak locators before CI promotion.' : 'Record qa_note outcomes so product readiness is auditable.',
-    }];
+    return [
+      {
+        workflow: 'recorded_session',
+        grade: gradeFromOutcome('unknown', false, durablePct),
+        outcome: 'unknown',
+        evidence: 'none',
+        fix:
+          durablePct < 80
+            ? 'Record qa_note outcomes and promote weak locators before CI promotion.'
+            : 'Record qa_note outcomes so product readiness is auditable.',
+      },
+    ];
   }
   return notes.map((n) => {
     const evidence = evidenceAssessmentForNote(n);
@@ -198,18 +215,42 @@ function workflowEvidenceWeight(n: TestNote): number {
   return 0.4;
 }
 
-function scoreBreakdown(session: Session, labels: ReadinessLabel[], coverage: AutomationReadinessStandard['locatorCoverage']): AutomationReadinessStandard['scoreBreakdown'] {
+function scoreBreakdown(
+  session: Session,
+  labels: ReadinessLabel[],
+  coverage: AutomationReadinessStandard['locatorCoverage'],
+): AutomationReadinessStandard['scoreBreakdown'] {
   const weightedPassCount = session.notes.filter((n) => n.outcome === 'pass').reduce((sum, n) => sum + workflowEvidenceWeight(n), 0);
   const failOrBlocked = session.notes.filter((n) => n.outcome === 'fail' || n.outcome === 'blocked').length;
-  const workflowEvidence = session.notes.length ? Math.max(0, Math.round((weightedPassCount / session.notes.length) * 15) - failOrBlocked * 2) : 0;
-  const stateProfiles = session.mutations.some((m) => m.action === 'state_profile_mutation' && m.status === 'executed') ? 10 : session.fixtures.length ? 5 : 0;
-  const idling = session.workarounds.some((w) => /idling: app-declared/i.test(w)) ? 10 : session.workarounds.some((w) => /idling:/i.test(w)) ? 5 : 0;
+  const workflowEvidence = session.notes.length
+    ? Math.max(0, Math.round((weightedPassCount / session.notes.length) * 15) - failOrBlocked * 2)
+    : 0;
+  const stateProfiles = session.mutations.some((m) => m.action === 'state_profile_mutation' && m.status === 'executed')
+    ? 10
+    : session.fixtures.length
+      ? 5
+      : 0;
+  const idling = session.workarounds.some((w) => /idling: app-declared/i.test(w))
+    ? 10
+    : session.workarounds.some((w) => /idling:/i.test(w))
+      ? 5
+      : 0;
   const riskyExecuted = session.mutations.filter((m) => m.risk === 'high' && m.status === 'executed').length;
   const refusedOrBounded = session.mutations.some((m) => (m.status === 'refused' || m.status === 'blocked') && m.risk === 'high');
   const safeDestructiveBoundaries = riskyExecuted ? 4 : refusedOrBounded ? 10 : 8;
-  const replayEvidence = labels.includes('ci_ready') ? 20 : labels.includes('replayed') ? 16 : labels.includes('compiled') ? 10 : labels.includes('generated') ? 5 : 0;
+  const replayEvidence = labels.includes('ci_ready')
+    ? 20
+    : labels.includes('replayed')
+      ? 16
+      : labels.includes('compiled')
+        ? 10
+        : labels.includes('generated')
+          ? 5
+          : 0;
   return {
-    durableLocators: coverage.totalActions ? Math.round(((coverage.durableActions + coverage.nativeFallbackActions * 0.6) / coverage.totalActions) * 35) : 0,
+    durableLocators: coverage.totalActions
+      ? Math.round(((coverage.durableActions + coverage.nativeFallbackActions * 0.6) / coverage.totalActions) * 35)
+      : 0,
     workflowEvidence,
     stateProfiles,
     idling,
@@ -218,20 +259,36 @@ function scoreBreakdown(session: Session, labels: ReadinessLabel[], coverage: Au
   };
 }
 
-export function automationReadinessForSession(session: Session, opts: { suiteRunnable?: boolean; suiteReplayed?: boolean; ciReady?: boolean } = {}): AutomationReadinessStandard {
+export function automationReadinessForSession(
+  session: Session,
+  opts: { suiteRunnable?: boolean; suiteReplayed?: boolean; ciReady?: boolean } = {},
+): AutomationReadinessStandard {
   const labels = readinessForSession(session, opts);
   const coverage = locatorCoverage(session.recordedActions);
   const breakdown = scoreBreakdown(session, labels, coverage);
-  const score = Math.max(0, Math.min(100, Object.values(breakdown).reduce((a, b) => a + b, 0)));
-  const fixes = uniqueTop([
-    ...session.notes.map(noteFix).filter((x): x is string => !!x),
-    ...session.findings.map(findingFix),
-    ...session.recordedActions.map(actionFix).filter((x): x is string => !!x),
-    coverage.totalActions && coverage.durablePct < 80 ? `Raise durable locator coverage from ${coverage.durablePct}% to at least 80% before release gating.` : '',
-    session.notes.length ? '' : 'Record workflow outcomes with qa_note so readiness can be reviewed by workflow.',
-    session.mutations.some((m) => m.action === 'state_profile_mutation' && m.status === 'executed') ? '' : 'Add a declared state profile for repeatable setup and teardown.',
-    session.workarounds.some((w) => /idling:/i.test(w)) ? '' : 'Add an app-declared idling hook for stable waits.',
-  ], 10);
+  const score = Math.max(
+    0,
+    Math.min(
+      100,
+      Object.values(breakdown).reduce((a, b) => a + b, 0),
+    ),
+  );
+  const fixes = uniqueTop(
+    [
+      ...session.notes.map(noteFix).filter((x): x is string => !!x),
+      ...session.findings.map(findingFix),
+      ...session.recordedActions.map(actionFix).filter((x): x is string => !!x),
+      coverage.totalActions && coverage.durablePct < 80
+        ? `Raise durable locator coverage from ${coverage.durablePct}% to at least 80% before release gating.`
+        : '',
+      session.notes.length ? '' : 'Record workflow outcomes with qa_note so readiness can be reviewed by workflow.',
+      session.mutations.some((m) => m.action === 'state_profile_mutation' && m.status === 'executed')
+        ? ''
+        : 'Add a declared state profile for repeatable setup and teardown.',
+      session.workarounds.some((w) => /idling:/i.test(w)) ? '' : 'Add an app-declared idling hook for stable waits.',
+    ],
+    10,
+  );
   return {
     grade: gradeFromScore(score),
     score,

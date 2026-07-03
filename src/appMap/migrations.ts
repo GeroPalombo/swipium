@@ -27,7 +27,7 @@ const MIGRATIONS: Record<number, { to: number; name: string; up: (m: Record<stri
           gitRemote: null,
           packageName: null,
           workspaceTarget: null,
-          framework: ((m.framework as ProjectIdentity['framework']) ?? 'unknown'),
+          framework: (m.framework as ProjectIdentity['framework']) ?? 'unknown',
           platforms: [],
         },
         (m.generatedAt as string) ?? (m.updatedAt as string) ?? '1970-01-01T00:00:00.000Z',

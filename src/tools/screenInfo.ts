@@ -29,7 +29,11 @@ export function registerScreenInfo(server: McpServer, sessions: SessionStore): v
         });
       }
       const serial = driver.currentDevice();
-      const [size, density, orient] = await Promise.all([driver.screenSize(), driver.screenDensity(), serial ? getOrientation(serial).catch(() => null) : Promise.resolve(null)]);
+      const [size, density, orient] = await Promise.all([
+        driver.screenSize(),
+        driver.screenDensity(),
+        serial ? getOrientation(serial).catch(() => null) : Promise.resolve(null),
+      ]);
       const orientation = orient ? (orient.rotation === 1 || orient.rotation === 3 ? 'landscape' : 'portrait') : 'unknown';
       const lastShot = [...session.artifacts].reverse().find((a) => a.kind === 'screenshot');
 
@@ -65,7 +69,8 @@ export function registerScreenInfo(server: McpServer, sessions: SessionStore): v
           device: session.device ?? null,
           screen: size ? { width: size.width, height: size.height, density } : null,
           orientation,
-          coordinateNote: 'landmarks/bands are DEVICE pixels (origin top-left) — pass directly as qa_act {x,y}. For screenshot-space hits (qa_visual find_image) convert with coordinateSpace.scale.',
+          coordinateNote:
+            'landmarks/bands are DEVICE pixels (origin top-left) — pass directly as qa_act {x,y}. For screenshot-space hits (qa_visual find_image) convert with coordinateSpace.scale.',
           mode: session.mode,
           headless: session.headless ?? null,
           latestScreenshot: lastShot?.uri ?? null,
@@ -75,7 +80,9 @@ export function registerScreenInfo(server: McpServer, sessions: SessionStore): v
           budget: session.budget,
         },
         `device=${session.device} screen=${size ? `${size.width}x${size.height}@${density ?? '?'}dpi` : 'unknown'} mode=${session.mode}` +
-          (landmarks ? `\nlandmarks: center=${landmarks.center} bottomNav=${landmarks.bottomNavCenter} cta=${landmarks.primaryCtaArea}` : '') +
+          (landmarks
+            ? `\nlandmarks: center=${landmarks.center} bottomNav=${landmarks.bottomNavCenter} cta=${landmarks.primaryCtaArea}`
+            : '') +
           (lastShot ? `\nlatest screenshot: ${lastShot.uri}` : '\n(no screenshot yet — call qa_screenshot)'),
       );
     },

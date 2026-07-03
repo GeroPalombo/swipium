@@ -6,15 +6,17 @@ Swipium runs as a local stdio MCP server. The MCP client starts the process and 
 
 - Node.js 20 or newer.
 - A mobile app repository as the MCP `cwd`.
-- Android Studio for Android Emulator workflows.
-- Xcode for iOS Simulator workflows.
+- Android platform-tools with `adb` on your PATH, usually from Android Studio.
+- Android Emulator package plus at least one AVD for Android Emulator workflows.
+- Xcode with an iOS Simulator runtime and at least one simulator for iOS workflows.
+- WebDriverAgent for structured iOS UI-tree access, taps, typing, and swipes. Visual-only iOS checks can still use `simctl` without WDA.
 
 ## Server Command
 
 No global install:
 
 ```jsonc
-{s
+{
   "mcpServers": {
     "swipium": {
       "command": "npx",
@@ -40,6 +42,8 @@ Global install:
   }
 }
 ```
+
+`npx -y swipium` is the canonical setup for npm users. From a source checkout, build with `npm run build` and use `node /absolute/path/to/swipium/dist/index.js` as the command instead.
 
 ## Claude Code
 
@@ -83,6 +87,42 @@ args = ["-y", "swipium"]
 cwd = "/absolute/path/to/your/mobile-app"
 ```
 
+Known caveat: Codex builds after ~0.120.0 have an open tool-injection regression (openai/codex#19425). Set `cwd` explicitly, and if `qa_*` tools do not appear after setup, switch `command` to an absolute path and restart Codex.
+
+## Claude Desktop
+
+Add to `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`), then restart Claude Desktop:
+
+```jsonc
+{
+  "mcpServers": {
+    "swipium": {
+      "command": "npx",
+      "args": ["-y", "swipium"],
+      "cwd": "/absolute/path/to/your/mobile-app",
+      "timeout": 600000
+    }
+  }
+}
+```
+
+## Cursor
+
+Add to `.cursor/mcp.json` in the mobile app repository, or `~/.cursor/mcp.json` for all projects:
+
+```jsonc
+{
+  "mcpServers": {
+    "swipium": {
+      "command": "npx",
+      "args": ["-y", "swipium"],
+      "cwd": "/absolute/path/to/your/mobile-app",
+      "timeout": 600000
+    }
+  }
+}
+```
+
 ## Verification
 
 Run:
@@ -100,7 +140,7 @@ qa_capabilities
 
 Use `qa_doctor` with `platform:"android"`, `platform:"ios"`, or `platform:"both"` when checking platform-specific readiness.
 
-Expected tool count: 95.
+Expected tool count: 60.
 
 If the client lists fewer tools, restart the MCP client. MCP clients often keep an old server process alive after package upgrades.
 

@@ -26,7 +26,12 @@ export function loadPolicy(root: string): Policy | null {
   if (!existsSync(p)) return null;
   try {
     const j = JSON.parse(readFileSync(p, 'utf8')) as Partial<Policy>;
-    return { blockOn: j.blockOn ?? [], warnOn: j.warnOn ?? [], ignoreKnown: j.ignoreKnown ?? [], ciAllowMutations: j.ciAllowMutations ?? [] };
+    return {
+      blockOn: j.blockOn ?? [],
+      warnOn: j.warnOn ?? [],
+      ignoreKnown: j.ignoreKnown ?? [],
+      ciAllowMutations: j.ciAllowMutations ?? [],
+    };
   } catch {
     return null;
   }
@@ -66,7 +71,7 @@ export function applyPolicy(verdicts: FlowVerdict[], policy: Policy | null): Pol
     const c = norm(code);
     return list.some((tok) => {
       const t = norm(tok);
-      return t === c || SYNONYMS[t] === c || (t === 'failedrequiredflow');
+      return t === c || SYNONYMS[t] === c || t === 'failedrequiredflow';
     });
   };
 
@@ -116,5 +121,10 @@ export function ciMutationAllowed(policy: Policy | null, stepKind: string): bool
     ioserase: ['simulatorerase', 'erase', 'destructiveappstate'],
   };
   const accepted = new Set([requested, ...(aliases[requested] ?? [])]);
-  return allowed.includes('all') || allowed.includes('*') || allowed.includes('mutatingsteps') || [...accepted].some((token) => allowed.includes(token));
+  return (
+    allowed.includes('all') ||
+    allowed.includes('*') ||
+    allowed.includes('mutatingsteps') ||
+    [...accepted].some((token) => allowed.includes(token))
+  );
 }

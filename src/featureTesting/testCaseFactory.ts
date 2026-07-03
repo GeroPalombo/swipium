@@ -40,10 +40,13 @@ export interface GenerateCasesOptions {
   allowAdversarial?: boolean;
 }
 
-export function generateFeatureTestCases(scope: FeatureScope, objective: FeatureObjective, opts: GenerateCasesOptions = {}): FeatureTestCase[] {
+export function generateFeatureTestCases(
+  scope: FeatureScope,
+  objective: FeatureObjective,
+  opts: GenerateCasesOptions = {},
+): FeatureTestCase[] {
   const level = opts.creativity ?? 'standard';
   const maxRank = CREATIVITY_RANK[level];
-  const platform = opts.platform ?? 'android+ios';
   const cases: FeatureTestCase[] = [];
 
   const fixtures = scope.dataDependencies.filter((d) => d.kind === 'fixture').map((d) => d.name);
@@ -51,9 +54,15 @@ export function generateFeatureTestCases(scope: FeatureScope, objective: Feature
   const runtimeScreenLinks = scope.runtimeScreens.map((s) => s.id ?? s.name).filter(Boolean) as string[];
   const baseRisk = scope.risks.reduce<'low' | 'medium' | 'high'>((acc, r) => (rank(r.level) > rank(acc) ? r.level : acc), 'low');
   const mapLinks = { staticScreens: staticScreenLinks, runtimeScreens: runtimeScreenLinks };
-  const idFor = (n: number) => `TC-${scope.featureId.replace(/^feat-/, '').toUpperCase().slice(0, 12)}-${String(n).padStart(3, '0')}`;
+  const idFor = (n: number) =>
+    `TC-${scope.featureId
+      .replace(/^feat-/, '')
+      .toUpperCase()
+      .slice(0, 12)}-${String(n).padStart(3, '0')}`;
 
-  const mk = (over: Partial<FeatureTestCase> & { title: string; creativity: CreativityLevel; steps: string[]; expected: string[] }): FeatureTestCase => ({
+  const mk = (
+    over: Partial<FeatureTestCase> & { title: string; creativity: CreativityLevel; steps: string[]; expected: string[] },
+  ): FeatureTestCase => ({
     id: idFor(cases.length + 1),
     featureId: scope.featureId,
     purpose: over.purpose ?? `Verify the ${scope.title} feature behaves as expected.`,
@@ -75,7 +84,10 @@ export function generateFeatureTestCases(scope: FeatureScope, objective: Feature
       title: `${scope.title} — happy path`,
       creativity: 'conservative',
       purpose: objective.userGoal,
-      preconditions: ['app installed and launched', ...(objective.externalDependencies.length ? [`available: ${objective.externalDependencies.join(', ')}`] : [])],
+      preconditions: [
+        'app installed and launched',
+        ...(objective.externalDependencies.length ? [`available: ${objective.externalDependencies.join(', ')}`] : []),
+      ],
       steps: objective.primaryHappyPath,
       expected: objective.expectedOutputs,
     }),
@@ -100,7 +112,14 @@ export function generateFeatureTestCases(scope: FeatureScope, objective: Feature
           title: `${scope.title} — required input validation`,
           creativity: 'standard',
           purpose: 'Submitting with required inputs missing is rejected.',
-          steps: [`Reach the ${scope.title} surface`, `Leave required field(s) blank: ${objective.inputFields.filter((f) => f.required).map((f) => f.name).join(', ')}`, 'Attempt to submit/continue'],
+          steps: [
+            `Reach the ${scope.title} surface`,
+            `Leave required field(s) blank: ${objective.inputFields
+              .filter((f) => f.required)
+              .map((f) => f.name)
+              .join(', ')}`,
+            'Attempt to submit/continue',
+          ],
           expected: ['A validation message is shown; the action is not performed'],
         }),
       );

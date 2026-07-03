@@ -58,9 +58,10 @@ export interface StateSeedTransaction {
 }
 
 export function loadStateProfile(root: string, nameOrYaml: string): { profile?: StateProfile; error?: string; path?: string } {
-  const candidates = nameOrYaml.includes('\n') || /name\s*:/.test(nameOrYaml)
-    ? []
-    : [join(root, '.swipium', 'state', `${nameOrYaml}.yaml`), join(root, '.swipium', 'state', `${nameOrYaml}.yml`)];
+  const candidates =
+    nameOrYaml.includes('\n') || /name\s*:/.test(nameOrYaml)
+      ? []
+      : [join(root, '.swipium', 'state', `${nameOrYaml}.yaml`), join(root, '.swipium', 'state', `${nameOrYaml}.yml`)];
   const path = candidates.find((p) => existsSync(p));
   const text = path ? readFileSync(path, 'utf8') : nameOrYaml;
   try {
@@ -101,12 +102,12 @@ function hasLaunchArgs(profile: StateProfile): boolean {
 
 function resetPolicyRefusal(profile: StateProfile): string | null {
   const destructiveReset =
-    profile.reset?.android === 'clearData' ||
-    profile.reset?.ios === 'reinstallApp' ||
-    profile.launch?.clearState === true;
+    profile.reset?.android === 'clearData' || profile.reset?.ios === 'reinstallApp' || profile.launch?.clearState === true;
   if (!destructiveReset) return null;
-  if (profile.reset?.requiresReleaseBuild && !profile.reset.acknowledgeBundleLossRisk) return 'release-build reset requires acknowledgeBundleLossRisk:true';
-  if (profile.reset?.allowedOnDebugBundle !== true && !profile.reset?.acknowledgeBundleLossRisk) return 'debug-bundle reset refused by state profile policy; reset.allowedOnDebugBundle defaults to false';
+  if (profile.reset?.requiresReleaseBuild && !profile.reset.acknowledgeBundleLossRisk)
+    return 'release-build reset requires acknowledgeBundleLossRisk:true';
+  if (profile.reset?.allowedOnDebugBundle !== true && !profile.reset?.acknowledgeBundleLossRisk)
+    return 'debug-bundle reset refused by state profile policy; reset.allowedOnDebugBundle defaults to false';
   return null;
 }
 
@@ -147,10 +148,17 @@ function seedTransaction(input: {
 async function assertVisible(driver: Driver, query: string): Promise<boolean> {
   const q = query.toLowerCase();
   const parsed = parseSnapshot(await driver.dumpXml());
-  return parsed.allNodes.some((n) => n.text.toLowerCase().includes(q) || n.desc.toLowerCase().includes(q) || n.id.toLowerCase().includes(q));
+  return parsed.allNodes.some(
+    (n) => n.text.toLowerCase().includes(q) || n.desc.toLowerCase().includes(q) || n.id.toLowerCase().includes(q),
+  );
 }
 
-export async function prepareStateProfile(sessions: SessionStore, session: Session, driver: Driver, profile: StateProfile): Promise<StateLedger> {
+export async function prepareStateProfile(
+  sessions: SessionStore,
+  session: Session,
+  driver: Driver,
+  profile: StateProfile,
+): Promise<StateLedger> {
   const steps: StateLedger['steps'] = [];
   const seedTransactions: StateSeedTransaction[] = [];
   const startedAt = new Date().toISOString();
@@ -217,13 +225,22 @@ export async function prepareStateProfile(sessions: SessionStore, session: Sessi
         sessions.addEnvChange(session, `state launch.clearState reinstall ${appId}`);
         steps.push({ kind: 'launch.clearState', status: 'ok', detail: `reinstalled ${appId}` });
       } else {
-        steps.push({ kind: 'launch.clearState', status: 'blocked', detail: 'non-Android clearState requires appPath and uninstall support' });
+        steps.push({
+          kind: 'launch.clearState',
+          status: 'blocked',
+          detail: 'non-Android clearState requires appPath and uninstall support',
+        });
         status = setBlocked(status);
       }
     }
   }
 
-  if (status !== 'state_refused' && status !== 'state_blocked' && profile.launch?.permissions && Object.keys(profile.launch.permissions).length) {
+  if (
+    status !== 'state_refused' &&
+    status !== 'state_blocked' &&
+    profile.launch?.permissions &&
+    Object.keys(profile.launch.permissions).length
+  ) {
     if (!appId) {
       steps.push({ kind: 'permissions', status: 'blocked', detail: 'no appId available' });
       status = setBlocked(status);
@@ -244,7 +261,11 @@ export async function prepareStateProfile(sessions: SessionStore, session: Sessi
               sessions.addEnvChange(session, `state permission revoke ${permission} from ${appId}`);
               steps.push({ kind: `permissions.android.${permission}`, status: 'ok', detail: 'revoke' });
             } else {
-              steps.push({ kind: `permissions.android.${permission}`, status: 'blocked', detail: 'unset is not supported per-permission on Android' });
+              steps.push({
+                kind: `permissions.android.${permission}`,
+                status: 'blocked',
+                detail: 'unset is not supported per-permission on Android',
+              });
               status = setBlocked(status);
             }
           }
@@ -284,7 +305,11 @@ export async function prepareStateProfile(sessions: SessionStore, session: Sessi
       }
       if (status !== 'state_blocked') {
         sessions.addEnvChange(session, `state launch ${appId}`);
-        steps.push({ kind: 'launch', status: 'ok', detail: JSON.stringify({ arguments: profile.launch.arguments ?? null, permissions: profile.launch.permissions ?? null }) });
+        steps.push({
+          kind: 'launch',
+          status: 'ok',
+          detail: JSON.stringify({ arguments: profile.launch.arguments ?? null, permissions: profile.launch.permissions ?? null }),
+        });
       }
     }
   }
@@ -299,23 +324,32 @@ export async function prepareStateProfile(sessions: SessionStore, session: Sessi
       }
       const r = await executeSeed(sessions, session, driver, seed.fixture, fixture.seed);
       steps.push({ kind: `seed.${seed.fixture}`, status: r.ok ? 'ok' : 'blocked', detail: r.detail ?? r.warnings.join(' ') });
-      seedTransactions.push(seedTransaction({
-        fixture: seed.fixture,
-        phase: 'prepare',
-        type: fixture.seed.type,
-        exactCommand: seedExactCommand(fixture.seed),
-        ok: r.ok,
-        detail: r.detail,
-        warnings: r.warnings,
-        idempotent: fixture.seed.idempotent,
-        cleanup: fixture.seed.cleanup ? 'declared' : 'not_declared',
-        profile,
-      }));
+      seedTransactions.push(
+        seedTransaction({
+          fixture: seed.fixture,
+          phase: 'prepare',
+          type: fixture.seed.type,
+          exactCommand: seedExactCommand(fixture.seed),
+          ok: r.ok,
+          detail: r.detail,
+          warnings: r.warnings,
+          idempotent: fixture.seed.idempotent,
+          cleanup: fixture.seed.cleanup ? 'declared' : 'not_declared',
+          profile,
+        }),
+      );
       if (!r.ok) status = 'state_blocked';
     }
   }
 
-  return { profile: profile.name, status, steps, seedTransactions: seedTransactions.length ? seedTransactions : undefined, startedAt, endedAt: new Date().toISOString() };
+  return {
+    profile: profile.name,
+    status,
+    steps,
+    seedTransactions: seedTransactions.length ? seedTransactions : undefined,
+    startedAt,
+    endedAt: new Date().toISOString(),
+  };
 }
 
 export async function verifyStateProfile(driver: Driver, profile: StateProfile): Promise<StateLedger> {
@@ -331,7 +365,12 @@ export async function verifyStateProfile(driver: Driver, profile: StateProfile):
   return { profile: profile.name, status, steps, startedAt, endedAt: new Date().toISOString() };
 }
 
-export async function teardownStateProfile(sessions: SessionStore, session: Session, driver: Driver, profile: StateProfile): Promise<StateLedger> {
+export async function teardownStateProfile(
+  sessions: SessionStore,
+  session: Session,
+  driver: Driver,
+  profile: StateProfile,
+): Promise<StateLedger> {
   const steps: StateLedger['steps'] = [];
   const seedTransactions: StateSeedTransaction[] = [];
   const startedAt = new Date().toISOString();
@@ -342,18 +381,20 @@ export async function teardownStateProfile(sessions: SessionStore, session: Sess
     if (!fixture?.seed || !cleanup) continue;
     const r = await executeSeed(sessions, session, driver, `${seed.fixture}-cleanup`, cleanup);
     steps.push({ kind: `seedCleanup.${seed.fixture}`, status: r.ok ? 'ok' : 'blocked', detail: r.detail ?? r.warnings.join(' ') });
-    seedTransactions.push(seedTransaction({
-      fixture: seed.fixture,
-      phase: 'cleanup',
-      type: cleanup.type,
-      exactCommand: seedExactCommand(cleanup),
-      ok: r.ok,
-      detail: r.detail,
-      warnings: r.warnings,
-      idempotent: fixture.seed.idempotent,
-      cleanup: r.ok ? 'executed' : 'blocked',
-      profile,
-    }));
+    seedTransactions.push(
+      seedTransaction({
+        fixture: seed.fixture,
+        phase: 'cleanup',
+        type: cleanup.type,
+        exactCommand: seedExactCommand(cleanup),
+        ok: r.ok,
+        detail: r.detail,
+        warnings: r.warnings,
+        idempotent: fixture.seed.idempotent,
+        cleanup: r.ok ? 'executed' : 'blocked',
+        profile,
+      }),
+    );
     if (!r.ok) status = 'state_blocked';
   }
   for (const t of profile.teardown ?? []) {
@@ -364,5 +405,12 @@ export async function teardownStateProfile(sessions: SessionStore, session: Sess
       steps.push({ kind: 'teardown.networkOnline', status: 'ok' });
     }
   }
-  return { profile: profile.name, status, steps, seedTransactions: seedTransactions.length ? seedTransactions : undefined, startedAt, endedAt: new Date().toISOString() };
+  return {
+    profile: profile.name,
+    status,
+    steps,
+    seedTransactions: seedTransactions.length ? seedTransactions : undefined,
+    startedAt,
+    endedAt: new Date().toISOString(),
+  };
 }

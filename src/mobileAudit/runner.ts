@@ -82,7 +82,20 @@ export async function runMobileAudit(
   const finalize = async (id: string, title: string, raw: RawCheckResult): Promise<void> => {
     const issueId = await recordIssue(title, raw);
     if (issueId) issueIds.push(issueId);
-    checks.push({ id, title, profile: opts.profile, status: raw.status, category: raw.category, severity: raw.severity, issueId, reason: raw.reason, evidenceUris: raw.evidenceUris, workflow: raw.workflow, screenId: raw.screenId, nextStep: raw.nextStep });
+    checks.push({
+      id,
+      title,
+      profile: opts.profile,
+      status: raw.status,
+      category: raw.category,
+      severity: raw.severity,
+      issueId,
+      reason: raw.reason,
+      evidenceUris: raw.evidenceUris,
+      workflow: raw.workflow,
+      screenId: raw.screenId,
+      nextStep: raw.nextStep,
+    });
   };
 
   const profilesToRun: AuditProfile[] =
@@ -124,15 +137,25 @@ export async function runMobileAudit(
 
   // Recurrence: a previously-fixed blocker/high issue reopened this run is a release blocker.
   const reopened = queryIssues(session.root, opts.now, { includeSuppressed: false }).recurrenceCandidates;
-  const blockingRecurrence = reopened.some((r) => (r.severity === 'blocker' || r.severity === 'high') && (r.category === 'app_bug' || r.category === 'blocker_app_bug'));
-  for (const r of reopened) if (r.lastRecurrenceMessage && !recurrenceWarnings.includes(r.lastRecurrenceMessage)) recurrenceWarnings.push(r.lastRecurrenceMessage);
+  const blockingRecurrence = reopened.some(
+    (r) => (r.severity === 'blocker' || r.severity === 'high') && (r.category === 'app_bug' || r.category === 'blocker_app_bug'),
+  );
+  for (const r of reopened)
+    if (r.lastRecurrenceMessage && !recurrenceWarnings.includes(r.lastRecurrenceMessage)) recurrenceWarnings.push(r.lastRecurrenceMessage);
 
   // release_gate adds locator readiness + an explicit issue-ledger recurrence check. The recurrence
   // check POINTS AT the existing reopened issue (no duplicate issue is created); plan/execute agree.
   if (opts.profile === 'release_gate') {
     await finalize('locator_readiness', 'Accessibility / test IDs', await C.checkLocatorReadiness(ev));
     if (reopened.length === 0) {
-      checks.push({ id: 'issue_recurrence', title: 'Issue-ledger recurrence', profile: 'release_gate', status: 'pass', reason: 'no previously-fixed issue has regressed', evidenceUris: [] });
+      checks.push({
+        id: 'issue_recurrence',
+        title: 'Issue-ledger recurrence',
+        profile: 'release_gate',
+        status: 'pass',
+        reason: 'no previously-fixed issue has regressed',
+        evidenceUris: [],
+      });
     } else {
       const top = reopened.find((r) => r.severity === 'blocker' || r.severity === 'high') ?? reopened[0];
       const blocking = top.severity === 'blocker' || top.severity === 'high';
@@ -165,7 +188,14 @@ async function runAccountCycle(
   finalize: (id: string, title: string, raw: RawCheckResult) => Promise<void>,
 ): Promise<AuditRunState> {
   if (!opts.allowGeneratedData) {
-    const blocked: RawCheckResult = { status: 'blocked', category: 'missing_test_data', severity: 'medium', reason: 'account-cycle needs generated disposable-account data; re-run with allowGeneratedData in a test/staging environment', evidenceUris: [], workflow: 'account_cycle' };
+    const blocked: RawCheckResult = {
+      status: 'blocked',
+      category: 'missing_test_data',
+      severity: 'medium',
+      reason: 'account-cycle needs generated disposable-account data; re-run with allowGeneratedData in a test/staging environment',
+      evidenceUris: [],
+      workflow: 'account_cycle',
+    };
     await finalize('create_account', 'Create account', blocked);
     await finalize('logout', 'Logout', { status: 'skipped', reason: 'account not created', evidenceUris: [] });
     await finalize('login_again', 'Login again', { status: 'skipped', reason: 'account not created', evidenceUris: [] });
@@ -180,21 +210,52 @@ async function runAccountCycle(
     switch (fr.accountOutcome) {
       case 'created':
       case 'used_provided_credentials':
-        createResult = { status: 'pass', reason: `account ${fr.accountOutcome} (${fr.pathTaken ?? 'auth'})`, evidenceUris: fr.evidenceUris, workflow: 'account_cycle' };
+        createResult = {
+          status: 'pass',
+          reason: `account ${fr.accountOutcome} (${fr.pathTaken ?? 'auth'})`,
+          evidenceUris: fr.evidenceUris,
+          workflow: 'account_cycle',
+        };
         break;
       case 'reached_verification':
-        createResult = { status: 'blocked', category: 'hard_gate', severity: 'medium', reason: 'account creation reached an OTP/verification gate (needs a real code)', evidenceUris: fr.evidenceUris, workflow: 'account_cycle' };
+        createResult = {
+          status: 'blocked',
+          category: 'hard_gate',
+          severity: 'medium',
+          reason: 'account creation reached an OTP/verification gate (needs a real code)',
+          evidenceUris: fr.evidenceUris,
+          workflow: 'account_cycle',
+        };
         runState = 'needs_input';
         break;
       case 'refused_unsafe':
-        createResult = { status: 'blocked', category: 'missing_test_data', severity: 'medium', reason: fr.stoppedReason || 'environment unsafe for generated account creation', evidenceUris: fr.evidenceUris, workflow: 'account_cycle' };
+        createResult = {
+          status: 'blocked',
+          category: 'missing_test_data',
+          severity: 'medium',
+          reason: fr.stoppedReason || 'environment unsafe for generated account creation',
+          evidenceUris: fr.evidenceUris,
+          workflow: 'account_cycle',
+        };
         runState = 'unsafe';
         break;
       default:
-        createResult = { status: 'blocked', reason: `account creation ${fr.accountOutcome}: ${fr.stoppedReason}`, evidenceUris: fr.evidenceUris, workflow: 'account_cycle' };
+        createResult = {
+          status: 'blocked',
+          reason: `account creation ${fr.accountOutcome}: ${fr.stoppedReason}`,
+          evidenceUris: fr.evidenceUris,
+          workflow: 'account_cycle',
+        };
     }
   } catch (e) {
-    createResult = { status: 'fail', category: 'app_bug', severity: 'high', reason: `account creation errored: ${String((e as Error).message ?? e)}`, evidenceUris: [], workflow: 'account_cycle' };
+    createResult = {
+      status: 'fail',
+      category: 'app_bug',
+      severity: 'high',
+      reason: `account creation errored: ${String((e as Error).message ?? e)}`,
+      evidenceUris: [],
+      workflow: 'account_cycle',
+    };
   }
   await finalize('create_account', 'Create account', createResult);
 
@@ -210,11 +271,39 @@ async function runAccountCycle(
     try {
       const lo = await C.findAndTapLogout(ev, true);
       loggedOutText = lo.loggedOutText;
-      if (lo.tapped && lo.authSurface) await finalize('logout', 'Logout', { status: 'pass', reason: 'logged out — reached a logged-out auth surface', evidenceUris: [], workflow: 'account_cycle' });
-      else if (lo.tapped) await finalize('logout', 'Logout', { status: 'skipped', reason: 'tapped a logout control but did not clearly reach a logged-out auth surface — confirm manually', evidenceUris: [], workflow: 'account_cycle' });
-      else await finalize('logout', 'Logout', { status: 'fail', category: 'improvement', severity: 'low', reason: 'no logout control found on the post-login screens', evidenceUris: [], workflow: 'account_cycle', nextStep: 'Expose a logout control once signed in.' });
+      if (lo.tapped && lo.authSurface)
+        await finalize('logout', 'Logout', {
+          status: 'pass',
+          reason: 'logged out — reached a logged-out auth surface',
+          evidenceUris: [],
+          workflow: 'account_cycle',
+        });
+      else if (lo.tapped)
+        await finalize('logout', 'Logout', {
+          status: 'skipped',
+          reason: 'tapped a logout control but did not clearly reach a logged-out auth surface — confirm manually',
+          evidenceUris: [],
+          workflow: 'account_cycle',
+        });
+      else
+        await finalize('logout', 'Logout', {
+          status: 'fail',
+          category: 'improvement',
+          severity: 'low',
+          reason: 'no logout control found on the post-login screens',
+          evidenceUris: [],
+          workflow: 'account_cycle',
+          nextStep: 'Expose a logout control once signed in.',
+        });
     } catch (e) {
-      await finalize('logout', 'Logout', { status: 'fail', category: 'app_bug', severity: 'high', reason: `logout attempt errored: ${String((e as Error).message ?? e)}`, evidenceUris: [], workflow: 'account_cycle' });
+      await finalize('logout', 'Logout', {
+        status: 'fail',
+        category: 'app_bug',
+        severity: 'high',
+        reason: `logout attempt errored: ${String((e as Error).message ?? e)}`,
+        evidenceUris: [],
+        workflow: 'account_cycle',
+      });
     }
 
     // Forgot-password is evaluated on the LOGGED-OUT auth surface captured above (right after logout),
@@ -227,20 +316,66 @@ async function runAccountCycle(
     try {
       const fr2 = await runFirstRun(sessions, session, driver, { mode: 'until_home', allowGeneratedAccount: true });
       let login: RawCheckResult;
-      if (fr2.state === 'completed') login = { status: 'pass', reason: `re-authenticated to home with the generated account (${fr2.pathTaken ?? 'login'})`, evidenceUris: fr2.evidenceUris, workflow: 'account_cycle' };
-      else if (fr2.accountOutcome === 'reached_verification') login = { status: 'blocked', category: 'hard_gate', severity: 'medium', reason: 'login-again hit an OTP/verification gate (needs a real code)', evidenceUris: fr2.evidenceUris, workflow: 'account_cycle' };
-      else if (fr2.needsInput) login = { status: 'blocked', category: 'hard_gate', severity: 'medium', reason: `login-again needs input: ${fr2.needsInput.reason}`, evidenceUris: fr2.evidenceUris, workflow: 'account_cycle' };
-      else login = { status: 'fail', category: 'app_bug', severity: 'high', reason: `could not log back in with the generated account (${fr2.state}: ${fr2.stoppedReason})`, evidenceUris: fr2.evidenceUris, workflow: 'account_cycle' };
+      if (fr2.state === 'completed')
+        login = {
+          status: 'pass',
+          reason: `re-authenticated to home with the generated account (${fr2.pathTaken ?? 'login'})`,
+          evidenceUris: fr2.evidenceUris,
+          workflow: 'account_cycle',
+        };
+      else if (fr2.accountOutcome === 'reached_verification')
+        login = {
+          status: 'blocked',
+          category: 'hard_gate',
+          severity: 'medium',
+          reason: 'login-again hit an OTP/verification gate (needs a real code)',
+          evidenceUris: fr2.evidenceUris,
+          workflow: 'account_cycle',
+        };
+      else if (fr2.needsInput)
+        login = {
+          status: 'blocked',
+          category: 'hard_gate',
+          severity: 'medium',
+          reason: `login-again needs input: ${fr2.needsInput.reason}`,
+          evidenceUris: fr2.evidenceUris,
+          workflow: 'account_cycle',
+        };
+      else
+        login = {
+          status: 'fail',
+          category: 'app_bug',
+          severity: 'high',
+          reason: `could not log back in with the generated account (${fr2.state}: ${fr2.stoppedReason})`,
+          evidenceUris: fr2.evidenceUris,
+          workflow: 'account_cycle',
+        };
       await finalize('login_again', 'Login again', login);
     } catch (e) {
-      await finalize('login_again', 'Login again', { status: 'fail', category: 'app_bug', severity: 'high', reason: `login-again errored: ${String((e as Error).message ?? e)}`, evidenceUris: [], workflow: 'account_cycle' });
+      await finalize('login_again', 'Login again', {
+        status: 'fail',
+        category: 'app_bug',
+        severity: 'high',
+        reason: `login-again errored: ${String((e as Error).message ?? e)}`,
+        evidenceUris: [],
+        workflow: 'account_cycle',
+      });
     }
 
     // Finalize forgot-password with the evidence captured on the logged-out surface (above).
     await finalize('forgot_password', 'Forgot password surface', forgotResult);
   } else {
-    for (const [id, title] of [['logout', 'Logout'], ['login_again', 'Login again'], ['forgot_password', 'Forgot password surface']] as const) {
-      await finalize(id, title, { status: 'skipped', reason: 'account not established this run', evidenceUris: [], workflow: 'account_cycle' });
+    for (const [id, title] of [
+      ['logout', 'Logout'],
+      ['login_again', 'Login again'],
+      ['forgot_password', 'Forgot password surface'],
+    ] as const) {
+      await finalize(id, title, {
+        status: 'skipped',
+        reason: 'account not established this run',
+        evidenceUris: [],
+        workflow: 'account_cycle',
+      });
     }
   }
   return runState;

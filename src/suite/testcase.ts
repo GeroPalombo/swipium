@@ -79,9 +79,7 @@ export function generateTestCases(
   const evidence = notes.flatMap((n) => n.artifactUris ?? []);
   const verifiedVisualOnly = notes.some((n) => n.method === 'visual' || n.verifiedVisually);
 
-  const expected = pom.steps
-    .filter((s) => s.action === 'assertVisible' && s.text)
-    .map((s) => `${s.text} is visible`);
+  const expected = pom.steps.filter((s) => s.action === 'assertVisible' && s.text).map((s) => `${s.text} is visible`);
   if (expected.length === 0) expected.push('App reaches the expected post-flow screen without an error surface');
 
   // Actual result = what THIS run observed (Deliverable 4). Kept separate from `expected` so a
@@ -108,7 +106,11 @@ export function generateTestCases(
       ...(verifiedVisualOnly ? ['some verification was visual-only — weaker than a structured assertion'] : []),
       ...(pom.variables.length ? [`requires test data: ${pom.variables.join(', ')}`] : []),
     ],
-    automation: { status, test: `tests/${kebab(pom.testName)}.smoke.yaml`, pageObjects: pom.pages.map((p) => `pages/${kebab(p.name)}.page.yaml`) },
+    automation: {
+      status,
+      test: `tests/${kebab(pom.testName)}.smoke.yaml`,
+      pageObjects: pom.pages.map((p) => `pages/${kebab(p.name)}.page.yaml`),
+    },
     replayStatus,
     knownBlockers,
     evidence,

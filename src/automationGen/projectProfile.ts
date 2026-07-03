@@ -109,7 +109,11 @@ function readFileSafe(p: string): string {
   }
 }
 
-function detectExistingAutomation(root: string, d: Record<string, unknown>, py: ReturnType<typeof pythonStack>): ExistingAutomationSignal[] {
+function detectExistingAutomation(
+  root: string,
+  d: Record<string, unknown>,
+  py: ReturnType<typeof pythonStack>,
+): ExistingAutomationSignal[] {
   const signals: ExistingAutomationSignal[] = [];
   if (hasDep(d, /^@wdio\/|^webdriverio$/)) signals.push({ tool: 'webdriverio', evidence: 'package.json: webdriverio/@wdio dependency' });
   if (hasDep(d, /^mocha$/)) signals.push({ tool: 'mocha', evidence: 'package.json: mocha dependency' });
@@ -168,8 +172,14 @@ function platformSupport(root: string, fw: Framework, appId?: string): { android
   let android: PlatformSupportLevel = 'none';
   let ios: PlatformSupportLevel = 'none';
 
-  const hasAndroidSource = exists(root, 'android') || exists(root, 'app/build.gradle') || exists(root, 'build.gradle') || exists(root, 'settings.gradle') || exists(root, 'settings.gradle.kts');
-  const hasIosSource = exists(root, 'ios') || readdirSafe(root).some((f) => /\.xcworkspace$|\.xcodeproj$/.test(f)) || exists(root, 'Package.swift');
+  const hasAndroidSource =
+    exists(root, 'android') ||
+    exists(root, 'app/build.gradle') ||
+    exists(root, 'build.gradle') ||
+    exists(root, 'settings.gradle') ||
+    exists(root, 'settings.gradle.kts');
+  const hasIosSource =
+    exists(root, 'ios') || readdirSafe(root).some((f) => /\.xcworkspace$|\.xcodeproj$/.test(f)) || exists(root, 'Package.swift');
 
   if (fw === 'native-android') {
     android = 'supported';
@@ -186,8 +196,14 @@ function platformSupport(root: string, fw: Framework, appId?: string): { android
     iosReasons.push(hasIosSource ? `${fw} with ios/ project` : `${fw} can target iOS (no ios/ folder yet)`);
   } else {
     // Unknown framework: lean on raw source evidence.
-    if (hasAndroidSource) { android = 'supported'; androidReasons.push('android source detected'); }
-    if (hasIosSource) { ios = 'supported'; iosReasons.push('ios source detected'); }
+    if (hasAndroidSource) {
+      android = 'supported';
+      androidReasons.push('android source detected');
+    }
+    if (hasIosSource) {
+      ios = 'supported';
+      iosReasons.push('ios source detected');
+    }
   }
 
   if (appId) {
@@ -217,12 +233,24 @@ function applyPlatformOverride(
   const android = { ...platforms.android };
   const ios = { ...platforms.ios };
   if (override === 'android') {
-    if (ios.level === 'supported') { ios.level = 'evidence_only'; ios.reasons = [...ios.reasons, 'demoted: caller requested android-only generation']; }
+    if (ios.level === 'supported') {
+      ios.level = 'evidence_only';
+      ios.reasons = [...ios.reasons, 'demoted: caller requested android-only generation'];
+    }
   } else if (override === 'ios') {
-    if (android.level === 'supported') { android.level = 'evidence_only'; android.reasons = [...android.reasons, 'demoted: caller requested ios-only generation']; }
+    if (android.level === 'supported') {
+      android.level = 'evidence_only';
+      android.reasons = [...android.reasons, 'demoted: caller requested ios-only generation'];
+    }
   } else if (override === 'both') {
-    if (android.level === 'none') { android.level = 'evidence_only'; android.reasons = [...android.reasons, 'forced: caller requested both platforms']; }
-    if (ios.level === 'none') { ios.level = 'evidence_only'; ios.reasons = [...ios.reasons, 'forced: caller requested both platforms']; }
+    if (android.level === 'none') {
+      android.level = 'evidence_only';
+      android.reasons = [...android.reasons, 'forced: caller requested both platforms'];
+    }
+    if (ios.level === 'none') {
+      ios.level = 'evidence_only';
+      ios.reasons = [...ios.reasons, 'forced: caller requested both platforms'];
+    }
   }
   return { android, ios };
 }

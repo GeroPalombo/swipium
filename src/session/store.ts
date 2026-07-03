@@ -1,12 +1,14 @@
 // Session + job + artifact store with DISK PERSISTENCE (DESIGN §3, M6).
 // Live, non-serializable bits (driver, lastSnapshot, abort controllers) stay in memory;
-// a serializable subset is written to <sessionDir>/state.json on every mutation, and a
-// small registry under ~/.swipium/registry.json lets a fresh server instance reload
-// prior sessions so artifacts/reports/job-status survive a server restart. (A restart does
-// NOT resurrect a running child process — such jobs are marked failed on reload.)
+// a serializable subset is written to <sessionDir>/state.json on mutation (debounced;
+// synchronous for the mutation ledger + session creation + shutdown flush), and a small
+// registry under ~/.swipium/registry.json — lock-guarded, lazily loaded on first access —
+// lets a fresh server instance reload prior sessions so artifacts/reports/job-status survive
+// a server restart. (A restart does NOT resurrect a running child process — such jobs are
+// marked failed on reload, and orphaned Metro pids are verified via `ps` and reaped.)
 
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import type { Driver } from '../drivers/Driver.js';
@@ -14,6 +16,9 @@ import type { RawNode } from '../snapshot/parse.js';
 import type { ResponseMode } from '../lib/result.js';
 import { DEFAULT_RESPONSE_MODE } from '../lib/result.js';
 import { makeRedactor } from '../lib/redact.js';
+import { withFileLock } from '../lib/lockfile.js';
+import { log } from '../lib/logger.js';
+import { pidOwnedByLiveServer, reclaimPid } from './processRegistry.js';
 
 export type JobStatus = 'running' | 'done' | 'failed' | 'cancelled';
 
@@ -51,6 +56,10 @@ export interface ArtifactRecord {
   kind: string;
   createdAt: number;
   label?: string; // optional human reason/label (e.g. why a screenshot was taken)
+  /** Whether secret redaction was applied to the stored bytes. Text artifacts get the session
+   * redactor ('applied'); binary artifacts (screenshots/recordings) CANNOT be redacted and are
+   * tagged 'not-applied' so consumers know pixels may contain visible sensitive content. */
+  redaction?: 'applied' | 'not-applied';
 }
 
 export interface MutationRecord {
@@ -82,13 +91,7 @@ export interface FindingRecord {
 // app bug from a blocked precondition / missing test data / intentional skip / refused action,
 // so reports stop mislabeling "no saved flight to delete" as a failure.
 export type TestOutcome = 'pass' | 'fail' | 'blocked' | 'skipped' | 'not_applicable';
-export type TestCategory =
-  | 'app_bug'
-  | 'mcp_limitation'
-  | 'missing_test_data'
-  | 'intentionally_skipped'
-  | 'destructive_refused'
-  | 'other';
+export type TestCategory = 'app_bug' | 'mcp_limitation' | 'missing_test_data' | 'intentionally_skipped' | 'destructive_refused' | 'other';
 export type TestEvidenceKind = 'structured_locator' | 'ocr_locator' | 'visual_match' | 'ai_visual_evidence' | 'manual_review' | 'ocr_text';
 
 export interface TestNote {
@@ -110,7 +113,7 @@ export interface TestNote {
 }
 
 // Action IR (DESIGN §8 / PHASE3-PLAN §4.1): qa_act appends a tagged step here as the agent
-// explores, so a successful run can be serialized into a durable flow (qa_flow_generate). The
+// explores, so a successful run can be serialized into a durable flow (qa_generate target:"flow"). The
 // exportability tag drives the durability grade: semantic (text/id) replays anywhere;
 // coordinate is brittle; needs-human-data is a credential that must become a ${VAR}.
 export type Exportability = 'semantic' | 'coordinate' | 'needs-human-data';
@@ -310,7 +313,7 @@ export interface Session {
   findings: FindingRecord[];
   notes: TestNote[]; // structured test outcomes (qa_note) — Phase 2.2
   mutations: MutationRecord[]; // central mutation ledger for consent-bound side effects
-  recordedActions: RecordedAction[]; // action IR for qa_flow_generate (PHASE3-PLAN §4.1)
+  recordedActions: RecordedAction[]; // action IR for qa_generate target:"flow" (PHASE3-PLAN §4.1)
   fixtures: Fixture[]; // declared preconditions — Phase 2.2 P1.4
   auth: AuthState; // observed auth state — Phase 2.2 P1.5
   milestones: Record<string, number>; // phase timing markers — Phase 2.2 P1.6
@@ -347,8 +350,10 @@ export function isTextArtifactMime(mime: string): boolean {
 
 export function artifactDirectoryName(kind: string): string {
   switch (kind) {
-    case 'screenshot': return 'screenshots';
-    case 'recording': return 'videos';
+    case 'screenshot':
+      return 'screenshots';
+    case 'recording':
+      return 'videos';
     case 'logs':
     case 'logcat':
     case 'metro':
@@ -364,59 +369,158 @@ function defaultSessionDir(root: string, id: string): string {
   return join(REGISTRY_DIR, 'runs', projectHash, id);
 }
 
+/** Trailing debounce for state.json writes (P2 write amplification): every mutator used to
+ * rewrite the full file synchronously. Correctness-critical writes (session creation, the
+ * mutation ledger, shutdown) still flush synchronously via persistNow()/flushAll(). */
+const PERSIST_DEBOUNCE_MS = 150;
+
 export class SessionStore {
   private sessions = new Map<string, Session>();
+  // Lazy prior-session loading (P2 startup cost): the registry of up to 200 prior sessions is
+  // read on first access (get/list/find/create), not in the constructor.
+  private registryLoaded = false;
+  private dirty = new Set<Session>();
+  private flushTimer: ReturnType<typeof setTimeout> | undefined;
 
-  constructor() {
+  private ensureRegistryLoaded(): void {
+    if (this.registryLoaded) return;
+    this.registryLoaded = true;
     this.loadRegistry();
   }
 
   create(root: string, budget?: Partial<Budget>, opts?: CreateSessionOptions): Session {
+    this.ensureRegistryLoaded();
     const id = randomUUID().slice(0, 8);
     const dir = opts?.sessionDir ?? defaultSessionDir(root, id);
     mkdirSync(dir, { recursive: true });
     const now = Date.now();
     const s: Session = {
-      id, root, dir, createdAt: now, screenshotCount: 0,
+      id,
+      root,
+      dir,
+      createdAt: now,
+      screenshotCount: 0,
       mode: 'structured',
       responseMode: opts?.responseMode ?? DEFAULT_RESPONSE_MODE,
       sensitive: opts?.sensitive ?? false,
       budget: { ...DEFAULT_BUDGET, ...(budget ?? {}) },
       counters: { actions: 0, screenshots: 0, snapshotFailures: 0, noChangeActions: 0 },
-      envChanges: [], workarounds: [],
-      jobs: new Map(), artifacts: [], findings: [], notes: [], mutations: [], recordedActions: [],
-      fixtures: opts?.fixtures ?? [], auth: {}, milestones: { session_start: now }, budgetProfile: opts?.budgetProfile,
-      secrets: new Set(), inputs: [], generatedValues: [], inputValues: new Map(), aborts: new Map(),
+      envChanges: [],
+      workarounds: [],
+      jobs: new Map(),
+      artifacts: [],
+      findings: [],
+      notes: [],
+      mutations: [],
+      recordedActions: [],
+      fixtures: opts?.fixtures ?? [],
+      auth: {},
+      milestones: { session_start: now },
+      budgetProfile: opts?.budgetProfile,
+      secrets: new Set(),
+      inputs: [],
+      generatedValues: [],
+      inputValues: new Map(),
+      aborts: new Map(),
     };
     this.sessions.set(id, s);
     this.appendRegistry(id, dir);
-    this.persist(s);
+    this.persistNow(s); // synchronous: a concurrent instance / crash must see the new session
     return s;
   }
 
   get(id: string): Session | undefined {
+    this.ensureRegistryLoaded();
     return this.sessions.get(id);
   }
   list(): Session[] {
+    this.ensureRegistryLoaded();
     return [...this.sessions.values()];
   }
 
+  /** Schedule a state.json write (trailing debounce). Mutators call this on every change;
+   * the actual write happens at most once per PERSIST_DEBOUNCE_MS per burst. Use
+   * persistNow()/flushAll() where a synchronous write is required for correctness. */
   persist(s: Session): void {
+    this.dirty.add(s);
+    if (this.flushTimer) return;
+    this.flushTimer = setTimeout(() => this.flushDirty(), PERSIST_DEBOUNCE_MS);
+    this.flushTimer.unref?.(); // never keep the process alive just for a pending flush
+  }
+
+  /** Write this session's state.json immediately (and drop any pending debounce for it). */
+  persistNow(s: Session): void {
+    this.dirty.delete(s);
+    this.writeState(s);
+  }
+
+  /** Flush every dirty session synchronously. Called on shutdown / process exit so a graceful
+   * stop never loses debounced state. */
+  flushAll(): void {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = undefined;
+    }
+    for (const s of [...this.dirty]) {
+      this.dirty.delete(s);
+      this.writeState(s);
+    }
+  }
+
+  private flushDirty(): void {
+    this.flushTimer = undefined;
+    for (const s of [...this.dirty]) {
+      this.dirty.delete(s);
+      this.writeState(s);
+    }
+  }
+
+  private writeState(s: Session): void {
     try {
       const state = {
-        id: s.id, root: s.root, dir: s.dir, createdAt: s.createdAt,
-        device: s.device, appId: s.appId, headless: s.headless, metroPid: s.metroPid, screenshotCount: s.screenshotCount,
-        network: s.network, envChanges: s.envChanges, workarounds: s.workarounds,
-        mode: s.mode, responseMode: s.responseMode, sensitive: s.sensitive, budget: s.budget, counters: s.counters,
-        jobs: [...s.jobs.values()], artifacts: s.artifacts, findings: s.findings, notes: s.notes, mutations: s.mutations, recordedActions: s.recordedActions,
-        fixtures: s.fixtures, auth: s.auth, milestones: s.milestones, budgetProfile: s.budgetProfile,
+        id: s.id,
+        root: s.root,
+        dir: s.dir,
+        createdAt: s.createdAt,
+        device: s.device,
+        appId: s.appId,
+        headless: s.headless,
+        metroPid: s.metroPid,
+        screenshotCount: s.screenshotCount,
+        network: s.network,
+        envChanges: s.envChanges,
+        workarounds: s.workarounds,
+        mode: s.mode,
+        responseMode: s.responseMode,
+        sensitive: s.sensitive,
+        budget: s.budget,
+        counters: s.counters,
+        jobs: [...s.jobs.values()],
+        artifacts: s.artifacts,
+        findings: s.findings,
+        notes: s.notes,
+        mutations: s.mutations,
+        recordedActions: s.recordedActions,
+        fixtures: s.fixtures,
+        auth: s.auth,
+        milestones: s.milestones,
+        budgetProfile: s.budgetProfile,
         inputs: s.inputs, // METADATA only — never the values
         generatedValues: serializeGeneratedValues(s.generatedValues), // secret raw values redacted before disk
         exploration: s.exploration,
       };
-      writeFileSync(join(s.dir, 'state.json'), JSON.stringify(state, null, 2));
-    } catch {
-      /* best-effort */
+      // Atomic write (tmp + rename) so a crash mid-write never leaves a truncated state.json.
+      const target = join(s.dir, 'state.json');
+      const tmp = `${target}.${process.pid}.tmp`;
+      writeFileSync(tmp, JSON.stringify(state, null, 2));
+      renameSync(tmp, target);
+    } catch (e) {
+      // A silent failure here means session state (jobs/artifacts/findings) is lost on restart.
+      log('error', 'failed to persist session state.json — this session will not survive a server restart', {
+        sessionId: s.id,
+        dir: s.dir,
+        err: String(e),
+      });
     }
   }
 
@@ -449,7 +553,8 @@ export class SessionStore {
     if (mins >= b.maxMinutes) return `time budget reached (${mins.toFixed(1)}/${b.maxMinutes} min)`;
     if (c.actions >= b.maxActions) return `action budget reached (${c.actions}/${b.maxActions})`;
     if (c.screenshots >= b.maxScreenshots) return `screenshot budget reached (${c.screenshots}/${b.maxScreenshots})`;
-    if (c.noChangeActions >= b.maxNoChangeActions) return `repeated no-change actions (${c.noChangeActions}/${b.maxNoChangeActions}) — likely wrong coords / disabled element / auth wall`;
+    if (c.noChangeActions >= b.maxNoChangeActions)
+      return `repeated no-change actions (${c.noChangeActions}/${b.maxNoChangeActions}) — likely wrong coords / disabled element / auth wall`;
     return null;
   }
   updateJob(s: Session, job: JobRecord, patch: Partial<JobRecord>): void {
@@ -499,10 +604,10 @@ export class SessionStore {
     const rec: MutationRecord = { id: randomUUID().slice(0, 8), at: Date.now(), ...mutation };
     s.mutations.push(rec);
     if (s.mutations.length > 500) s.mutations.splice(0, s.mutations.length - 500);
-    this.persist(s);
+    this.persistNow(s); // the mutation ledger is an audit trail — never leave it debounce-only
     return rec;
   }
-  /** Append an action-IR step (bounded) for qa_flow_generate. */
+  /** Append an action-IR step (bounded) for qa_generate target:"flow". */
   addRecordedAction(s: Session, ra: RecordedAction): void {
     s.recordedActions.push(ra);
     if (s.recordedActions.length > 300) s.recordedActions.splice(0, s.recordedActions.length - 300);
@@ -559,15 +664,27 @@ export class SessionStore {
     mkdirSync(sub, { recursive: true });
     const path = join(sub, name);
     const redact = makeRedactor(s.secrets);
-    const storedData = typeof data === 'string' && isTextArtifactMime(mime) ? (redact(data) ?? '') : data;
+    const isRedactableText = typeof data === 'string' && isTextArtifactMime(mime);
+    const storedData = isRedactableText ? (redact(data) ?? '') : data;
     const storedLabel = label ? redact(label) : label;
     writeFileSync(path, storedData);
     const uri = `swipium://session/${s.id}/${kind}/${name}`;
-    s.artifacts.push({ uri, path, mime, kind, createdAt: Date.now(), label: storedLabel });
+    // Binary artifacts (screenshots/recordings) cannot be redacted — tag them explicitly so
+    // consumers (qa_get_artifact, reports) know pixels may show sensitive on-screen content.
+    s.artifacts.push({
+      uri,
+      path,
+      mime,
+      kind,
+      createdAt: Date.now(),
+      label: storedLabel,
+      redaction: isRedactableText ? 'applied' : 'not-applied',
+    });
     this.persist(s);
     return uri;
   }
   findArtifact(uri: string): { session: Session; rec: ArtifactRecord } | undefined {
+    this.ensureRegistryLoaded();
     for (const s of this.sessions.values()) {
       const rec = s.artifacts.find((a) => a.uri === uri);
       if (rec) return { session: s, rec };
@@ -575,7 +692,7 @@ export class SessionStore {
     return undefined;
   }
 
-  // ---- persistence reload ----
+  // ---- persistence reload (lazy — triggered by the first get/list/find/create) ----
   private loadRegistry(): void {
     try {
       if (!existsSync(REGISTRY)) return;
@@ -585,6 +702,8 @@ export class SessionStore {
         if (!existsSync(sp)) continue;
         try {
           const st = JSON.parse(readFileSync(sp, 'utf8'));
+          // Never clobber a LIVE session created by this process (lazy load can run after create()).
+          if (typeof st.id === 'string' && this.sessions.has(st.id)) continue;
           const jobs = new Map<string, JobRecord>((st.jobs ?? []).map((j: JobRecord) => [j.jobId, j]));
           for (const j of jobs.values()) {
             if (j.status === 'running') {
@@ -592,36 +711,89 @@ export class SessionStore {
               j.error = 'server restarted while job was running (child process gone)';
             }
           }
+          // Orphaned-process handling: a prior server persisted its Metro pid. If no live
+          // server instance owns that pid, verify via `ps` that it still IS a bundler-ish
+          // process and reap it; a recycled pid is never signalled. Either way the reloaded
+          // session drops the pid — it is not ours to manage (or stop) anymore.
+          if (typeof st.metroPid === 'number' && st.metroPid > 0) {
+            if (!pidOwnedByLiveServer(st.metroPid)) {
+              const outcome = reclaimPid(st.metroPid, 'metro');
+              if (outcome === 'killed')
+                log('warn', 'reaped orphaned Metro bundler from a previous server run', { pid: st.metroPid, sessionId: st.id });
+            }
+            st.metroPid = undefined; // reaped, gone, recycled, or another live server's — never ours
+          }
           const s: Session = {
-            id: st.id, root: st.root, dir: st.dir, createdAt: st.createdAt,
-            device: st.device, appId: st.appId, headless: st.headless, metroPid: st.metroPid, screenshotCount: st.screenshotCount ?? 0,
-            network: st.network, envChanges: st.envChanges ?? [], workarounds: st.workarounds ?? [],
+            id: st.id,
+            root: st.root,
+            dir: st.dir,
+            createdAt: st.createdAt,
+            device: st.device,
+            appId: st.appId,
+            headless: st.headless,
+            metroPid: st.metroPid,
+            screenshotCount: st.screenshotCount ?? 0,
+            network: st.network,
+            envChanges: st.envChanges ?? [],
+            workarounds: st.workarounds ?? [],
             mode: st.mode ?? 'structured',
             responseMode: st.responseMode ?? DEFAULT_RESPONSE_MODE,
             sensitive: st.sensitive ?? false,
             budget: { ...DEFAULT_BUDGET, ...(st.budget ?? {}) },
             counters: { actions: 0, screenshots: 0, snapshotFailures: 0, noChangeActions: 0, ...(st.counters ?? {}) },
-            jobs, artifacts: st.artifacts ?? [], findings: st.findings ?? [], notes: st.notes ?? [], mutations: st.mutations ?? [], recordedActions: st.recordedActions ?? [],
-            fixtures: st.fixtures ?? [], auth: st.auth ?? {}, milestones: st.milestones ?? { session_start: st.createdAt }, budgetProfile: st.budgetProfile,
-            secrets: new Set(), inputs: st.inputs ?? [], generatedValues: st.generatedValues ?? [], inputValues: new Map(), exploration: st.exploration, aborts: new Map(),
+            jobs,
+            artifacts: st.artifacts ?? [],
+            findings: st.findings ?? [],
+            notes: st.notes ?? [],
+            mutations: st.mutations ?? [],
+            recordedActions: st.recordedActions ?? [],
+            fixtures: st.fixtures ?? [],
+            auth: st.auth ?? {},
+            milestones: st.milestones ?? { session_start: st.createdAt },
+            budgetProfile: st.budgetProfile,
+            secrets: new Set(),
+            inputs: st.inputs ?? [],
+            generatedValues: st.generatedValues ?? [],
+            inputValues: new Map(),
+            exploration: st.exploration,
+            aborts: new Map(),
           };
           this.sessions.set(s.id, s);
-        } catch {
-          /* skip a corrupt session */
+        } catch (e) {
+          // Skip a corrupt session, but say so — otherwise prior artifacts/reports vanish silently.
+          log('warn', 'skipping corrupt prior session state.json on reload', { dir, err: String(e) });
         }
       }
-    } catch {
-      /* no registry */
+    } catch (e) {
+      log('warn', 'session registry unreadable — prior sessions will not be reloaded', { registry: REGISTRY, err: String(e) });
     }
   }
+  /** Append this session to the shared ~/.swipium/registry.json. Guarded by an advisory
+   * lockfile + atomic rename so two concurrent server instances (common with multiple MCP
+   * clients) never clobber each other's read-modify-write. */
   private appendRegistry(id: string, dir: string): void {
     try {
       mkdirSync(REGISTRY_DIR, { recursive: true });
-      const reg: Array<{ id: string; dir: string }> = existsSync(REGISTRY) ? JSON.parse(readFileSync(REGISTRY, 'utf8')) : [];
-      reg.push({ id, dir });
-      writeFileSync(REGISTRY, JSON.stringify(reg.slice(-200), null, 2));
-    } catch {
-      /* best-effort */
+      withFileLock(`${REGISTRY}.lock`, () => {
+        let reg: Array<{ id: string; dir: string }> = [];
+        if (existsSync(REGISTRY)) {
+          try {
+            const parsed: unknown = JSON.parse(readFileSync(REGISTRY, 'utf8'));
+            if (Array.isArray(parsed)) reg = parsed;
+          } catch (e) {
+            log('warn', 'registry.json corrupt — rebuilding it (prior sessions may need re-registration)', {
+              registry: REGISTRY,
+              err: String(e),
+            });
+          }
+        }
+        reg.push({ id, dir });
+        const tmp = `${REGISTRY}.${process.pid}.tmp`;
+        writeFileSync(tmp, JSON.stringify(reg.slice(-200), null, 2));
+        renameSync(tmp, REGISTRY); // atomic on the same filesystem
+      });
+    } catch (e) {
+      log('error', 'failed to append session to registry — it will not be reloadable after a restart', { id, dir, err: String(e) });
     }
   }
 }

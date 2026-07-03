@@ -18,7 +18,10 @@ function appSignature(appPath: string): string {
   try {
     const plist = join(appPath, 'Info.plist');
     if (existsSync(plist)) return createHash('sha256').update(readFileSync(plist)).digest('hex').slice(0, 16);
-    return createHash('sha256').update(`${appPath}:${statSync(appPath).mtimeMs}`).digest('hex').slice(0, 16);
+    return createHash('sha256')
+      .update(`${appPath}:${statSync(appPath).mtimeMs}`)
+      .digest('hex')
+      .slice(0, 16);
   } catch {
     return 'unknown';
   }
@@ -40,16 +43,25 @@ export function registerPrepareIosTarget(server: McpServer, sessions: SessionSto
         sessionId: z.string(),
         app: z.string().optional().describe('Simulator .app path (absolute or project-relative).'),
         bundleId: z.string().optional(),
-        simulator: z.string().optional().describe('Simulator udid or name substring.'),
+        device: z
+          .string()
+          .optional()
+          .describe('Simulator UDID or name substring to prepare (same selector param name as the other tools).'),
         launch: z.boolean().optional(),
         attachWda: z.enum(['auto', 'required', 'skip']).optional(),
         consentId: z.string().optional(),
         approve: z.boolean().optional(),
       },
     },
-    async ({ sessionId, app, bundleId, simulator, launch, attachWda, consentId, approve }) => {
+    async ({ sessionId, app, bundleId, device, launch, attachWda, consentId, approve }) => {
       const session = sessions.get(sessionId);
-      if (!session) return qaError({ what: `Unknown sessionId "${sessionId}"`, changedState: false, retrySafe: true, nextSteps: ['Call qa_start_session first.'] });
+      if (!session)
+        return qaError({
+          what: `Unknown sessionId "${sessionId}"`,
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Call qa_start_session first.'],
+        });
 
       // Installing app code is privileged → consent (mirrors qa_ios install).
       let mutationConsent: { required: boolean; consentId?: string; approved: boolean; payloadHash?: string } | undefined;
@@ -70,7 +82,8 @@ export function registerPrepareIosTarget(server: McpServer, sessions: SessionSto
             status: 'requested',
           });
           return requireConsent({
-            action: 'install_app', risk: affects.external ? 'medium' : 'low',
+            action: 'install_app',
+            risk: affects.external ? 'medium' : 'low',
             exactCommand: `xcrun simctl install <booted> ${abs}`,
             affects,
             explain: `Boot a simulator and install ${abs}${affects.external ? ' (outside the project root)' : ''}? It runs third-party app code.`,
@@ -87,7 +100,12 @@ export function registerPrepareIosTarget(server: McpServer, sessions: SessionSto
         });
       }
 
-      const res = await prepareIos(sessions, session, { app, bundleId, simulator, launch, attachWda, mutationConsent }, { onProgress: () => {} });
+      const res = await prepareIos(
+        sessions,
+        session,
+        { app, bundleId, simulator: device, launch, attachWda, mutationConsent },
+        { onProgress: () => {} },
+      );
       if (!res.ok) {
         if (installAffects) {
           sessions.recordMutation(session, {
@@ -100,10 +118,21 @@ export function registerPrepareIosTarget(server: McpServer, sessions: SessionSto
             detail: res.error ?? res.failureCode ?? 'prepare failed',
           });
         }
-        return qaFail((res.failureCode as FailureCode) ?? 'APP_LAUNCH_FAILED', { what: res.error ?? 'iOS prepare failed', extra: { udid: res.udid ?? null, name: res.name ?? null } });
+        return qaFail((res.failureCode as FailureCode) ?? 'APP_LAUNCH_FAILED', {
+          what: res.error ?? 'iOS prepare failed',
+          extra: { udid: res.udid ?? null, name: res.name ?? null },
+        });
       }
       return qaOk(
-        { udid: res.udid, name: res.name, bundleId: res.bundleId ?? null, installed: res.installed, launched: res.launched, mode: res.mode, wda: res.wda ?? null },
+        {
+          udid: res.udid,
+          name: res.name,
+          bundleId: res.bundleId ?? null,
+          installed: res.installed,
+          launched: res.launched,
+          mode: res.mode,
+          wda: res.wda ?? null,
+        },
         res.resultText ?? 'iOS target prepared.',
       );
     },

@@ -5,7 +5,8 @@ import type { SnapshotElement } from '../drivers/Driver.js';
 import type { PlannedAction } from './types.js';
 
 // Controls that buy / subscribe — must never be auto-tapped.
-const PURCHASE = /\b(subscribe|buy|purchase|start\s+(free\s+)?trial|upgrade|continue\s+to\s+payment|pay|unlock\s+premium|get\s+premium|choose\s+plan|select\s+plan)\b/i;
+const PURCHASE =
+  /\b(subscribe|buy|purchase|start\s+(free\s+)?trial|upgrade|continue\s+to\s+payment|pay|unlock\s+premium|get\s+premium|choose\s+plan|select\s+plan)\b/i;
 // Safe ways off a paywall.
 const SAFE_DISMISS: Array<{ re: RegExp; rank: number; why: string }> = [
   { re: /\b(skip)\b/i, rank: 4, why: 'skip the paywall' },

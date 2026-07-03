@@ -104,11 +104,11 @@ export function registerPrompts(server: McpServer): void {
     ({ name }) =>
       userText(
         `Turn the workflow you just ran into a repeatable Swipium flow.\n\n` +
-          `1. Write a flow YAML named "${name ?? 'my-flow'}" with: name, appId, budgetProfile, fixtures, and a steps list.\n` +
+          `1. Call qa_generate { sessionId, target: "flow", name: "${name ?? 'my-flow'}" } to draft the flow YAML from the recorded actions (or write it by hand with: name, appId, budgetProfile, fixtures, and a steps list).\n` +
           `2. Use durable selectors: prefer text/id (e.g. tap: "Sign In") over @ref. Replace credentials with \${TEST_EMAIL}/\${TEST_PASSWORD} variables — never inline secrets.\n` +
           `   Available steps: prepareTarget, tap, tapAt, inputText, assertVisible, assertNotVisible, swipe, scrollTo, press, openUrl, wait.\n` +
-          `3. Validate it with qa_flow_check { flowYaml: "<your yaml>" } and fix any reported errors.\n` +
-          `4. Save it under .swipium/flows/${name ?? 'my-flow'}.yaml so qa_plan lists it and qa_flow_run can replay it.`,
+          `3. Validate it with qa_flow_check { flowYaml: "<your yaml>" } and fix any reported errors (qa_generate also reports a durability grade + brittle steps).\n` +
+          `4. Save it under .swipium/flows/${name ?? 'my-flow'}.yaml (qa_generate save:true does this) so qa_plan lists it and qa_flow_run can replay it.`,
       ),
   );
 }

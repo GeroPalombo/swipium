@@ -27,7 +27,12 @@ export interface PrelaunchAppMapResult {
 export interface PrelaunchOptions {
   at: string; // ISO timestamp (caller supplies — deterministic/testable)
   forceRescan?: boolean;
-  appIdentityHints?: { androidPackage?: string | null; iosBundleId?: string | null; artifactHash?: string | null; environment?: string | null };
+  appIdentityHints?: {
+    androidPackage?: string | null;
+    iosBundleId?: string | null;
+    artifactHash?: string | null;
+    environment?: string | null;
+  };
   persist?: boolean; // default true
 }
 

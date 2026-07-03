@@ -99,7 +99,11 @@ export function ciRequiredVariables(flow: Flow): CiMissingVariable[] {
   return out;
 }
 
-export function validateCiVariables(flows: Flow[], env: NodeJS.ProcessEnv = process.env, variables: Record<string, string> = {}): CiVariablePreflight {
+export function validateCiVariables(
+  flows: Flow[],
+  env: NodeJS.ProcessEnv = process.env,
+  variables: Record<string, string> = {},
+): CiVariablePreflight {
   const missing = flows
     .flatMap((flow) => ciRequiredVariables(flow))
     .filter((v) => {

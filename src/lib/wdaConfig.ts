@@ -33,15 +33,14 @@ function resolvePath(root: string, path: string): string {
 function developmentTeamFrom(wda?: Record<string, unknown>): string | undefined {
   if (typeof wda?.developmentTeam === 'string' && wda.developmentTeam.trim()) return wda.developmentTeam.trim();
   if (typeof process.env.DEVELOPMENT_TEAM === 'string' && process.env.DEVELOPMENT_TEAM.trim()) return process.env.DEVELOPMENT_TEAM.trim();
-  if (typeof process.env.XCODE_DEVELOPMENT_TEAM === 'string' && process.env.XCODE_DEVELOPMENT_TEAM.trim()) return process.env.XCODE_DEVELOPMENT_TEAM.trim();
+  if (typeof process.env.XCODE_DEVELOPMENT_TEAM === 'string' && process.env.XCODE_DEVELOPMENT_TEAM.trim())
+    return process.env.XCODE_DEVELOPMENT_TEAM.trim();
   return undefined;
 }
 
 function plainObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>).filter(([key]) => key.trim().length > 0),
-  );
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([key]) => key.trim().length > 0));
 }
 
 export function loadWdaConfig(root: string): WdaConfig {
@@ -49,15 +48,19 @@ export function loadWdaConfig(root: string): WdaConfig {
   const raw = (cfg?.ios as Record<string, unknown> | undefined)?.wda;
   if (!raw || typeof raw !== 'object') {
     const team = developmentTeamFrom();
-    return { ...DEFAULT_WDA_CONFIG, derivedDataPath: resolvePath(root, DEFAULT_WDA_CONFIG.derivedDataPath), ...(team ? { developmentTeam: team } : {}) };
+    return {
+      ...DEFAULT_WDA_CONFIG,
+      derivedDataPath: resolvePath(root, DEFAULT_WDA_CONFIG.derivedDataPath),
+      ...(team ? { developmentTeam: team } : {}),
+    };
   }
   const wda = raw as Record<string, unknown>;
-  const derivedDataPath = typeof wda.derivedDataPath === 'string' && wda.derivedDataPath.trim()
-    ? wda.derivedDataPath
-    : DEFAULT_WDA_CONFIG.derivedDataPath;
-  const startupTimeoutMs = typeof wda.startupTimeoutMs === 'number' && Number.isFinite(wda.startupTimeoutMs) && wda.startupTimeoutMs > 0
-    ? Math.floor(wda.startupTimeoutMs)
-    : DEFAULT_WDA_CONFIG.startupTimeoutMs;
+  const derivedDataPath =
+    typeof wda.derivedDataPath === 'string' && wda.derivedDataPath.trim() ? wda.derivedDataPath : DEFAULT_WDA_CONFIG.derivedDataPath;
+  const startupTimeoutMs =
+    typeof wda.startupTimeoutMs === 'number' && Number.isFinite(wda.startupTimeoutMs) && wda.startupTimeoutMs > 0
+      ? Math.floor(wda.startupTimeoutMs)
+      : DEFAULT_WDA_CONFIG.startupTimeoutMs;
   const allowNonLoopbackUrls = Array.isArray(wda.allowNonLoopbackUrls)
     ? wda.allowNonLoopbackUrls.filter((v): v is string => typeof v === 'string' && v.trim().length > 0).map((v) => v.replace(/\/+$/, ''))
     : DEFAULT_WDA_CONFIG.allowNonLoopbackUrls;
@@ -75,9 +78,19 @@ export function loadWdaConfig(root: string): WdaConfig {
   };
 }
 
-export function wdaSigningStatus(config: Pick<WdaConfig, 'developmentTeam'>): { configured: boolean; developmentTeam?: string; source: 'config-or-env' | 'missing'; message: string } {
+export function wdaSigningStatus(config: Pick<WdaConfig, 'developmentTeam'>): {
+  configured: boolean;
+  developmentTeam?: string;
+  source: 'config-or-env' | 'missing';
+  message: string;
+} {
   return config.developmentTeam
-    ? { configured: true, developmentTeam: config.developmentTeam, source: 'config-or-env', message: 'development team configured for managed WDA signing' }
+    ? {
+        configured: true,
+        developmentTeam: config.developmentTeam,
+        source: 'config-or-env',
+        message: 'development team configured for managed WDA signing',
+      }
     : { configured: false, source: 'missing', message: 'no development team configured; managed WDA signing may fail' };
 }
 

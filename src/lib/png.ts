@@ -77,12 +77,23 @@ export function decodePng(buf: Buffer): DecodedImage {
       const c = x >= channels && y > 0 ? out[po + x - channels] : 0; // up-left
       let val: number;
       switch (filter) {
-        case 0: val = cur; break;
-        case 1: val = cur + a; break;
-        case 2: val = cur + b; break;
-        case 3: val = cur + ((a + b) >> 1); break;
-        case 4: val = cur + paeth(a, b, c); break;
-        default: throw new Error(`bad PNG filter ${filter} at row ${y}`);
+        case 0:
+          val = cur;
+          break;
+        case 1:
+          val = cur + a;
+          break;
+        case 2:
+          val = cur + b;
+          break;
+        case 3:
+          val = cur + ((a + b) >> 1);
+          break;
+        case 4:
+          val = cur + paeth(a, b, c);
+          break;
+        default:
+          throw new Error(`bad PNG filter ${filter} at row ${y}`);
       }
       out[o + x] = val & 0xff;
     }

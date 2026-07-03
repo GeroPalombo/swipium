@@ -45,12 +45,16 @@ export async function runInit(args: string[]): Promise<void> {
     for (const f of result.files) {
       process.stdout.write(`  ${f.written ? 'wrote' : 'kept'} ${f.path}${f.skipped ? ' (--force to overwrite)' : ''}\n`);
     }
-    process.stdout.write('\nNext: edit selectors/variables, then validate with qa_flow_check and run with qa_flow_run from an MCP session.\n');
+    process.stdout.write(
+      '\nNext: edit selectors/variables, then validate with qa_flow_check and run with qa_flow_run from an MCP session.\n',
+    );
     return;
   }
 
   if (!['claude', 'gemini', 'codex'].includes(client)) {
-    process.stdout.write('Usage: swipium init <claude|gemini|codex> [--apply] [--scope project|user|local]\n       swipium init flows [--root <dir>] [--force]\n');
+    process.stdout.write(
+      'Usage: swipium init <claude|gemini|codex> [--apply] [--scope project|user|local]\n       swipium init flows [--root <dir>] [--force]\n',
+    );
     process.exitCode = 2;
     return;
   }
@@ -79,7 +83,9 @@ export async function runInit(args: string[]): Promise<void> {
         await runVerify();
       }
     } else {
-      process.stdout.write(`Preview (run with --apply):\n  gemini ${cmd.join(' ')}\nor add to ~/.gemini/settings.json:\n${geminiBlock(node)}\n`);
+      process.stdout.write(
+        `Preview (run with --apply):\n  gemini ${cmd.join(' ')}\nor add to ~/.gemini/settings.json:\n${geminiBlock(node)}\n`,
+      );
     }
   } else {
     // codex — no `mcp add`; write config.toml (append if absent), then self-verify.
@@ -94,7 +100,9 @@ export async function runInit(args: string[]): Promise<void> {
         appendFileSync(cfg, `\n${block}\n`);
         process.stdout.write(`Appended to ${cfg}\n`);
       }
-      process.stdout.write('⚠ Codex has an open tool-injection regression (#19425) on builds after ~0.120.0 — confirm tools actually appear in Codex. Server-side self-check:\n');
+      process.stdout.write(
+        '⚠ Codex has an open tool-injection regression (#19425) on builds after ~0.120.0 — confirm tools actually appear in Codex. Server-side self-check:\n',
+      );
       await runVerify();
     } else {
       process.stdout.write(`Add to ${cfg}:\n${block}\n⚠ Codex has an open tool-injection regression — verify tools appear after adding.\n`);

@@ -5,7 +5,8 @@
 import { isSecureNode } from '../lib/redact.js';
 import type { RawNode } from '../snapshot/parse.js';
 
-const LOGIN_TEXT_RE = /sign ?in|log ?in|forgot password|create account|sign ?up|continue with (google|apple|facebook)|enter your (email|password)|welcome back/i;
+const LOGIN_TEXT_RE =
+  /sign ?in|log ?in|forgot password|create account|sign ?up|continue with (google|apple|facebook)|enter your (email|password)|welcome back/i;
 const EMAIL_HINT_RE = /e-?mail|username/i;
 
 export interface AuthScreen {

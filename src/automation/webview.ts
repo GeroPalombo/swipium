@@ -68,7 +68,13 @@ export function detectHybridSurface(elements: ElementLike[], opts: DetectHybridO
   const hybrid = surfaces.length > 0 || softHybrid;
 
   if (!hybrid) {
-    return { hybrid: false, surfaces, diagnostic: 'NATIVE', appiumRequired: false, agentMessage: 'This screen looks like a native UI tree; structured selectors should work.' };
+    return {
+      hybrid: false,
+      surfaces,
+      diagnostic: 'NATIVE',
+      appiumRequired: false,
+      agentMessage: 'This screen looks like a native UI tree; structured selectors should work.',
+    };
   }
 
   const hasWebview = surfaces.some((s) => s.kind === 'webview') || softHybrid;
@@ -91,7 +97,8 @@ export function detectHybridSurface(elements: ElementLike[], opts: DetectHybridO
       surfaces,
       diagnostic: 'WEBVIEW_CONTEXT_MISSING',
       appiumRequired: true,
-      agentMessage: 'This screen looks like a WebView. The backend can switch contexts, but none are currently reported; attach the WebView context or use a native accessibility id, otherwise only visual candidate evidence is possible.',
+      agentMessage:
+        'This screen looks like a WebView. The backend can switch contexts, but none are currently reported; attach the WebView context or use a native accessibility id, otherwise only visual candidate evidence is possible.',
     };
   }
 
@@ -100,7 +107,8 @@ export function detectHybridSurface(elements: ElementLike[], opts: DetectHybridO
     surfaces,
     diagnostic: 'WEBVIEW_VISUAL_ONLY',
     appiumRequired: true,
-    agentMessage: 'This screen looks like a WebView. I need Appium context support or a native accessibility id to automate it structurally; otherwise I can only produce visual candidate evidence.',
+    agentMessage:
+      'This screen looks like a WebView. I need Appium context support or a native accessibility id to automate it structurally; otherwise I can only produce visual candidate evidence.',
   };
 }
 
@@ -121,6 +129,7 @@ export function webviewSelectorBlocker(selector: SelectorIR): PlanDiagnostic {
   return {
     code: 'WEBVIEW_VISUAL_ONLY',
     detail: `Selector ${selector.strategy}=${selector.value} targets a WebView surface that the current backend cannot reach structurally.`,
-    nextStep: 'This screen looks like a WebView. I need Appium context support or a native accessibility id to automate it structurally; otherwise I can only produce visual candidate evidence.',
+    nextStep:
+      'This screen looks like a WebView. I need Appium context support or a native accessibility id to automate it structurally; otherwise I can only produce visual candidate evidence.',
   };
 }

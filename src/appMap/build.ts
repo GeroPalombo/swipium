@@ -4,7 +4,7 @@
 // the static topology while PRESERVING runtime observations, tickets, the test suite, and automation
 // links. Pure-ish: filesystem I/O is confined to staticScan/codeIndex/store; this composes them.
 
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { detectFramework, type Framework } from '../context/detect.js';
 import type { SerializedGraph } from '../explore/graph.js';
@@ -31,7 +31,12 @@ export interface BuildOptions {
   sessionId?: string;
   exploreGraph?: SerializedGraph | null; // runtime graph to merge
   firstRunPatches?: AppMapPatch[] | null; // first-run classifications to fold into the durable map
-  appIdentityHints?: { androidPackage?: string | null; iosBundleId?: string | null; artifactHash?: string | null; environment?: string | null };
+  appIdentityHints?: {
+    androidPackage?: string | null;
+    iosBundleId?: string | null;
+    artifactHash?: string | null;
+    environment?: string | null;
+  };
   persist?: boolean; // default true — write to disk
 }
 
@@ -121,17 +126,41 @@ function applyStaticScan(map: AppKnowledgeMap, root: string, at: string): CodeIn
   if (scan.packageName) map.project.packageName = scan.packageName;
 
   // Re-infer features, but carry over runtime enrichment (runtimeScreens/testCoverage) by id.
-  const fresh = inferFeatures({ topo: scan.staticTopology, auth: scan.auth, onboarding: scan.onboarding, paywalls: scan.paywalls, hasForms: hasFormLibrary(root) });
+  const fresh = inferFeatures({
+    topo: scan.staticTopology,
+    auth: scan.auth,
+    onboarding: scan.onboarding,
+    paywalls: scan.paywalls,
+    hasForms: hasFormLibrary(root),
+  });
   const prevById = new Map(map.features.map((f) => [f.id, f]));
   map.features = fresh.map((f) => {
     const prev = prevById.get(f.id);
     if (!prev) return f;
-    return { ...f, runtimeScreens: prev.runtimeScreens, testCoverage: prev.testCoverage, actions: prev.actions.length ? prev.actions : f.actions };
+    return {
+      ...f,
+      runtimeScreens: prev.runtimeScreens,
+      testCoverage: prev.testCoverage,
+      actions: prev.actions.length ? prev.actions : f.actions,
+    };
   });
 
-  addProvenance(map, makeProvenance('code_scan', at, `Static scan: ${scan.staticTopology.screens.length} screen(s), router=${scan.staticTopology.router ?? 'none'}`, { targetType: 'map', refs: scan.staticTopology.parserNotes.slice(0, 3) }));
+  addProvenance(
+    map,
+    makeProvenance(
+      'code_scan',
+      at,
+      `Static scan: ${scan.staticTopology.screens.length} screen(s), router=${scan.staticTopology.router ?? 'none'}`,
+      { targetType: 'map', refs: scan.staticTopology.parserNotes.slice(0, 3) },
+    ),
+  );
   if (scan.appIdentity.androidPackage || scan.appIdentity.iosBundleId) {
-    addProvenance(map, makeProvenance('app_config', at, `App identity from config: ${scan.appIdentity.androidPackage ?? scan.appIdentity.iosBundleId}`, { targetType: 'identity' }));
+    addProvenance(
+      map,
+      makeProvenance('app_config', at, `App identity from config: ${scan.appIdentity.androidPackage ?? scan.appIdentity.iosBundleId}`, {
+        targetType: 'identity',
+      }),
+    );
   }
 
   // Code index over the collected files.
@@ -143,7 +172,7 @@ export function buildAppMap(root: string, opts: BuildOptions): BuildResult {
   const fw = detectFramework(root);
   const fallbackProject = projectIdentity(root, fw, null);
   const loaded = loadAppMap(root, fallbackProject, opts.at);
-  let map: AppKnowledgeMap = loaded.map ?? emptyAppMap(fallbackProject, opts.at);
+  const map: AppKnowledgeMap = loaded.map ?? emptyAppMap(fallbackProject, opts.at);
   // refresh project identity (framework can change as the repo evolves)
   map.project = { ...map.project, ...projectIdentity(root, fw, map.project.packageName) };
 
@@ -158,13 +187,29 @@ export function buildAppMap(root: string, opts: BuildOptions): BuildResult {
   let mergeResult: MergeResult | undefined;
   if ((opts.mode === 'runtime_merge' || opts.mode === 'full') && opts.exploreGraph) {
     mergeResult = mergeRuntimeGraph(map, opts.exploreGraph, { sessionId: opts.sessionId, at: opts.at });
-    addProvenance(map, makeProvenance('runtime', opts.at, `Runtime merge: +${mergeResult.newRuntimeScreens} new, ~${mergeResult.updatedRuntimeScreens} updated, ${mergeResult.linkedScreens} linked`, { targetType: 'map', refs: opts.sessionId ? [opts.sessionId] : [] }));
+    addProvenance(
+      map,
+      makeProvenance(
+        'runtime',
+        opts.at,
+        `Runtime merge: +${mergeResult.newRuntimeScreens} new, ~${mergeResult.updatedRuntimeScreens} updated, ${mergeResult.linkedScreens} linked`,
+        { targetType: 'map', refs: opts.sessionId ? [opts.sessionId] : [] },
+      ),
+    );
   }
 
   let firstRunApply: FirstRunApplyResult | undefined;
   if (opts.firstRunPatches?.length) {
     firstRunApply = applyFirstRunPatches(map, opts.firstRunPatches, opts.at);
-    addProvenance(map, makeProvenance('runtime', opts.at, `First-run merge: ${firstRunApply.newScreens} new, ${firstRunApply.updatedScreens} updated runtime screen(s)`, { targetType: 'map', refs: opts.sessionId ? [opts.sessionId] : [] }));
+    addProvenance(
+      map,
+      makeProvenance(
+        'runtime',
+        opts.at,
+        `First-run merge: ${firstRunApply.newScreens} new, ${firstRunApply.updatedScreens} updated runtime screen(s)`,
+        { targetType: 'map', refs: opts.sessionId ? [opts.sessionId] : [] },
+      ),
+    );
   }
 
   if (opts.appIdentityHints) {
@@ -208,9 +253,16 @@ export function quickCoverage(root: string, at: string): { overallPercent: numbe
 /** Compact, context-friendly summary of a map for tool text + structured results. */
 export function summarizeMap(map: AppKnowledgeMap): Record<string, unknown> {
   const gaps: string[] = [];
-  if (map.runtimeTopology.unvisitedStaticScreens.length) gaps.push(`${map.runtimeTopology.unvisitedStaticScreens.length} static screen(s) never visited at runtime`);
+  if (map.runtimeTopology.unvisitedStaticScreens.length)
+    gaps.push(`${map.runtimeTopology.unvisitedStaticScreens.length} static screen(s) never visited at runtime`);
   const uncovered = map.features.filter((f) => f.testCoverage === 'none');
-  if (uncovered.length) gaps.push(`${uncovered.length} feature(s) with no coverage: ${uncovered.slice(0, 4).map((f) => f.title).join(', ')}`);
+  if (uncovered.length)
+    gaps.push(
+      `${uncovered.length} feature(s) with no coverage: ${uncovered
+        .slice(0, 4)
+        .map((f) => f.title)
+        .join(', ')}`,
+    );
   const hypotheses = map.features.filter((f) => f.status === 'hypothesis');
   if (hypotheses.length) gaps.push(`${hypotheses.length} low-confidence feature hypothesis(es)`);
   return {
@@ -219,7 +271,13 @@ export function summarizeMap(map: AppKnowledgeMap): Record<string, unknown> {
     appIdentity: map.appIdentity,
     staticScreens: map.staticTopology.screens.length,
     runtimeScreens: map.runtimeTopology.screens.length,
-    features: map.features.map((f) => ({ id: f.id, title: f.title, status: f.status, testCoverage: f.testCoverage, confidence: f.confidence })),
+    features: map.features.map((f) => ({
+      id: f.id,
+      title: f.title,
+      status: f.status,
+      testCoverage: f.testCoverage,
+      confidence: f.confidence,
+    })),
     coverage: map.coverage,
     confidence: map.confidence.overall,
     topGaps: gaps.slice(0, 6),

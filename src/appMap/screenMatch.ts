@@ -53,13 +53,25 @@ export function staticCandidatesForObservation(map: AppKnowledgeMap, obs: Observ
 
   const scored: ScoredCandidate[] = [];
   for (const screen of screens) {
-    const nameTokens = new Set([...tokenize(screen.name), ...tokenize(screen.route ?? ''), ...screen.sourceFiles.flatMap((f) => tokenize(f))]);
+    const nameTokens = new Set([
+      ...tokenize(screen.name),
+      ...tokenize(screen.route ?? ''),
+      ...screen.sourceFiles.flatMap((f) => tokenize(f)),
+    ]);
     let score = 0;
     const hints: string[] = [];
     // Foreground owner / activity / view controller match (strong signal).
-    for (const t of fgTokens) if (nameTokens.has(t)) { score += 2; hints.push(t); }
+    for (const t of fgTokens)
+      if (nameTokens.has(t)) {
+        score += 2;
+        hints.push(t);
+      }
     // Visible-text token overlap with the screen name/route (weaker corroboration).
-    for (const t of nameTokens) if (textTokens.has(t)) { score += 1; if (!hints.includes(t)) hints.push(t); }
+    for (const t of nameTokens)
+      if (textTokens.has(t)) {
+        score += 1;
+        if (!hints.includes(t)) hints.push(t);
+      }
     // The map already knows this screen is an auth/onboarding/paywall gate.
     const purpose = purposeForStaticScreen(map, screen);
     if (purpose && (score > 0 || screens.length <= 3)) score += 0.5;

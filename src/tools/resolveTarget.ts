@@ -33,7 +33,14 @@ export function registerResolveTarget(server: McpServer, sessions: SessionStore)
       if (sessionId) root = sessions.get(sessionId)?.root;
       if (!root) {
         const resolved = await resolveProjectRoot(server, projectRoot);
-        if (!resolved.root) return qaError({ what: 'Could not resolve a project root', changedState: false, retrySafe: true, nextSteps: ['Pass projectRoot or call qa_start_session.'], clientHint: resolved.hint });
+        if (!resolved.root)
+          return qaError({
+            what: 'Could not resolve a project root',
+            changedState: false,
+            retrySafe: true,
+            nextSteps: ['Pass projectRoot or call qa_start_session.'],
+            clientHint: resolved.hint,
+          });
         root = resolved.root;
       }
 
@@ -63,7 +70,10 @@ export function registerResolveTarget(server: McpServer, sessions: SessionStore)
 
       const plan = planTarget(inputs);
       if (plan.blocked) {
-        return qaFail(plan.blocked.failureCode, { what: plan.blocked.detail, extra: { targetPlan: plan, artifactPlatform: inputs.artifactPlatform ?? null } });
+        return qaFail(plan.blocked.failureCode, {
+          what: plan.blocked.detail,
+          extra: { targetPlan: plan, artifactPlatform: inputs.artifactPlatform ?? null },
+        });
       }
 
       const summary =

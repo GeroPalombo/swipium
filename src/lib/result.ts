@@ -39,8 +39,10 @@ export type QaErrorPayload = {
   nextSteps: string[];
   artifactUri?: string;
   clientHint?: string;
-  failureCode?: string; // typed failure class (PHASE3-PLAN §4.3) — optional until taxonomy lands
+  failureCode: string; // typed failure class (PHASE3-PLAN §4.3); UNKNOWN is the fallback
 };
+
+type QaErrorInput = Omit<QaErrorPayload, 'ok' | 'failureCode'> & { failureCode?: string };
 
 function fence(obj: unknown): string {
   return '```json\n' + JSON.stringify(obj, null, 2) + '\n```';
@@ -74,8 +76,8 @@ function renderText(summary: string, payload: Record<string, unknown>, mode: Res
   return `${summary}\n\n${fence(payload)}`;
 }
 
-export function qaError(p: Omit<QaErrorPayload, 'ok'>, extra?: Record<string, unknown>): CallToolResult {
-  const payload = { ok: false, ...p, ...(extra ?? {}) };
+export function qaError(p: QaErrorInput, extra?: Record<string, unknown>): CallToolResult {
+  const payload = { ok: false, failureCode: p.failureCode ?? 'UNKNOWN', ...p, ...(extra ?? {}) };
   const mode = currentResponseMode();
   const head = [
     `❌ ${p.what}`,
@@ -98,6 +100,19 @@ export function qaOk(payload: Record<string, unknown>, summary: string): CallToo
     content: [{ type: 'text', text: renderText(summary, structured, currentResponseMode()) }],
     structuredContent: structured,
   };
+}
+
+/** Append advisory notes (e.g. params ignored in the active mode) to a result without touching
+ * its verdict — the pattern qa_generate established for mode/target-scoped parameters. */
+export function qaAnnotate(result: CallToolResult, notes: string[]): CallToolResult {
+  if (!notes.length) return result;
+  const content = [...(result.content ?? [])];
+  const noteText = `\n\n${notes.map((n) => `Note: ${n}`).join('\n')}`;
+  const first = content[0];
+  if (first && first.type === 'text') content[0] = { ...first, text: `${String(first.text)}${noteText}` };
+  else content.unshift({ type: 'text', text: noteText.trim() });
+  const sc = { ...((result.structuredContent ?? {}) as Record<string, unknown>), notes };
+  return { ...result, content, structuredContent: sc };
 }
 
 /** A deliberate, budgeted stop (not an error). The agent should call qa_report next. */

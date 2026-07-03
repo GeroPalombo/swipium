@@ -8,20 +8,9 @@
 // Public v1 levels:
 //   observed -> smoke_tested -> automation_candidate -> automation_runnable -> ci_ready
 
-export type QaLevel =
-  | 'observed'
-  | 'smoke_tested'
-  | 'automation_candidate'
-  | 'automation_runnable'
-  | 'ci_ready';
+export type QaLevel = 'observed' | 'smoke_tested' | 'automation_candidate' | 'automation_runnable' | 'ci_ready';
 
-export const QA_LEVELS: readonly QaLevel[] = [
-  'observed',
-  'smoke_tested',
-  'automation_candidate',
-  'automation_runnable',
-  'ci_ready',
-];
+export const QA_LEVELS: readonly QaLevel[] = ['observed', 'smoke_tested', 'automation_candidate', 'automation_runnable', 'ci_ready'];
 
 export const QA_LEVEL_MEANING: Record<QaLevel, string> = {
   observed: 'Swipium launched the app and captured evidence.',
@@ -98,7 +87,7 @@ export function qaLevelRequirement(level: QaLevel): string {
     case 'automation_candidate':
       return 'Record actions (qa_act / qa_smoke / qa_explore) so a POM suite can be generated.';
     case 'automation_runnable':
-      return 'Compile and dry-run the generated suite (qa_suite_compile).';
+      return 'Compile and dry-run the generated suite (qa_flow_compile).';
     case 'ci_ready':
       return 'Replay the suite from a declared state profile.';
   }

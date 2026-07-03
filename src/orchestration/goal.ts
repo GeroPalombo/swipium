@@ -3,22 +3,9 @@
 // the services Developer 2/3 own). Keeping the mapping a pure, exported helper makes goal behavior
 // unit-testable without a device, and keeps `qa_test_this` an orchestrator rather than a switchboard.
 
-export type TestGoal =
-  | 'smoke'
-  | 'explore'
-  | 'create_automation_suite'
-  | 'release_gate'
-  | 'test_login'
-  | 'reproduce_bug';
+export type TestGoal = 'smoke' | 'explore' | 'create_automation_suite' | 'release_gate' | 'test_login' | 'reproduce_bug';
 
-export const TEST_GOALS: TestGoal[] = [
-  'smoke',
-  'explore',
-  'create_automation_suite',
-  'release_gate',
-  'test_login',
-  'reproduce_bug',
-];
+export const TEST_GOALS: TestGoal[] = ['smoke', 'explore', 'create_automation_suite', 'release_gate', 'test_login', 'reproduce_bug'];
 
 /** Orchestration flags a goal resolves to. These map onto existing `qa_test_this` behavior. */
 export interface GoalFlags {
@@ -120,7 +107,8 @@ export function resolveGoalFlags(goal: TestGoal | undefined, overrides: GoalOver
     // is best-effort and skips when there are no recorded actions to turn into page objects.
     base.generateSuite = true;
     base.requiredOutputs = ['reportUri', 'smoke', 'suite'];
-    base.description = 'Default autopilot: fast launch + smoke, then generate a POM suite when actions exist (goal:"smoke" or fastSmoke:true to skip).';
+    base.description =
+      'Default autopilot: fast launch + smoke, then generate a POM suite when actions exist (goal:"smoke" or fastSmoke:true to skip).';
   }
   if (policy.fastSmoke) {
     // Strongest "just smoke, fast" signal — overrides the default automation attempt.

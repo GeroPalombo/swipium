@@ -17,7 +17,14 @@ export function imageDiff(aBuf: Buffer, bBuf: Buffer, tol = 32): DiffResult {
   const a = decodePng(aBuf);
   const b = decodePng(bBuf);
   if (a.width !== b.width || a.height !== b.height) {
-    return { comparable: false, reason: `size mismatch ${a.width}x${a.height} vs ${b.width}x${b.height}`, ratio: 1, changedPixels: 0, total: 0, box: null };
+    return {
+      comparable: false,
+      reason: `size mismatch ${a.width}x${a.height} vs ${b.width}x${b.height}`,
+      ratio: 1,
+      changedPixels: 0,
+      total: 0,
+      box: null,
+    };
   }
   const { width, height } = a;
   const ca = a.channels;
@@ -31,7 +38,11 @@ export function imageDiff(aBuf: Buffer, bBuf: Buffer, tol = 32): DiffResult {
     for (let x = 0; x < width; x++) {
       const pa = (y * width + x) * ca;
       const pb = (y * width + x) * cb;
-      if (Math.abs(a.data[pa] - b.data[pb]) > tol || Math.abs(a.data[pa + 1] - b.data[pb + 1]) > tol || Math.abs(a.data[pa + 2] - b.data[pb + 2]) > tol) {
+      if (
+        Math.abs(a.data[pa] - b.data[pb]) > tol ||
+        Math.abs(a.data[pa + 1] - b.data[pb + 1]) > tol ||
+        Math.abs(a.data[pa + 2] - b.data[pb + 2]) > tol
+      ) {
         changed++;
         if (x < minX) minX = x;
         if (y < minY) minY = y;

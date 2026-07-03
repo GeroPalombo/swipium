@@ -5,11 +5,7 @@
 // duplicating. Contradictory observations are preserved as versioned facts, never overwritten.
 
 import type { SerializedGraph, ScreenNode } from '../explore/graph.js';
-import type {
-  AppKnowledgeMap,
-  RuntimeScreen,
-  StaticScreen,
-} from './schema.js';
+import type { AppKnowledgeMap, RuntimeScreen, StaticScreen } from './schema.js';
 
 export interface MergeOptions {
   sessionId?: string;
@@ -29,9 +25,7 @@ export interface MergeResult {
  *  recomputed after EVERY static scan (not only after a runtime merge) — otherwise a static-only
  *  map knows about static screens but reports zero unvisited (SWIPIUM-REQ-01). */
 export function computeUnvisitedStaticScreens(map: AppKnowledgeMap): string[] {
-  const linkedStaticIds = new Set(
-    map.runtimeTopology.screens.map((r) => r.linkedStaticScreenId).filter(Boolean) as string[],
-  );
+  const linkedStaticIds = new Set(map.runtimeTopology.screens.map((r) => r.linkedStaticScreenId).filter(Boolean) as string[]);
   return map.staticTopology.screens.filter((s) => !linkedStaticIds.has(s.id)).map((s) => s.id);
 }
 
@@ -123,7 +117,13 @@ function toRuntimeScreen(node: ScreenNode, at: string): RuntimeScreen {
  * Re-running exploration UPDATES matched nodes (visits/lastSeen/artifacts) rather than duplicating.
  */
 export function mergeRuntimeGraph(map: AppKnowledgeMap, graph: SerializedGraph, opts: MergeOptions): MergeResult {
-  const stats: MergeResult = { newRuntimeScreens: 0, updatedRuntimeScreens: 0, linkedScreens: 0, unmappedRuntimeScreens: 0, unvisitedStaticScreens: 0 };
+  const stats: MergeResult = {
+    newRuntimeScreens: 0,
+    updatedRuntimeScreens: 0,
+    linkedScreens: 0,
+    unmappedRuntimeScreens: 0,
+    unvisitedStaticScreens: 0,
+  };
   if (opts.sessionId && !map.runtimeTopology.mergedFromSessions.includes(opts.sessionId)) {
     map.runtimeTopology.mergedFromSessions.push(opts.sessionId);
   }
@@ -206,13 +206,16 @@ export function mergeRuntimeGraph(map: AppKnowledgeMap, graph: SerializedGraph, 
 
   // refresh feature coverage + runtime screen links
   for (const feature of map.features) {
-    const featureRuntime = map.runtimeTopology.screens.filter((r) => r.linkedStaticScreenId && feature.staticScreens.includes(r.linkedStaticScreenId));
+    const featureRuntime = map.runtimeTopology.screens.filter(
+      (r) => r.linkedStaticScreenId && feature.staticScreens.includes(r.linkedStaticScreenId),
+    );
     feature.runtimeScreens = [...new Set(featureRuntime.map((r) => r.id))];
     if (!feature.runtimeScreens.length) {
       feature.testCoverage = feature.testCoverage === 'covered' ? 'covered' : 'none';
     } else {
       const coveredStatic = new Set(featureRuntime.map((r) => r.linkedStaticScreenId));
-      feature.testCoverage = feature.staticScreens.length && feature.staticScreens.every((s) => coveredStatic.has(s)) ? 'covered' : 'partial';
+      feature.testCoverage =
+        feature.staticScreens.length && feature.staticScreens.every((s) => coveredStatic.has(s)) ? 'covered' : 'partial';
     }
   }
 

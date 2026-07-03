@@ -53,7 +53,10 @@ export function scorePromotionCandidates(graph: ExploreGraph): SuitePromotionCan
         path,
         score: scored.score,
         status,
-        reasons: status === 'promote' ? ['semantic path has enough replay confidence', ...scored.reasons] : ['replay confidence below threshold', ...scored.reasons],
+        reasons:
+          status === 'promote'
+            ? ['semantic path has enough replay confidence', ...scored.reasons]
+            : ['replay confidence below threshold', ...scored.reasons],
       } satisfies SuitePromotionCandidate;
     });
   return candidates.sort((a, b) => b.score - a.score);

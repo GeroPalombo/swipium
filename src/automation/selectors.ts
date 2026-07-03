@@ -170,10 +170,15 @@ export type SelectorResolution =
  */
 export function resolveSelector(ir: SelectorIR, candidates: SelectorMatchCandidate[]): SelectorResolution {
   const key = (c: SelectorMatchCandidate): string | undefined =>
-    ir.strategy === 'resource_id' ? (c.resourceId ? normalizeResourceId(c.resourceId) : undefined)
-    : ir.strategy === 'accessibility_id' ? c.accessibilityId
-    : ir.strategy === 'text' ? c.text
-    : undefined;
+    ir.strategy === 'resource_id'
+      ? c.resourceId
+        ? normalizeResourceId(c.resourceId)
+        : undefined
+      : ir.strategy === 'accessibility_id'
+        ? c.accessibilityId
+        : ir.strategy === 'text'
+          ? c.text
+          : undefined;
 
   let matches = candidates.filter((c) => key(c) === ir.value);
   if (matches.length === 0) {

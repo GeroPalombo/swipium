@@ -48,9 +48,12 @@ export function registerPlan(server: McpServer, sessions: SessionStore): void {
       const summary =
         `Plan for session ${session.id} (framework=${ctx.framework})\n` +
         `READY (${plan.ready.length}):\n` +
-        (plan.ready.map((w) => line(`${w.workflow} [${w.budgetProfile}]${w.requires.length ? ` needs ${w.requires.join(', ')}` : ''}`)).join('\n') || ' (none)') +
+        (plan.ready
+          .map((w) => line(`${w.workflow} [${w.budgetProfile}]${w.requires.length ? ` needs ${w.requires.join(', ')}` : ''}`))
+          .join('\n') || ' (none)') +
         `\nBLOCKED (${plan.blocked.length}):\n` +
-        (plan.blocked.map((w) => line(`${w.workflow}: ${w.category} — ${w.requiredState} → ${w.recommendedSetup}`)).join('\n') || ' (none)') +
+        (plan.blocked.map((w) => line(`${w.workflow}: ${w.category} — ${w.requiredState} → ${w.recommendedSetup}`)).join('\n') ||
+          ' (none)') +
         `\nUNSAFE (${plan.unsafe.length}):\n` +
         (plan.unsafe.map((w) => line(`${w.workflow}: ${w.reason} — ${w.detail}`)).join('\n') || ' (none)') +
         (plan.notes.length ? `\nnotes:\n` + plan.notes.map(line).join('\n') : '');

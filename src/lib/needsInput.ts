@@ -77,8 +77,7 @@ export const NeedsInput = {
       needsInput: true,
       kind: 'credentials',
       question:
-        (context ? `${context} ` : '') +
-        'This app appears to require login. Provide test credentials, or ask Swipium to stay pre-login.',
+        (context ? `${context} ` : '') + 'This app appears to require login. Provide test credentials, or ask Swipium to stay pre-login.',
       fields: [
         { name: 'email', secret: false, description: 'Test account email/username' },
         { name: 'password', secret: true, description: 'Test account password' },
@@ -133,7 +132,11 @@ export const NeedsInput = {
       kind: 'destructive_exploration_approval',
       question: `${what} Exploring it may trigger destructive actions (delete/reset/purchase). Approve, or keep exploration read-only?`,
       fields: [{ name: 'approveDestructive', secret: false, description: 'true to allow potentially destructive exploration' }],
-      fallbackOptions: ['keep exploration non-destructive (skip risky controls)', 'approve destructive exploration', 'run destructive steps last'],
+      fallbackOptions: [
+        'keep exploration non-destructive (skip risky controls)',
+        'approve destructive exploration',
+        'run destructive steps last',
+      ],
       resume: resumeVia('destructive_exploration_approval'),
       attempted: [],
       ifDeclined: 'Swipium explores non-destructively and skips controls flagged as risky.',
@@ -143,7 +146,8 @@ export const NeedsInput = {
     return {
       needsInput: true,
       kind: 'signing_team',
-      question: 'A simulator build needs Xcode signing/build settings. Provide a development team if your project requires one, or adjust the simulator build.',
+      question:
+        'A simulator build needs Xcode signing/build settings. Provide a development team if your project requires one, or adjust the simulator build.',
       fields: [
         { name: 'developmentTeam', secret: false, description: 'Apple Developer Team ID' },
         { name: 'provisioningProfile', secret: false, description: 'Provisioning profile name (optional)' },
@@ -251,7 +255,6 @@ export function qaNeedsInput(p: NeedsInputPayload, extra?: Record<string, unknow
   const enriched: NeedsInputPayload = { ...p, attempted, resume };
   const payload = { ok: true, ...enriched, ...(extra ?? {}) };
   const head = renderQuestion(enriched);
-  const text =
-    currentResponseMode() === 'compact' ? head : `${head}\n\`\`\`json\n${JSON.stringify(payload, null, 2)}\n\`\`\``;
+  const text = currentResponseMode() === 'compact' ? head : `${head}\n\`\`\`json\n${JSON.stringify(payload, null, 2)}\n\`\`\``;
   return { content: [{ type: 'text', text }], structuredContent: payload };
 }

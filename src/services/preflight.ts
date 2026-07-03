@@ -66,7 +66,13 @@ export function buildTestThisPreflight(i: TestThisPreflightInput): ExecutionPref
   const steps: PrivilegedStep[] = [];
 
   if (i.needBuild) {
-    steps.push({ kind: 'build_from_source', risk: 'medium', consentRequired: true, affects: { platform: i.buildPlatform }, exactCommand: i.buildCommand });
+    steps.push({
+      kind: 'build_from_source',
+      risk: 'medium',
+      consentRequired: true,
+      affects: { platform: i.buildPlatform },
+      exactCommand: i.buildCommand,
+    });
   }
   if (i.isAab) {
     // Safe: writes a cached universal APK inside .swipium using local files. No consent.
@@ -78,20 +84,46 @@ export function buildTestThisPreflight(i: TestThisPreflightInput): ExecutionPref
       risk: 'low',
       consentRequired: true,
       affects: { target: i.bootTarget, headless: i.headless ?? true },
-      exactCommand: i.isAndroid ? `emulator -avd ${i.bootTarget}${i.headless === false ? '' : ' -no-window'}` : `xcrun simctl boot ${i.bootTarget}`,
+      exactCommand: i.isAndroid
+        ? `emulator -avd ${i.bootTarget}${i.headless === false ? '' : ' -no-window'}`
+        : `xcrun simctl boot ${i.bootTarget}`,
     });
   }
   if (i.isAndroid) {
     if (i.externalApk) {
-      steps.push({ kind: 'install_external_apk', risk: 'medium', consentRequired: true, affects: { path: i.externalApk.path, sha256: i.externalApk.sha256 }, exactCommand: `adb install -r -g ${i.externalApk.path}` });
+      steps.push({
+        kind: 'install_external_apk',
+        risk: 'medium',
+        consentRequired: true,
+        affects: { path: i.externalApk.path, sha256: i.externalApk.sha256 },
+        exactCommand: `adb install -r -g ${i.externalApk.path}`,
+      });
     } else if (i.apkPath) {
-      steps.push({ kind: 'install_apk', risk: 'low', consentRequired: false, affects: { path: i.apkPath }, exactCommand: `adb install -r -g ${i.apkPath}` });
+      steps.push({
+        kind: 'install_apk',
+        risk: 'low',
+        consentRequired: false,
+        affects: { path: i.apkPath },
+        exactCommand: `adb install -r -g ${i.apkPath}`,
+      });
     }
   } else if (i.iosReal) {
     // Installing on PHYSICAL hardware via devicectl — always high risk + consent.
-    steps.push({ kind: 'install_ios_real', risk: 'high', consentRequired: true, affects: { app: i.iosRealApp, udid: i.iosRealUdid }, exactCommand: `xcrun devicectl device install app --device ${i.iosRealUdid ?? '<udid>'} ${i.iosRealApp ?? '<app>'}` });
+    steps.push({
+      kind: 'install_ios_real',
+      risk: 'high',
+      consentRequired: true,
+      affects: { app: i.iosRealApp, udid: i.iosRealUdid },
+      exactCommand: `xcrun devicectl device install app --device ${i.iosRealUdid ?? '<udid>'} ${i.iosRealApp ?? '<app>'}`,
+    });
   } else if (i.iosApp) {
-    steps.push({ kind: 'install_ios_app', risk: i.iosAppOutsideRoot ? 'medium' : 'low', consentRequired: true, affects: { app: i.iosApp, external: !!i.iosAppOutsideRoot }, exactCommand: `xcrun simctl install <booted> ${i.iosApp}` });
+    steps.push({
+      kind: 'install_ios_app',
+      risk: i.iosAppOutsideRoot ? 'medium' : 'low',
+      consentRequired: true,
+      affects: { app: i.iosApp, external: !!i.iosAppOutsideRoot },
+      exactCommand: `xcrun simctl install <booted> ${i.iosApp}`,
+    });
   }
   steps.push({ kind: 'launch_app', risk: 'low', consentRequired: false, affects: {} });
 

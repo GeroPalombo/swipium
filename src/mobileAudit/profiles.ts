@@ -24,29 +24,130 @@ export interface AuditCheck {
 }
 
 const CHECKS: Record<string, AuditCheck> = {
-  launch: { id: 'launch', title: 'App launch + main screen', expected: 'App launches and renders its main screen with no crash/RedBox.', classification: 'blocker_app_bug' },
-  health_scan: { id: 'health_scan', title: 'Crash / RedBox / log scan', expected: 'No native crash, RedBox, unhandled exception, or error surface on the main flow.', classification: 'app_bug' },
-  navigation: { id: 'navigation', title: 'Basic navigation', expected: 'Primary tabs / navigation are reachable and stable.', classification: 'app_bug' },
+  launch: {
+    id: 'launch',
+    title: 'App launch + main screen',
+    expected: 'App launches and renders its main screen with no crash/RedBox.',
+    classification: 'blocker_app_bug',
+  },
+  health_scan: {
+    id: 'health_scan',
+    title: 'Crash / RedBox / log scan',
+    expected: 'No native crash, RedBox, unhandled exception, or error surface on the main flow.',
+    classification: 'app_bug',
+  },
+  navigation: {
+    id: 'navigation',
+    title: 'Basic navigation',
+    expected: 'Primary tabs / navigation are reachable and stable.',
+    classification: 'app_bug',
+  },
 
-  privacy_link: { id: 'privacy_link', title: 'Privacy Policy link', expected: 'Privacy Policy link exists, opens, and is reachable.', classification: 'store_compliance' },
-  terms_link: { id: 'terms_link', title: 'Terms link', expected: 'Terms link exists where account/payment/subscription surfaces need it.', classification: 'store_compliance' },
-  account_deletion: { id: 'account_deletion', title: 'Account deletion path', expected: 'Account/settings exposes a delete-account or data-deletion flow when the app has accounts.', classification: 'store_compliance' },
-  subscription_management: { id: 'subscription_management', title: 'Subscription management / restore', expected: 'Paywall/account exposes restore-purchase and a manage-subscription path or clear system handoff.', classification: 'store_compliance' },
-  paywall: { id: 'paywall', title: 'Paywall classification', expected: 'Soft paywall can be dismissed or a free path exists; a hard paywall is recorded without purchase.', classification: 'hard_gate' },
-  external_links: { id: 'external_links', title: 'External links', expected: 'External links (support/help/store) open without crashing the app.', classification: 'improvement' },
+  privacy_link: {
+    id: 'privacy_link',
+    title: 'Privacy Policy link',
+    expected: 'Privacy Policy link exists, opens, and is reachable.',
+    classification: 'store_compliance',
+  },
+  terms_link: {
+    id: 'terms_link',
+    title: 'Terms link',
+    expected: 'Terms link exists where account/payment/subscription surfaces need it.',
+    classification: 'store_compliance',
+  },
+  account_deletion: {
+    id: 'account_deletion',
+    title: 'Account deletion path',
+    expected: 'Account/settings exposes a delete-account or data-deletion flow when the app has accounts.',
+    classification: 'store_compliance',
+  },
+  subscription_management: {
+    id: 'subscription_management',
+    title: 'Subscription management / restore',
+    expected: 'Paywall/account exposes restore-purchase and a manage-subscription path or clear system handoff.',
+    classification: 'store_compliance',
+  },
+  paywall: {
+    id: 'paywall',
+    title: 'Paywall classification',
+    expected: 'Soft paywall can be dismissed or a free path exists; a hard paywall is recorded without purchase.',
+    classification: 'hard_gate',
+  },
+  external_links: {
+    id: 'external_links',
+    title: 'External links',
+    expected: 'External links (support/help/store) open without crashing the app.',
+    classification: 'improvement',
+  },
 
-  create_account: { id: 'create_account', title: 'Create account', expected: 'A safe generated account can be created in test/staging.', classification: 'app_bug', requiresAccountCycle: true, requiresGeneratedData: true },
-  logout: { id: 'logout', title: 'Logout', expected: 'User can log out from the disposable test account.', classification: 'app_bug', requiresAccountCycle: true },
-  login_again: { id: 'login_again', title: 'Login again', expected: 'The same generated account can log back in.', classification: 'app_bug', requiresAccountCycle: true, requiresGeneratedData: true },
-  forgot_password: { id: 'forgot_password', title: 'Forgot password surface', expected: 'A forgot-password entrypoint exists and accepts a test email without consuming email/OTP.', classification: 'improvement', requiresAccountCycle: true },
+  create_account: {
+    id: 'create_account',
+    title: 'Create account',
+    expected: 'A safe generated account can be created in test/staging.',
+    classification: 'app_bug',
+    requiresAccountCycle: true,
+    requiresGeneratedData: true,
+  },
+  logout: {
+    id: 'logout',
+    title: 'Logout',
+    expected: 'User can log out from the disposable test account.',
+    classification: 'app_bug',
+    requiresAccountCycle: true,
+  },
+  login_again: {
+    id: 'login_again',
+    title: 'Login again',
+    expected: 'The same generated account can log back in.',
+    classification: 'app_bug',
+    requiresAccountCycle: true,
+    requiresGeneratedData: true,
+  },
+  forgot_password: {
+    id: 'forgot_password',
+    title: 'Forgot password surface',
+    expected: 'A forgot-password entrypoint exists and accepts a test email without consuming email/OTP.',
+    classification: 'improvement',
+    requiresAccountCycle: true,
+  },
 
-  offline_entry: { id: 'offline_entry', title: 'Offline entry', expected: 'App handles offline state gracefully (expected offline message, no crash/blank).', classification: 'app_bug' },
-  network_restoration: { id: 'network_restoration', title: 'Network restoration', expected: 'App recovers after connectivity returns.', classification: 'app_bug' },
-  process_relaunch: { id: 'process_relaunch', title: 'Process kill / relaunch', expected: 'After process kill + relaunch the app restores or returns to a sane state.', classification: 'app_bug' },
-  rotation: { id: 'rotation', title: 'Rotation', expected: 'Rotation (where supported) does not crash or lose critical state.', classification: 'improvement' },
+  offline_entry: {
+    id: 'offline_entry',
+    title: 'Offline entry',
+    expected: 'App handles offline state gracefully (expected offline message, no crash/blank).',
+    classification: 'app_bug',
+  },
+  network_restoration: {
+    id: 'network_restoration',
+    title: 'Network restoration',
+    expected: 'App recovers after connectivity returns.',
+    classification: 'app_bug',
+  },
+  process_relaunch: {
+    id: 'process_relaunch',
+    title: 'Process kill / relaunch',
+    expected: 'After process kill + relaunch the app restores or returns to a sane state.',
+    classification: 'app_bug',
+  },
+  rotation: {
+    id: 'rotation',
+    title: 'Rotation',
+    expected: 'Rotation (where supported) does not crash or lose critical state.',
+    classification: 'improvement',
+  },
 
-  locator_readiness: { id: 'locator_readiness', title: 'Accessibility / test IDs', expected: 'Important buttons/fields have stable locators.', classification: 'accessibility_readiness' },
-  issue_recurrence: { id: 'issue_recurrence', title: 'Issue-ledger recurrence', expected: 'No previously-fixed issue has regressed (issue ledger reports no reopened fingerprints).', classification: 'app_bug' },
+  locator_readiness: {
+    id: 'locator_readiness',
+    title: 'Accessibility / test IDs',
+    expected: 'Important buttons/fields have stable locators.',
+    classification: 'accessibility_readiness',
+  },
+  issue_recurrence: {
+    id: 'issue_recurrence',
+    title: 'Issue-ledger recurrence',
+    expected: 'No previously-fixed issue has regressed (issue ledger reports no reopened fingerprints).',
+    classification: 'app_bug',
+  },
 };
 
 const PROFILE_CHECKS: Record<AuditProfile, string[]> = {

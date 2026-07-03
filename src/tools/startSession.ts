@@ -11,8 +11,6 @@ import { SWIPIUM_VERSION, TOOL_COUNT } from '../version.js';
 import { getSchemaHash } from '../lib/schemaHash.js';
 import { BUDGET_PROFILES, type Fixture, type SessionStore } from '../session/store.js';
 
-const PROFILE_KEYS = Object.keys(BUDGET_PROFILES) as Array<keyof typeof BUDGET_PROFILES>;
-
 /** Load declared fixtures from <root>/.swipium/fixtures.json (best-effort, array or {fixtures:[]}). */
 export function loadProjectFixtures(root: string): Fixture[] {
   const p = join(root, '.swipium', 'fixtures.json');
@@ -38,12 +36,19 @@ export function registerStartSession(server: McpServer, sessions: SessionStore):
         responseMode: z
           .enum(['compact', 'normal', 'verbose'])
           .optional()
-          .describe('Text-channel verbosity for every tool in this session. compact = summary + artifact URIs only (structuredContent stays full); normal (default) = summary + JSON; verbose = everything.'),
+          .describe(
+            'Text-channel verbosity for every tool in this session. compact = summary + artifact URIs only (structuredContent stays full); normal (default) = summary + JSON; verbose = everything.',
+          ),
         sensitive: z
           .boolean()
           .optional()
-          .describe('Sensitive mode: refuse all screenshots, screen recordings, and on-screen-error evidence capture for this session (no pixels leave the device). For privacy-sensitive apps.'),
-        profile: z.enum(['guardrail', 'login_smoke', 'full_smoke', 'install_smoke']).optional().describe('Budget class — sizes the time budget to the intended workflow.'),
+          .describe(
+            'Sensitive mode: refuse all screenshots, screen recordings, and on-screen-error evidence capture for this session (no pixels leave the device). For privacy-sensitive apps.',
+          ),
+        profile: z
+          .enum(['guardrail', 'login_smoke', 'full_smoke', 'install_smoke'])
+          .optional()
+          .describe('Budget class — sizes the time budget to the intended workflow.'),
         budget: z
           .object({
             maxMinutes: z.number().optional(),
@@ -63,8 +68,14 @@ export function registerStartSession(server: McpServer, sessions: SessionStore):
               recommendedSetup: z.string().optional(),
               testAccount: z.string().optional(),
               apkPath: z.string().optional(),
-              value: z.string().optional().describe('Non-secret safe test input (e.g. flight number/search term) for exploration text entry.'),
-              disposable: z.boolean().optional().describe('True only for disposable accounts/data that destructive QA may mutate or delete.'),
+              value: z
+                .string()
+                .optional()
+                .describe('Non-secret safe test input (e.g. flight number/search term) for exploration text entry.'),
+              disposable: z
+                .boolean()
+                .optional()
+                .describe('True only for disposable accounts/data that destructive QA may mutate or delete.'),
               environment: z.string().optional().describe('Environment label. Use "test" for non-production disposable test state.'),
               fields: z
                 .record(
@@ -72,18 +83,45 @@ export function registerStartSession(server: McpServer, sessions: SessionStore):
                     value: z.string().optional(),
                     var: z.string().optional().describe('Environment/secure-input variable name to read at runtime.'),
                     secret: z.boolean().optional(),
-                    generator: z.enum(['email', 'email_address', 'person', 'person_name', 'full_name', 'display_name', 'number', 'numeric', 'text', 'city', 'city_name', 'country', 'country_name', 'color', 'phone', 'phone_number', 'mobile', 'date', 'date_iso']).optional(),
+                    generator: z
+                      .enum([
+                        'email',
+                        'email_address',
+                        'person',
+                        'person_name',
+                        'full_name',
+                        'display_name',
+                        'number',
+                        'numeric',
+                        'text',
+                        'city',
+                        'city_name',
+                        'country',
+                        'country_name',
+                        'color',
+                        'phone',
+                        'phone_number',
+                        'mobile',
+                        'date',
+                        'date_iso',
+                      ])
+                      .optional(),
                     role: z.string().optional(),
                     inputType: z.string().optional(),
                   }),
                 )
                 .optional()
-                .describe('Typed fixture catalog for form entry. Fields match by label/id/role and may use a fixed value, variable, or safe generator.'),
+                .describe(
+                  'Typed fixture catalog for form entry. Fields match by label/id/role and may use a fixed value, variable, or safe generator.',
+                ),
               seed: z
                 .object({
                   type: z.enum(['deeplink', 'script', 'api']),
                   url: z.string().optional(),
-                  command: z.union([z.string(), z.array(z.string())]).optional().describe('script: argv array preferred (string is deprecated).'),
+                  command: z
+                    .union([z.string(), z.array(z.string())])
+                    .optional()
+                    .describe('script: argv array preferred (string is deprecated).'),
                   method: z.string().optional(),
                   body: z.string().optional(),
                   headers: z.record(z.string()).optional(),
@@ -92,7 +130,10 @@ export function registerStartSession(server: McpServer, sessions: SessionStore):
                     .object({
                       type: z.enum(['deeplink', 'script', 'api']),
                       url: z.string().optional(),
-                      command: z.union([z.string(), z.array(z.string())]).optional().describe('script: argv array preferred (string is deprecated).'),
+                      command: z
+                        .union([z.string(), z.array(z.string())])
+                        .optional()
+                        .describe('script: argv array preferred (string is deprecated).'),
                       method: z.string().optional(),
                       body: z.string().optional(),
                       headers: z.record(z.string()).optional(),
@@ -127,7 +168,9 @@ export function registerStartSession(server: McpServer, sessions: SessionStore):
       if (profileMinutes != null && effBudget.maxMinutes == null) effBudget.maxMinutes = profileMinutes;
       const warnings: string[] = [];
       if (profileMinutes != null && effBudget.maxMinutes != null && effBudget.maxMinutes < profileMinutes) {
-        warnings.push(`Requested ${effBudget.maxMinutes}m is below the ${profile} class (${profileMinutes}m) — likely too short; consider raising maxMinutes.`);
+        warnings.push(
+          `Requested ${effBudget.maxMinutes}m is below the ${profile} class (${profileMinutes}m) — likely too short; consider raising maxMinutes.`,
+        );
       }
 
       // Surface a prior `swipium scan` (.swipium/config.json) so the agent knows the
@@ -145,7 +188,12 @@ export function registerStartSession(server: McpServer, sessions: SessionStore):
       for (const f of fixtures ?? []) byName.set(f.name, f as Fixture);
       const mergedFixtures = [...byName.values()];
 
-      const session = sessions.create(resolved.root, effBudget, { fixtures: mergedFixtures, budgetProfile: profile, responseMode, sensitive });
+      const session = sessions.create(resolved.root, effBudget, {
+        fixtures: mergedFixtures,
+        budgetProfile: profile,
+        responseMode,
+        sensitive,
+      });
       // Fix 8: durably register this project so its app-map resource URI resolves across restarts.
       try {
         const { rememberProject } = await import('../appMap/projectRegistry.js');
@@ -167,7 +215,11 @@ export function registerStartSession(server: McpServer, sessions: SessionStore):
           responseMode: session.responseMode,
           sensitive: session.sensitive,
           scan: projectConfig
-            ? { recommendedProfile: projectConfig.recommendedProfile ?? null, appId: projectConfig.appId ?? null, readiness: projectConfig.readiness ?? null }
+            ? {
+                recommendedProfile: projectConfig.recommendedProfile ?? null,
+                appId: projectConfig.appId ?? null,
+                readiness: projectConfig.readiness ?? null,
+              }
             : null,
           declaredPreconditions: mergedFixtures,
           warnings,

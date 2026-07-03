@@ -2,22 +2,14 @@
 // then into a backend-specific automation plan WITHOUT touching a device. Every step is classified
 // before execution (native / supported_with_fallback / visual_only / unsupported) and unsupported
 // steps name the exact missing capability and a concrete next step. This is the pure core behind the
-// qa_flow_plan tool; it does not execute or mutate anything.
+// qa_flow_run mode:"plan" preview; it does not execute or mutate anything.
 
 import type { Flow, FlowStep } from '../flows/schema.js';
 import type { BackendCapabilities } from './capabilities.js';
 import { selectorSupported } from './capabilities.js';
 import { checkSelectorBackend, parseSelector, selectorForCoordinate, selectorForVisual } from './selectors.js';
 import { gestureSupport } from './gestures.js';
-import type {
-  ActionIR,
-  AutomationPlan,
-  GestureIR,
-  PlanDiagnostic,
-  PlanStep,
-  SelectorIR,
-  StepSupport,
-} from './types.js';
+import type { ActionIR, AutomationPlan, GestureIR, PlanDiagnostic, PlanStep, StepSupport } from './types.js';
 import { isVisualStrategy } from './types.js';
 
 /** Compile a single Flow V2 step into Action IR. Returns null for steps with no automation action. */
@@ -26,13 +18,33 @@ export function compileStep(step: FlowStep): ActionIR | null {
     case 'tap':
       return { kind: 'tap', selector: parseSelector(step.selector), expectedChange: 'unknown', note: step.selector };
     case 'tapAt':
-      return { kind: 'tap', selector: selectorForCoordinate(`${step.x},${step.y}`), expectedChange: 'unknown', note: `tapAt ${step.x},${step.y}` };
+      return {
+        kind: 'tap',
+        selector: selectorForCoordinate(`${step.x},${step.y}`),
+        expectedChange: 'unknown',
+        note: `tapAt ${step.x},${step.y}`,
+      };
     case 'tapImage':
-      return { kind: 'tap', selector: selectorForVisual('image', step.template), expectedChange: 'unknown', note: `tapImage ${step.template}` };
+      return {
+        kind: 'tap',
+        selector: selectorForVisual('image', step.template),
+        expectedChange: 'unknown',
+        note: `tapImage ${step.template}`,
+      };
     case 'tapOcrText':
-      return { kind: 'tap', selector: selectorForVisual('ocr_text', step.query), expectedChange: 'unknown', note: `tapOcrText ${step.query}` };
+      return {
+        kind: 'tap',
+        selector: selectorForVisual('ocr_text', step.query),
+        expectedChange: 'unknown',
+        note: `tapOcrText ${step.query}`,
+      };
     case 'inputText':
-      return { kind: 'inputText', selector: step.into ? parseSelector(step.into) : undefined, text: step.value, note: step.into ?? '(focused field)' };
+      return {
+        kind: 'inputText',
+        selector: step.into ? parseSelector(step.into) : undefined,
+        text: step.value,
+        note: step.into ?? '(focused field)',
+      };
     case 'assertVisible':
       return { kind: 'assertVisible', selector: parseSelector(step.query), note: step.query };
     case 'assertNotVisible':
@@ -83,14 +95,19 @@ export function compileStep(step: FlowStep): ActionIR | null {
 
 /** Compile all of a flow's setup + main + teardown steps into Action IR. */
 export function compileActions(flow: Flow): ActionIR[] {
-  return [...flow.setup, ...flow.steps, ...flow.teardown]
-    .map(compileStep)
-    .filter((a): a is ActionIR => a != null);
+  return [...flow.setup, ...flow.steps, ...flow.teardown].map(compileStep).filter((a): a is ActionIR => a != null);
 }
 
 const STRUCTURED_ACTIONS = new Set<ActionIR['kind']>([
-  'tap', 'longPress', 'doubleTap', 'inputText', 'clearText', 'scrollUntilVisible',
-  'waitForVisible', 'waitForNotVisible', 'assertVisible',
+  'tap',
+  'longPress',
+  'doubleTap',
+  'inputText',
+  'clearText',
+  'scrollUntilVisible',
+  'waitForVisible',
+  'waitForNotVisible',
+  'assertVisible',
 ]);
 
 interface Classification {
@@ -111,7 +128,8 @@ function hasNonAscii(text?: string): boolean {
  * textInputUnicode — adb `input text` cannot type Unicode reliably, so Android direct is blocked.
  */
 function inputTextSupport(action: ActionIR, caps: BackendCapabilities): Classification | null {
-  if (!caps.textInputAscii) return { support: 'unsupported', reason: `text input is unsupported on ${caps.backend}.`, requiredCapability: 'textInputAscii' };
+  if (!caps.textInputAscii)
+    return { support: 'unsupported', reason: `text input is unsupported on ${caps.backend}.`, requiredCapability: 'textInputAscii' };
   if (hasNonAscii(action.text) && !caps.textInputUnicode) {
     return {
       support: 'unsupported',
@@ -133,7 +151,10 @@ function classifyAction(action: ActionIR, caps: BackendCapabilities): Classifica
 
   if (action.kind === 'waitForIdle') {
     if (action.idleSource === 'app_declared' && !caps.appDeclaredIdling) {
-      return { support: 'supported_with_fallback', reason: `app-declared idling is unavailable on ${caps.backend}; will fall back to heuristic settling (not app proof).` };
+      return {
+        support: 'supported_with_fallback',
+        reason: `app-declared idling is unavailable on ${caps.backend}; will fall back to heuristic settling (not app proof).`,
+      };
     }
     return { support: 'native', reason: `waitForIdle uses ${caps.wdaIdling ? 'backend' : 'heuristic'} settling on ${caps.backend}.` };
   }
@@ -150,7 +171,12 @@ function classifyAction(action: ActionIR, caps: BackendCapabilities): Classifica
   }
 
   if (action.kind === 'pinch' || action.kind === 'drag' || action.kind === 'longPress' || action.kind === 'doubleTap') {
-    const g = gestureSupport(action.gesture ?? { kind: action.kind === 'pinch' ? 'pinch' : action.kind === 'drag' ? 'drag' : action.kind === 'longPress' ? 'longPress' : 'doubleTap' }, caps);
+    const g = gestureSupport(
+      action.gesture ?? {
+        kind: action.kind === 'pinch' ? 'pinch' : action.kind === 'drag' ? 'drag' : action.kind === 'longPress' ? 'longPress' : 'doubleTap',
+      },
+      caps,
+    );
     if (!g.supported && (STRUCTURED_ACTIONS.has(action.kind) || action.kind === 'pinch' || action.kind === 'drag')) {
       return { support: 'unsupported', reason: g.reason, requiredCapability: g.requiredCapability };
     }
@@ -162,8 +188,15 @@ function classifyAction(action: ActionIR, caps: BackendCapabilities): Classifica
   if (selector && isVisualStrategy(selector.strategy)) {
     const ok = selectorSupported(caps, selector.strategy);
     return ok
-      ? { support: 'visual_only', reason: `${action.kind} uses a ${selector.strategy} target — visual/OCR candidate evidence, not a structured locator proof.` }
-      : { support: 'unsupported', reason: `${selector.strategy} fallback is unavailable on ${caps.backend}.`, requiredCapability: selector.strategy };
+      ? {
+          support: 'visual_only',
+          reason: `${action.kind} uses a ${selector.strategy} target — visual/OCR candidate evidence, not a structured locator proof.`,
+        }
+      : {
+          support: 'unsupported',
+          reason: `${selector.strategy} fallback is unavailable on ${caps.backend}.`,
+          requiredCapability: selector.strategy,
+        };
   }
 
   // assertVisual with no selector is always visual-only candidate evidence.
@@ -174,8 +207,15 @@ function classifyAction(action: ActionIR, caps: BackendCapabilities): Classifica
   // Coordinate targets work anywhere we can screenshot, but are a fallback (brittle).
   if (selector && selector.strategy === 'coordinate') {
     return selectorSupported(caps, 'coordinate')
-      ? { support: 'supported_with_fallback', reason: `${action.kind} by coordinate is a brittle fallback on ${caps.backend}; prefer a durable selector.` }
-      : { support: 'unsupported', reason: `coordinate targeting needs screenshot support on ${caps.backend}.`, requiredCapability: 'screenshot' };
+      ? {
+          support: 'supported_with_fallback',
+          reason: `${action.kind} by coordinate is a brittle fallback on ${caps.backend}; prefer a durable selector.`,
+        }
+      : {
+          support: 'unsupported',
+          reason: `coordinate targeting needs screenshot support on ${caps.backend}.`,
+          requiredCapability: 'screenshot',
+        };
   }
 
   // Structured selector actions: the backend must support the selector strategy.
@@ -190,7 +230,11 @@ function classifyAction(action: ActionIR, caps: BackendCapabilities): Classifica
           requiredCapability: 'structuredTree',
         };
       }
-      return { support: 'unsupported', reason: check.detail ?? `${selector.strategy} unsupported on ${caps.backend}.`, requiredCapability: selector.strategy };
+      return {
+        support: 'unsupported',
+        reason: check.detail ?? `${selector.strategy} unsupported on ${caps.backend}.`,
+        requiredCapability: selector.strategy,
+      };
     }
     // Text input also needs the right input capability (ASCII, and Unicode for non-ASCII text).
     if (action.kind === 'inputText') {
@@ -279,7 +323,13 @@ export function compileAutomationPlan(flow: Flow, caps: BackendCapabilities): Au
   return { backend: caps.backend, executable, steps, blockers, warnings, agentMessage, developerMessage };
 }
 
-function buildAgentMessage(backend: string, executable: boolean, supported: number, visualOnly: number, blockers: PlanDiagnostic[]): string {
+function buildAgentMessage(
+  backend: string,
+  executable: boolean,
+  supported: number,
+  visualOnly: number,
+  blockers: PlanDiagnostic[],
+): string {
   if (!executable) {
     const first = blockers[0];
     return `This flow is not runnable on ${backend}: ${first?.detail ?? 'an unsupported step blocks it'}. ${first?.nextStep ?? ''}`.trim();
@@ -291,7 +341,12 @@ function buildAgentMessage(backend: string, executable: boolean, supported: numb
   return `This flow is runnable on ${backend} with ${supported} structured step(s)${visualPart}.`;
 }
 
-function buildDeveloperMessage(caps: BackendCapabilities, steps: PlanStep[], blockers: PlanDiagnostic[], warnings: PlanDiagnostic[]): string {
+function buildDeveloperMessage(
+  caps: BackendCapabilities,
+  steps: PlanStep[],
+  blockers: PlanDiagnostic[],
+  warnings: PlanDiagnostic[],
+): string {
   const lines = [`Backend: ${caps.backend}. ${steps.length} step(s) planned.`];
   for (const b of blockers) lines.push(`BLOCKER ${b.code}: ${b.detail} → ${b.nextStep}`);
   for (const w of warnings) lines.push(`WARNING ${w.code}: ${w.detail} → ${w.nextStep}`);

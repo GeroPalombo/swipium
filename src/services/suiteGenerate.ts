@@ -1,6 +1,6 @@
 // Suite generation service (Phase 3.2 Milestone C) — generate POM files + test cases from a
 // session's recorded actions, write them under .swipium/, and (optionally) compile them to runnable
-// Flow V2. Shared by qa_suite_generate and qa_test_this execute so the autopilot
+// Flow V2. Shared by qa_generate target:"suite" and qa_test_this execute so the autopilot
 // produces REAL files (not a note). Honest: when there are no recorded actions it returns a typed
 // `skipped` result rather than pretending a suite was created.
 
@@ -40,7 +40,7 @@ export interface SuiteGenerationResult {
 }
 
 export function appIdOf(session: Session): string | undefined {
-  return session.appId ?? ((loadProjectConfig(session.root)?.appId as string | undefined) ?? undefined);
+  return session.appId ?? (loadProjectConfig(session.root)?.appId as string | undefined) ?? undefined;
 }
 
 /** Write generated files under .swipium/, returning absolute paths written. */
@@ -57,7 +57,11 @@ export function writeSuiteFiles(session: Session, files: GeneratedFile[]): strin
 }
 
 /** Build the POM (+ flowName) for a session's recorded actions. */
-export function pomForSession(session: Session, name?: string, actions: RecordedAction[] = session.recordedActions): { pom: PomResult; flowName: string } {
+export function pomForSession(
+  session: Session,
+  name?: string,
+  actions: RecordedAction[] = session.recordedActions,
+): { pom: PomResult; flowName: string } {
   const appId = appIdOf(session);
   const flowName = (name ?? `${(appId ?? 'app').split('.').pop()}-smoke`).replace(/[^\w.-]+/g, '-');
   const pom = generatePom(actions, { name: flowName, appId, budgetProfile: session.budgetProfile });
@@ -92,7 +96,12 @@ export function generateAndCompileSuite(sessions: SessionStore, session: Session
   const save = opts.save ?? true;
   const compile = opts.compile ?? true;
   const { pom, flowName } = pomForSession(session, opts.name, actions);
-  const tc = generateTestCases(pom, { appId: appIdOf(session), fixtures: session.fixtures, notes: session.notes, budgetProfile: session.budgetProfile });
+  const tc = generateTestCases(pom, {
+    appId: appIdOf(session),
+    fixtures: session.fixtures,
+    notes: session.notes,
+    budgetProfile: session.budgetProfile,
+  });
 
   const files: GeneratedFile[] = [
     ...pom.files,
@@ -133,17 +142,31 @@ export function generateAndCompileSuite(sessions: SessionStore, session: Session
   let manifestPath: string | undefined;
   if (save) {
     manifestPath = join(session.root, '.swipium', 'suites', 'smoke.manifest.json');
-    writeFileSync(manifestPath, JSON.stringify({
-      schema: 'swipium.suite.manifest.v1',
-      generatedAt: new Date(session.createdAt).toISOString(),
-      name: flowName,
-      suiteFile: 'suites/smoke.yaml',
-      readinessLabels,
-      suiteRunnable,
-      compiledFlows: compiledFlows.map((f) => ({ name: f.name, slug: f.slug, ok: f.ok, errors: f.errors, flowPath: f.flowPath ?? null, compiledPath: f.compiledPath ?? null })),
-      audit: pom.audit,
-      variables: pom.variables,
-    }, null, 2));
+    writeFileSync(
+      manifestPath,
+      JSON.stringify(
+        {
+          schema: 'swipium.suite.manifest.v1',
+          generatedAt: new Date(session.createdAt).toISOString(),
+          name: flowName,
+          suiteFile: 'suites/smoke.yaml',
+          readinessLabels,
+          suiteRunnable,
+          compiledFlows: compiledFlows.map((f) => ({
+            name: f.name,
+            slug: f.slug,
+            ok: f.ok,
+            errors: f.errors,
+            flowPath: f.flowPath ?? null,
+            compiledPath: f.compiledPath ?? null,
+          })),
+          audit: pom.audit,
+          variables: pom.variables,
+        },
+        null,
+        2,
+      ),
+    );
     written.push(manifestPath);
   }
   return {

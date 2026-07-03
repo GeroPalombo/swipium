@@ -93,10 +93,16 @@ export async function waitForIdle(
   const appProof = opts.source === 'app_declared' && r.ok;
   const detail =
     opts.source === 'app_declared'
-      ? r.ok ? 'app-declared idling resource reported idle' : 'app-declared idling resource did not settle within timeout'
+      ? r.ok
+        ? 'app-declared idling resource reported idle'
+        : 'app-declared idling resource did not settle within timeout'
       : opts.source === 'backend'
-        ? r.ok ? 'backend (WDA/XCTest) idle reported' : 'backend idle did not settle within timeout'
-        : r.ok ? 'heuristic settling reached (not app-declared proof)' : 'heuristic settling did not stabilize within timeout';
+        ? r.ok
+          ? 'backend (WDA/XCTest) idle reported'
+          : 'backend idle did not settle within timeout'
+        : r.ok
+          ? 'heuristic settling reached (not app-declared proof)'
+          : 'heuristic settling did not stabilize within timeout';
   return { ok: r.ok, source: opts.source, elapsedMs: r.elapsedMs, polls: r.polls, timedOut: r.timedOut, appProof, detail };
 }
 

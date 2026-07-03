@@ -6,23 +6,10 @@
 //
 // See SWIPIUM-DEVELOPER-3-AUTOMATION-KERNEL-V2-PLAN-2026-05-29.md (Workstreams 1-5, 9).
 
-export type AutomationBackend =
-  | 'android-direct'
-  | 'ios-raw-simulator'
-  | 'ios-wda'
-  | 'appium-uiautomator2'
-  | 'appium-xcuitest'
-  | 'unknown';
+export type AutomationBackend = 'android-direct' | 'ios-raw-simulator' | 'ios-wda' | 'appium-uiautomator2' | 'appium-xcuitest' | 'unknown';
 
 export type SelectorStrategy =
-  | 'resource_id'
-  | 'accessibility_id'
-  | 'text'
-  | 'ios_predicate'
-  | 'ios_class_chain'
-  | 'ocr_text'
-  | 'image'
-  | 'coordinate';
+  'resource_id' | 'accessibility_id' | 'text' | 'ios_predicate' | 'ios_class_chain' | 'ocr_text' | 'image' | 'coordinate';
 
 export type SelectorSource = 'flow' | 'maestro_import' | 'recorded_action' | 'repair' | 'manual';
 

@@ -39,6 +39,8 @@ It helps an agent answer requests like:
 
 The MCP server keeps the workflow deterministic where possible and explicit where risk exists. Heavy steps such as booting simulators, installing apps, writing files, or generating automation are exposed as tools with structured outputs, blockers, artifacts, and consent prompts.
 
+Swipium does not run on Appium. It drives devices directly via `adb`, `simctl`, and WebDriverAgent; Appium is one of the export formats for generated tests (`qa_generate` with `target:"appium"`), not the execution engine.
+
 ## QuickStart
 
 Run this from the mobile app repository:
@@ -97,13 +99,30 @@ npm install --save-dev swipium
 npx swipium verify
 ```
 
-Requirements:
+### Prerequisites
+
+All platforms:
 
 - Node.js 20 or newer.
-- Android Studio for Android Emulator workflows.
-- Xcode for iOS Simulator workflows.
-- A simulator-ready app artifact when testing iOS, such as a simulator `.app`.
-- An APK or buildable Android project when testing Android.
+
+Android:
+
+- Android platform-tools with `adb` on your PATH (`ANDROID_HOME/platform-tools`), typically installed via Android Studio.
+- The Android Emulator package and at least one AVD, or an emulator that is already online.
+- An APK or buildable Android project. Java is only needed for build-from-source native Android builds.
+
+iOS:
+
+- Xcode with an iOS Simulator runtime and at least one simulator created.
+- A simulator-ready app artifact, such as a simulator `.app`.
+- For UI interaction (taps, typing, `qa_snapshot`): a WebDriverAgent build. Install `appium-webdriveragent`, or configure `ios.wda.derivedDataPath` / `wdaProjectPath`, then let `qa_wda` build and start it. `qa_doctor` with `platform:"ios"` checks for this.
+
+#### iOS runs in two modes
+
+- **Visual-only mode** (no WebDriverAgent): install, launch, deep links, screenshots, logs, and visual assertions work via `simctl`. UI-tree snapshots, taps, typing, and swipes are rejected with a clear error pointing to `qa_wda`.
+- **Full-interaction mode** (WebDriverAgent built and running): structured snapshots and input work like on Android. Use `qa_wda` (doctor, build, start) or attach an external WDA URL.
+
+Android has full interaction out of the box through `adb`; no extra agent is required.
 
 ## Usage
 
@@ -125,7 +144,7 @@ Common workflow:
 4. `qa_smoke` or `qa_explore` runs the app.
 5. `qa_report` produces the evidence report, including separate app and coverage verdicts.
 6. `qa_app_map_read` or `qa_app_map_query` reads the durable app map.
-7. `qa_flow_generate`, `qa_suite_generate`, or `qa_automation_generate` creates reusable QA assets.
+7. `qa_generate` creates reusable QA assets from the run (`target`: flow, page objects, POM suite, test cases, or Appium code).
 
 CLI helpers:
 
@@ -138,6 +157,8 @@ swipium init flows             # create starter flow templates
 swipium scan                   # scan project context
 swipium suite                  # local suite helper
 ```
+
+Note: `swipium verify` only reports pass/fail for server start and tool injection. Actionable fix hints — install steps for platform-tools, Xcode, WebDriverAgent, `brew install` suggestions — come from the `qa_doctor` tool output inside your MCP client, not from `swipium verify`.
 
 ## MCP Server
 
@@ -172,6 +193,8 @@ Installed binary configuration:
   }
 }
 ```
+
+`npx -y swipium` is the canonical setup for npm users. If you run from a source checkout instead, build first with `npm run build` and use `node /absolute/path/to/swipium/dist/index.js` as the command.
 
 Important:
 
@@ -232,39 +255,74 @@ args = ["-y", "swipium"]
 cwd = "/absolute/path/to/your/mobile-app"
 ```
 
+Known caveat: Codex builds after ~0.120.0 have an open tool-injection regression (openai/codex#19425). Set `cwd` explicitly, and if `qa_*` tools do not appear after setup, switch `command` to an absolute path (the installed `swipium` binary, or `node <abs>/dist/index.js` from a source checkout) and restart Codex.
+
+### Claude Desktop
+
+Add to `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`), then restart Claude Desktop:
+
+```jsonc
+{
+  "mcpServers": {
+    "swipium": {
+      "command": "npx",
+      "args": ["-y", "swipium"],
+      "cwd": "/absolute/path/to/your/mobile-app",
+      "timeout": 600000
+    }
+  }
+}
+```
+
+### Cursor
+
+Add to `.cursor/mcp.json` in the mobile app repository (or `~/.cursor/mcp.json` for all projects):
+
+```jsonc
+{
+  "mcpServers": {
+    "swipium": {
+      "command": "npx",
+      "args": ["-y", "swipium"],
+      "cwd": "/absolute/path/to/your/mobile-app",
+      "timeout": 600000
+    }
+  }
+}
+```
+
 After setup, verify that the client lists `qa_test_this`, `qa_capabilities`, and `qa_report`.
 
 ## Tool Docs
 
-Swipium exposes 95 public MCP tools. Start with `qa_test_this` for low-context requests.
+Swipium exposes 60 public MCP tools. Start with `qa_test_this` for low-context requests.
 
 Full reference: [docs/tools.md](docs/tools.md)
 
-New in 1.4.0 — 4 additional tools, all backward compatible:
+New in 1.5.0 — production consolidation:
 
-- **`qa_inspect`** — return the full attributes of a single `@eN` element from the latest snapshot, without dumping the whole tree.
-- **`qa_next_best_action`** — a deterministic recommendation of the single best next tool to call (with args) and why.
-- **`qa_app_map_update`** / **`qa_app_map_diff`** — targeted provenance-tracked app-map updates, and a diff between two map snapshots.
+- **60 public tools** — the MCP surface is smaller and clearer, with lower-level helpers merged into canonical workflows or deferred out of the public contract.
+- **`qa_generate`** — one entry point for flow YAML, page objects, per-run suites, test-case docs, and Appium code.
+- **`qa_first_run`** — one safe first-run tool for login, signup, onboarding, permissions, OTP, paywall, and home-screen transitions.
+- **Release hardening** — clean builds, lint/format/test/audit/pack release checks, structured `failureCode` errors, and safer local file locking.
 
-Earlier releases added device-parity, local-first visual, seeded-state, report-history (1.1.0); durable issue memory, persistent test suite, flow plan/repair, Maestro interop, agent helpers (1.2.0); and feature-focused testing plus local build/artifact resolution (1.3.0).
+Earlier releases added device-parity, local-first visual, seeded-state, report-history (1.1.0); durable issue memory, persistent test suite, flow plan/repair, agent helpers (1.2.0); feature-focused testing plus local build/artifact resolution (1.3.0); and app-map/agent helper refinements (1.4.0). The 1.5.0 release consolidates those capabilities into the production public surface — see the CHANGELOG for migration notes.
 
 | Group | Tools |
 | --- | --- |
 | Start | `qa_agent_brief`, `qa_capabilities`, `qa_test_this`, `qa_job_status`, `qa_job_cancel`, `qa_status`, `qa_explain_blocker`, `qa_continue_from_blocker`, `qa_next_best_action`, `qa_get_artifact` |
 | Setup | `qa_doctor`, `qa_start_session`, `qa_detect_context`, `qa_plan`, `qa_prepare_target`, `qa_prepare_ios_target`, `qa_ios`, `qa_wda` |
-| Build | `qa_resolve_target`, `qa_resolve_artifact`, `qa_build_plan`, `qa_build`, `qa_bundletool` |
-| Device | `qa_device_info`, `qa_permissions`, `qa_orientation`, `qa_geolocation`, `qa_network`, `qa_metro`, `qa_app_control`, `qa_screen_info`, `qa_screen_record` |
-| Drive | `qa_snapshot`, `qa_inspect`, `qa_act`, `qa_clear_overlay`, `qa_check_health`, `qa_screenshot`, `qa_note`, `qa_assert_visual`, `qa_visual`, `qa_visual_find_text`, `qa_locator_suggest`, `qa_input_capabilities`, `qa_wait`, `qa_idling_status` |
-| State | `qa_seed`, `qa_state_prepare`, `qa_state_verify`, `qa_state_teardown` |
-| Run | `qa_smoke`, `qa_explore`, `qa_report`, `qa_report_compare`, `qa_run_history` |
-| App map | `qa_app_map_build`, `qa_app_map_read`, `qa_app_map_query`, `qa_app_map_update`, `qa_app_map_diff`, `qa_app_map_feature_scope`, `qa_app_map_validate` |
-| Feature | `qa_feature_scope`, `qa_feature_test_plan`, `qa_test_feature` |
-| Flows and suites | `qa_flow_check`, `qa_flow_plan`, `qa_flow_run`, `qa_flow_generate`, `qa_flow_repair`, `qa_suite_generate`, `qa_suite_compile`, `qa_suite_lint`, `qa_pom_generate`, `qa_testcase_generate` |
-| Test suite | `qa_test_suite_read`, `qa_test_suite_update`, `qa_test_suite_generate`, `qa_test_suite_export`, `qa_test_suite_lint` |
-| Interop | `qa_maestro_import`, `qa_maestro_export` |
-| Issues | `qa_issue_log`, `qa_issue_history`, `qa_issue_mark_fixed`, `qa_issue_triage`, `qa_issue_suppress`, `qa_issue_verify_fixed`, `qa_issue_metrics`, `qa_mobile_audit` |
-| First run | `qa_first_run_plan`, `qa_first_run_continue` |
-| Automation | `qa_automation_plan`, `qa_automation_generate`, `qa_automation_validate` |
+| Build | `qa_resolve_target`, `qa_resolve_artifact`, `qa_build`, `qa_bundletool` |
+| Device | `qa_device_info`, `qa_orientation`, `qa_geolocation`, `qa_network`, `qa_metro`, `qa_app_control`, `qa_screen_record` |
+| Drive | `qa_snapshot`, `qa_inspect`, `qa_act`, `qa_clear_overlay`, `qa_check_health`, `qa_screenshot`, `qa_note`, `qa_assert_visual`, `qa_wait` |
+| Run | `qa_smoke`, `qa_explore`, `qa_report` |
+| App map | `qa_app_map_build`, `qa_app_map_read`, `qa_app_map_query`, `qa_app_map_update`, `qa_app_map_feature_scope` |
+| Feature | `qa_test_feature` |
+| Flows | `qa_flow_check`, `qa_flow_run`, `qa_flow_compile`, `qa_flow_repair` |
+| Generate | `qa_generate` |
+| Test suite | `qa_suite_read`, `qa_suite_update`, `qa_suite_generate`, `qa_suite_export`, `qa_suite_lint` |
+| Issues | `qa_issue_log`, `qa_mobile_audit` |
+| First run | `qa_first_run` |
 
 ## Why Swipium?
 
@@ -276,11 +334,16 @@ Earlier releases added device-parity, local-first visual, seeded-state, report-h
 - Reusable output: exploratory runs can become flows, test cases, suites, and generated automation.
 - Local by default: the server runs on the developer machine and uses local simulators.
 
+## Security
+
+Swipium runs locally as a stdio process: no network listener, no remote service. Destructive actions are consent-gated server-side, and known secret shapes are redacted from snapshots, artifacts, and reports. Trust boundaries, threats, and controls are documented in the [Threat Model](THREAT_MODEL.md). Report vulnerabilities per the [Security Policy](SECURITY.md).
+
 ## Docs
 
 - [MCP Server](docs/mcp-server.md)
 - [Tool Reference](docs/tools.md)
 - [Project Docs Index](docs/README.md)
+- [Threat Model](THREAT_MODEL.md)
 - [Security Policy](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
 - [Support](SUPPORT.md)

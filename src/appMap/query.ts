@@ -109,7 +109,11 @@ export function queryAppMap(
         provenance,
         sourceFiles: s.sourceFiles.slice(0, 8),
         screens: [s.id],
-        recommendedNextTool: { tool: 'qa_explore', args: { goal: `reach the ${s.name} screen` }, why: 'Exercise this screen at runtime to confirm + capture locators' },
+        recommendedNextTool: {
+          tool: 'qa_explore',
+          args: { goal: `reach the ${s.name} screen` },
+          why: 'Exercise this screen at runtime to confirm + capture locators',
+        },
       });
     }
     for (const r of map.runtimeTopology.screens) {
@@ -124,7 +128,11 @@ export function queryAppMap(
         provenance: ['runtime'],
         sourceFiles: [],
         screens: [r.id, ...(r.linkedStaticScreenId ? [r.linkedStaticScreenId] : [])],
-        recommendedNextTool: { tool: 'qa_app_map_read', args: { section: 'screens', screenId: r.id }, why: 'Read the observed runtime screen detail' },
+        recommendedNextTool: {
+          tool: 'qa_app_map_read',
+          args: { section: 'screens', screenId: r.id },
+          why: 'Read the observed runtime screen detail',
+        },
       });
     }
   }
@@ -141,7 +149,11 @@ export function queryAppMap(
         provenance: ['code_scan', ...fileMatchDimensions(file, ts)],
         sourceFiles: [file.file],
         screens: [],
-        recommendedNextTool: { tool: 'qa_app_map_query', args: { query: opts.query, intent: 'feature' }, why: 'Pivot from this file to the feature(s) it backs' },
+        recommendedNextTool: {
+          tool: 'qa_app_map_query',
+          args: { query: opts.query, intent: 'feature' },
+          why: 'Pivot from this file to the feature(s) it backs',
+        },
       });
     }
   }
@@ -159,7 +171,11 @@ export function queryAppMap(
         provenance: ['test_case'],
         sourceFiles: c.source ? [c.source] : [],
         screens: [c.featureId, c.screenId].filter((x): x is string => !!x),
-        recommendedNextTool: { tool: 'qa_flow_run', args: {}, why: c.stale ? 'This test looks stale — re-run / repair it' : 'Run this existing test case' },
+        recommendedNextTool: {
+          tool: 'qa_flow_run',
+          args: {},
+          why: c.stale ? 'This test looks stale — re-run / repair it' : 'Run this existing test case',
+        },
       });
     }
   }

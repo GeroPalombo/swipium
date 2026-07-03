@@ -11,17 +11,8 @@ import { createHash } from 'node:crypto';
 import { classifyObservation, type ClassifyContext } from './classify.js';
 import { fingerprint, issueIdFromFingerprint } from './fingerprint.js';
 import { buildRecurrenceMessage, foldEvent } from './recurrence.js';
-import {
-  appendEvents,
-  eventCountForIssue,
-  findRecord,
-  getIndex,
-  loadPolicy,
-  saveIndex,
-  type IssuePolicyFile,
-} from './store.js';
+import { appendEvents, eventCountForIssue, findRecord, getIndex, loadPolicy, saveIndex, type IssuePolicyFile } from './store.js';
 import type {
-  IssueClassification,
   IssueEnvironment,
   IssueEvent,
   IssueIndex,
@@ -36,7 +27,6 @@ import type {
   IssueCategory,
   IssueSeverity,
   SourceRevision,
-  SuppressionScope,
 } from './schema.js';
 import { ISSUE_SCHEMA_VERSION } from './schema.js';
 
@@ -151,44 +141,21 @@ export function markFixed(
   patch: { fixedInCommit?: string; fixedInVersion?: string; howFixed?: string; fixedBy?: string; sourceRevision?: SourceRevision },
   now: string,
 ): { ok: boolean; record?: IssueRecord; reason?: string } {
-  return applyLifecycle(root, key, now, 'fixed', {
-    state: 'fixed',
-    fixedAt: now,
-    fixedInCommit: patch.fixedInCommit ?? patch.sourceRevision?.commit,
-    fixedInVersion: patch.fixedInVersion ?? patch.sourceRevision?.buildVersion,
-    howFixed: patch.howFixed,
-    fixedBy: patch.fixedBy,
-  }, patch.sourceRevision);
-}
-
-/** Append a `triaged` lifecycle event (change category/severity/owner/note). */
-export function triageIssue(
-  root: string,
-  key: { issueId?: string; fingerprint?: string },
-  patch: { category?: IssueCategory; severity?: IssueSeverity; owner?: IssueRecord['owner']; note?: string },
-  now: string,
-): { ok: boolean; record?: IssueRecord; reason?: string } {
-  return applyLifecycle(root, key, now, 'triaged', {
-    category: patch.category,
-    severity: patch.severity,
-    owner: patch.owner,
-    note: patch.note,
-  });
-}
-
-/** Append a `suppressed` lifecycle event. Suppressed issues stay visible under known-noise. */
-export function suppressIssue(
-  root: string,
-  key: { issueId?: string; fingerprint?: string },
-  patch: { reason: string; until?: string; scope?: SuppressionScope },
-  now: string,
-): { ok: boolean; record?: IssueRecord; reason?: string } {
-  return applyLifecycle(root, key, now, 'suppressed', {
-    state: 'suppressed',
-    suppressionReason: patch.reason,
-    suppressedUntil: patch.until,
-    suppressionScope: patch.scope ?? 'fingerprint',
-  });
+  return applyLifecycle(
+    root,
+    key,
+    now,
+    'fixed',
+    {
+      state: 'fixed',
+      fixedAt: now,
+      fixedInCommit: patch.fixedInCommit ?? patch.sourceRevision?.commit,
+      fixedInVersion: patch.fixedInVersion ?? patch.sourceRevision?.buildVersion,
+      howFixed: patch.howFixed,
+      fixedBy: patch.fixedBy,
+    },
+    patch.sourceRevision,
+  );
 }
 
 export interface LinkRunOptions {
@@ -224,7 +191,10 @@ export function linkRun(
     createdAt: now,
     sourceRevision: opts.sourceRevision,
     relationship: opts.relationship,
-    run: opts.reportUri || opts.reportPath || opts.testCaseId ? { reportUri: opts.reportUri, reportPath: opts.reportPath, testCaseId: opts.testCaseId } : undefined,
+    run:
+      opts.reportUri || opts.reportPath || opts.testCaseId
+        ? { reportUri: opts.reportUri, reportPath: opts.reportPath, testCaseId: opts.testCaseId }
+        : undefined,
     links: {
       evidenceRefs: opts.evidenceUris?.map((uri) => ({ kind: 'evidence', uri })),
       testRefs: opts.testCaseId ? [{ testCaseId: opts.testCaseId }] : undefined,
@@ -247,15 +217,24 @@ export function linkRun(
 export function verifyFixed(
   root: string,
   key: { issueId?: string; fingerprint?: string },
-  opts: { reportUri?: string; testCaseId?: string; auditCheckId?: string; evidenceUris?: string[]; sourceRevision?: SourceRevision; note?: string },
+  opts: {
+    reportUri?: string;
+    testCaseId?: string;
+    auditCheckId?: string;
+    evidenceUris?: string[];
+    sourceRevision?: SourceRevision;
+    note?: string;
+  },
   now: string,
 ): { ok: boolean; record?: IssueRecord; reason?: string } {
   const index = getIndex(root, now);
   const existing = findRecord(index, key);
   if (!existing) return { ok: false, reason: `No issue found for ${key.issueId ?? key.fingerprint ?? '(no key)'}` };
-  if (existing.state !== 'fixed') return { ok: false, reason: `Issue ${existing.issueId} is "${existing.state}", not "fixed" — only a fixed issue can be verified` };
+  if (existing.state !== 'fixed')
+    return { ok: false, reason: `Issue ${existing.issueId} is "${existing.state}", not "fixed" — only a fixed issue can be verified` };
   const hasEvidence = Boolean(opts.reportUri || opts.testCaseId || opts.auditCheckId || (opts.evidenceUris && opts.evidenceUris.length));
-  if (!hasEvidence) return { ok: false, reason: 'verify_fixed needs current-run evidence: a reportUri, testCaseId, auditCheckId, or evidenceUris' };
+  if (!hasEvidence)
+    return { ok: false, reason: 'verify_fixed needs current-run evidence: a reportUri, testCaseId, auditCheckId, or evidenceUris' };
   return linkRun(
     root,
     { issueId: existing.issueId },

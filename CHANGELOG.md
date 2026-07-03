@@ -2,7 +2,34 @@
 
 All notable public changes to Swipium are documented here.
 
-## Unreleased
+## 1.5.0 - 2026-07-03
+
+Swipium 1.5.0 is the production consolidation release. It narrows the MCP surface from 95 to 60 public tools, keeps the main simulator QA workflows, and moves lower-level/internal helpers out of the public contract so agents have fewer overlapping choices.
+
+### Highlights
+
+- `qa_generate` is now the single generator for flow YAML, page objects, per-run suites, test-case docs, and Appium code.
+- `qa_first_run` replaces the first-run plan/continue split with `mode:"plan"` and `mode:"continue"`.
+- Planning/execution patterns are standardized: `qa_build` uses `mode:"plan"|"run"` (default `plan`), and `qa_flow_run` uses `mode:"plan"|"run"` (default `run`).
+- Durable suite tools now use the shorter `qa_suite_*` names, and generated POM suites compile through `qa_flow_compile`.
+- `qa_app_map_feature_scope`, `qa_test_feature`, `qa_mobile_audit`, `qa_report`, and the suite/reporting tools remain the supported public paths for feature, audit, evidence, and release-gate workflows.
+
+### Compatibility Notes
+
+- Public tool count is now 60. Tools removed from public registration were merged into canonical tools or deferred from the public v1 surface.
+- Main migrations: generation tools move to `qa_generate target:"flow"|"pom"|"suite"|"testcases"|"appium"`; `qa_feature_scope` moves to `qa_app_map_feature_scope`; `qa_feature_test_plan` moves to `qa_test_feature mode:"plan"`; first-run twins move to `qa_first_run`; build/flow plan twins move to `qa_build mode:"plan"` and `qa_flow_run mode:"plan"`.
+- `qa_build` without `mode` now returns a build plan. Use `qa_build mode:"run"` to start the consent-gated build job.
+- `qa_act` now requires structured selector objects instead of free-form selector strings.
+- Timing fields are normalized to milliseconds (`*Ms`), and snapshot/action element lists are capped with an `elementsOmitted` count plus filtering support.
+
+### Reliability and Release Readiness
+
+- Added hermetic coverage for the core happy path, `qa_doctor`, docs/version consistency, and every public tool's structured error envelope.
+- Every `qaError` now includes a `failureCode`, with `UNKNOWN` as the fallback.
+- Release checks now run typecheck, lint, format check, tests, production audit, clean build, and pack dry-run.
+- `npm run build` cleans `dist/` before compiling so stale removed tools cannot ship.
+- File-lock timeouts now fail instead of falling back to unlocked writes.
+- Added the published threat model documenting local trust boundaries, consent gates, and secret redaction.
 
 ## 1.4.0 - 2026-06-04
 

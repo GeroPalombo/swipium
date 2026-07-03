@@ -99,7 +99,9 @@ export function mergeFeatureRun(
     } else if (globallyBlocked && status === 'not_run') {
       // Honest: the run was blocked before reaching this case — blocked, not failed.
       status = 'blocked';
-      actualResult.push(`blocked — ${signals.blockReason ?? signals.exploration?.stoppedReason ?? 'feature run was blocked before this case'}`);
+      actualResult.push(
+        `blocked — ${signals.blockReason ?? signals.exploration?.stoppedReason ?? 'feature run was blocked before this case'}`,
+      );
     } else if (status === 'not_run') {
       actualResult.push('not executed in this run');
     }
@@ -118,12 +120,23 @@ export function mergeFeatureRun(
   else statusAfter = 'partial';
 
   const newRuntimeScreens = signals.visitedRuntimeScreens.filter((id) => !(prior?.runtimeScreens ?? []).includes(id));
-  const runtimeScreens = [...new Set([...(prior?.runtimeScreens ?? []), ...scope.runtimeScreens.map((s) => s.id ?? s.name).filter(Boolean) as string[], ...signals.visitedRuntimeScreens])];
-  const staticScreens = [...new Set([...(prior?.staticScreens ?? []), ...scope.staticScreens.map((s) => s.file ?? s.name).filter(Boolean) as string[]])];
+  const runtimeScreens = [
+    ...new Set([
+      ...(prior?.runtimeScreens ?? []),
+      ...(scope.runtimeScreens.map((s) => s.id ?? s.name).filter(Boolean) as string[]),
+      ...signals.visitedRuntimeScreens,
+    ]),
+  ];
+  const staticScreens = [
+    ...new Set([...(prior?.staticScreens ?? []), ...(scope.staticScreens.map((s) => s.file ?? s.name).filter(Boolean) as string[])]),
+  ];
 
   const blockers: string[] = [];
-  if (globallyBlocked) blockers.push(signals.blockGuidance ?? signals.blockReason ?? signals.exploration?.stoppedReason ?? 'feature run blocked');
-  for (const n of signals.notes) if (n.outcome === 'blocked') blockers.push(`${n.workflow}: ${n.reason ?? 'blocked'}${n.recommendedSetup ? ` — ${n.recommendedSetup}` : ''}`);
+  if (globallyBlocked)
+    blockers.push(signals.blockGuidance ?? signals.blockReason ?? signals.exploration?.stoppedReason ?? 'feature run blocked');
+  for (const n of signals.notes)
+    if (n.outcome === 'blocked')
+      blockers.push(`${n.workflow}: ${n.reason ?? 'blocked'}${n.recommendedSetup ? ` — ${n.recommendedSetup}` : ''}`);
 
   const coverage: FeatureCoverage = {
     featureId: scope.featureId,

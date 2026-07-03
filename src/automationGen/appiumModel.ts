@@ -9,14 +9,7 @@
 
 import type { Durability, PomResult, PomTestStep } from '../suite/pom.js';
 
-export type AppiumStrategy =
-  | 'accessibilityId'
-  | 'id'
-  | 'name'
-  | 'iosPredicate'
-  | 'iosClassChain'
-  | 'androidUiautomator'
-  | 'coordinate';
+export type AppiumStrategy = 'accessibilityId' | 'id' | 'name' | 'iosPredicate' | 'iosClassChain' | 'androidUiautomator' | 'coordinate';
 
 export interface AppiumLocator {
   strategy: AppiumStrategy;
@@ -41,15 +34,7 @@ export interface CrossPlatformElement {
   sourceFile?: string;
 }
 
-export type AppiumActionKind =
-  | 'tap'
-  | 'tapAt'
-  | 'inputText'
-  | 'press'
-  | 'swipe'
-  | 'scrollTo'
-  | 'openUrl'
-  | 'assertVisible';
+export type AppiumActionKind = 'tap' | 'tapAt' | 'inputText' | 'press' | 'swipe' | 'scrollTo' | 'openUrl' | 'assertVisible';
 
 export interface AppiumStep {
   /** Screen CLASS name (e.g. LoginScreen) the step targets. */
@@ -171,7 +156,9 @@ export function buildAppiumModel(
         secure: e.secure,
         remediation: e.remediation,
         mapScreenId: p.screen,
-        sourceFile: opts.sourceFilePrefix ? `${opts.sourceFilePrefix}/pages/${kebab(p.name)}.page.yaml` : `pages/${kebab(p.name)}.page.yaml`,
+        sourceFile: opts.sourceFilePrefix
+          ? `${opts.sourceFilePrefix}/pages/${kebab(p.name)}.page.yaml`
+          : `pages/${kebab(p.name)}.page.yaml`,
       };
     });
     return { className, pageName: p.name, screenSignature: p.screen, elements };

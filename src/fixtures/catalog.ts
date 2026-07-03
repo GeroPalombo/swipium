@@ -98,12 +98,22 @@ function fixtureFields(f: Fixture): Record<string, FixtureFieldSpec> {
 }
 
 function normalizeText(value?: string): string {
-  return (value ?? '').toLowerCase().replace(/[_-]+/g, ' ').replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return (value ?? '')
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function normalizeGenerator(value?: string): FixtureGenerator | undefined {
   if (!value) return undefined;
-  return GENERATOR_ALIASES[value.trim().toLowerCase().replace(/[-\s]+/g, '_')];
+  return GENERATOR_ALIASES[
+    value
+      .trim()
+      .toLowerCase()
+      .replace(/[-\s]+/g, '_')
+  ];
 }
 
 function fieldScore(fieldName: string, spec: FixtureFieldSpec, key: string, context: FixtureMatchContext = {}): number {
@@ -130,8 +140,15 @@ function fieldScore(fieldName: string, spec: FixtureFieldSpec, key: string, cont
   return score;
 }
 
-export function resolveFixtureValue(session: Session, label?: string, locatorValue?: string, context: FixtureMatchContext = {}): ResolvedFixtureValue | undefined {
-  const key = normalizeText(`${label ?? ''} ${locatorValue ?? ''} ${context.placeholder ?? ''} ${context.nearbyText ?? ''} ${context.role ?? ''} ${context.inputType ?? ''}`);
+export function resolveFixtureValue(
+  session: Session,
+  label?: string,
+  locatorValue?: string,
+  context: FixtureMatchContext = {},
+): ResolvedFixtureValue | undefined {
+  const key = normalizeText(
+    `${label ?? ''} ${locatorValue ?? ''} ${context.placeholder ?? ''} ${context.nearbyText ?? ''} ${context.role ?? ''} ${context.inputType ?? ''}`,
+  );
   let best: { fixture: Fixture; field: string; score: number } | undefined;
   for (const fixture of session.fixtures) {
     for (const field of Object.keys(fixtureFields(fixture))) {
@@ -143,10 +160,20 @@ export function resolveFixtureValue(session: Session, label?: string, locatorVal
     const spec = fixtureFields(best.fixture)[best.field];
     const varName = spec.var ?? variableName(best.fixture.name, best.field);
     const secret = !!spec.secret || /pass|secret|token|otp|pin|cvv|key/i.test(best.field);
-    const generated = session.generatedValues.find((g) => g.varName === varName && g.fixture === best.fixture.name && g.field === best.field);
+    const generated = session.generatedValues.find(
+      (g) => g.varName === varName && g.fixture === best.fixture.name && g.field === best.field,
+    );
     if (generated) {
       session.inputValues.set(varName, generated.value);
-      return { value: generated.value, varName, secret: generated.secret, fixture: best.fixture.name, field: best.field, source: 'generator', generator: generated.generator as FixtureGenerator };
+      return {
+        value: generated.value,
+        varName,
+        secret: generated.secret,
+        fixture: best.fixture.name,
+        field: best.field,
+        source: 'generator',
+        generator: generated.generator as FixtureGenerator,
+      };
     }
     const fromVar = session.inputValues.get(varName) ?? (spec.var ? process.env[spec.var] : undefined);
     if (fromVar != null) return { value: fromVar, varName, secret, fixture: best.fixture.name, field: best.field, source: 'variable' };
@@ -155,13 +182,31 @@ export function resolveFixtureValue(session: Session, label?: string, locatorVal
     if (generator && GENERATORS[generator]) {
       const value = GENERATORS[generator]();
       session.inputValues.set(varName, value);
-      session.generatedValues.push({ at: Date.now(), fixture: best.fixture.name, field: best.field, varName, generator, value, secret: false });
+      session.generatedValues.push({
+        at: Date.now(),
+        fixture: best.fixture.name,
+        field: best.field,
+        varName,
+        generator,
+        value,
+        secret: false,
+      });
       return { value, varName, secret: false, fixture: best.fixture.name, field: best.field, source: 'generator', generator };
     }
   }
 
-  const legacy = key ? session.fixtures.find((f) => f.value && (key.includes(normalizeText(f.name)) || normalizeText(f.name).includes(key))) : undefined;
-  if (legacy?.value) return { value: legacy.value, varName: variableName(legacy.name, 'value'), secret: false, fixture: legacy.name, field: 'value', source: 'legacy_value' };
+  const legacy = key
+    ? session.fixtures.find((f) => f.value && (key.includes(normalizeText(f.name)) || normalizeText(f.name).includes(key)))
+    : undefined;
+  if (legacy?.value)
+    return {
+      value: legacy.value,
+      varName: variableName(legacy.name, 'value'),
+      secret: false,
+      fixture: legacy.name,
+      field: 'value',
+      source: 'legacy_value',
+    };
   return undefined;
 }
 

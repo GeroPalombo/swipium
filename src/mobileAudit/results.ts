@@ -1,6 +1,12 @@
 // SWIPIUM-REQ-08 — executable mobile-audit result model + release-impact rollup.
 
-import { combineReleaseImpact, defaultReleaseImpact, type IssueCategory, type IssueSeverity, type ReleaseImpact } from '../issues/schema.js';
+import {
+  combineReleaseImpact,
+  defaultReleaseImpact,
+  type IssueCategory,
+  type IssueSeverity,
+  type ReleaseImpact,
+} from '../issues/schema.js';
 import type { AuditProfile } from './profiles.js';
 
 export type CheckStatus = 'pass' | 'fail' | 'blocked' | 'skipped' | 'not_applicable';
@@ -62,7 +68,12 @@ export function checkLine(c: MobileAuditCheckResult): string {
 
 /** Render the audit run as a compact markdown block for the report / tool output. */
 export function auditRunToMarkdown(run: MobileAuditRunResult): string {
-  const lines = [`## Mobile Audit — ${run.profile}`, '', `State: **${run.state}** · Release impact: **${run.releaseImpact.toUpperCase()}**`, ''];
+  const lines = [
+    `## Mobile Audit — ${run.profile}`,
+    '',
+    `State: **${run.state}** · Release impact: **${run.releaseImpact.toUpperCase()}**`,
+    '',
+  ];
   for (const c of run.checks) lines.push(checkLine(c));
   if (run.recurrenceWarnings.length) {
     lines.push('', '### Recurrence');

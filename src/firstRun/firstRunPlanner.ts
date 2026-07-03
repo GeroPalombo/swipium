@@ -12,7 +12,7 @@ import { chooseAuthIntent, planAuthActions, hasProvidedCredentials } from './aut
 import { planOnboardingStep } from './onboardingStateMachine.js';
 import { planPaywall } from './paywallPolicy.js';
 import type { GeneratedAccountDecision, TestDataPolicy } from './generatedDataPolicy.js';
-import type { AppMapPatch, FirstRunPlan, ScreenClassification, PlannedAction } from './types.js';
+import type { AppMapPatch, FirstRunPlan, ScreenClassification } from './types.js';
 
 export interface FirstRunPlanContext {
   policy: TestDataPolicy;
@@ -97,7 +97,10 @@ export function planFirstRun(obs: ScreenObservation, session: Session, ctx: Firs
         expectedNextPurposes: [],
         stopConditions: ['unsafe environment for generated account creation'],
         reason: ctx.decision.reason,
-        needsInput: { kind: 'credentials', reason: `${ctx.decision.reason}. Provide test credentials, or confirm this is a disposable test/staging environment.` },
+        needsInput: {
+          kind: 'credentials',
+          reason: `${ctx.decision.reason}. Provide test credentials, or confirm this is a disposable test/staging environment.`,
+        },
         pathTaken,
         nextRecommendedTool: 'qa_continue_from_blocker',
       };
@@ -148,7 +151,7 @@ export function planFirstRun(obs: ScreenObservation, session: Session, ctx: Firs
       stopConditions: ['permission prompt requires deliberate handling'],
       reason: 'permission prompt encountered; not auto-granted',
       pathTaken: 'permissions',
-      nextRecommendedTool: 'qa_first_run_continue',
+      nextRecommendedTool: 'qa_first_run',
     };
   }
 

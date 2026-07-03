@@ -33,7 +33,12 @@ export function registerSmoke(server: McpServer, sessions: SessionStore): void {
       const session = sessions.get(sessionId);
       const { driver: d } = session ? await getDriver(session) : { driver: undefined };
       if (!session || !d) {
-        return qaError({ what: 'No device attached to this session', changedState: false, retrySafe: true, nextSteps: ['Call qa_prepare_target first, then qa_smoke.'] });
+        return qaError({
+          what: 'No device attached to this session',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Call qa_prepare_target first, then qa_smoke.'],
+        });
       }
 
       const result = await runSmoke(sessions, session, d, { launch, runFlows, variables });
@@ -41,10 +46,21 @@ export function registerSmoke(server: McpServer, sessions: SessionStore): void {
       const summary =
         `qa_smoke done — launch=${launchOutcome}, flows ${result.flowsPassed}/${result.flowsTotal} passed.\n` +
         `baseline: ${JSON.stringify(result.baseline.launch)}\n` +
-        (result.flows.length ? result.flows.map((f) => `${f.passed ? '✓' : '✗'} ${f.name}${f.passed ? '' : ` — ${f.reason}`}`).join('\n') : 'no saved flows (.swipium/flows is empty)') +
+        (result.flows.length
+          ? result.flows.map((f) => `${f.passed ? '✓' : '✗'} ${f.name}${f.passed ? '' : ` — ${f.reason}`}`).join('\n')
+          : 'no saved flows (.swipium/flows is empty)') +
         `\nCall qa_report to summarize.`;
 
-      return qaOk({ baseline: result.baseline.launch, flows: result.flows, flowsPassed: result.flowsPassed, flowsTotal: result.flowsTotal, counters: session.counters }, summary);
+      return qaOk(
+        {
+          baseline: result.baseline.launch,
+          flows: result.flows,
+          flowsPassed: result.flowsPassed,
+          flowsTotal: result.flowsTotal,
+          counters: session.counters,
+        },
+        summary,
+      );
     },
   );
 }

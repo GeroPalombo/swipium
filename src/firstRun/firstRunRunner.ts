@@ -64,7 +64,14 @@ export interface FirstRunResult {
   environment: EnvironmentClassification;
   decision: GeneratedAccountDecision;
   policySource: string;
-  generatedVariables: Array<{ varName: string; field?: string; generator?: string; value: string | '<redacted>'; secret: boolean; artifactUri?: string }>;
+  generatedVariables: Array<{
+    varName: string;
+    field?: string;
+    generator?: string;
+    value: string | '<redacted>';
+    secret: boolean;
+    artifactUri?: string;
+  }>;
   mapUpdates: AppMapPatch[];
   mapArtifactUri?: string;
   evidenceUris: string[];
@@ -110,14 +117,23 @@ export async function observeScreen(sessions: SessionStore, session: Session, dr
       /* best-effort */
     }
   }
-  const visibleText = elements.map((e) => `${e.text ?? ''} ${e.label ?? ''}`).join(' ').trim();
+  const visibleText = elements
+    .map((e) => `${e.text ?? ''} ${e.label ?? ''}`)
+    .join(' ')
+    .trim();
   const screenSignature = elements.length ? structuredSignature(elements, { foreground, keyboardShown: false }) : `visual:${foreground}`;
   return { elements, foreground, visibleText, screenSignature, screenshotUri, appError: APP_ERROR_RE.test(xml) };
 }
 
 /** Resolve policy + environment + the generated-account decision for a session (read-only). */
-export function resolveFirstRunPolicy(session: Session, opts: { testDataPolicyPath?: string; allowGeneratedAccount?: boolean } = {}): {
-  policy: TestDataPolicy; policySource: string; environment: EnvironmentClassification; decision: GeneratedAccountDecision;
+export function resolveFirstRunPolicy(
+  session: Session,
+  opts: { testDataPolicyPath?: string; allowGeneratedAccount?: boolean } = {},
+): {
+  policy: TestDataPolicy;
+  policySource: string;
+  environment: EnvironmentClassification;
+  decision: GeneratedAccountDecision;
 } {
   const { policy, source: policySource } = loadTestDataPolicy(session.root, opts.testDataPolicyPath);
   const environment = classifyEnvironment(gatherEnvironmentSignals(session));
@@ -239,8 +255,14 @@ export async function runFirstRun(
       sessions.bump(session, 'actions');
       if (action.value && action.locator && action.locator.strategy && action.locator.strategy !== 'coordinate') {
         sessions.addRecordedAction(session, {
-          at: Date.now(), action: 'type', selector: action.locator.value, selectorKind: selectorKind(action.locator.strategy),
-          text: `\${${action.value.varName}}`, secret: action.value.secret, exportability: action.value.secret ? 'needs-human-data' : 'semantic', screen,
+          at: Date.now(),
+          action: 'type',
+          selector: action.locator.value,
+          selectorKind: selectorKind(action.locator.strategy),
+          text: `\${${action.value.varName}}`,
+          secret: action.value.secret,
+          exportability: action.value.secret ? 'needs-human-data' : 'semantic',
+          screen,
         } as RecordedAction);
       }
       return 'done';
@@ -254,32 +276,74 @@ export async function runFirstRun(
     sessions.bump(session, 'actions');
     if (action.locator && action.locator.strategy && action.locator.strategy !== 'coordinate') {
       sessions.addRecordedAction(session, {
-        at: Date.now(), action: 'tap', selector: action.locator.value, selectorKind: selectorKind(action.locator.strategy),
-        exportability: 'semantic', screen,
+        at: Date.now(),
+        action: 'tap',
+        selector: action.locator.value,
+        selectorKind: selectorKind(action.locator.strategy),
+        exportability: 'semantic',
+        screen,
       } as RecordedAction);
     }
     return 'done';
   };
 
   for (let i = 0; i < maxSteps; i++) {
-    if (ctx.signal?.aborted) { stoppedReason = 'cancelled'; break; }
-    if (Date.now() >= deadline) { finalState = 'blocked'; stoppedReason = 'time budget reached'; break; }
+    if (ctx.signal?.aborted) {
+      stoppedReason = 'cancelled';
+      break;
+    }
+    if (Date.now() >= deadline) {
+      finalState = 'blocked';
+      stoppedReason = 'time budget reached';
+      break;
+    }
     const budgetStop = sessions.budgetStop(session);
-    if (budgetStop) { finalState = 'blocked'; stoppedReason = `session budget: ${budgetStop}`; break; }
+    if (budgetStop) {
+      finalState = 'blocked';
+      stoppedReason = `session budget: ${budgetStop}`;
+      break;
+    }
 
     const obs = await observe();
-    const staticCandidates = opts.appMap ? staticCandidatesForObservation(opts.appMap, { foreground: obs.foreground, visibleText: obs.visibleText }) : undefined;
-    const plan = planFirstRun({ ...obs, screenSignature: obs.screenSignature, appError: obs.appError, staticCandidates, authState: session.auth.loginScreenSeen ? 'auth_required' : undefined }, session, {
-      policy, decision, timestamp: opts.timestamp, fromSignature,
-    });
+    const staticCandidates = opts.appMap
+      ? staticCandidatesForObservation(opts.appMap, { foreground: obs.foreground, visibleText: obs.visibleText })
+      : undefined;
+    const plan = planFirstRun(
+      {
+        ...obs,
+        screenSignature: obs.screenSignature,
+        appError: obs.appError,
+        staticCandidates,
+        authState: session.auth.loginScreenSeen ? 'auth_required' : undefined,
+      },
+      session,
+      {
+        policy,
+        decision,
+        timestamp: opts.timestamp,
+        fromSignature,
+      },
+    );
     mapUpdates.push(...plan.mapUpdates);
     if (obs.screenshotUri) evidenceUris.push(obs.screenshotUri);
     progress(`first-run: ${plan.classification.purpose} → ${plan.state}`);
 
     // Record a classification note (auth-state side-effects too).
-    if (AUTH_PURPOSES_RUNTIME.has(plan.classification.purpose)) sessions.markAuth(session, { loginScreenSeen: true, loginScreenSeenAt: Date.now() });
+    if (AUTH_PURPOSES_RUNTIME.has(plan.classification.purpose))
+      sessions.markAuth(session, { loginScreenSeen: true, loginScreenSeenAt: Date.now() });
     sessions.addNote(session, {
-      at: Date.now(), workflow: 'first_run', outcome: plan.state === 'completed' ? 'pass' : plan.state === 'ready' ? 'pass' : plan.state === 'unsafe' ? 'skipped' : plan.state === 'needs_input' ? 'blocked' : 'blocked',
+      at: Date.now(),
+      workflow: 'first_run',
+      outcome:
+        plan.state === 'completed'
+          ? 'pass'
+          : plan.state === 'ready'
+            ? 'pass'
+            : plan.state === 'unsafe'
+              ? 'skipped'
+              : plan.state === 'needs_input'
+                ? 'blocked'
+                : 'blocked',
       category: plan.state === 'unsafe' ? 'destructive_refused' : plan.state === 'needs_input' ? 'missing_test_data' : undefined,
       reason: `${plan.classification.purpose} (confidence ${plan.classification.confidence})${plan.reason ? ` — ${plan.reason}` : ''}`,
       artifactUris: obs.screenshotUri ? [obs.screenshotUri] : undefined,
@@ -290,16 +354,48 @@ export async function runFirstRun(
     nextRecommendedTool = plan.nextRecommendedTool;
 
     const stepRec: FirstRunStepRecord = {
-      index: i, purpose: plan.classification.purpose, confidence: plan.classification.confidence,
-      state: plan.state, pathTaken: plan.pathTaken, actions: [], evidenceUris: obs.screenshotUri ? [obs.screenshotUri] : [],
-      screenSignature: obs.screenSignature, reason: plan.reason,
+      index: i,
+      purpose: plan.classification.purpose,
+      confidence: plan.classification.confidence,
+      state: plan.state,
+      pathTaken: plan.pathTaken,
+      actions: [],
+      evidenceUris: obs.screenshotUri ? [obs.screenshotUri] : [],
+      screenSignature: obs.screenSignature,
+      reason: plan.reason,
     };
 
     // Terminal / pause states.
-    if (plan.state === 'completed') { steps.push(stepRec); finalState = 'completed'; stoppedReason = plan.reason ?? 'reached home/feature'; if (plan.pathTaken === 'login' && usedProvidedCreds === false && createdAccount === false && hasProvidedCredsNow(session)) usedProvidedCreds = true; break; }
-    if (plan.state === 'needs_input') { steps.push(stepRec); finalState = 'needs_input'; needsInput = plan.needsInput; stoppedReason = plan.reason ?? 'needs input'; if (plan.classification.purpose === 'otp_or_email_verification') reachedVerification = true; break; }
-    if (plan.state === 'unsafe') { steps.push(stepRec); finalState = 'unsafe'; needsInput = plan.needsInput; refusedUnsafe = true; stoppedReason = plan.reason ?? 'unsafe'; break; }
-    if (plan.state === 'blocked') { steps.push(stepRec); finalState = 'blocked'; stoppedReason = plan.reason ?? plan.stopConditions[0] ?? 'blocked'; break; }
+    if (plan.state === 'completed') {
+      steps.push(stepRec);
+      finalState = 'completed';
+      stoppedReason = plan.reason ?? 'reached home/feature';
+      if (plan.pathTaken === 'login' && usedProvidedCreds === false && createdAccount === false && hasProvidedCredsNow(session))
+        usedProvidedCreds = true;
+      break;
+    }
+    if (plan.state === 'needs_input') {
+      steps.push(stepRec);
+      finalState = 'needs_input';
+      needsInput = plan.needsInput;
+      stoppedReason = plan.reason ?? 'needs input';
+      if (plan.classification.purpose === 'otp_or_email_verification') reachedVerification = true;
+      break;
+    }
+    if (plan.state === 'unsafe') {
+      steps.push(stepRec);
+      finalState = 'unsafe';
+      needsInput = plan.needsInput;
+      refusedUnsafe = true;
+      stoppedReason = plan.reason ?? 'unsafe';
+      break;
+    }
+    if (plan.state === 'blocked') {
+      steps.push(stepRec);
+      finalState = 'blocked';
+      stoppedReason = plan.reason ?? plan.stopConditions[0] ?? 'blocked';
+      break;
+    }
 
     // state === 'ready' → execute the planned actions.
     let typedCredential = false;
@@ -325,12 +421,23 @@ export async function runFirstRun(
     }
     lastSignature = obs.screenSignature;
     fromSignature = obs.screenSignature;
-    if (sameSignatureCount >= 2) { finalState = 'blocked'; stoppedReason = 'repeated no-change actions'; break; }
+    if (sameSignatureCount >= 2) {
+      finalState = 'blocked';
+      stoppedReason = 'repeated no-change actions';
+      break;
+    }
 
     // Mode-based stop after acting.
-    if (opts.mode === 'one_step') { finalState = 'ready'; stoppedReason = 'one step executed'; break; }
+    if (opts.mode === 'one_step') {
+      finalState = 'ready';
+      stoppedReason = 'one step executed';
+      break;
+    }
     // For until_gate / until_home, peek at the next screen on the next iteration; loop continues.
-    if (i === maxSteps - 1) { finalState = 'ready'; stoppedReason = 'step budget reached'; }
+    if (i === maxSteps - 1) {
+      finalState = 'ready';
+      stoppedReason = 'step budget reached';
+    }
     void typedCredential;
   }
 
@@ -338,24 +445,43 @@ export async function runFirstRun(
   let mapArtifactUri: string | undefined;
   if (mapUpdates.length) {
     mapArtifactUri = sessions.saveArtifact(
-      session, 'app_map', `first-run-map-${Date.now()}.json`,
+      session,
+      'app_map',
+      `first-run-map-${Date.now()}.json`,
       JSON.stringify({ schema: 'swipium.app_map_patch.v1', appId: session.appId ?? null, platform, patches: mapUpdates }, null, 2),
-      'application/json', 'first-run app-map classifications',
+      'application/json',
+      'first-run app-map classifications',
     );
     evidenceUris.push(mapArtifactUri);
   }
 
-  const accountOutcome: FirstRunResult['accountOutcome'] =
-    refusedUnsafe ? 'refused_unsafe'
-      : reachedVerification ? 'reached_verification'
-        : createdAccount ? 'created'
-          : usedProvidedCreds ? 'used_provided_credentials'
-            : session.auth.loginScreenSeen ? 'pre_login_only'
-              : 'not_applicable';
+  const accountOutcome: FirstRunResult['accountOutcome'] = refusedUnsafe
+    ? 'refused_unsafe'
+    : reachedVerification
+      ? 'reached_verification'
+      : createdAccount
+        ? 'created'
+        : usedProvidedCreds
+          ? 'used_provided_credentials'
+          : session.auth.loginScreenSeen
+            ? 'pre_login_only'
+            : 'not_applicable';
 
   result = {
-    state: finalState, stoppedReason, steps, environment, decision, policySource,
-    generatedVariables, mapUpdates, mapArtifactUri, evidenceUris, needsInput, pathTaken, nextRecommendedTool, accountOutcome,
+    state: finalState,
+    stoppedReason,
+    steps,
+    environment,
+    decision,
+    policySource,
+    generatedVariables,
+    mapUpdates,
+    mapArtifactUri,
+    evidenceUris,
+    needsInput,
+    pathTaken,
+    nextRecommendedTool,
+    accountOutcome,
   };
   return result as FirstRunResult;
 }
@@ -368,10 +494,14 @@ function hasProvidedCredsNow(session: Session): boolean {
 
 function selectorKind(strategy: string): RecordedAction['selectorKind'] {
   switch (strategy) {
-    case 'accessibility': return 'accessibility_id';
-    case 'id': return 'resource_id';
-    case 'text': return 'text';
-    default: return 'coords';
+    case 'accessibility':
+      return 'accessibility_id';
+    case 'id':
+      return 'resource_id';
+    case 'text':
+      return 'text';
+    default:
+      return 'coords';
   }
 }
 

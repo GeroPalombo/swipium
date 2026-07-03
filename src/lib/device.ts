@@ -16,7 +16,8 @@ export interface DeviceProps {
 
 /** One `getprop` dump, parsed into the props we surface. */
 export async function getDeviceProps(serial: string): Promise<DeviceProps> {
-  const get = (out: string, key: string): string | null => out.match(new RegExp(`\\[${key.replace(/\./g, '\\.')}\\]:\\s*\\[([^\\]]*)\\]`))?.[1] ?? null;
+  const get = (out: string, key: string): string | null =>
+    out.match(new RegExp(`\\[${key.replace(/\./g, '\\.')}\\]:\\s*\\[([^\\]]*)\\]`))?.[1] ?? null;
   try {
     const r = await run('adb', ['-s', serial, 'shell', 'getprop'], { timeoutMs: 8000 });
     const o = r.stdout;
@@ -25,7 +26,10 @@ export async function getDeviceProps(serial: string): Promise<DeviceProps> {
       manufacturer: get(o, 'ro.product.manufacturer'),
       sdk: get(o, 'ro.build.version.sdk'),
       release: get(o, 'ro.build.version.release'),
-      abis: (get(o, 'ro.product.cpu.abilist') ?? '').split(',').map((s) => s.trim()).filter(Boolean),
+      abis: (get(o, 'ro.product.cpu.abilist') ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
       locale: get(o, 'persist.sys.locale') ?? get(o, 'ro.product.locale'),
       timezone: get(o, 'persist.sys.timezone'),
     };
@@ -50,12 +54,21 @@ export async function getOrientation(serial: string): Promise<{ rotation: number
 
 export async function setOrientation(serial: string, o: Orientation): Promise<void> {
   if (o === 'auto') {
-    await run('adb', ['-s', serial, 'shell', 'settings', 'put', 'system', 'accelerometer_rotation', '1'], { timeoutMs: 5000, rejectOnNonZero: true });
+    await run('adb', ['-s', serial, 'shell', 'settings', 'put', 'system', 'accelerometer_rotation', '1'], {
+      timeoutMs: 5000,
+      rejectOnNonZero: true,
+    });
     return;
   }
   // fixed orientation: disable auto-rotate, then pin user_rotation (0=portrait, 1=landscape).
-  await run('adb', ['-s', serial, 'shell', 'settings', 'put', 'system', 'accelerometer_rotation', '0'], { timeoutMs: 5000, rejectOnNonZero: true });
-  await run('adb', ['-s', serial, 'shell', 'settings', 'put', 'system', 'user_rotation', o === 'landscape' ? '1' : '0'], { timeoutMs: 5000, rejectOnNonZero: true });
+  await run('adb', ['-s', serial, 'shell', 'settings', 'put', 'system', 'accelerometer_rotation', '0'], {
+    timeoutMs: 5000,
+    rejectOnNonZero: true,
+  });
+  await run('adb', ['-s', serial, 'shell', 'settings', 'put', 'system', 'user_rotation', o === 'landscape' ? '1' : '0'], {
+    timeoutMs: 5000,
+    rejectOnNonZero: true,
+  });
 }
 
 /** Installed packages (optionally third-party only / name-filtered). */
@@ -65,7 +78,11 @@ export async function listPackages(serial: string, opts: { thirdPartyOnly?: bool
   if (opts.filter) args.push(opts.filter);
   try {
     const r = await run('adb', args, { timeoutMs: 8000 });
-    return r.stdout.split('\n').map((l) => l.trim().replace(/^package:/, '')).filter(Boolean).sort();
+    return r.stdout
+      .split('\n')
+      .map((l) => l.trim().replace(/^package:/, ''))
+      .filter(Boolean)
+      .sort();
   } catch {
     return [];
   }

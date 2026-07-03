@@ -1,4 +1,4 @@
-// Exporters for the persistent suite (SWIPIUM-REQ-06 "qa_test_suite_export"). PURE: serialize the
+// Exporters for the persistent suite (SWIPIUM-REQ-06 "qa_suite_export"). PURE: serialize the
 // canonical suite to Markdown (review-ready), a per-functionality YAML directory, JSON, and a
 // JUnit-like results doc. TestRail CSV / Jira-Xray are explicitly deferred (Non-Goals) — the shapes
 // here are the v1 surface other tools can build on.
@@ -49,7 +49,9 @@ export function exportMarkdown(suite: TestSuiteFile): string {
         ...(c.preconditions.length ? c.preconditions.map((p) => `- ${p}`) : ['- _none_']),
         '',
         '**Steps:**',
-        ...(c.steps.length ? c.steps.map((s) => `${s.index}. ${s.action}${s.target ? ` → ${s.target}` : ''}${s.data ? ` [${s.data}]` : ''}`) : ['- _none_']),
+        ...(c.steps.length
+          ? c.steps.map((s) => `${s.index}. ${s.action}${s.target ? ` → ${s.target}` : ''}${s.data ? ` [${s.data}]` : ''}`)
+          : ['- _none_']),
         '',
         '**Expected:**',
         ...c.expectedResult.map((e) => `- ${e}`),
@@ -58,7 +60,9 @@ export function exportMarkdown(suite: TestSuiteFile): string {
         ...(c.evidence.length ? ['', `**Evidence:** ${c.evidence.map((e) => e.uri).join(', ')}`] : []),
         ...(c.ticketRefs.length ? [`**Tickets:** ${c.ticketRefs.join(', ')}`] : []),
         ...(c.requirementRefs.length ? [`**Requirements:** ${c.requirementRefs.join(', ')}`] : []),
-        ...(c.issueRefs?.length ? [`**Linked issues:** ${c.issueRefs.map((r) => `${r.issueId} (${r.relationship}, ${r.lastIssueState})`).join(', ')}`] : []),
+        ...(c.issueRefs?.length
+          ? [`**Linked issues:** ${c.issueRefs.map((r) => `${r.issueId} (${r.relationship}, ${r.lastIssueState})`).join(', ')}`]
+          : []),
         ...(c.risk.length ? ['', '**Risks:**', ...c.risk.map((r) => `- ${r}`)] : []),
         `- **History:** ${c.history.length} run(s)`,
         '',
@@ -80,12 +84,16 @@ export function exportJunit(suite: TestSuiteFile): string {
   const lines: string[] = ['<?xml version="1.0" encoding="UTF-8"?>', '<testsuites name="swipium-test-suite">'];
   for (const [functionality, cases] of groups) {
     const failures = cases.filter((c) => c.actualResult.status === 'fail').length;
-    const skipped = cases.filter((c) => c.actualResult.status === 'skipped' || c.actualResult.status === 'not_run' || c.actualResult.status === 'blocked').length;
+    const skipped = cases.filter(
+      (c) => c.actualResult.status === 'skipped' || c.actualResult.status === 'not_run' || c.actualResult.status === 'blocked',
+    ).length;
     lines.push(`  <testsuite name="${xmlEscape(functionality)}" tests="${cases.length}" failures="${failures}" skipped="${skipped}">`);
     for (const c of cases) {
       lines.push(`    <testcase classname="${xmlEscape(functionality)}" name="${xmlEscape(`${c.id}: ${c.title}`)}">`);
       if (c.actualResult.status === 'fail') {
-        lines.push(`      <failure message="${xmlEscape(c.actualResult.summary)}"${c.actualResult.failureCode ? ` type="${xmlEscape(c.actualResult.failureCode)}"` : ''}/>`);
+        lines.push(
+          `      <failure message="${xmlEscape(c.actualResult.summary)}"${c.actualResult.failureCode ? ` type="${xmlEscape(c.actualResult.failureCode)}"` : ''}/>`,
+        );
       } else if (c.actualResult.status === 'skipped' || c.actualResult.status === 'not_run' || c.actualResult.status === 'blocked') {
         lines.push(`      <skipped message="${xmlEscape(c.actualResult.status)}: ${xmlEscape(c.actualResult.summary)}"/>`);
       }

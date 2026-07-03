@@ -54,9 +54,10 @@ export function assembleAutomationSuite(
   const outputDir = outputDirFor(profile.automationLanguage);
   const model = buildAppiumModel(pom, { platforms, sourceFilePrefix: '../../../' });
 
-  const codeFiles = profile.automationLanguage === 'python'
-    ? emitPythonSuite({ model, profile, appId, framework: profile.testFramework === 'pytest' ? 'pytest' : 'unittest' })
-    : emitJsSuite({ model, profile, appId, language: profile.automationLanguage });
+  const codeFiles =
+    profile.automationLanguage === 'python'
+      ? emitPythonSuite({ model, profile, appId, framework: profile.testFramework === 'pytest' ? 'pytest' : 'unittest' })
+      : emitJsSuite({ model, profile, appId, language: profile.automationLanguage });
 
   const files: GeneratedFile[] = [...codeFiles];
   files.push({ path: 'README.md', content: emitReadme({ model, profile, language: profile.automationLanguage, appId, outputDir }) });

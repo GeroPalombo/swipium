@@ -14,14 +14,7 @@ import type { Framework } from '../context/detect.js';
 /** Current on-disk schema version. Bumping this requires a migration in migrations.ts. */
 export const APP_MAP_SCHEMA_VERSION = 1 as const;
 
-export type ProvenanceSource =
-  | 'code_scan'
-  | 'app_config'
-  | 'runtime'
-  | 'ticket'
-  | 'user_note'
-  | 'test_case'
-  | 'report';
+export type ProvenanceSource = 'code_scan' | 'app_config' | 'runtime' | 'ticket' | 'user_note' | 'test_case' | 'report';
 
 /** Where a fact came from. Every non-trivial node should be traceable to at least one of these. */
 export interface ProvenanceEntry {
@@ -76,17 +69,7 @@ export interface AppIdentity {
 }
 
 export type StaticScreenKind =
-  | 'route'
-  | 'screen'
-  | 'component'
-  | 'modal'
-  | 'tab'
-  | 'layout'
-  | 'not_found'
-  | 'activity'
-  | 'fragment'
-  | 'view_controller'
-  | 'page';
+  'route' | 'screen' | 'component' | 'modal' | 'tab' | 'layout' | 'not_found' | 'activity' | 'fragment' | 'view_controller' | 'page';
 
 /**
  * Compact, derived issue summary for a screen or feature (SWIPIUM-REQ-08). The issue ledger

@@ -12,7 +12,7 @@ export interface ReportCompare {
   flakeStatus: 'not_checked' | 'known_flaky' | 'not_flaky';
   changedScreenshots: { added: string[]; removed: string[] };
   changedOutcomes: Array<{ workflow: string; from: string; to: string }>;
-  runtimeRegressionSec: number | null;
+  runtimeRegressionMs: number | null;
   failureCodeDelta: { current: string[]; baseline: string[] };
   summary: string;
 }
@@ -21,9 +21,9 @@ export interface TrendSummary {
   reports: number;
   passRate: Record<string, number>;
   passRateByAppPlatformBackend: Record<string, number>;
-  medianRuntimeSec: number | null;
-  averageSetupSec: number | null;
-  averageActiveSec: number | null;
+  medianRuntimeMs: number | null;
+  averageSetupMs: number | null;
+  averageActiveMs: number | null;
   topFailureCodes: Array<{ code: string; count: number }>;
   topEnvironmentFailures: Array<{ kind: string; count: number }>;
   flakyFlows: string[];
@@ -40,8 +40,8 @@ export interface TrendSummary {
   };
   releaseGateSignals: TrendReleaseGateSignal[];
   confidenceCalibration: ConfidenceCalibrationSummary;
-  slowestRuns: Array<{ file: string; totalSec: number }>;
-  slowestSteps: Array<{ file: string; workflow: string; index: number; kind: string; summary?: string; durationSec: number }>;
+  slowestRuns: Array<{ file: string; totalMs: number }>;
+  slowestSteps: Array<{ file: string; workflow: string; index: number; kind: string; summary?: string; durationMs: number }>;
 }
 
 export interface TrendReleaseGateSignal {
@@ -98,7 +98,8 @@ export interface ConfidenceCalibrationSummary {
 
 export interface PrSummary {
   status: 'SHIP' | 'CAUTION' | 'BLOCK';
-  classification: 'clean' | 'new_app_regression' | 'known_flaky_flow' | 'new_environment_failure' | 'automation_readiness' | 'runtime_regression';
+  classification:
+    'clean' | 'new_app_regression' | 'known_flaky_flow' | 'new_environment_failure' | 'automation_readiness' | 'runtime_regression';
   reason: string;
   nativeHealth: string;
   appHealth: string;
@@ -114,6 +115,28 @@ export function loadReport(path: string): ReportData {
   return JSON.parse(readFileSync(path, 'utf8')) as ReportData;
 }
 
+// ---- Legacy on-disk compatibility (pre-1.5.0 reports stored *Sec fields) ----
+// History/trends read report.json files written by OLDER Swipium versions, so ms readers
+// fall back to the legacy seconds fields and convert.
+
+function legacySecAsMs(obj: unknown, secKey: string): number | null {
+  const v = obj && typeof obj === 'object' ? (obj as Record<string, unknown>)[secKey] : undefined;
+  return typeof v === 'number' ? Math.round(v * 1000) : null;
+}
+
+/** phaseTimings.totalMs / setupMs / activeMs with legacy *Sec fallback. */
+function timingMs(t: ReportData['phaseTimings'], msKey: 'totalMs' | 'setupMs' | 'activeMs'): number | null {
+  const v = t?.[msKey];
+  if (typeof v === 'number') return v;
+  return legacySecAsMs(t, msKey.replace(/Ms$/, 'Sec'));
+}
+
+/** step.durationMs with legacy durationSec fallback. */
+function stepDurationMs(step: NonNullable<ReportNote['steps']>[number]): number | null {
+  if (typeof step.durationMs === 'number') return step.durationMs;
+  return legacySecAsMs(step, 'durationSec');
+}
+
 function outcomeMap(r: ReportData): Map<string, string> {
   return new Map(r.testOutcomes.map((o) => [o.workflow, o.outcome]));
 }
@@ -122,17 +145,15 @@ function failureKeys(r: ReportData): string[] {
   const fromOutcomes = r.testOutcomes
     .filter((o) => o.outcome === 'fail' || o.outcome === 'blocked')
     .map((o) => `${o.workflow}: ${o.reason ?? o.missingPrecondition ?? o.category ?? o.outcome}`);
-  const fromFindings = r.findings
-    .filter((f) => f.severity === 'high')
-    .map((f) => `${f.kind}: ${f.detail}`);
+  const fromFindings = r.findings.filter((f) => f.severity === 'high').map((f) => `${f.kind}: ${f.detail}`);
   return [...fromOutcomes, ...fromFindings].sort();
 }
 
 function screenshotUris(r: ReportData): string[] {
-  const direct = r.artifacts
-    .filter((a) => a.kind === 'screenshot')
-    .map((a) => a.uri);
-  const fromOutcomes = r.testOutcomes.flatMap((o) => o.artifactUris ?? []).filter((uri) => /\.(png|jpg|jpeg|webp)(\?|$)/i.test(uri) || /\/screenshot\//i.test(uri));
+  const direct = r.artifacts.filter((a) => a.kind === 'screenshot').map((a) => a.uri);
+  const fromOutcomes = r.testOutcomes
+    .flatMap((o) => o.artifactUris ?? [])
+    .filter((uri) => /\.(png|jpg|jpeg|webp)(\?|$)/i.test(uri) || /\/screenshot\//i.test(uri));
   return [...new Set([...direct, ...fromOutcomes])].sort();
 }
 
@@ -173,15 +194,15 @@ export function compareReports(currentPath: string, baselinePath: string, opts: 
     added: curScreenshots.filter((uri) => !baselineScreenshots.has(uri)),
     removed: baseScreenshots.filter((uri) => !currentScreenshots.has(uri)),
   };
-  const curTime = current.phaseTimings.totalSec;
-  const baseTime = baseline.phaseTimings.totalSec;
-  const runtimeRegressionSec = curTime != null && baseTime != null && curTime > baseTime ? Number((curTime - baseTime).toFixed(2)) : null;
+  const curTime = timingMs(current.phaseTimings, 'totalMs');
+  const baseTime = timingMs(baseline.phaseTimings, 'totalMs');
+  const runtimeRegressionMs = curTime != null && baseTime != null && curTime > baseTime ? Math.round(curTime - baseTime) : null;
   const summary = newFailures.length
     ? `BLOCK: ${newFailures.length} new failure(s)`
     : fixedFailures.length
       ? `IMPROVED: ${fixedFailures.length} failure(s) fixed`
-      : runtimeRegressionSec
-        ? `CAUTION: runtime regressed by ${runtimeRegressionSec}s`
+      : runtimeRegressionMs
+        ? `CAUTION: runtime regressed by ${Math.round(runtimeRegressionMs / 100) / 10}s`
         : 'UNCHANGED: no new failures';
   return {
     current: currentPath,
@@ -192,7 +213,7 @@ export function compareReports(currentPath: string, baselinePath: string, opts: 
     flakeStatus,
     changedScreenshots,
     changedOutcomes,
-    runtimeRegressionSec,
+    runtimeRegressionMs,
     failureCodeDelta: { current: curFailures, baseline: baseFailures },
     summary,
   };
@@ -241,12 +262,12 @@ export function buildPrSummary(currentPath: string, opts: { baselinePath?: strin
   const status: PrSummary['status'] =
     report.executiveSummary.risk === 'block' || hasNewFailure || (problem && !knownFlaky)
       ? 'BLOCK'
-      : report.executiveSummary.risk === 'caution' || knownFlaky || !!cmp?.runtimeRegressionSec
+      : report.executiveSummary.risk === 'caution' || knownFlaky || !!cmp?.runtimeRegressionMs
         ? 'CAUTION'
         : 'SHIP';
   const reason = problem
     ? `${problem.workflow ? `${problem.workflow}: ` : ''}${problem.reason}`
-    : report.executiveSummary.reasons[0] ?? 'No blocking failures detected.';
+    : (report.executiveSummary.reasons[0] ?? 'No blocking failures detected.');
   const category = likelyCategory(problem, report);
   const classification: PrSummary['classification'] = knownFlaky
     ? 'known_flaky_flow'
@@ -256,7 +277,7 @@ export function buildPrSummary(currentPath: string, opts: { baselinePath?: strin
         ? 'new_environment_failure'
         : category === 'automation readiness' && problem
           ? 'automation_readiness'
-          : cmp?.runtimeRegressionSec != null
+          : cmp?.runtimeRegressionMs != null
             ? 'runtime_regression'
             : 'clean';
   const evidence = evidenceList(report, problem);
@@ -265,8 +286,8 @@ export function buildPrSummary(currentPath: string, opts: { baselinePath?: strin
       ? `${cmp.newFailures.length} new failure(s) versus baseline`
       : cmp.fixedFailures.length
         ? `${cmp.fixedFailures.length} failure(s) fixed versus baseline`
-        : cmp.runtimeRegressionSec != null
-          ? `runtime regressed by ${cmp.runtimeRegressionSec}s versus baseline`
+        : cmp.runtimeRegressionMs != null
+          ? `runtime regressed by ${Math.round(cmp.runtimeRegressionMs! / 100) / 10}s versus baseline`
           : 'no new failures versus baseline'
     : undefined;
   const nextAction = problem
@@ -352,7 +373,7 @@ function isProbabilisticKind(kind: unknown): kind is ProbabilisticEvidenceKind {
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
 function normalizeConfidence(value: unknown): number | null {
@@ -428,7 +449,7 @@ function accumulatorSummary(acc: CalibrationAccumulator): ConfidenceCalibrationK
   };
 }
 
-function bucketForConfidence(confidence: number): typeof CALIBRATION_BUCKETS[number] {
+function bucketForConfidence(confidence: number): (typeof CALIBRATION_BUCKETS)[number] {
   if (confidence < 0.5) return CALIBRATION_BUCKETS[0];
   if (confidence < 0.7) return CALIBRATION_BUCKETS[1];
   if (confidence < 0.85) return CALIBRATION_BUCKETS[2];
@@ -460,7 +481,8 @@ function confidenceObservationsForReport(file: string, report: ReportData): Cali
 
 function calibrationNote(status: ConfidenceCalibrationStatus, warnings: string[]): string {
   if (status === 'not_required') return 'No probabilistic visual/OCR/AI visual evidence was recorded in the history.';
-  if (status === 'insufficient_data') return warnings[0] ?? 'More dogfood-nightly confidence samples are required before calibration can be trusted.';
+  if (status === 'insufficient_data')
+    return warnings[0] ?? 'More dogfood-nightly confidence samples are required before calibration can be trusted.';
   if (status === 'needs_attention') return warnings[0] ?? 'Confidence calibration is available but has reliability warnings.';
   return 'Probabilistic confidence values are paired with enough dogfood outcomes and no calibration warning crossed the configured thresholds.';
 }
@@ -468,7 +490,10 @@ function calibrationNote(status: ConfidenceCalibrationStatus, warnings: string[]
 function confidenceCalibrationForReports(reports: Array<{ file: string; report: ReportData }>): ConfidenceCalibrationSummary {
   const observations = reports.flatMap(({ file, report }) => confidenceObservationsForReport(file, report));
   const overall = emptyAccumulator();
-  const byKindAcc = Object.fromEntries(PROBABILISTIC_KINDS.map((kind) => [kind, emptyAccumulator()])) as Record<ProbabilisticEvidenceKind, CalibrationAccumulator>;
+  const byKindAcc = Object.fromEntries(PROBABILISTIC_KINDS.map((kind) => [kind, emptyAccumulator()])) as Record<
+    ProbabilisticEvidenceKind,
+    CalibrationAccumulator
+  >;
   const bucketAcc = new Map<string, CalibrationAccumulator>();
   for (const b of CALIBRATION_BUCKETS) bucketAcc.set(b.label, emptyAccumulator());
 
@@ -500,26 +525,33 @@ function confidenceCalibrationForReports(reports: Array<{ file: string; report: 
   if (overall.missingConfidence) warnings.push(`${overall.missingConfidence} probabilistic evidence item(s) did not record confidence.`);
   if (overall.evidence && !overall.confidenceSamples) warnings.push('No probabilistic evidence had a numeric confidence value.');
   if (overall.evidence && overallSummary.outcomeSamples < MIN_CALIBRATION_OUTCOMES) {
-    warnings.push(`Only ${overallSummary.outcomeSamples} pass/fail outcome sample(s) are paired with confidence; ${MIN_CALIBRATION_OUTCOMES} are required for calibration.`);
+    warnings.push(
+      `Only ${overallSummary.outcomeSamples} pass/fail outcome sample(s) are paired with confidence; ${MIN_CALIBRATION_OUTCOMES} are required for calibration.`,
+    );
   }
-  if (overallSummary.outcomeSamples >= MIN_CALIBRATION_OUTCOMES && overallSummary.calibrationError != null && overallSummary.calibrationError > MAX_CALIBRATION_ERROR) {
+  if (
+    overallSummary.outcomeSamples >= MIN_CALIBRATION_OUTCOMES &&
+    overallSummary.calibrationError != null &&
+    overallSummary.calibrationError > MAX_CALIBRATION_ERROR
+  ) {
     warnings.push(`Observed pass rate differs from average confidence by ${overallSummary.calibrationError}.`);
   }
   for (const bucket of buckets) {
     const bucketOutcomes = bucket.passed + bucket.failed;
     if (bucket.min >= 0.85 && bucketOutcomes >= MIN_BUCKET_OUTCOMES && bucket.observedPassRate != null && bucket.observedPassRate < 0.9) {
-      warnings.push(`High-confidence bucket ${bucket.label} passed only ${(bucket.observedPassRate * 100).toFixed(1)}% of ${bucketOutcomes} outcome sample(s).`);
+      warnings.push(
+        `High-confidence bucket ${bucket.label} passed only ${(bucket.observedPassRate * 100).toFixed(1)}% of ${bucketOutcomes} outcome sample(s).`,
+      );
     }
   }
 
-  const status: ConfidenceCalibrationStatus =
-    !overall.evidence
-      ? 'not_required'
-      : !overall.confidenceSamples || overallSummary.outcomeSamples < MIN_CALIBRATION_OUTCOMES
-        ? 'insufficient_data'
-        : warnings.length
-          ? 'needs_attention'
-          : 'calibrated';
+  const status: ConfidenceCalibrationStatus = !overall.evidence
+    ? 'not_required'
+    : !overall.confidenceSamples || overallSummary.outcomeSamples < MIN_CALIBRATION_OUTCOMES
+      ? 'insufficient_data'
+      : warnings.length
+        ? 'needs_attention'
+        : 'calibrated';
 
   return {
     schema: 'swipium.confidence.calibration.v1',
@@ -533,7 +565,10 @@ function confidenceCalibrationForReports(reports: Array<{ file: string; report: 
     passRate: overallSummary.passRate,
     averageConfidence: overallSummary.averageConfidence,
     calibrationError: overallSummary.calibrationError,
-    byEvidenceKind: Object.fromEntries(PROBABILISTIC_KINDS.map((kind) => [kind, accumulatorSummary(byKindAcc[kind])])) as Record<ProbabilisticEvidenceKind, ConfidenceCalibrationKindSummary>,
+    byEvidenceKind: Object.fromEntries(PROBABILISTIC_KINDS.map((kind) => [kind, accumulatorSummary(byKindAcc[kind])])) as Record<
+      ProbabilisticEvidenceKind,
+      ConfidenceCalibrationKindSummary
+    >,
     buckets,
     warnings,
     note: calibrationNote(status, warnings),
@@ -573,7 +608,12 @@ export function trendForReports(files: string[]): TrendSummary {
   let visualOnlyRuns = 0;
   let coordinateOnlyWarnings = 0;
   const locatorRuns: TrendSummary['locatorReadinessTrend']['runs'] = [];
-  const addReleaseSignal = (level: TrendReleaseGateSignal['level'], code: TrendReleaseGateSignal['code'], policy: string, example: string) => {
+  const addReleaseSignal = (
+    level: TrendReleaseGateSignal['level'],
+    code: TrendReleaseGateSignal['code'],
+    policy: string,
+    example: string,
+  ) => {
     const existing = releaseSignals.get(code);
     if (existing) {
       existing.count++;
@@ -583,26 +623,47 @@ export function trendForReports(files: string[]): TrendSummary {
     releaseSignals.set(code, { level, code, count: 1, policy, examples: [example] });
   };
   for (const { file, report } of reports) {
-    if (report.phaseTimings.totalSec != null) times.push(report.phaseTimings.totalSec);
-    if (report.phaseTimings.setupSec != null) setupTimes.push(report.phaseTimings.setupSec);
-    if (report.phaseTimings.activeSec != null) activeTimes.push(report.phaseTimings.activeSec);
+    const totalMs = timingMs(report.phaseTimings, 'totalMs');
+    const setupMs = timingMs(report.phaseTimings, 'setupMs');
+    const activeMs = timingMs(report.phaseTimings, 'activeMs');
+    if (totalMs != null) times.push(totalMs);
+    if (setupMs != null) setupTimes.push(setupMs);
+    if (activeMs != null) activeTimes.push(activeMs);
     for (const o of report.testOutcomes) {
       byFlow.set(o.workflow, [...(byFlow.get(o.workflow) ?? []), o.outcome]);
       const contextKey = `${report.appId ?? 'unknown'}|${report.device ?? 'device'}|${report.automationBackend?.kind ?? 'unknown'}`;
       byContext.set(contextKey, [...(byContext.get(contextKey) ?? []), o.outcome]);
       for (const step of o.steps ?? []) {
-        if (step.durationSec == null) continue;
-        stepTimes.push({ file, workflow: o.workflow, index: step.index, kind: step.kind, summary: step.summary, durationSec: step.durationSec });
+        const durationMs = stepDurationMs(step);
+        if (durationMs == null) continue;
+        stepTimes.push({ file, workflow: o.workflow, index: step.index, kind: step.kind, summary: step.summary, durationMs });
       }
       if (o.outcome === 'fail') {
         const code = o.category ?? o.reason ?? 'fail';
         codeCounts.set(code, (codeCounts.get(code) ?? 0) + 1);
       }
       if (o.outcome === 'fail' || o.outcome === 'blocked') {
-        addReleaseSignal('block', 'REQUIRED_WORKFLOW_FAILED', 'Block release when a required workflow fails or is blocked.', `${o.workflow}: ${o.reason ?? o.missingPrecondition ?? o.category ?? o.outcome}`);
+        addReleaseSignal(
+          'block',
+          'REQUIRED_WORKFLOW_FAILED',
+          'Block release when a required workflow fails or is blocked.',
+          `${o.workflow}: ${o.reason ?? o.missingPrecondition ?? o.category ?? o.outcome}`,
+        );
       }
-      if (o.outcome === 'pass' && (o.method === 'visual' || o.verifiedVisually || o.evidenceKind === 'ocr_locator' || o.evidenceKind === 'visual_match' || o.evidenceKind === 'ai_visual_evidence')) {
-        addReleaseSignal('warn', 'VISUAL_ONLY_PASS', 'Warn when a passing workflow is proven only by visual/OCR/AI evidence.', `${o.workflow}: ${o.evidenceKind ?? o.method ?? 'visual evidence'}`);
+      if (
+        o.outcome === 'pass' &&
+        (o.method === 'visual' ||
+          o.verifiedVisually ||
+          o.evidenceKind === 'ocr_locator' ||
+          o.evidenceKind === 'visual_match' ||
+          o.evidenceKind === 'ai_visual_evidence')
+      ) {
+        addReleaseSignal(
+          'warn',
+          'VISUAL_ONLY_PASS',
+          'Warn when a passing workflow is proven only by visual/OCR/AI evidence.',
+          `${o.workflow}: ${o.evidenceKind ?? o.method ?? 'visual evidence'}`,
+        );
       }
     }
     for (const f of report.findings) {
@@ -612,11 +673,25 @@ export function trendForReports(files: string[]): TrendSummary {
       }
     }
     if (report.appHealth !== 'OK' || report.findings.some((f) => f.layer === 'app' && f.severity === 'high')) {
-      addReleaseSignal('block', 'APP_ERROR', 'Block release on app-layer health errors or high-severity app findings.', `${file}: appHealth=${report.appHealth}`);
+      addReleaseSignal(
+        'block',
+        'APP_ERROR',
+        'Block release on app-layer health errors or high-severity app findings.',
+        `${file}: appHealth=${report.appHealth}`,
+      );
     }
     const readinessLabels = report.automationReadiness?.labels ?? [];
-    if ((readinessLabels.includes('generated') || readinessLabels.includes('compiled')) && !readinessLabels.includes('replayed') && !readinessLabels.includes('ci_ready')) {
-      addReleaseSignal('warn', 'GENERATED_SUITE_NOT_REPLAYED', 'Warn when generated or compiled suites have not replayed from declared state.', `${file}: labels=${readinessLabels.join(',')}`);
+    if (
+      (readinessLabels.includes('generated') || readinessLabels.includes('compiled')) &&
+      !readinessLabels.includes('replayed') &&
+      !readinessLabels.includes('ci_ready')
+    ) {
+      addReleaseSignal(
+        'warn',
+        'GENERATED_SUITE_NOT_REPLAYED',
+        'Warn when generated or compiled suites have not replayed from declared state.',
+        `${file}: labels=${readinessLabels.join(',')}`,
+      );
     }
     if (report.wda) {
       wdaReports++;
@@ -625,7 +700,9 @@ export function trendForReports(files: string[]): TrendSummary {
     }
     if (report.finalNetwork === 'online') onlineAtEnd++;
     if ((report as unknown as { visualOnly?: boolean }).visualOnly) visualOnlyRuns++;
-    coordinateOnlyWarnings += report.findings.filter((f) => /COORDINATE_ONLY|coordinate/i.test(`${f.failureCode ?? ''} ${f.kind} ${f.detail}`)).length;
+    coordinateOnlyWarnings += report.findings.filter((f) =>
+      /COORDINATE_ONLY|coordinate/i.test(`${f.failureCode ?? ''} ${f.kind} ${f.detail}`),
+    ).length;
     if (report.automationReadiness?.locatorCoverage) {
       const coverage = report.automationReadiness.locatorCoverage;
       locatorRuns.push({
@@ -650,14 +727,18 @@ export function trendForReports(files: string[]): TrendSummary {
     const passes = outcomes.filter((o) => o === 'pass').length;
     passRateByAppPlatformBackend[key] = Number((passes / outcomes.length).toFixed(3));
   }
-  const top = (m: Map<string, number>) => [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([code, count]) => ({ code, count }));
+  const top = (m: Map<string, number>) =>
+    [...m.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([code, count]) => ({ code, count }));
   return {
     reports: reports.length,
     passRate,
     passRateByAppPlatformBackend,
-    medianRuntimeSec: median(times),
-    averageSetupSec: average(setupTimes),
-    averageActiveSec: average(activeTimes),
+    medianRuntimeMs: median(times),
+    averageSetupMs: average(setupTimes),
+    averageActiveMs: average(activeTimes),
     topFailureCodes: top(codeCounts),
     topEnvironmentFailures: top(envCounts).map(({ code, count }) => ({ kind: code, count })),
     flakyFlows: flakyFlows.sort(),
@@ -672,14 +753,16 @@ export function trendForReports(files: string[]): TrendSummary {
       minimumDurablePct: locatorRuns.length ? Math.min(...locatorRuns.map((r) => r.durablePct)) : null,
       runs: locatorRuns,
     },
-    releaseGateSignals: [...releaseSignals.values()].sort((a, b) => (a.level === b.level ? b.count - a.count : a.level === 'block' ? -1 : 1)),
+    releaseGateSignals: [...releaseSignals.values()].sort((a, b) =>
+      a.level === b.level ? b.count - a.count : a.level === 'block' ? -1 : 1,
+    ),
     confidenceCalibration: confidenceCalibrationForReports(reports),
     slowestRuns: reports
-      .filter((r) => r.report.phaseTimings.totalSec != null)
-      .map((r) => ({ file: r.file, totalSec: r.report.phaseTimings.totalSec! }))
-      .sort((a, b) => b.totalSec - a.totalSec)
+      .map((r) => ({ file: r.file, totalMs: timingMs(r.report.phaseTimings, 'totalMs') }))
+      .filter((r): r is { file: string; totalMs: number } => r.totalMs != null)
+      .sort((a, b) => b.totalMs - a.totalMs)
       .slice(0, 10),
-    slowestSteps: stepTimes.sort((a, b) => b.durationSec - a.durationSec).slice(0, 10),
+    slowestSteps: stepTimes.sort((a, b) => b.durationMs - a.durationMs).slice(0, 10),
   };
 }
 

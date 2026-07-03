@@ -54,7 +54,12 @@ function detectBanners(allNodes: RawNode[], screen?: [number, number]): Overlay[
     const sub = allNodes.filter((m) => m.dfs >= n.dfs && m.dfs <= n.subtreeEnd);
     const dismissible = sub.some((m) => (m.clickable || m.cls.includes('Button')) && DISMISS_RE.test(`${m.text} ${m.desc}`));
     const label = (n.text || n.desc).trim().slice(0, 60);
-    out.push({ type: atBottom ? 'snackbar' : 'banner', detail: `${atBottom ? 'bottom snackbar/banner' : 'top banner'}: "${label}"`, bounds: n.bounds, dismissible });
+    out.push({
+      type: atBottom ? 'snackbar' : 'banner',
+      detail: `${atBottom ? 'bottom snackbar/banner' : 'top banner'}: "${label}"`,
+      bounds: n.bounds,
+      dismissible,
+    });
   }
   const dedupe = (band: OverlayType) => {
     const inBand = out.filter((o) => o.type === band);
@@ -147,6 +152,6 @@ export function obstructionAt(allNodes: RawNode[], target: RawNode | undefined, 
   if (!realContent) return { obstructed: false };
   return {
     obstructed: true,
-    by: { cls: topmost.cls, id: topmost.id || undefined, text: (topmost.text || topmost.desc) || undefined, bounds: topmost.bounds },
+    by: { cls: topmost.cls, id: topmost.id || undefined, text: topmost.text || topmost.desc || undefined, bounds: topmost.bounds },
   };
 }

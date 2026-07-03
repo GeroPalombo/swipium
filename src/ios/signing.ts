@@ -49,7 +49,12 @@ function arrayValues(text: string, key: string): string[] {
 function dictStringValue(text: string, key: string): string | null {
   const idx = text.indexOf(`<key>${key}</key>`);
   if (idx < 0) return null;
-  return text.slice(idx).match(/<string>([^<]+)<\/string>/)?.[1]?.trim() ?? null;
+  return (
+    text
+      .slice(idx)
+      .match(/<string>([^<]+)<\/string>/)?.[1]
+      ?.trim() ?? null
+  );
 }
 
 function entitlements(text: string): Record<string, string> {
@@ -123,9 +128,12 @@ function findExtractedApp(dir: string): string | null {
   return null;
 }
 
-async function materializeApp(path: string): Promise<{ appPath: string | null; cleanup?: string; artifactType: IosSigningInspection['artifactType']; missing: string[] }> {
+async function materializeApp(
+  path: string,
+): Promise<{ appPath: string | null; cleanup?: string; artifactType: IosSigningInspection['artifactType']; missing: string[] }> {
   if (path.endsWith('.app')) return { appPath: path, artifactType: 'iphoneos-app', missing: [] };
-  if (extname(path).toLowerCase() !== '.ipa') return { appPath: null, artifactType: 'unknown', missing: [`unsupported iOS artifact extension: ${basename(path)}`] };
+  if (extname(path).toLowerCase() !== '.ipa')
+    return { appPath: null, artifactType: 'unknown', missing: [`unsupported iOS artifact extension: ${basename(path)}`] };
   const dir = mkdtempSync(join(tmpdir(), 'swipium-ipa-'));
   const unzip = await run('unzip', ['-q', path, '-d', dir], { timeoutMs: 30000 });
   if (unzip.code !== 0) {
@@ -135,14 +143,43 @@ async function materializeApp(path: string): Promise<{ appPath: string | null; c
   return { appPath: findExtractedApp(dir), cleanup: dir, artifactType: 'ipa', missing: [] };
 }
 
-export async function inspectIosSigningArtifact(path: string, opts: { requestedUdid?: string | null; expectedBundleId?: string | null } = {}): Promise<IosSigningInspection> {
+export async function inspectIosSigningArtifact(
+  path: string,
+  opts: { requestedUdid?: string | null; expectedBundleId?: string | null } = {},
+): Promise<IosSigningInspection> {
   const missing: string[] = [];
   const warnings: string[] = [];
   if (!existsSync(path)) {
-    return { checked: true, artifactPath: path, artifactType: 'unknown', appPath: null, embeddedProvisionPresent: false, simulatorBuildSuspected: false, codesign: null, mobileProvision: null, requestedUdid: opts.requestedUdid ?? null, ready: false, missing: ['artifact path does not exist'], warnings };
+    return {
+      checked: true,
+      artifactPath: path,
+      artifactType: 'unknown',
+      appPath: null,
+      embeddedProvisionPresent: false,
+      simulatorBuildSuspected: false,
+      codesign: null,
+      mobileProvision: null,
+      requestedUdid: opts.requestedUdid ?? null,
+      ready: false,
+      missing: ['artifact path does not exist'],
+      warnings,
+    };
   }
   if (process.platform !== 'darwin') {
-    return { checked: false, artifactPath: path, artifactType: path.endsWith('.ipa') ? 'ipa' : path.endsWith('.app') ? 'iphoneos-app' : 'unknown', appPath: null, embeddedProvisionPresent: false, simulatorBuildSuspected: false, codesign: null, mobileProvision: null, requestedUdid: opts.requestedUdid ?? null, ready: false, missing: ['iOS signing inspection requires macOS codesign/security tools'], warnings };
+    return {
+      checked: false,
+      artifactPath: path,
+      artifactType: path.endsWith('.ipa') ? 'ipa' : path.endsWith('.app') ? 'iphoneos-app' : 'unknown',
+      appPath: null,
+      embeddedProvisionPresent: false,
+      simulatorBuildSuspected: false,
+      codesign: null,
+      mobileProvision: null,
+      requestedUdid: opts.requestedUdid ?? null,
+      ready: false,
+      missing: ['iOS signing inspection requires macOS codesign/security tools'],
+      warnings,
+    };
   }
 
   const materialized = await materializeApp(path);
@@ -180,7 +217,10 @@ export async function inspectIosSigningArtifact(path: string, opts: { requestedU
   if (opts.requestedUdid && mobileProvision?.provisionedDevices && !mobileProvision.provisionedDevices.includes(opts.requestedUdid)) {
     missing.push(`provisioning profile does not include requested device UDID ${opts.requestedUdid}`);
   }
-  if (!opts.requestedUdid && mobileProvision?.provisionedDevices?.length) warnings.push('provisioning profile has device UDIDs; pass a device UDID to verify this artifact is provisioned for the target hardware');
+  if (!opts.requestedUdid && mobileProvision?.provisionedDevices?.length)
+    warnings.push(
+      'provisioning profile has device UDIDs; pass a device UDID to verify this artifact is provisioned for the target hardware',
+    );
   if (mobileProvision?.expirationDate) {
     const expiresAt = Date.parse(mobileProvision.expirationDate);
     if (!Number.isNaN(expiresAt) && expiresAt < Date.now()) {

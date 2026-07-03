@@ -43,7 +43,13 @@ function upsertPaywall(map: AppKnowledgeMap, screenId: string, confidence: numbe
 
 /** Fold first-run classifications into the map's runtime topology + auth/onboarding/paywall models. */
 export function applyFirstRunPatches(map: AppKnowledgeMap, patches: AppMapPatch[], at: string): FirstRunApplyResult {
-  const res: FirstRunApplyResult = { updatedScreens: 0, newScreens: 0, authUpdated: false, onboardingUpdated: false, paywallUpdated: false };
+  const res: FirstRunApplyResult = {
+    updatedScreens: 0,
+    newScreens: 0,
+    authUpdated: false,
+    onboardingUpdated: false,
+    paywallUpdated: false,
+  };
   const platform = defaultPlatform(map);
 
   // Resolve the strongest static-screen link from a patch (Vision Gap Fix 2) against ids that actually
@@ -81,7 +87,9 @@ export function applyFirstRunPatches(map: AppKnowledgeMap, patches: AppMapPatch[
         firstSeen: at,
         lastSeen: at,
         visits: 1,
-        ...(staticLink ? { linkedStaticScreenId: staticLink.id, linkConfidence: staticLink.confidence, unmapped: false } : { unmapped: true }),
+        ...(staticLink
+          ? { linkedStaticScreenId: staticLink.id, linkConfidence: staticLink.confidence, unmapped: false }
+          : { unmapped: true }),
       };
       map.runtimeTopology.screens.push(screen);
       res.newScreens++;
@@ -97,7 +105,15 @@ export function applyFirstRunPatches(map: AppKnowledgeMap, patches: AppMapPatch[
       map.auth.confidence = Math.max(map.auth.confidence, p.confidence);
       res.authUpdated = true;
     } else if (p.purpose === 'onboarding') {
-      const ob: FlowModel = map.onboarding ?? { id: 'onboarding', kind: 'onboarding', present: false, signals: [], libraries: [], screens: [], confidence: 0 };
+      const ob: FlowModel = map.onboarding ?? {
+        id: 'onboarding',
+        kind: 'onboarding',
+        present: false,
+        signals: [],
+        libraries: [],
+        screens: [],
+        confidence: 0,
+      };
       ob.present = true;
       ob.signals = [...new Set([...ob.signals, 'runtime_first_run'])];
       if (!ob.screens.includes(screen.id)) ob.screens.push(screen.id);
@@ -132,7 +148,12 @@ export function applyFirstRunPatches(map: AppKnowledgeMap, patches: AppMapPatch[
 
   map.runtimeTopology.unvisitedStaticScreens = computeUnvisitedStaticScreens(map);
   if (patches.length) {
-    addProvenance(map, makeProvenance('runtime', at, `First-run classifications: ${[...new Set(patches.map((p) => p.purpose))].slice(0, 6).join(', ')}`, { targetType: 'map' }));
+    addProvenance(
+      map,
+      makeProvenance('runtime', at, `First-run classifications: ${[...new Set(patches.map((p) => p.purpose))].slice(0, 6).join(', ')}`, {
+        targetType: 'map',
+      }),
+    );
   }
   return res;
 }

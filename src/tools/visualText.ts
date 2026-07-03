@@ -29,20 +29,47 @@ export function registerVisualText(server: McpServer, sessions: SessionStore): v
     async ({ sessionId, query, minConfidence, consentId, approve }) => {
       const session = sessions.get(sessionId);
       const { driver } = session ? await getDriver(session) : { driver: undefined };
-      if (!session || !driver) return qaError({ what: 'No device attached to this session', changedState: false, retrySafe: true, nextSteps: ['Prepare a target first.'] });
+      if (!session || !driver)
+        return qaError({
+          what: 'No device attached to this session',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Prepare a target first.'],
+        });
       if (session.sensitive) return sensitiveRefusal('OCR visual text search');
       const command = configuredOcrCommand(session.root);
-      if (!command) return qaError({ what: 'OCR is not configured', changedState: false, retrySafe: false, failureCode: 'VISUAL_ONLY_SCREEN', nextSteps: ['Set ocrCommand in .swipium/config.json as an argv array or SWIPIUM_OCR_CMD. The command should emit JSON regions with text/confidence/bbox.'] });
+      if (!command)
+        return qaError({
+          what: 'OCR is not configured',
+          changedState: false,
+          retrySafe: false,
+          failureCode: 'VISUAL_ONLY_SCREEN',
+          nextSteps: [
+            'Set ocrCommand in .swipium/config.json as an argv array or SWIPIUM_OCR_CMD. The command should emit JSON regions with text/confidence/bbox.',
+          ],
+        });
       let preview;
       let maskPreview;
       try {
         preview = resolveVisualProvider(command, { image: '<screenshot>' }, 30000);
         maskPreview = resolveMaskProvider(session.root);
       } catch (e) {
-        return qaError({ what: e instanceof GitScopeForbiddenError ? e.message : `Invalid OCR command template: ${String(e)}`, changedState: false, retrySafe: !(e instanceof GitScopeForbiddenError), failureCode: e instanceof GitScopeForbiddenError ? 'GIT_SCOPE_FORBIDDEN' : 'INVALID_FLOW', nextSteps: e instanceof GitScopeForbiddenError ? ['Run Git yourself outside Swipium; configure ocrCommand to use a non-Git executable.'] : ['Use an argv array in .swipium/config.json, e.g. ["node","ocr.js","{image}"].'] });
+        return qaError({
+          what: e instanceof GitScopeForbiddenError ? e.message : `Invalid OCR command template: ${String(e)}`,
+          changedState: false,
+          retrySafe: !(e instanceof GitScopeForbiddenError),
+          failureCode: e instanceof GitScopeForbiddenError ? 'GIT_SCOPE_FORBIDDEN' : 'INVALID_FLOW',
+          nextSteps:
+            e instanceof GitScopeForbiddenError
+              ? ['Run Git yourself outside Swipium; configure ocrCommand to use a non-Git executable.']
+              : ['Use an argv array in .swipium/config.json, e.g. ["node","ocr.js","{image}"].'],
+        });
       }
       const maskConfigured = !!maskPreview;
-      const gate = consumeConsent(consentId, approve, { action: 'ocr_run', affects: { argv: preview.argv, io: preview.io, query, maskConfigured } });
+      const gate = consumeConsent(consentId, approve, {
+        action: 'ocr_run',
+        affects: { argv: preview.argv, io: preview.io, query, maskConfigured },
+      });
       if (!gate.approved) {
         return requireConsent({
           action: 'ocr_run',
@@ -56,10 +83,34 @@ export function registerVisualText(server: McpServer, sessions: SessionStore): v
       const hit = findOcrRegion(ocr, query, minConfidence ?? 0.8);
       if (!hit) {
         const bounded = boundedText(ocr.text, makeRedactor(session.secrets), 8000);
-        return qaOk({ found: false, query, text: bounded.text, truncated: bounded.truncated, regions: ocr.regions, coordinateSpace: ocr.coordinateSpace, provider: ocr.provider, masking: ocr.masking, evidenceKind: 'ocr_text' }, `OCR did not find "${query}" at confidence >= ${minConfidence ?? 0.8}.`);
+        return qaOk(
+          {
+            found: false,
+            query,
+            text: bounded.text,
+            truncated: bounded.truncated,
+            regions: ocr.regions,
+            coordinateSpace: ocr.coordinateSpace,
+            provider: ocr.provider,
+            masking: ocr.masking,
+            evidenceKind: 'ocr_text',
+          },
+          `OCR did not find "${query}" at confidence >= ${minConfidence ?? 0.8}.`,
+        );
       }
       return qaOk(
-        { found: true, query, region: hit.region, devicePoint: hit.devicePoint, coordinateSpace: ocr.coordinateSpace, method: 'ocr', locatorStrategy: 'ocr_text', evidenceKind: 'ocr_text', provider: ocr.provider, masking: ocr.masking },
+        {
+          found: true,
+          query,
+          region: hit.region,
+          devicePoint: hit.devicePoint,
+          coordinateSpace: ocr.coordinateSpace,
+          method: 'ocr',
+          locatorStrategy: 'ocr_text',
+          evidenceKind: 'ocr_text',
+          provider: ocr.provider,
+          masking: ocr.masking,
+        },
         `found "${hit.region.text}" (${hit.region.confidence}) → tap device (${hit.devicePoint.x}, ${hit.devicePoint.y})`,
       );
     },

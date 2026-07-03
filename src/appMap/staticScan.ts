@@ -18,7 +18,6 @@ import type {
   FlowModel,
   InputModel,
   NavigationEdge,
-  RouteConstant,
   SourceFingerprint,
   StaticScreen,
   StaticTopology,
@@ -37,7 +36,8 @@ export interface StaticScanResult {
   collectedFiles: string[];
 }
 
-const AUTH_LIB_RE = /(next-auth|expo-auth-session|react-native-app-auth|amazon-cognito|@clerk|@supabase\/supabase|firebase\/auth|@react-native-firebase\/auth|@auth0|msal|react-native-keychain|@okta)/i;
+const AUTH_LIB_RE =
+  /(next-auth|expo-auth-session|react-native-app-auth|amazon-cognito|@clerk|@supabase\/supabase|firebase\/auth|@react-native-firebase\/auth|@auth0|msal|react-native-keychain|@okta)/i;
 const FORM_LIB_RE = /(react-hook-form|formik|yup|zod|@hookform|final-form)/i;
 const PAYWALL_LIB_RE = /(react-native-purchases|expo-in-app-purchases|react-native-iap|revenuecat|@stripe\/stripe-react-native|stripe)/i;
 const ONBOARDING_RE = /(onboard|welcome|intro|get-?started|walkthrough|tutorial)/i;
@@ -57,11 +57,13 @@ function uniq(values: string[]): string[] {
 }
 
 function slug(value: string): string {
-  return value
-    .replace(/\.[a-zA-Z]+$/, '')
-    .replace(/[^a-zA-Z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .toLowerCase() || 'screen';
+  return (
+    value
+      .replace(/\.[a-zA-Z]+$/, '')
+      .replace(/[^a-zA-Z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .toLowerCase() || 'screen'
+  );
 }
 
 function depsOf(root: string): Record<string, string> {
@@ -141,7 +143,15 @@ function scanReactNavigation(root: string, topo: StaticTopology, jsFiles: string
       const navKind = Object.entries(kindMap).find(([k]) => navType.includes(k))?.[1] ?? 'navigation';
       const id = `screen:${slug(name)}`;
       if (!topo.screens.some((s) => s.id === id)) {
-        topo.screens.push({ id, name, route: name, kind: 'screen', sourceFiles: [relPath], confidence: 0.8, reasons: ['react_navigation_screen', `nav_${navKind}`] });
+        topo.screens.push({
+          id,
+          name,
+          route: name,
+          kind: 'screen',
+          sourceFiles: [relPath],
+          confidence: 0.8,
+          reasons: ['react_navigation_screen', `nav_${navKind}`],
+        });
       } else {
         const existing = topo.screens.find((s) => s.id === id)!;
         existing.sourceFiles = uniq([...existing.sourceFiles, relPath]);
@@ -178,7 +188,10 @@ function scanTsAst(root: string, topo: StaticTopology, jsFiles: string[]): void 
     const text = readTextSafe(f);
     if (!text || text.length > MAX_BYTES) continue;
     const res = scanTsSource(relPath, text);
-    if (!res.parsed) { failedFiles++; continue; }
+    if (!res.parsed) {
+      failedFiles++;
+      continue;
+    }
     parsedFiles++;
     // Fold ONLY explicit navigator (<Stack/Tab/Drawer.Screen>) declarations into the topology — these
     // carry an authoritative route name (incl. constant-resolved) that regex misses. Generic component
@@ -193,7 +206,15 @@ function scanTsAst(root: string, topo: StaticTopology, jsFiles: string[]): void 
         existing.reasons = uniq([...existing.reasons, ...s.reasons]);
         if (s.route && !existing.route) existing.route = s.route;
       } else {
-        topo.screens.push({ id, name: s.name, route: s.route, kind: 'screen', sourceFiles: [relPath], confidence: s.confidence, reasons: ['ast', ...s.reasons] });
+        topo.screens.push({
+          id,
+          name: s.name,
+          route: s.route,
+          kind: 'screen',
+          sourceFiles: [relPath],
+          confidence: s.confidence,
+          reasons: ['ast', ...s.reasons],
+        });
       }
     }
     for (const e of res.navEdges) {
@@ -203,11 +224,13 @@ function scanTsAst(root: string, topo: StaticTopology, jsFiles: string[]): void 
       }
     }
     for (const rc of res.routeConstants) {
-      if (!topo.routeConstants.some((x) => x.name === rc.name && x.file === relPath)) topo.routeConstants.push({ name: rc.name, value: rc.value, file: relPath });
+      if (!topo.routeConstants.some((x) => x.name === rc.name && x.file === relPath))
+        topo.routeConstants.push({ name: rc.name, value: rc.value, file: relPath });
     }
     for (const note of res.parserNotes) topo.parserNotes.push(note);
   }
-  if (!topo.router && parsedFiles && topo.screens.some((s) => (s.reasons ?? []).includes('ast_navigator_screen'))) topo.router = 'react-navigation';
+  if (!topo.router && parsedFiles && topo.screens.some((s) => (s.reasons ?? []).includes('ast_navigator_screen')))
+    topo.router = 'react-navigation';
   topo.routeConstants = topo.routeConstants.slice(0, 200);
   if (failedFiles) topo.parserNotes.push(`AST scan: ${failedFiles} JS/TS file(s) failed to parse — reduced confidence`);
 }
@@ -255,15 +278,38 @@ function detectRnInputModels(jsFiles: string[], root: string): InputModel[] {
     const relPath = rel(root, f);
     // secureTextEntry → password; keyboardType email-address → email; placeholder hints.
     if (/secureTextEntry/.test(text) && !seen.has('password')) {
-      out.push({ fieldPurpose: 'password', inputType: 'password', secret: true, fixtureRequired: true, safeGenerator: 'faker.internet.password', validation: 'non-empty', source: relPath });
+      out.push({
+        fieldPurpose: 'password',
+        inputType: 'password',
+        secret: true,
+        fixtureRequired: true,
+        safeGenerator: 'faker.internet.password',
+        validation: 'non-empty',
+        source: relPath,
+      });
       seen.add('password');
     }
     if (/keyboardType\s*=\s*["'`]email-address["'`]|placeholder\s*=\s*["'`][^"'`]*email/i.test(text) && !seen.has('email')) {
-      out.push({ fieldPurpose: 'email', inputType: 'email', secret: false, fixtureRequired: true, safeGenerator: 'faker.internet.email', validation: 'email format', source: relPath });
+      out.push({
+        fieldPurpose: 'email',
+        inputType: 'email',
+        secret: false,
+        fixtureRequired: true,
+        safeGenerator: 'faker.internet.email',
+        validation: 'email format',
+        source: relPath,
+      });
       seen.add('email');
     }
     if (/placeholder\s*=\s*["'`][^"'`]*search/i.test(text) && !seen.has('search')) {
-      out.push({ fieldPurpose: 'search', inputType: 'text', secret: false, fixtureRequired: false, safeGenerator: 'static.search-term', source: relPath });
+      out.push({
+        fieldPurpose: 'search',
+        inputType: 'text',
+        secret: false,
+        fixtureRequired: false,
+        safeGenerator: 'static.search-term',
+        source: relPath,
+      });
       seen.add('search');
     }
   }
@@ -273,7 +319,9 @@ function detectRnInputModels(jsFiles: string[], root: string): InputModel[] {
 function scanExpoRn(root: string, fw: Framework, topo: StaticTopology, result: StaticScanResult, jsFiles: string[]): void {
   // app.json / app.config.* / package.json identity
   const appJson = readJson(join(root, 'app.json'));
-  const expo = (appJson?.expo ?? appJson) as { name?: string; version?: string; android?: { package?: string }; ios?: { bundleIdentifier?: string }; scheme?: string | string[] } | undefined;
+  const expo = (appJson?.expo ?? appJson) as
+    | { name?: string; version?: string; android?: { package?: string }; ios?: { bundleIdentifier?: string }; scheme?: string | string[] }
+    | undefined;
   if (expo) {
     result.appIdentity.appName = expo.name ?? null;
     result.appIdentity.version = expo.version ?? null;
@@ -284,7 +332,8 @@ function scanExpoRn(root: string, fw: Framework, topo: StaticTopology, result: S
   }
   // config presence notes (app.config.js/ts not evaluated — recorded as partial confidence)
   for (const cfg of ['app.config.js', 'app.config.ts']) {
-    if (existsSync(join(root, cfg))) topo.parserNotes.push(`${cfg} present but not evaluated (dynamic config) — identity may be incomplete`);
+    if (existsSync(join(root, cfg)))
+      topo.parserNotes.push(`${cfg} present but not evaluated (dynamic config) — identity may be incomplete`);
   }
 
   scanExpoRouter(root, topo);
@@ -303,7 +352,9 @@ function findManifest(root: string): string | null {
   for (const p of ['app/src/main/AndroidManifest.xml', 'android/app/src/main/AndroidManifest.xml', 'src/main/AndroidManifest.xml']) {
     if (existsSync(join(root, p))) return join(root, p);
   }
-  const hits = walkFiles(root, { alsoNames: ['AndroidManifest.xml'], maxFiles: 50, exts: [] }).filter((f) => basename(f) === 'AndroidManifest.xml' && !/\/(test|androidTest|debug)\//.test(f));
+  const hits = walkFiles(root, { alsoNames: ['AndroidManifest.xml'], maxFiles: 50, exts: [] }).filter(
+    (f) => basename(f) === 'AndroidManifest.xml' && !/\/(test|androidTest|debug)\//.test(f),
+  );
   return hits[0] ?? null;
 }
 
@@ -321,7 +372,7 @@ function scanNativeAndroid(root: string, topo: StaticTopology, result: StaticSca
         const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' });
         const doc = parser.parse(text) as Record<string, any>;
         const manifest = doc.manifest ?? {};
-        result.appIdentity.androidPackage = result.appIdentity.androidPackage ?? (manifest['@_package'] ?? null);
+        result.appIdentity.androidPackage = result.appIdentity.androidPackage ?? manifest['@_package'] ?? null;
         const app = manifest.application ?? {};
         const activities = asArray(app.activity);
         for (const act of activities) {
@@ -329,7 +380,14 @@ function scanNativeAndroid(root: string, topo: StaticTopology, result: StaticSca
           if (!name) continue;
           const short = name.split('.').pop() ?? name;
           topo.nativeActivities.push(name);
-          topo.screens.push({ id: `activity:${slug(short)}`, name: short, kind: 'activity', sourceFiles: [rel(root, manifestPath)], confidence: 0.85, reasons: ['android_manifest_activity'] });
+          topo.screens.push({
+            id: `activity:${slug(short)}`,
+            name: short,
+            kind: 'activity',
+            sourceFiles: [rel(root, manifestPath)],
+            confidence: 0.85,
+            reasons: ['android_manifest_activity'],
+          });
           // deep links from intent-filter data
           for (const f of asArray(act['intent-filter'])) {
             for (const d of asArray(f.data)) {
@@ -352,7 +410,14 @@ function scanNativeAndroid(root: string, topo: StaticTopology, result: StaticSca
   }
 
   // Gradle namespace / applicationId
-  for (const g of ['app/build.gradle', 'app/build.gradle.kts', 'android/app/build.gradle', 'android/app/build.gradle.kts', 'build.gradle', 'build.gradle.kts']) {
+  for (const g of [
+    'app/build.gradle',
+    'app/build.gradle.kts',
+    'android/app/build.gradle',
+    'android/app/build.gradle.kts',
+    'build.gradle',
+    'build.gradle.kts',
+  ]) {
     const p = join(root, g);
     const text = readTextSafe(p);
     if (!text) continue;
@@ -373,7 +438,15 @@ function scanNativeAndroid(root: string, topo: StaticTopology, result: StaticSca
     let m: RegExpExecArray | null;
     while ((m = fragRe.exec(text))) {
       const name = (m[1] ?? m[2] ?? '').split('.').pop();
-      if (name) topo.screens.push({ id: `fragment:${slug(name)}`, name, kind: 'fragment', sourceFiles: [rel(root, f)], confidence: 0.7, reasons: ['jetpack_navigation_xml'] });
+      if (name)
+        topo.screens.push({
+          id: `fragment:${slug(name)}`,
+          name,
+          kind: 'fragment',
+          sourceFiles: [rel(root, f)],
+          confidence: 0.7,
+          reasons: ['jetpack_navigation_xml'],
+        });
     }
     if (navXml.length) topo.router = 'jetpack-navigation';
   }
@@ -388,7 +461,16 @@ function scanNativeAndroid(root: string, topo: StaticTopology, result: StaticSca
       const route = m[1];
       const name = route.split('/')[0].split('?')[0] || route;
       const id = `composable:${slug(name)}`;
-      if (!topo.screens.some((s) => s.id === id)) topo.screens.push({ id, name, route, kind: 'screen', sourceFiles: [rel(root, f)], confidence: 0.7, reasons: ['compose_navigation'] });
+      if (!topo.screens.some((s) => s.id === id))
+        topo.screens.push({
+          id,
+          name,
+          route,
+          kind: 'screen',
+          sourceFiles: [rel(root, f)],
+          confidence: 0.7,
+          reasons: ['compose_navigation'],
+        });
       topo.edges.push({ to: id, kind: 'route_declaration', evidence: `${rel(root, f)}:composable`, confidence: 0.6 });
     }
   }
@@ -406,12 +488,14 @@ function plistValue(text: string, key: string): string | null {
 
 function scanNativeIos(root: string, topo: StaticTopology, result: StaticScanResult, swiftFiles: string[]): void {
   topo.router = topo.router ?? 'storyboard';
-  const plists = walkFiles(root, { alsoNames: ['Info.plist'], exts: [], maxFiles: 200 }).filter((f) => basename(f) === 'Info.plist' && !/\/(Tests|Pods)\//.test(f));
+  const plists = walkFiles(root, { alsoNames: ['Info.plist'], exts: [], maxFiles: 200 }).filter(
+    (f) => basename(f) === 'Info.plist' && !/\/(Tests|Pods)\//.test(f),
+  );
   for (const p of plists) {
     const text = readTextSafe(p);
     if (!text) continue;
     result.appIdentity.iosBundleId = result.appIdentity.iosBundleId ?? plistValue(text, 'CFBundleIdentifier');
-    result.appIdentity.appName = result.appIdentity.appName ?? (plistValue(text, 'CFBundleDisplayName') ?? plistValue(text, 'CFBundleName'));
+    result.appIdentity.appName = result.appIdentity.appName ?? plistValue(text, 'CFBundleDisplayName') ?? plistValue(text, 'CFBundleName');
     result.appIdentity.version = result.appIdentity.version ?? plistValue(text, 'CFBundleShortVersionString');
     // URL schemes (CFBundleURLSchemes string array)
     const schemeBlock = text.match(/<key>CFBundleURLSchemes<\/key>\s*<array>([\s\S]*?)<\/array>/i);
@@ -430,13 +514,31 @@ function scanNativeIos(root: string, topo: StaticTopology, result: StaticScanRes
       const name = m[1];
       if (/Cell|Row|Button|Style|Modifier|Preview$/.test(name)) continue;
       const id = `view:${slug(name)}`;
-      if (!topo.screens.some((s) => s.id === id)) topo.screens.push({ id, name, kind: 'view_controller', sourceFiles: [relPath], confidence: /View$|Screen$|Page$/.test(name) ? 0.7 : 0.5, reasons: ['swiftui_view_struct'] });
+      if (!topo.screens.some((s) => s.id === id))
+        topo.screens.push({
+          id,
+          name,
+          kind: 'view_controller',
+          sourceFiles: [relPath],
+          confidence: /View$|Screen$|Page$/.test(name) ? 0.7 : 0.5,
+          reasons: ['swiftui_view_struct'],
+        });
       topo.viewControllers.push(name);
     }
-    for (const m of text.matchAll(/class\s+([A-Za-z0-9_]+)\s*:\s*[^{]*\b(UIViewController|UITableViewController|UICollectionViewController)\b/g)) {
+    for (const m of text.matchAll(
+      /class\s+([A-Za-z0-9_]+)\s*:\s*[^{]*\b(UIViewController|UITableViewController|UICollectionViewController)\b/g,
+    )) {
       const name = m[1];
       const id = `vc:${slug(name)}`;
-      if (!topo.screens.some((s) => s.id === id)) topo.screens.push({ id, name, kind: 'view_controller', sourceFiles: [relPath], confidence: 0.75, reasons: ['uikit_view_controller'] });
+      if (!topo.screens.some((s) => s.id === id))
+        topo.screens.push({
+          id,
+          name,
+          kind: 'view_controller',
+          sourceFiles: [relPath],
+          confidence: 0.75,
+          reasons: ['uikit_view_controller'],
+        });
       topo.viewControllers.push(name);
     }
     // NavigationLink destinations → edges (best-effort)
@@ -459,8 +561,8 @@ function scanFlutter(root: string, topo: StaticTopology, result: StaticScanResul
   if (pubspecText) {
     try {
       const pub = parseYaml(pubspecText) as { name?: string; version?: string; dependencies?: Record<string, unknown> };
-      result.packageName = result.packageName ?? (pub.name ?? null);
-      result.appIdentity.appName = result.appIdentity.appName ?? (pub.name ?? null);
+      result.packageName = result.packageName ?? pub.name ?? null;
+      result.appIdentity.appName = result.appIdentity.appName ?? pub.name ?? null;
       result.appIdentity.version = result.appIdentity.version ?? (pub.version ? String(pub.version) : null);
       const deps = Object.keys(pub.dependencies ?? {});
       if (deps.includes('go_router')) topo.router = 'go_router';
@@ -477,14 +579,24 @@ function scanFlutter(root: string, topo: StaticTopology, result: StaticScanResul
     for (const m of text.matchAll(/["']\/([A-Za-z0-9_\-/]*)["']\s*:\s*\(/g)) {
       const route = '/' + m[1];
       const id = `route:${slug(m[1] || 'home')}`;
-      if (!topo.screens.some((s) => s.id === id)) topo.screens.push({ id, name: m[1] || 'home', route, kind: 'route', sourceFiles: [relPath], confidence: 0.75, reasons: ['flutter_named_route'] });
+      if (!topo.screens.some((s) => s.id === id))
+        topo.screens.push({
+          id,
+          name: m[1] || 'home',
+          route,
+          kind: 'route',
+          sourceFiles: [relPath],
+          confidence: 0.75,
+          reasons: ['flutter_named_route'],
+        });
       topo.flutterRoutes.push(route);
     }
     // GoRoute(path: '/foo')
     for (const m of text.matchAll(/GoRoute\([^)]*path:\s*["']([^"']+)["']/g)) {
       const route = m[1];
       const id = `route:${slug(route.replace(/^\//, '') || 'home')}`;
-      if (!topo.screens.some((s) => s.id === id)) topo.screens.push({ id, name: route, route, kind: 'route', sourceFiles: [relPath], confidence: 0.8, reasons: ['go_router_route'] });
+      if (!topo.screens.some((s) => s.id === id))
+        topo.screens.push({ id, name: route, route, kind: 'route', sourceFiles: [relPath], confidence: 0.8, reasons: ['go_router_route'] });
       topo.flutterRoutes.push(route);
     }
     if (/onGenerateRoute/.test(text)) topo.parserNotes.push(`onGenerateRoute in ${relPath} — dynamic routes not fully enumerated`);
@@ -496,7 +608,8 @@ function scanFlutter(root: string, topo: StaticTopology, result: StaticScanResul
     const name = basename(f).replace(/\.dart$/, '');
     if (/^_/.test(name) || /_test$/.test(name)) continue;
     const id = `page:${slug(name)}`;
-    if (!topo.screens.some((s) => s.id === id)) topo.screens.push({ id, name, kind: 'page', sourceFiles: [relPath], confidence: 0.55, reasons: ['flutter_page_filename'] });
+    if (!topo.screens.some((s) => s.id === id))
+      topo.screens.push({ id, name, kind: 'page', sourceFiles: [relPath], confidence: 0.55, reasons: ['flutter_page_filename'] });
   }
   topo.flutterRoutes = uniq(topo.flutterRoutes);
 }
@@ -505,13 +618,21 @@ function scanFlutter(root: string, topo: StaticTopology, result: StaticScanResul
 // Cross-framework: auth / onboarding / paywalls from dependencies + screens
 // ---------------------------------------------------------------------------
 
-function detectFeatureModels(root: string, deps: Record<string, string>, topo: StaticTopology): { auth: AuthModel; onboarding: FlowModel | null; paywalls: FlowModel[] } {
+function detectFeatureModels(
+  root: string,
+  deps: Record<string, string>,
+  topo: StaticTopology,
+): { auth: AuthModel; onboarding: FlowModel | null; paywalls: FlowModel[] } {
   const depNames = Object.keys(deps);
   const authLibs = depNames.filter((d) => AUTH_LIB_RE.test(d));
   const paywallLibs = depNames.filter((d) => PAYWALL_LIB_RE.test(d));
-  const authScreens = topo.screens.filter((s) => /login|signin|sign-in|auth|register|signup|sign-up|password/i.test(s.name) || /login|signin|auth/i.test(s.route ?? '')).map((s) => s.id);
+  const authScreens = topo.screens
+    .filter((s) => /login|signin|sign-in|auth|register|signup|sign-up|password/i.test(s.name) || /login|signin|auth/i.test(s.route ?? ''))
+    .map((s) => s.id);
   const onboardingScreens = topo.screens.filter((s) => ONBOARDING_RE.test(s.name) || ONBOARDING_RE.test(s.route ?? '')).map((s) => s.id);
-  const paywallScreens = topo.screens.filter((s) => /paywall|subscribe|subscription|premium|upgrade|pricing|plans?/i.test(s.name)).map((s) => s.id);
+  const paywallScreens = topo.screens
+    .filter((s) => /paywall|subscribe|subscription|premium|upgrade|pricing|plans?/i.test(s.name))
+    .map((s) => s.id);
 
   const auth: AuthModel = {
     hasAuth: authLibs.length > 0 || authScreens.length > 0,
@@ -521,11 +642,30 @@ function detectFeatureModels(root: string, deps: Record<string, string>, topo: S
     confidence: Math.min(1, (authLibs.length ? 0.7 : 0) + (authScreens.length ? 0.5 : 0)),
   };
   const onboarding: FlowModel | null = onboardingScreens.length
-    ? { id: 'flow:onboarding', kind: 'onboarding', present: true, signals: ['onboarding_screen_detected'], libraries: [], screens: onboardingScreens, confidence: 0.55 }
+    ? {
+        id: 'flow:onboarding',
+        kind: 'onboarding',
+        present: true,
+        signals: ['onboarding_screen_detected'],
+        libraries: [],
+        screens: onboardingScreens,
+        confidence: 0.55,
+      }
     : null;
-  const paywalls: FlowModel[] = paywallLibs.length || paywallScreens.length
-    ? [{ id: 'flow:paywall', kind: 'paywall', present: true, signals: uniq([...paywallLibs.map((l) => `lib:${l}`), ...(paywallScreens.length ? ['paywall_screen_detected'] : [])]), libraries: paywallLibs, screens: paywallScreens, confidence: Math.min(1, (paywallLibs.length ? 0.7 : 0) + (paywallScreens.length ? 0.4 : 0)) }]
-    : [];
+  const paywalls: FlowModel[] =
+    paywallLibs.length || paywallScreens.length
+      ? [
+          {
+            id: 'flow:paywall',
+            kind: 'paywall',
+            present: true,
+            signals: uniq([...paywallLibs.map((l) => `lib:${l}`), ...(paywallScreens.length ? ['paywall_screen_detected'] : [])]),
+            libraries: paywallLibs,
+            screens: paywallScreens,
+            confidence: Math.min(1, (paywallLibs.length ? 0.7 : 0) + (paywallScreens.length ? 0.4 : 0)),
+          },
+        ]
+      : [];
   return { auth, onboarding, paywalls };
 }
 

@@ -9,7 +9,7 @@ import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { getDriver } from '../session/attach.js';
 import { detectFramework } from '../context/detect.js';
 import { metroReadiness } from '../lib/metroState.js';
-import type { Session, SessionStore } from '../session/store.js';
+import type { SessionStore } from '../session/store.js';
 import type { Driver } from '../drivers/Driver.js';
 
 const ACTIONS = ['launch', 'foreground', 'background', 'force_stop', 'restart', 'clear_data', 'fresh_start'] as const;
@@ -31,7 +31,12 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
       inputSchema: {
         sessionId: z.string(),
         action: z.enum(ACTIONS),
-        acknowledgeBundleRisk: z.boolean().optional().describe('Proceed with clear_data/fresh_start on an RN/Expo build even though wiping may make a bundle-less debug build unloadable.'),
+        acknowledgeBundleRisk: z
+          .boolean()
+          .optional()
+          .describe(
+            'Proceed with clear_data/fresh_start on an RN/Expo build even though wiping may make a bundle-less debug build unloadable.',
+          ),
         consentId: z.string().optional(),
         approve: z.boolean().optional(),
       },
@@ -44,7 +49,12 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
       }
       const pkg = session.appId;
       if (!pkg) {
-        return qaError({ what: 'No appId on this session', changedState: false, retrySafe: true, nextSteps: ['Call qa_prepare_target (it sets the appId).'] });
+        return qaError({
+          what: 'No appId on this session',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Call qa_prepare_target (it sets the appId).'],
+        });
       }
 
       // Destructive-wipe BUNDLE-RISK PREFLIGHT (Phase 2.1 follow-up): a `pm clear` on an RN/Expo
@@ -61,7 +71,10 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
         if (isRn) {
           const rd = await metroReadiness(session.device);
           if (!acknowledgeBundleRisk) {
-            sessions.addEnvChange(session, `GUARDRAIL bundle-risk: ${action} REFUSED (acknowledgeBundleRisk required; framework=${fw}, metroServing=${rd.serving})`);
+            sessions.addEnvChange(
+              session,
+              `GUARDRAIL bundle-risk: ${action} REFUSED (acknowledgeBundleRisk required; framework=${fw}, metroServing=${rd.serving})`,
+            );
             sessions.recordMutation(session, {
               tool: 'qa_app_control',
               action: `app_${action}`,
@@ -91,7 +104,10 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
             );
           }
           // Override present: record it as a distinct guardrail override (honest reporting).
-          sessions.addEnvChange(session, `OVERRIDE acknowledgeBundleRisk: ${action} on RN/Expo (${fw}) — bundle-cache-loss risk accepted (metroServing=${rd.serving})`);
+          sessions.addEnvChange(
+            session,
+            `OVERRIDE acknowledgeBundleRisk: ${action} on RN/Expo (${fw}) — bundle-cache-loss risk accepted (metroServing=${rd.serving})`,
+          );
         }
       }
 
@@ -177,7 +193,12 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
           status: 'blocked',
           detail: String(e),
         });
-        return qaError({ what: `app_control "${action}" failed: ${String(e)}`, changedState: true, retrySafe: true, nextSteps: ['Confirm the device is online (qa_doctor).'] });
+        return qaError({
+          what: `app_control "${action}" failed: ${String(e)}`,
+          changedState: true,
+          retrySafe: true,
+          nextSteps: ['Confirm the device is online (qa_doctor).'],
+        });
       }
 
       const launchedOk = foreground.startsWith(pkg);

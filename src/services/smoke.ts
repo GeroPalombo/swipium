@@ -52,7 +52,11 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
     if (session.mode !== 'visual-fallback') {
       try {
         const parsed = parseSnapshot(await d.dumpXml());
-        session.lastSnapshot = { fullByRef: parsed.fullByRef, signatures: new Set(parsed.elements.map(signature)), allNodes: parsed.allNodes };
+        session.lastSnapshot = {
+          fullByRef: parsed.fullByRef,
+          signatures: new Set(parsed.elements.map(signature)),
+          allNodes: parsed.allNodes,
+        };
         quality = parsed.quality.verdict;
       } catch {
         /* visual-only screen — health + screenshot still run */
@@ -63,7 +67,14 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
     let shotUri: string | undefined;
     try {
       const png = await d.screenshot();
-      shotUri = sessions.saveArtifact(session, 'screenshot', `smoke-baseline-${Date.now()}.png`, png, 'image/png', 'qa_smoke baseline evidence');
+      shotUri = sessions.saveArtifact(
+        session,
+        'screenshot',
+        `smoke-baseline-${Date.now()}.png`,
+        png,
+        'image/png',
+        'qa_smoke baseline evidence',
+      );
       sessions.bump(session, 'screenshots');
     } catch {
       /* best-effort */
@@ -73,10 +84,17 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
       workflow: 'launch_smoke',
       outcome,
       category: outcome === 'fail' ? 'app_bug' : undefined,
-      reason: `native=${health.nativeHealthy ? 'ok' : health.nativeStatus} app=${health.appStatus}` + (quality ? ` quality=${quality}` : ''),
+      reason:
+        `native=${health.nativeHealthy ? 'ok' : health.nativeStatus} app=${health.appStatus}` + (quality ? ` quality=${quality}` : ''),
       artifactUris: shotUri ? [shotUri] : undefined,
     });
-    baseline.launch = { outcome, nativeHealth: health.nativeHealthy ? 'ok' : health.nativeStatus, appHealth: health.appStatus, quality, screenshotUri: shotUri };
+    baseline.launch = {
+      outcome,
+      nativeHealth: health.nativeHealthy ? 'ok' : health.nativeStatus,
+      appHealth: health.appStatus,
+      quality,
+      screenshotUri: shotUri,
+    };
   } catch (e) {
     note({ workflow: 'launch_smoke', outcome: 'fail', category: 'mcp_limitation', reason: `baseline failed: ${String(e)}` });
     baseline.launch = { outcome: 'fail', error: String(e) };
@@ -94,21 +112,40 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
       }
       const { flow, errors } = parseFlow(readFileSync(f.path, 'utf8'));
       if (errors.length || !flow) {
-        note({ workflow: f.name, outcome: 'blocked', category: 'other', reason: `flow invalid: ${errors[0] ?? 'parse error'}`, requiredState: 'a valid flow file' });
+        note({
+          workflow: f.name,
+          outcome: 'blocked',
+          category: 'other',
+          reason: `flow invalid: ${errors[0] ?? 'parse error'}`,
+          requiredState: 'a valid flow file',
+        });
         flowResults.push({ name: f.name, passed: false, reason: 'invalid flow' });
         continue;
       }
       const mutatingSteps = ciMutatingSteps(flow);
       if (mutatingSteps.length) {
         const reason = `mutating flow requires explicit qa_flow_run consent or CI policy: ${mutatingSteps.map((m) => `${m.step}:${m.kind}`).join(', ')}`;
-        note({ workflow: f.name, outcome: 'blocked', category: 'destructive_refused', reason, recommendedSetup: 'Run this flow with qa_flow_run and approve the flow_mutation_run consent, or run it through a CI policy that allowlists the mutation.' });
+        note({
+          workflow: f.name,
+          outcome: 'blocked',
+          category: 'destructive_refused',
+          reason,
+          recommendedSetup:
+            'Run this flow with qa_flow_run and approve the flow_mutation_run consent, or run it through a CI policy that allowlists the mutation.',
+        });
         flowResults.push({ name: f.name, passed: false, reason });
         continue;
       }
       const providerSteps = externalProviderSteps(flow);
       if (providerSteps.length) {
         const reason = `external visual-provider flow requires explicit qa_flow_run consent: ${providerSteps.map((m) => `${m.step}:${m.kind}`).join(', ')}`;
-        note({ workflow: f.name, outcome: 'blocked', category: 'destructive_refused', reason, recommendedSetup: 'Run this flow with qa_flow_run and approve the provider consent, or run it through reviewed CI configuration.' });
+        note({
+          workflow: f.name,
+          outcome: 'blocked',
+          category: 'destructive_refused',
+          reason,
+          recommendedSetup: 'Run this flow with qa_flow_run and approve the provider consent, or run it through reviewed CI configuration.',
+        });
         flowResults.push({ name: f.name, passed: false, reason });
         continue;
       }
@@ -125,7 +162,9 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
         workflow: f.name,
         outcome: r.passed ? 'pass' : 'fail',
         category: r.passed ? undefined : 'app_bug',
-        reason: r.passed ? `${r.steps.length} steps in ${r.durationSec}s` : `failed at step ${r.failedAtStep}: ${r.reason}`,
+        reason: r.passed
+          ? `${r.steps.length} steps in ${Math.round(r.durationMs / 100) / 10}s`
+          : `failed at step ${r.failedAtStep}: ${r.reason}`,
         artifactUris: failShot ? [failShot] : undefined,
       });
       flowResults.push({ name: f.name, passed: r.passed, failedAtStep: r.failedAtStep, reason: r.reason });

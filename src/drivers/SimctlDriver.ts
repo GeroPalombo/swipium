@@ -89,7 +89,10 @@ export class SimctlDriver implements Driver {
   async logcat(lines = 200, grep?: string): Promise<string> {
     const raw = await sim.simulatorLogs(this.udid, { last: '5m' });
     const filtered = grep
-      ? raw.split(/\r?\n/).filter((line) => new RegExp(grep, 'i').test(line)).join('\n')
+      ? raw
+          .split(/\r?\n/)
+          .filter((line) => new RegExp(grep, 'i').test(line))
+          .join('\n')
       : raw;
     const all = filtered.split(/\r?\n/);
     return all.slice(Math.max(0, all.length - lines)).join('\n');

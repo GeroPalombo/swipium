@@ -43,10 +43,16 @@ function tokenize(text: string, limit = 40): string[] {
   for (const m of text.matchAll(/[A-Za-z][A-Za-z0-9]{2,}/g)) {
     // split camelCase into sub-words so "WeatherAnalysisScreen" matches "weather"/"analysis"
     const word = m[0];
-    const parts = word.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/\s+/);
+    const parts = word
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .toLowerCase()
+      .split(/\s+/);
     for (const p of parts) if (p.length >= 3) counts.set(p, (counts.get(p) ?? 0) + 1);
   }
-  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([t]) => t);
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([t]) => t);
 }
 
 function extractVisibleText(text: string): string {
@@ -59,7 +65,27 @@ function extractVisibleText(text: string): string {
   return chunks.join(' ');
 }
 
-const STOP = new Set(['const', 'export', 'import', 'function', 'return', 'class', 'this', 'from', 'react', 'native', 'string', 'number', 'void', 'null', 'undefined', 'true', 'false', 'async', 'await']);
+const STOP = new Set([
+  'const',
+  'export',
+  'import',
+  'function',
+  'return',
+  'class',
+  'this',
+  'from',
+  'react',
+  'native',
+  'string',
+  'number',
+  'void',
+  'null',
+  'undefined',
+  'true',
+  'false',
+  'async',
+  'await',
+]);
 
 /** Build a code index from collected source files. Skips tests/specs and oversized files. */
 export function buildCodeIndex(root: string, files: string[], generatedAt: string): CodeIndex {

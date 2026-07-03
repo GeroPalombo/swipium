@@ -152,7 +152,8 @@ export function buildPlan(i: PlanInput): Plan {
     unsafe.push({
       workflow: 'destructive_exploration',
       reason: 'needs_disposable_state',
-      detail: 'Delete/pay/send/logout workflows require a fixture marked disposable:true or environment:"test" before Swipium can approve an exact destructive candidate.',
+      detail:
+        'Delete/pay/send/logout workflows require a fixture marked disposable:true or environment:"test" before Swipium can approve an exact destructive candidate.',
     });
   }
 

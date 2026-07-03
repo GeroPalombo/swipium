@@ -16,7 +16,11 @@ export function runtimeScreensFromGraph(graph: SerializedGraph | undefined): Run
     id: n.id,
     title: n.title,
     route: n.urlOrRoute,
-    text: n.elements.map((e) => `${e.label ?? ''} ${e.locator?.value ?? ''}`).join(' ').trim() || undefined,
+    text:
+      n.elements
+        .map((e) => `${e.label ?? ''} ${e.locator?.value ?? ''}`)
+        .join(' ')
+        .trim() || undefined,
   }));
 }
 

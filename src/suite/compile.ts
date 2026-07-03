@@ -70,7 +70,10 @@ interface PomStep {
 }
 
 /** Compile one POM test doc into a Flow V2 flow object + variables + per-step errors. */
-export function compileTest(testDoc: Record<string, unknown>, pages: Map<string, PageDoc>): { flow: Record<string, unknown>; variables: string[]; errors: string[] } {
+export function compileTest(
+  testDoc: Record<string, unknown>,
+  pages: Map<string, PageDoc>,
+): { flow: Record<string, unknown>; variables: string[]; errors: string[] } {
   const errors: string[] = [];
   const variables = new Set<string>();
   const steps: Array<string | Record<string, unknown>> = ['prepareTarget'];
@@ -110,7 +113,8 @@ export function compileTest(testDoc: Record<string, unknown>, pages: Map<string,
       case 'inputText': {
         collectVars(s.text);
         const sel = s.element ? resolveSel(s) : null;
-        if (s.element && sel) steps.push(waitForVisibleGuard(sel), { inputText: { into: sel, text: s.text ?? '', ...(s.secret ? { secret: true } : {}) } });
+        if (s.element && sel)
+          steps.push(waitForVisibleGuard(sel), { inputText: { into: sel, text: s.text ?? '', ...(s.secret ? { secret: true } : {}) } });
         else steps.push({ inputText: s.text ?? '' });
         break;
       }
@@ -155,10 +159,15 @@ export function compileTestFile(root: string, testRel: string, pages?: Map<strin
   }
   const compiled = compileTest(doc, pages ?? loadPages(root));
   const header = [
-    '# Compiled by Swipium qa_suite_compile from a POM test — runnable via qa_flow_run / `swipium ci`.',
+    '# Compiled by Swipium qa_flow_compile from a POM test — runnable via qa_flow_run / `swipium ci`.',
     ...(compiled.variables.length ? [`# variables: ${compiled.variables.join(', ')}`] : []),
   ].join('\n');
-  return { name: (doc.name as string) ?? testRel, yaml: `${header}\n${stringify(compiled.flow)}`, variables: compiled.variables, errors: compiled.errors };
+  return {
+    name: (doc.name as string) ?? testRel,
+    yaml: `${header}\n${stringify(compiled.flow)}`,
+    variables: compiled.variables,
+    errors: compiled.errors,
+  };
 }
 
 /** Compile every test referenced by a suite file (default .swipium/suites/smoke.yaml). */

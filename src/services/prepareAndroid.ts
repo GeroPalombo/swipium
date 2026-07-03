@@ -6,9 +6,18 @@
 import type { ChildProcess } from 'node:child_process';
 import { statSync } from 'node:fs';
 import {
-  adbDevices, bootEmulator, waitForBoot, resolveApk,
-  deviceFreeDataBytes, deviceAbis, apkNativeAbis, fmtBytes,
-  apkMinSdk, deviceSdk, minSdkCompatible, classifyAndroidInstallError,
+  adbDevices,
+  bootEmulator,
+  waitForBoot,
+  resolveApk,
+  deviceFreeDataBytes,
+  deviceAbis,
+  apkNativeAbis,
+  fmtBytes,
+  apkMinSdk,
+  deviceSdk,
+  minSdkCompatible,
+  classifyAndroidInstallError,
 } from '../lib/android.js';
 import { metroReadiness } from '../lib/metroState.js';
 import { log } from '../lib/logger.js';
@@ -117,7 +126,14 @@ export async function prepareAndroid(
 
     if (a.bindOnly) {
       const rd = await metroReadiness(serial);
-      return { ok: true, bound: true, device: serial, metro: rd, resultText: `Bound ${serial} (bindOnly). ${a.rnDebug ? `Metro serving=${rd.serving} reverse=${rd.reverseSet} ready=${rd.ready}.` : ''}`, result: { device: serial, bound: true, metro: rd } };
+      return {
+        ok: true,
+        bound: true,
+        device: serial,
+        metro: rd,
+        resultText: `Bound ${serial} (bindOnly). ${a.rnDebug ? `Metro serving=${rd.serving} reverse=${rd.reverseSet} ready=${rd.ready}.` : ''}`,
+        result: { device: serial, bound: true, metro: rd },
+      };
     }
 
     const installed = await driver.isInstalled(a.resolvedAppId);
@@ -131,13 +147,21 @@ export async function prepareAndroid(
       const apkSize = statSync(apkPath).size;
       const free = await deviceFreeDataBytes(serial);
       if (free != null && free < apkSize * 1.3) {
-        return { ok: false, failureCode: 'INSTALL_FAILED', error: `not enough space: APK ~${fmtBytes(apkSize)}, /data free ${fmtBytes(free)}. Reboot emulator with \`-wipe-data -partition-size 8192\`.` };
+        return {
+          ok: false,
+          failureCode: 'INSTALL_FAILED',
+          error: `not enough space: APK ~${fmtBytes(apkSize)}, /data free ${fmtBytes(free)}. Reboot emulator with \`-wipe-data -partition-size 8192\`.`,
+        };
       }
       const apkAbis = await apkNativeAbis(apkPath);
       if (apkAbis.length) {
         const devAbis = await deviceAbis(serial);
         if (devAbis.length && !apkAbis.some((x) => devAbis.includes(x))) {
-          return { ok: false, failureCode: 'APK_ARCH_INCOMPATIBLE', error: `ABI mismatch: apk=[${apkAbis.join(',')}] device=[${devAbis.join(',')}]` };
+          return {
+            ok: false,
+            failureCode: 'APK_ARCH_INCOMPATIBLE',
+            error: `ABI mismatch: apk=[${apkAbis.join(',')}] device=[${devAbis.join(',')}]`,
+          };
         }
       }
       // minSdk preflight: catch "APK needs a newer Android than this device" before install,
@@ -145,7 +169,11 @@ export async function prepareAndroid(
       // not an opaque INSTALL_FAILED. Unknown values don't block (don't fail on missing aapt2).
       const [apkMin, devSdk] = await Promise.all([apkMinSdk(apkPath), deviceSdk(serial)]);
       if (!minSdkCompatible(apkMin, devSdk)) {
-        return { ok: false, failureCode: 'ANDROID_MIN_SDK_INCOMPATIBLE', error: `APK minSdk ${apkMin} > device API level ${devSdk}. Use a device/emulator with API ${apkMin}+ or lower minSdkVersion.` };
+        return {
+          ok: false,
+          failureCode: 'ANDROID_MIN_SDK_INCOMPATIBLE',
+          error: `APK minSdk ${apkMin} > device API level ${devSdk}. Use a device/emulator with API ${apkMin}+ or lower minSdkVersion.`,
+        };
       }
       progress('installing');
       if (aborted()) return { ok: false, aborted: true };
@@ -180,10 +208,15 @@ export async function prepareAndroid(
     if (a.rnDebug && !a.allowLaunchWithoutMetro) {
       const rd = await metroReadiness(serial);
       if (!rd.serving) {
-        return { ok: false, failureCode: 'METRO_REQUIRED', error: `Debug RN/Expo build; Metro is not serving (listening=${rd.listening} serving=${rd.serving}) and the app would RedBox. Start the Metro/dev server, wait until it is serving, then retry.` };
+        return {
+          ok: false,
+          failureCode: 'METRO_REQUIRED',
+          error: `Debug RN/Expo build; Metro is not serving (listening=${rd.listening} serving=${rd.serving}) and the app would RedBox. Start the Metro/dev server, wait until it is serving, then retry.`,
+        };
       }
     }
-    if (a.rnDebug && a.allowLaunchWithoutMetro) sessions.addEnvChange(session, 'OVERRIDE allowLaunchWithoutMetro — launched without confirmed Metro readiness');
+    if (a.rnDebug && a.allowLaunchWithoutMetro)
+      sessions.addEnvChange(session, 'OVERRIDE allowLaunchWithoutMetro — launched without confirmed Metro readiness');
     progress('launching');
     sessions.milestone(session, 'app_launch_start');
     await driver.launchApp(a.resolvedAppId);
@@ -205,16 +238,29 @@ export async function prepareAndroid(
     const launchedOk = foreground.startsWith(a.resolvedAppId);
     const display = a.needBoot ? (session.headless ? 'headless' : 'visible window') : 'pre-existing device';
     const looksDebug = /debug|\bdev\b/i.test(a.apkPath ?? a.apk ?? '');
-    const metroHint = looksDebug ? 'Looks like a debug build. If a Metro/dev-server error appears, start Metro manually and retry.' : undefined;
+    const metroHint = looksDebug
+      ? 'Looks like a debug build. If a Metro/dev-server error appears, start Metro manually and retry.'
+      : undefined;
     const result = {
-      device: serial, appId: a.resolvedAppId,
+      device: serial,
+      appId: a.resolvedAppId,
       installed: installed && !a.force ? 'already-present' : 'installed-now',
-      foreground, launchedOk, display, ...(metroHint ? { metroHint } : {}),
+      foreground,
+      launchedOk,
+      display,
+      ...(metroHint ? { metroHint } : {}),
     };
     const viewHint = a.needBoot && session.headless ? ` (headless — view with: scrcpy -s ${serial})` : '';
     return {
-      ok: true, device: serial, appId: a.resolvedAppId, installed: result.installed, foreground, launchedOk, display,
-      result, resultText: `${launchedOk ? '✅' : '⚠️'} ${a.resolvedAppId} on ${serial} [${display}${viewHint}]; foreground=${foreground}.${metroHint ? '\n' + metroHint : ''}`,
+      ok: true,
+      device: serial,
+      appId: a.resolvedAppId,
+      installed: result.installed,
+      foreground,
+      launchedOk,
+      display,
+      result,
+      resultText: `${launchedOk ? '✅' : '⚠️'} ${a.resolvedAppId} on ${serial} [${display}${viewHint}]; foreground=${foreground}.${metroHint ? '\n' + metroHint : ''}`,
     };
   } catch (e) {
     if (aborted()) return { ok: false, aborted: true };

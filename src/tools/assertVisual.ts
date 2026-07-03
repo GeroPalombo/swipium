@@ -29,7 +29,12 @@ export function registerAssertVisual(server: McpServer, sessions: SessionStore):
       const session = sessions.get(sessionId);
       const { driver } = session ? await getDriver(session) : { driver: undefined };
       if (!session || !driver) {
-        return qaError({ what: 'No device attached to this session', changedState: false, retrySafe: true, nextSteps: ['Call qa_prepare_target first.'] });
+        return qaError({
+          what: 'No device attached to this session',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Call qa_prepare_target first.'],
+        });
       }
       if (session.sensitive) return sensitiveRefusal('Visual assertion (screenshot)');
       let uri: string;
@@ -40,7 +45,12 @@ export function registerAssertVisual(server: McpServer, sessions: SessionStore):
         sessions.bump(session, 'screenshots');
         coordinateSpace = await captureCoordinateSpace(driver, png);
       } catch (e) {
-        return qaError({ what: `Could not capture the screenshot evidence: ${String(e)}`, changedState: false, retrySafe: true, nextSteps: ['Confirm the device is online (qa_doctor), then retry.'] });
+        return qaError({
+          what: `Could not capture the screenshot evidence: ${String(e)}`,
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Confirm the device is online (qa_doctor), then retry.'],
+        });
       }
       sessions.addNote(session, {
         at: Date.now(),

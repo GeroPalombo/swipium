@@ -15,7 +15,7 @@ export function registerDetectContext(server: McpServer, sessions: SessionStore)
       description:
         'Scan the resolved project root (a session root, an explicit projectRoot, or MCP workspace roots — never the server cwd) and report: framework (expo/bare-rn/native-android/native-ios/flutter), monorepo, prebuilt artifacts (apk/ipa/.app), online devices + AVDs, toolchain, and blockers. Use this to decide what qa_prepare_target needs.',
       inputSchema: {
-        sessionId: z.string().optional().describe('Use this session\'s projectRoot if given.'),
+        sessionId: z.string().optional().describe("Use this session's projectRoot if given."),
         projectRoot: z.string().optional().describe('Absolute path; else resolved via MCP roots.'),
       },
     },

@@ -22,7 +22,14 @@ export async function recordHealthFindings(
   if (appError && driver && !session.sensitive) {
     try {
       const png = await driver.screenshot();
-      evidenceUri = sessions.saveArtifact(session, 'screenshot', `app-error-${Date.now()}.png`, png, 'image/png', `app-health: ${appError.kind}`);
+      evidenceUri = sessions.saveArtifact(
+        session,
+        'screenshot',
+        `app-error-${Date.now()}.png`,
+        png,
+        'image/png',
+        `app-health: ${appError.kind}`,
+      );
     } catch {
       /* best-effort — evidence is a bonus, not required */
     }

@@ -10,6 +10,8 @@ export function sensitiveRefusal(what: string): CallToolResult {
     what: `${what} refused — this session is in sensitive mode (no screenshots/video/logs are captured)`,
     changedState: false,
     retrySafe: false,
-    nextSteps: ['Start a non-sensitive session (omit sensitive:true) to capture pixels, or rely on structured snapshot + health, which carry no screen contents.'],
+    nextSteps: [
+      'Start a non-sensitive session (omit sensitive:true) to capture pixels, or rely on structured snapshot + health, which carry no screen contents.',
+    ],
   });
 }

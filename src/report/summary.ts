@@ -25,8 +25,7 @@ export interface ReleaseAssessment {
 export function releaseAssessment(i: RiskInput): ReleaseAssessment {
   const reasons: string[] = [];
 
-  const blocking =
-    i.nativeHealth === 'error' || i.appHealth === 'error' || i.highSeverityCount > 0 || i.failCount > 0;
+  const blocking = i.nativeHealth === 'error' || i.appHealth === 'error' || i.highSeverityCount > 0 || i.failCount > 0;
   if (i.nativeHealth === 'error') reasons.push('native crash/ANR detected');
   if (i.appHealth === 'error') reasons.push('app-level error surface (ErrorBoundary/RedBox)');
   if (i.highSeverityCount > 0) reasons.push(`${i.highSeverityCount} high-severity finding(s)`);

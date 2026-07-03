@@ -17,7 +17,7 @@ export function registerPermissions(server: McpServer, sessions: SessionStore): 
     {
       title: 'App permissions',
       description:
-        'Inspect or change a package\'s Android runtime permissions. action: list (granted/denied), grant (pre-approve to skip a dialog — logged), revoke (consent-gated, can break app state — logged). `package` defaults to the session\'s appId; `permission` is a full android.permission.* name (e.g. android.permission.ACCESS_FINE_LOCATION).',
+        "Inspect or change a package's Android runtime permissions. action: list (granted/denied), grant (pre-approve to skip a dialog — logged), revoke (consent-gated, can break app state — logged). `package` defaults to the session's appId; `permission` is a full android.permission.* name (e.g. android.permission.ACCESS_FINE_LOCATION).",
       inputSchema: {
         sessionId: z.string(),
         action: z.enum(['list', 'grant', 'revoke']),
@@ -32,20 +32,38 @@ export function registerPermissions(server: McpServer, sessions: SessionStore): 
       const { driver } = session ? await getDriver(session) : { driver: undefined };
       const serial = driver?.currentDevice();
       if (!session || !driver || !serial) {
-        return qaError({ what: 'No device attached to this session', changedState: false, retrySafe: true, nextSteps: ['Call qa_prepare_target first.'] });
+        return qaError({
+          what: 'No device attached to this session',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Call qa_prepare_target first.'],
+        });
       }
       const pkg = pkgArg ?? session.appId;
       if (!pkg) {
-        return qaError({ what: 'No package given and the session has no appId', changedState: false, retrySafe: true, nextSteps: ['Pass package, or qa_prepare_target to set the appId.'] });
+        return qaError({
+          what: 'No package given and the session has no appId',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Pass package, or qa_prepare_target to set the appId.'],
+        });
       }
 
       if (action === 'list') {
         const perms = await listRuntimePermissions(serial, pkg);
-        return qaOk({ package: pkg, ...perms }, `${pkg}: ${perms.granted.length} granted, ${perms.denied.length} denied\n  granted: ${perms.granted.join(', ') || '—'}\n  denied: ${perms.denied.join(', ') || '—'}`);
+        return qaOk(
+          { package: pkg, ...perms },
+          `${pkg}: ${perms.granted.length} granted, ${perms.denied.length} denied\n  granted: ${perms.granted.join(', ') || '—'}\n  denied: ${perms.denied.join(', ') || '—'}`,
+        );
       }
 
       if (!permission) {
-        return qaError({ what: `${action} requires a permission name`, changedState: false, retrySafe: true, nextSteps: ['Pass permission="android.permission.…" (qa_permissions list to see them).'] });
+        return qaError({
+          what: `${action} requires a permission name`,
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Pass permission="android.permission.…" (qa_permissions list to see them).'],
+        });
       }
 
       if (action === 'revoke') {
@@ -88,7 +106,12 @@ export function registerPermissions(server: McpServer, sessions: SessionStore): 
             status: 'blocked',
             detail: String(e),
           });
-          return qaError({ what: `revoke failed: ${String(e)}`, changedState: false, retrySafe: true, nextSteps: ['Check the permission name; some are not revocable.'] });
+          return qaError({
+            what: `revoke failed: ${String(e)}`,
+            changedState: false,
+            retrySafe: true,
+            nextSteps: ['Check the permission name; some are not revocable.'],
+          });
         }
         sessions.addEnvChange(session, `permission revoke ${permission} from ${pkg}`);
         sessions.recordMutation(session, {
@@ -142,7 +165,12 @@ export function registerPermissions(server: McpServer, sessions: SessionStore): 
           status: 'blocked',
           detail: String(e),
         });
-        return qaError({ what: `grant failed: ${String(e)}`, changedState: false, retrySafe: true, nextSteps: ['Check the permission name; only runtime permissions are grantable.'] });
+        return qaError({
+          what: `grant failed: ${String(e)}`,
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Check the permission name; only runtime permissions are grantable.'],
+        });
       }
       sessions.addEnvChange(session, `permission grant ${permission} to ${pkg}`);
       sessions.recordMutation(session, {

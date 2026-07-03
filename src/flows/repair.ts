@@ -8,7 +8,8 @@ import { parseFlow, type Flow, type FlowStep } from './schema.js';
 import type { SnapshotElement } from '../drivers/Driver.js';
 import type { FailureCode } from '../oracle/failures.js';
 
-export type FlowRepairDriftCode = 'screen_mismatch' | 'resource_id_missing' | 'duplicate_candidate' | 'text_or_label_drift' | 'role_changed';
+export type FlowRepairDriftCode =
+  'screen_mismatch' | 'resource_id_missing' | 'duplicate_candidate' | 'text_or_label_drift' | 'role_changed';
 
 export interface FlowRepairDriftFinding {
   code: FlowRepairDriftCode;
@@ -64,12 +65,21 @@ export interface FlowRepairProposal {
   };
 }
 
-export function resolveFlowSource(root: string, flow?: string, flowYaml?: string): { source: string; yaml: string; writable: boolean } | { error: string } {
+export function resolveFlowSource(
+  root: string,
+  flow?: string,
+  flowYaml?: string,
+): { source: string; yaml: string; writable: boolean } | { error: string } {
   if (flowYaml && flowYaml.trim()) return { source: 'inline', yaml: flowYaml, writable: false };
   if (!flow) return { error: 'Provide flow or flowYaml.' };
   const candidates = isAbsolute(flow)
     ? [flow]
-    : [join(root, flow), join(root, '.swipium', 'flows', `${flow}.yaml`), join(root, '.swipium', 'flows', `${flow}.yml`), join(root, '.swipium', 'flows', flow)];
+    : [
+        join(root, flow),
+        join(root, '.swipium', 'flows', `${flow}.yaml`),
+        join(root, '.swipium', 'flows', `${flow}.yml`),
+        join(root, '.swipium', 'flows', flow),
+      ];
   const path = candidates.find((p) => existsSync(p));
   return path ? { source: path, yaml: readFileSync(path, 'utf8'), writable: true } : { error: `Flow not found: ${flow}` };
 }
@@ -85,8 +95,10 @@ function stepAt(flow: Flow, failedStep: number): { phase: FlowRepairSuggestion['
 
 function selectorOf(step: FlowStep): string | undefined {
   switch (step.kind) {
-    case 'tap': return step.selector;
-    case 'inputText': return step.into;
+    case 'tap':
+      return step.selector;
+    case 'inputText':
+      return step.into;
     case 'assertVisible':
     case 'assertNotVisible':
     case 'waitForVisible':
@@ -179,10 +191,22 @@ function provenanceEntries(yamlText: string): FlowProvenanceEntry[] {
 function provenanceForStep(yamlText: string, failedStep: number, originalSelector: string | undefined): FlowProvenanceEntry | undefined {
   const oneBased = failedStep + 1;
   const entries = provenanceEntries(yamlText);
-  return entries.find((e) => e.generatedStepIndex === oneBased)
-    ?? entries.find((e) => e.stepIndex === oneBased)
-    ?? (originalSelector ? entries.find((e) => [e.selector, e.selectorValue, e.resourceId, e.text, e.accessibilityLabel].some((v) => v && norm(v) === norm(originalSelector))) : undefined)
-    ?? (originalSelector ? entries.find((e) => [e.selector, e.selectorValue, e.resourceId, e.text, e.accessibilityLabel].some((v) => v && (norm(v).includes(norm(originalSelector)) || norm(originalSelector).includes(norm(v))))) : undefined);
+  return (
+    entries.find((e) => e.generatedStepIndex === oneBased) ??
+    entries.find((e) => e.stepIndex === oneBased) ??
+    (originalSelector
+      ? entries.find((e) =>
+          [e.selector, e.selectorValue, e.resourceId, e.text, e.accessibilityLabel].some((v) => v && norm(v) === norm(originalSelector)),
+        )
+      : undefined) ??
+    (originalSelector
+      ? entries.find((e) =>
+          [e.selector, e.selectorValue, e.resourceId, e.text, e.accessibilityLabel].some(
+            (v) => v && (norm(v).includes(norm(originalSelector)) || norm(originalSelector).includes(norm(v))),
+          ),
+        )
+      : undefined)
+  );
 }
 
 function byNorm(values: Array<string | undefined>, target: string | undefined): boolean {
@@ -202,25 +226,47 @@ function driftFindings(
   const findings: FlowRepairDriftFinding[] = [];
   const currentSig = currentScreenSignature(elements);
   if (provenance.originalScreenSignature && currentSig && provenance.originalScreenSignature !== currentSig) {
-    findings.push({ code: 'screen_mismatch', message: `Recorded screen signature ${provenance.originalScreenSignature} differs from current screen ${currentSig}. Navigation may have failed before this step.` });
+    findings.push({
+      code: 'screen_mismatch',
+      message: `Recorded screen signature ${provenance.originalScreenSignature} differs from current screen ${currentSig}. Navigation may have failed before this step.`,
+    });
   }
   if (provenance.resourceId) {
     const idMatches = elements.filter((e) => byNorm([e.id], provenance.resourceId));
     if (idMatches.length === 0) {
-      findings.push({ code: 'resource_id_missing', message: `Recorded resource id "${provenance.resourceId}" is not present on the current screen.` });
+      findings.push({
+        code: 'resource_id_missing',
+        message: `Recorded resource id "${provenance.resourceId}" is not present on the current screen.`,
+      });
     } else if (idMatches.length > 1) {
-      findings.push({ code: 'duplicate_candidate', message: `Recorded resource id "${provenance.resourceId}" now matches ${idMatches.length} elements; add a more specific testID/accessibilityIdentifier.` });
+      findings.push({
+        code: 'duplicate_candidate',
+        message: `Recorded resource id "${provenance.resourceId}" now matches ${idMatches.length} elements; add a more specific testID/accessibilityIdentifier.`,
+      });
     }
   }
   const oldLabel = provenance.accessibilityLabel ?? provenance.text;
-  if (oldLabel && !elements.some((e) => byNorm([e.label, e.text], oldLabel)) && elements.some((e) => containsNorm([e.label, e.text], oldLabel))) {
-    findings.push({ code: 'text_or_label_drift', message: `Recorded text/label "${oldLabel}" changed but a similar current label exists.` });
+  if (
+    oldLabel &&
+    !elements.some((e) => byNorm([e.label, e.text], oldLabel)) &&
+    elements.some((e) => containsNorm([e.label, e.text], oldLabel))
+  ) {
+    findings.push({
+      code: 'text_or_label_drift',
+      message: `Recorded text/label "${oldLabel}" changed but a similar current label exists.`,
+    });
   } else if (oldLabel && picked.element && !byNorm([picked.element.label, picked.element.text], oldLabel)) {
-    findings.push({ code: 'text_or_label_drift', message: `Recorded text/label "${oldLabel}" no longer identifies the proposed replacement.` });
+    findings.push({
+      code: 'text_or_label_drift',
+      message: `Recorded text/label "${oldLabel}" no longer identifies the proposed replacement.`,
+    });
   }
   const oldRole = provenance.elementRole ?? provenance.className?.split('.').pop();
   if (oldRole && picked.element && norm(picked.element.role) !== norm(oldRole) && !norm(picked.element.role).endsWith(norm(oldRole))) {
-    findings.push({ code: 'role_changed', message: `Recorded element role "${oldRole}" differs from current candidate role "${picked.element.role}".` });
+    findings.push({
+      code: 'role_changed',
+      message: `Recorded element role "${oldRole}" differs from current candidate role "${picked.element.role}".`,
+    });
   }
   return findings;
 }
@@ -231,12 +277,21 @@ function driftRationale(findings: FlowRepairDriftFinding[]): string {
 }
 
 function desiredId(label: string, role: string): string {
-  const base = label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40) || 'target';
+  const base =
+    label
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 40) || 'target';
   const suffix = /field|text/i.test(role) ? 'field' : /button|cell|link/i.test(role) ? 'button' : 'control';
   return `${base}_${suffix}`;
 }
 
-function chooseReplacement(selector: string | undefined, elements: SnapshotElement[], platform: LocatorPlatform): { element?: SnapshotElement; suggestion?: LocatorSuggestion; confidence: FlowRepairSuggestion['confidence'] } {
+function chooseReplacement(
+  selector: string | undefined,
+  elements: SnapshotElement[],
+  platform: LocatorPlatform,
+): { element?: SnapshotElement; suggestion?: LocatorSuggestion; confidence: FlowRepairSuggestion['confidence'] } {
   const scored = elements.map((el) => ({ el, suggestion: suggestLocator(el, { platform }) }));
   if (selector) {
     const n = norm(selector);
@@ -245,12 +300,18 @@ function chooseReplacement(selector: string | undefined, elements: SnapshotEleme
     const contains = scored.find(({ el }) => [el.id, el.label, el.text].some((v) => v && (norm(v).includes(n) || n.includes(norm(v)))));
     if (contains) return { ...contains, confidence: 'medium' };
   }
-  const durable = scored.find(({ suggestion }) => suggestion.locator && (suggestion.tier === 'accessibility' || suggestion.tier === 'resource_id'));
+  const durable = scored.find(
+    ({ suggestion }) => suggestion.locator && (suggestion.tier === 'accessibility' || suggestion.tier === 'resource_id'),
+  );
   if (durable) return { ...durable, confidence: 'low' };
   return { ...scored[0], confidence: 'low' };
 }
 
-function selectorForSuggestion(suggestion: LocatorSuggestion | undefined, element: SnapshotElement | undefined, platform: LocatorPlatform): string | undefined {
+function selectorForSuggestion(
+  suggestion: LocatorSuggestion | undefined,
+  element: SnapshotElement | undefined,
+  platform: LocatorPlatform,
+): string | undefined {
   if (!suggestion?.locator) return element?.text ?? element?.label ?? element?.id;
   if (platform === 'ios') {
     if (suggestion.locatorKind === 'accessibility_identifier') return `accessibility id=${suggestion.locator}`;
@@ -259,7 +320,13 @@ function selectorForSuggestion(suggestion: LocatorSuggestion | undefined, elemen
   return suggestion.locator;
 }
 
-function applyReplacement(yamlText: string, phase: FlowRepairSuggestion['phase'], phaseIndex: number, step: FlowStep, replacement: string): string | null {
+function applyReplacement(
+  yamlText: string,
+  phase: FlowRepairSuggestion['phase'],
+  phaseIndex: number,
+  step: FlowStep,
+  replacement: string,
+): string | null {
   const doc = parseYaml(yamlText) as Record<string, unknown>;
   const key = phase === 'steps' ? 'steps' : phase;
   const list = doc[key];
@@ -271,7 +338,12 @@ function applyReplacement(yamlText: string, phase: FlowRepairSuggestion['phase']
       break;
     case 'inputText': {
       const v = raw.inputText;
-      list[phaseIndex] = { inputText: typeof v === 'object' && v ? { ...(v as Record<string, unknown>), into: replacement } : { into: replacement, text: step.value, secret: step.secret } };
+      list[phaseIndex] = {
+        inputText:
+          typeof v === 'object' && v
+            ? { ...(v as Record<string, unknown>), into: replacement }
+            : { into: replacement, text: step.value, secret: step.secret },
+      };
       break;
     }
     case 'assertVisible':
@@ -345,7 +417,15 @@ function makeProposal(opts: {
   };
 }
 
-export function repairFlow(opts: { root: string; flow?: string; flowYaml?: string; failedStep: number; elements: SnapshotElement[]; apply?: boolean; platform?: LocatorPlatform }): FlowRepairResult | { error: string } {
+export function repairFlow(opts: {
+  root: string;
+  flow?: string;
+  flowYaml?: string;
+  failedStep: number;
+  elements: SnapshotElement[];
+  apply?: boolean;
+  platform?: LocatorPlatform;
+}): FlowRepairResult | { error: string } {
   const src = resolveFlowSource(opts.root, opts.flow, opts.flowYaml);
   if ('error' in src) return src;
   const parsed = parseFlow(src.yaml);
@@ -358,23 +438,35 @@ export function repairFlow(opts: { root: string; flow?: string; flowYaml?: strin
   if (isVisualStep(at.step)) {
     const fallback = chooseReplacement(undefined, opts.elements, platform);
     const replacementSelector = selectorForSuggestion(fallback.suggestion, fallback.element, platform);
-    const suggestions: FlowRepairSuggestion[] = [{
-      failedStep: opts.failedStep,
-      phase: at.phase,
-      phaseIndex: at.phaseIndex,
-      kind: at.step.kind,
-      originalSelector,
-      replacementSelector,
-      confidence: replacementSelector ? 'low' : 'medium',
-      rationale: replacementSelector
-        ? 'Visual/OCR locator drift suspected. Refresh the visual evidence and consider this structured fallback locator.'
-        : 'Visual/OCR locator drift suspected. Refresh the screenshot crop/OCR text, confidence threshold, locale/theme/density/orientation metadata, and rerun.',
-      appCodeSuggestion: replacementSelector ? undefined : 'Expose a stable accessibilityIdentifier/testID near this visual target so replay can fall back to structure.',
-      platform,
-      failureCode: 'VISUAL_LOCATOR_DRIFT',
-      visualProvenanceRequired: ['screenshot crop', 'OCR text/confidence', 'locale', 'theme', 'density', 'orientation', 'fallback structured locator'],
-      provenance: { found: false, currentScreenSignature: currentSig },
-    }];
+    const suggestions: FlowRepairSuggestion[] = [
+      {
+        failedStep: opts.failedStep,
+        phase: at.phase,
+        phaseIndex: at.phaseIndex,
+        kind: at.step.kind,
+        originalSelector,
+        replacementSelector,
+        confidence: replacementSelector ? 'low' : 'medium',
+        rationale: replacementSelector
+          ? 'Visual/OCR locator drift suspected. Refresh the visual evidence and consider this structured fallback locator.'
+          : 'Visual/OCR locator drift suspected. Refresh the screenshot crop/OCR text, confidence threshold, locale/theme/density/orientation metadata, and rerun.',
+        appCodeSuggestion: replacementSelector
+          ? undefined
+          : 'Expose a stable accessibilityIdentifier/testID near this visual target so replay can fall back to structure.',
+        platform,
+        failureCode: 'VISUAL_LOCATOR_DRIFT',
+        visualProvenanceRequired: [
+          'screenshot crop',
+          'OCR text/confidence',
+          'locale',
+          'theme',
+          'density',
+          'orientation',
+          'fallback structured locator',
+        ],
+        provenance: { found: false, currentScreenSignature: currentSig },
+      },
+    ];
     return {
       source: src.source,
       flow: parsed.flow.name,
@@ -395,9 +487,10 @@ export function repairFlow(opts: { root: string; flow?: string; flowYaml?: strin
   const provenance = provenanceForStep(src.yaml, opts.failedStep, originalSelector);
   const drift = driftFindings(provenance, opts.elements, picked);
   const label = picked.element?.label ?? picked.element?.text ?? originalSelector ?? 'target';
-  const appCodeSuggestion = picked.suggestion?.needsTestId || !picked.suggestion?.locator
-    ? `Add accessibilityIdentifier/testID "${desiredId(label, picked.element?.role ?? at.step.kind)}" to this ${picked.element?.role ?? 'control'}.`
-    : undefined;
+  const appCodeSuggestion =
+    picked.suggestion?.needsTestId || !picked.suggestion?.locator
+      ? `Add accessibilityIdentifier/testID "${desiredId(label, picked.element?.role ?? at.step.kind)}" to this ${picked.element?.role ?? 'control'}.`
+      : undefined;
   const suggestion: FlowRepairSuggestion = {
     failedStep: opts.failedStep,
     phase: at.phase,
@@ -417,7 +510,8 @@ export function repairFlow(opts: { root: string; flow?: string; flowYaml?: strin
       originalScreenSignature: provenance?.originalScreenSignature,
       currentScreenSignature: currentSig,
       selectorKind: provenance?.selectorKind,
-      selectorValue: provenance?.selectorValue ?? provenance?.selector ?? provenance?.resourceId ?? provenance?.text ?? provenance?.accessibilityLabel,
+      selectorValue:
+        provenance?.selectorValue ?? provenance?.selector ?? provenance?.resourceId ?? provenance?.text ?? provenance?.accessibilityLabel,
     },
   };
   let proposedYaml: string | undefined;

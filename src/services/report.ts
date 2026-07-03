@@ -34,7 +34,13 @@ import { resolveSourceRevision } from '../issues/sourceRevision.js';
 import { loadPolicy as loadIssuePolicy, getIndex as getIssueIndex, readEvents as readIssueEvents } from '../issues/store.js';
 import { computeIssueMetrics } from '../issues/metrics.js';
 import { verifyFixed } from '../issues/index.js';
-import { linkIssueToCase, linkRunIssue, relationshipForCase, runRelationshipFor, verifiedFixedIssuesForRun } from '../testSuite/issueLinks.js';
+import {
+  linkIssueToCase,
+  linkRunIssue,
+  relationshipForCase,
+  runRelationshipFor,
+  verifiedFixedIssuesForRun,
+} from '../testSuite/issueLinks.js';
 import { saveSuite } from '../testSuite/store.js';
 import type { IssueEnvironment, IssuePlatform } from '../issues/schema.js';
 import { pomForSession } from './suiteGenerate.js';
@@ -44,6 +50,11 @@ import type { ReplayStatus } from '../testSuite/schema.js';
 import type { Session, SessionStore } from '../session/store.js';
 
 export type ReportFormat = 'summary' | 'markdown' | 'json' | 'junit' | 'flow' | 'playwright';
+
+/** Render an *Ms structured value as human-readable seconds for text summaries. */
+function secText(ms: number | null | undefined): string {
+  return `${Math.round((ms ?? 0) / 1000)}s`;
+}
 
 export interface ReportOptions {
   format?: ReportFormat;
@@ -114,20 +125,25 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
 
   const notes = session.notes;
   const outcomeTally = notes.reduce<Record<string, number>>((a, n) => ((a[n.outcome] = (a[n.outcome] ?? 0) + 1), a), {});
-  const categoryTally = notes.reduce<Record<string, number>>((a, n) => (n.category ? ((a[n.category] = (a[n.category] ?? 0) + 1), a) : a), {});
+  const categoryTally = notes.reduce<Record<string, number>>(
+    (a, n) => (n.category ? ((a[n.category] = (a[n.category] ?? 0) + 1), a) : a),
+    {},
+  );
   const outcomeByCategory = notes.reduce<Record<string, Record<string, number>>>((a, n) => {
     const cat = n.category ?? 'uncategorized';
     (a[n.outcome] ??= {})[cat] = (a[n.outcome][cat] ?? 0) + 1;
     return a;
   }, {});
-  const visualVerifications = notes.filter((n) => n.verifiedVisually).map((n) => ({
-    workflow: n.workflow,
-    outcome: n.outcome,
-    evidenceKind: n.evidenceKind,
-    confidence: n.confidence,
-    minConfidence: n.minConfidence,
-    artifactUris: n.artifactUris ?? [],
-  }));
+  const visualVerifications = notes
+    .filter((n) => n.verifiedVisually)
+    .map((n) => ({
+      workflow: n.workflow,
+      outcome: n.outcome,
+      evidenceKind: n.evidenceKind,
+      confidence: n.confidence,
+      minConfidence: n.minConfidence,
+      artifactUris: n.artifactUris ?? [],
+    }));
   const evidenceTaxonomy = evidenceTaxonomyForNotes(notes);
   const evidenceByWorkflow = new Map(evidenceTaxonomy.assessments.map((a) => [a.workflow, a]));
 
@@ -181,7 +197,13 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     bucketExamples[bucket] ??= `${n.workflow}: ${n.reason ? redact(n.reason) : n.outcome}`;
   }
   const dominantBucket = ALL_BUCKETS.filter((b) => bucketCounts[b] > 0).sort((x, y) => bucketCounts[y] - bucketCounts[x])[0] ?? null;
-  const failureBuckets = { counts: bucketCounts, total: totalFailures, classifiedPct: totalFailures ? Math.round((classified / totalFailures) * 100) : 100, dominant: dominantBucket, examples: bucketExamples };
+  const failureBuckets = {
+    counts: bucketCounts,
+    total: totalFailures,
+    classifiedPct: totalFailures ? Math.round((classified / totalFailures) * 100) : 100,
+    dominant: dominantBucket,
+    examples: bucketExamples,
+  };
 
   const blockedCount = outcomeTally.blocked ?? 0;
   const APP_OWNED_FAIL_CATEGORIES = new Set(['app_bug', 'other']);
@@ -200,32 +222,46 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     blockedCount: blockedCount + toolLimitationFailCount,
     overrideCount: session.envChanges.filter((c) => /OVERRIDE|GUARDRAIL|acknowledgeBundleRisk|allowLaunchWithoutMetro/i.test(c)).length,
     topHighFinding: topHigh ? redact(topHigh.detail) : undefined,
-    topFail: topAppFailNote ? { workflow: topAppFailNote.workflow, reason: topAppFailNote.reason ? redact(topAppFailNote.reason) : undefined } : undefined,
+    topFail: topAppFailNote
+      ? { workflow: topAppFailNote.workflow, reason: topAppFailNote.reason ? redact(topAppFailNote.reason) : undefined }
+      : undefined,
     topBlocked: topBlockedNote ? { workflow: topBlockedNote.workflow, recommendedSetup: topBlockedNote.recommendedSetup } : undefined,
   });
 
-  const outcomesByWorkflow = notes.reduce<Record<string, { outcome: string; category?: string; reason?: string; artifactUris: string[] }>>((acc, n) => {
-    acc[n.workflow] = { outcome: n.outcome, category: n.category, reason: n.reason ? redact(n.reason) : undefined, artifactUris: n.artifactUris ?? [] };
-    return acc;
-  }, {});
+  const outcomesByWorkflow = notes.reduce<Record<string, { outcome: string; category?: string; reason?: string; artifactUris: string[] }>>(
+    (acc, n) => {
+      acc[n.workflow] = {
+        outcome: n.outcome,
+        category: n.category,
+        reason: n.reason ? redact(n.reason) : undefined,
+        artifactUris: n.artifactUris ?? [],
+      };
+      return acc;
+    },
+    {},
+  );
 
-  const appId = session.appId ?? ((loadProjectConfig(session.root)?.appId as string | undefined) ?? null);
+  const appId = session.appId ?? (loadProjectConfig(session.root)?.appId as string | undefined) ?? null;
   const wdaConfig = driver instanceof WdaDriver ? loadWdaConfig(session.root) : null;
-  const wdaReport = driver instanceof WdaDriver && wdaConfig
-    ? {
-        webDriverAgentUrl: driver.baseUrl,
-        device: driver.currentDevice() ?? null,
-        wdaSessionId: driver.currentSession() ?? null,
-        config: wdaConfig,
-        status: await checkWda(driver.baseUrl, 1500),
-        tuning: { timings: wdaTimingSummary(session), recommendations: wdaRecommendations(wdaConfig, session) },
-      }
-    : null;
-  const readiness = orderReadinessLabels([...readinessForSession(session, {
-    suiteRunnable: options.suite?.suiteRunnable,
-    suiteReplayed: false,
-    ciReady: false,
-  }), ...(options.suite?.readinessLabels ?? [])]);
+  const wdaReport =
+    driver instanceof WdaDriver && wdaConfig
+      ? {
+          webDriverAgentUrl: driver.baseUrl,
+          device: driver.currentDevice() ?? null,
+          wdaSessionId: driver.currentSession() ?? null,
+          config: wdaConfig,
+          status: await checkWda(driver.baseUrl, 1500),
+          tuning: { timings: wdaTimingSummary(session), recommendations: wdaRecommendations(wdaConfig, session) },
+        }
+      : null;
+  const readiness = orderReadinessLabels([
+    ...readinessForSession(session, {
+      suiteRunnable: options.suite?.suiteRunnable,
+      suiteReplayed: false,
+      ciReady: false,
+    }),
+    ...(options.suite?.readinessLabels ?? []),
+  ]);
   const automationReadiness = automationReadinessForSession(session, {
     suiteRunnable: options.suite?.suiteRunnable,
     suiteReplayed: false,
@@ -236,21 +272,37 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   const automationBackend = automationBackendForSession(session);
   const passNotes = notes.filter((n) => n.outcome === 'pass').length;
   const appVerdict = (() => {
-    if (nativeHealth === 'error' || appHealth === 'error' || high.some((f) => f.layer === 'app' || f.layer === 'native') || appFailCount > 0) {
-      const summary = topHigh ? (redact(topHigh.detail) ?? topHigh.detail) : topAppFailNote?.reason ? (redact(topAppFailNote.reason) ?? topAppFailNote.reason) : 'High severity app/native finding or failed app workflow observed.';
+    if (
+      nativeHealth === 'error' ||
+      appHealth === 'error' ||
+      high.some((f) => f.layer === 'app' || f.layer === 'native') ||
+      appFailCount > 0
+    ) {
+      const summary = topHigh
+        ? (redact(topHigh.detail) ?? topHigh.detail)
+        : topAppFailNote?.reason
+          ? (redact(topAppFailNote.reason) ?? topAppFailNote.reason)
+          : 'High severity app/native finding or failed app workflow observed.';
       return { status: 'BLOCKED', summary };
     }
-    if (appHealth === 'degraded') return { status: 'PASS_WITH_WARNING', summary: 'App launched, but medium-severity app findings were observed.' };
+    if (appHealth === 'degraded')
+      return { status: 'PASS_WITH_WARNING', summary: 'App launched, but medium-severity app findings were observed.' };
     return { status: 'PASS', summary: 'No high-severity app/native finding observed in this run.' };
   })();
   const coverageVerdict = (() => {
     if (blockedCount > 0 || toolLimitationNotes.length > 0 || session.exploration?.state === 'blocked') {
-      const summary = topBlockedNote?.recommendedSetup
-        ?? (toolLimitationNotes.length ? `A Swipium/tool limitation blocked ${toolLimitationNotes.length} workflow(s); see toolVerdict.` : 'A setup or precondition blocker limited coverage.');
+      const summary =
+        topBlockedNote?.recommendedSetup ??
+        (toolLimitationNotes.length
+          ? `A Swipium/tool limitation blocked ${toolLimitationNotes.length} workflow(s); see toolVerdict.`
+          : 'A setup or precondition blocker limited coverage.');
       return { status: 'BLOCKED', summary };
     }
     if (!automationBackend.structured) {
-      return { status: 'PARTIAL', summary: 'Coverage was limited because the active backend is visual-only or lacks structured UI automation.' };
+      return {
+        status: 'PARTIAL',
+        summary: 'Coverage was limited because the active backend is visual-only or lacks structured UI automation.',
+      };
     }
     if (passNotes === 0 && !session.exploration && session.recordedActions.length === 0) {
       return { status: 'SMOKE_ONLY', summary: 'Only launch/setup evidence was collected.' };
@@ -338,7 +390,12 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
         now,
         replayStatus: suiteReplayStatus as ReplayStatus,
       });
-      const applied = applyMerge(session.root, incoming, { source: 'report', mode: 'update', now, runId: runIdFromNow(now) }, appId ?? undefined);
+      const applied = applyMerge(
+        session.root,
+        incoming,
+        { source: 'report', mode: 'update', now, runId: runIdFromNow(now) },
+        appId ?? undefined,
+      );
       mergedSuite = applied.result.suite;
       const delta = suiteDelta(applied.result.suite, applied.result);
       persistentSuite = {
@@ -350,7 +407,16 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     } else {
       const suite = loadSuite(session.root, appId ?? undefined);
       mergedSuite = suite;
-      persistentSuite = { totalCases: suite.cases.length, created: [], updated: [], deprecated: [], failed: [], blocked: [], newlyAutomated: [], caseIds: suite.cases.map((c) => c.id) };
+      persistentSuite = {
+        totalCases: suite.cases.length,
+        created: [],
+        updated: [],
+        deprecated: [],
+        failed: [],
+        blocked: [],
+        newlyAutomated: [],
+        caseIds: suite.cases.map((c) => c.id),
+      };
     }
   } catch {
     persistentSuite = null;
@@ -386,7 +452,9 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
       ...g,
       value: g.secret ? '<redacted>' : redact(g.value),
     })),
-    guardrailOverrides: session.envChanges.filter((c) => /OVERRIDE|GUARDRAIL|external-APK|clear_data|fresh_start|allowLaunchWithoutMetro|acknowledgeBundleRisk/i.test(c)),
+    guardrailOverrides: session.envChanges.filter((c) =>
+      /OVERRIDE|GUARDRAIL|external-APK|clear_data|fresh_start|allowLaunchWithoutMetro|acknowledgeBundleRisk/i.test(c),
+    ),
     launchedWithoutMetroReady: session.envChanges.some((c) => /allowLaunchWithoutMetro/i.test(c)),
     destructiveGuardrail,
     finalNetwork,
@@ -395,12 +463,26 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     findings: session.findings.map((f) => {
       const code = (f.failureCode as keyof typeof FAILURES) ?? failureForFindingKind(f.kind);
       const info = FAILURES[code] ?? FAILURES.UNKNOWN;
-      return { ...f, failureCode: code, bucket: info.bucket, retrySafe: info.retrySafe, nextStep: info.recovery, detail: redact(f.detail), evidence: f.evidence ? redact(f.evidence) : undefined };
+      return {
+        ...f,
+        failureCode: code,
+        bucket: info.bucket,
+        retrySafe: info.retrySafe,
+        nextStep: info.recovery,
+        detail: redact(f.detail),
+        evidence: f.evidence ? redact(f.evidence) : undefined,
+      };
     }),
     highSeverityCount: high.length,
     nativeHealth,
     appHealth,
-    appHealthFindings: appFindings.map((f) => ({ kind: f.kind, severity: f.severity, evidence: f.evidence ? redact(f.evidence) : undefined, screen: f.screen, screenshotUri: f.screenshotUri })),
+    appHealthFindings: appFindings.map((f) => ({
+      kind: f.kind,
+      severity: f.severity,
+      evidence: f.evidence ? redact(f.evidence) : undefined,
+      screen: f.screen,
+      screenshotUri: f.screenshotUri,
+    })),
     testOutcomes: notes.map((n) => ({ ...n, reason: n.reason ? redact(n.reason) : undefined })),
     outcomeTally,
     categoryTally,
@@ -445,9 +527,29 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     const environment: IssueEnvironment =
       session.headless !== undefined ? (platform === 'ios' ? 'simulator' : 'emulator') : process.env.CI ? 'ci' : 'unknown';
     const issuePolicy = loadIssuePolicy(session.root);
-    const sourceRevision = resolveSourceRevision({ env: process.env, allowGitMetadataRead: issuePolicy.allowGitMetadataRead, root: session.root });
-    const bridgeFindings: BridgeFinding[] = session.findings.map((f) => ({ severity: f.severity, kind: f.kind, detail: redact(f.detail) ?? f.detail, layer: f.layer, evidence: f.evidence ? redact(f.evidence) : undefined, screen: f.screen, screenshotUri: f.screenshotUri, failureCode: f.failureCode }));
-    const bridgeNotes: BridgeNote[] = notes.map((n) => ({ workflow: n.workflow, outcome: n.outcome, category: n.category, reason: n.reason ? redact(n.reason) : undefined, failureCode: (n as { failureCode?: string }).failureCode, artifactUris: n.artifactUris }));
+    const sourceRevision = resolveSourceRevision({
+      env: process.env,
+      allowGitMetadataRead: issuePolicy.allowGitMetadataRead,
+      root: session.root,
+    });
+    const bridgeFindings: BridgeFinding[] = session.findings.map((f) => ({
+      severity: f.severity,
+      kind: f.kind,
+      detail: redact(f.detail) ?? f.detail,
+      layer: f.layer,
+      evidence: f.evidence ? redact(f.evidence) : undefined,
+      screen: f.screen,
+      screenshotUri: f.screenshotUri,
+      failureCode: f.failureCode,
+    }));
+    const bridgeNotes: BridgeNote[] = notes.map((n) => ({
+      workflow: n.workflow,
+      outcome: n.outcome,
+      category: n.category,
+      reason: n.reason ? redact(n.reason) : undefined,
+      failureCode: (n as { failureCode?: string }).failureCode,
+      artifactUris: n.artifactUris,
+    }));
     const issuesNow = new Date().toISOString();
     const bridge = foldRunIntoLedger(session.root, bridgeFindings, bridgeNotes, issuesNow, {
       appId: appId ?? undefined,
@@ -466,7 +568,12 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
       const recordById = new Map(idx.records.map((r) => [r.issueId, r]));
       const matchCase = (workflow?: string) =>
         workflow
-          ? mergedSuite!.cases.filter((c) => c.actualResult.summary?.toLowerCase().includes(workflow.toLowerCase()) || c.functionality.toLowerCase() === workflow.toLowerCase() || c.title.toLowerCase().includes(workflow.toLowerCase()))
+          ? mergedSuite!.cases.filter(
+              (c) =>
+                c.actualResult.summary?.toLowerCase().includes(workflow.toLowerCase()) ||
+                c.functionality.toLowerCase() === workflow.toLowerCase() ||
+                c.title.toLowerCase().includes(workflow.toLowerCase()),
+            )
           : [];
       for (const rec of bridge.recorded) {
         const record = recordById.get(rec.issueId);
@@ -484,7 +591,8 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
         verifyFixed(session.root, { issueId }, { testCaseId: 'persistent-suite', evidenceUris: [] }, issuesNow);
         const rec = recordById.get(issueId);
         for (const c of mergedSuite.cases) {
-          if (passingCaseIds.has(c.id) && c.issueRefs?.some((r) => r.issueId === issueId) && rec) linkIssueToCase(c, rec, 'verified_fixed', issuesNow);
+          if (passingCaseIds.has(c.id) && c.issueRefs?.some((r) => r.issueId === issueId) && rec)
+            linkIssueToCase(c, rec, 'verified_fixed', issuesNow);
         }
       }
       verifiedFixedIds = new Set(verified);
@@ -526,18 +634,38 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
 
   const prSummary = { text: inlinePrSummary(report as unknown as ReportData) };
   (report as Record<string, unknown>).prSummary = prSummary;
-  const reportUri = sessions.saveArtifact(session, 'report', `report-${Date.now()}.json`, JSON.stringify(report, null, 2), 'application/json');
+  const reportUri = sessions.saveArtifact(
+    session,
+    'report',
+    `report-${Date.now()}.json`,
+    JSON.stringify(report, null, 2),
+    'application/json',
+  );
   const reportRec = sessions.findArtifact(reportUri)?.rec;
 
   let reportLinks: Record<string, unknown> | undefined;
   if ((baseline || trendRoot) && reportRec) {
     try {
       const pr = buildPrSummary(reportRec.path, { baselinePath: baseline, trendRoot: trendRoot ?? session.root });
-      reportLinks = { current: reportUri, currentPath: reportRec.path, baseline: baseline ?? null, trendRoot: trendRoot ?? session.root, comparison: pr.comparison ?? null, knownFlaky: pr.knownFlaky, prSummary: pr };
+      reportLinks = {
+        current: reportUri,
+        currentPath: reportRec.path,
+        baseline: baseline ?? null,
+        trendRoot: trendRoot ?? session.root,
+        comparison: pr.comparison ?? null,
+        knownFlaky: pr.knownFlaky,
+        prSummary: pr,
+      };
       (report as Record<string, unknown>).reportLinks = reportLinks;
       writeFileSync(reportRec.path, JSON.stringify(report, null, 2));
     } catch (e) {
-      reportLinks = { current: reportUri, currentPath: reportRec.path, baseline: baseline ?? null, trendRoot: trendRoot ?? session.root, error: String((e as Error).message ?? e) };
+      reportLinks = {
+        current: reportUri,
+        currentPath: reportRec.path,
+        baseline: baseline ?? null,
+        trendRoot: trendRoot ?? session.root,
+        error: String((e as Error).message ?? e),
+      };
       (report as Record<string, unknown>).reportLinks = reportLinks;
       writeFileSync(reportRec.path, JSON.stringify(report, null, 2));
     }
@@ -552,8 +680,18 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
       if (!session.recordedActions.length) {
         flowExportSkipped = true;
       } else {
-        const gen = generateFlow(session.recordedActions, { name: `${(appId ?? 'app').split('.').pop()}-recorded`, appId: appId ?? undefined });
-        exportUri = sessions.saveArtifact(session, 'flow', `recorded-${Date.now()}.yaml`, gen.yaml, 'text/yaml', `flow drafted from the run (durability ${gen.durability.grade})`);
+        const gen = generateFlow(session.recordedActions, {
+          name: `${(appId ?? 'app').split('.').pop()}-recorded`,
+          appId: appId ?? undefined,
+        });
+        exportUri = sessions.saveArtifact(
+          session,
+          'flow',
+          `recorded-${Date.now()}.yaml`,
+          gen.yaml,
+          'text/yaml',
+          `flow drafted from the run (durability ${gen.durability.grade})`,
+        );
       }
     } else {
       const data = report as unknown as ReportData;
@@ -565,7 +703,14 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   }
 
   const manifest = buildSessionArtifactManifest(session);
-  const manifestUri = sessions.saveArtifact(session, 'manifest', `manifest-${Date.now()}.json`, JSON.stringify(manifest, null, 2), 'application/json', 'artifact manifest with SHA-256 hashes');
+  const manifestUri = sessions.saveArtifact(
+    session,
+    'manifest',
+    `manifest-${Date.now()}.json`,
+    JSON.stringify(manifest, null, 2),
+    'application/json',
+    'artifact manifest with SHA-256 hashes',
+  );
   const noteSummaryLines = notes.map((n) => {
     const ev = evidenceByWorkflow.get(n.workflow);
     return `  • ${n.workflow}: ${n.outcome}${ev ? ` (evidence=${ev.kind}/${ev.authority})` : ''}${n.category ? ` [${n.category}]` : ''}${n.missingPrecondition ? ` — missing: ${n.missingPrecondition}` : n.reason ? ` — ${redact(n.reason)}` : ''}${n.recommendedSetup ? ` · setup: ${n.recommendedSetup}` : ''}`;
@@ -582,18 +727,35 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     `QA level: ${qaLevel.level.toUpperCase()} — ${qaLevel.rationale}${qaLevel.next ? ` · next: ${qaLevel.next} (${qaLevel.nextRequirement})` : ''}`,
     qaLevel.notes.length ? `QA level notes:\n  ${qaLevel.notes.join('\n  ')}` : '',
     `automation readiness: ${automationReadiness.grade} (${automationReadiness.score}/100, durable locators ${automationReadiness.locatorCoverage.durablePct}%)`,
-    `test catalog: ${runTestCatalog.total} case(s) — ${Object.entries(runTestCatalog.counts).filter(([, v]) => v).map(([k, v]) => `${k}=${v}`).join(' ') || 'none'}`,
-    automationReadiness.topFixes.length ? `top readiness fixes:\n  ${automationReadiness.topFixes.join('\n  ')}` : 'top readiness fixes: none',
+    `test catalog: ${runTestCatalog.total} case(s) — ${
+      Object.entries(runTestCatalog.counts)
+        .filter(([, v]) => v)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(' ') || 'none'
+    }`,
+    automationReadiness.topFixes.length
+      ? `top readiness fixes:\n  ${automationReadiness.topFixes.join('\n  ')}`
+      : 'top readiness fixes: none',
     `${report.coverage}${report.visualOnly ? ' · VISUAL-ONLY (structured snapshots were poor — see screenshots)' : ''}`,
     `emulator display: ${report.emulatorDisplay}`,
     `network: ${finalNetwork}${networkRestore ? ` (${networkRestore})` : session.network?.changed ? ' ⚠ Swipium changed it and did NOT restore' : ''}`,
-    report.activeRecording ? `A screen recording is still active (${report.activeRecording.backend}, ~${report.activeRecording.seconds}s). It will be stopped on shutdown.` : '',
+    report.activeRecording
+      ? `A screen recording is still active (${report.activeRecording.backend}, ~${report.activeRecording.seconds}s). It will be stopped on shutdown.`
+      : '',
     session.envChanges.length ? `environment changes:\n  ${session.envChanges.join('\n  ')}` : 'environment changes: none',
-    session.mutations.length ? `mutation ledger: ${session.mutations.length} record(s), ${session.mutations.filter((m) => m.status === 'executed').length} executed, ${session.mutations.filter((m) => m.status === 'refused' || m.status === 'blocked').length} refused/blocked` : 'mutation ledger: none',
-    report.guardrailOverrides.length ? `⚠ guardrail overrides used:\n  ${report.guardrailOverrides.join('\n  ')}` : 'guardrail overrides: none',
+    session.mutations.length
+      ? `mutation ledger: ${session.mutations.length} record(s), ${session.mutations.filter((m) => m.status === 'executed').length} executed, ${session.mutations.filter((m) => m.status === 'refused' || m.status === 'blocked').length} refused/blocked`
+      : 'mutation ledger: none',
+    report.guardrailOverrides.length
+      ? `⚠ guardrail overrides used:\n  ${report.guardrailOverrides.join('\n  ')}`
+      : 'guardrail overrides: none',
     session.workarounds.length ? `workarounds attempted:\n  ${session.workarounds.join('\n  ')}` : '',
-    session.inputs.length ? `inputs provided (redacted): ${session.inputs.map((i) => `${i.varName}${i.secret ? '🔒' : ''}`).join(', ')}` : '',
-    session.generatedValues.length ? `generated test data: ${session.generatedValues.map((g) => `${g.fixture}.${g.field}=${g.secret ? '<redacted>' : redact(g.value)} (${g.generator})`).join(', ')}` : '',
+    session.inputs.length
+      ? `inputs provided (redacted): ${session.inputs.map((i) => `${i.varName}${i.secret ? '🔒' : ''}`).join(', ')}`
+      : '',
+    session.generatedValues.length
+      ? `generated test data: ${session.generatedValues.map((g) => `${g.fixture}.${g.field}=${g.secret ? '<redacted>' : redact(g.value)} (${g.generator})`).join(', ')}`
+      : '',
     options.suite
       ? options.suite.generated
         ? `generated suite "${options.suite.name}": ${(options.suite.compiledFlows ?? []).filter((c) => c.ok).length}/${(options.suite.compiledFlows ?? []).length} runnable flow(s), runnable=${options.suite.suiteRunnable}, readiness=${(options.suite.readinessLabels ?? []).join(' → ') || 'unknown'} (${(options.suite.written ?? []).length} files)`
@@ -604,20 +766,37 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
       : '',
     `destructive/bundle-risk guardrail: ${destructiveGuardrail.status}`,
     `health — native: ${nativeHealth === 'OK' ? '✅ OK' : '❌ error'} · app: ${appHealth === 'OK' ? '✅ OK' : appHealth === 'degraded' ? '⚠ degraded' : '❌ error'}`,
-    wdaReport ? `wda: ${wdaReport.status.reachable ? 'reachable' : 'unreachable'} ${wdaReport.webDriverAgentUrl} device=${wdaReport.device ?? 'unknown'}` : '',
+    wdaReport
+      ? `wda: ${wdaReport.status.reachable ? 'reachable' : 'unreachable'} ${wdaReport.webDriverAgentUrl} device=${wdaReport.device ?? 'unknown'}`
+      : '',
     `findings: ${session.findings.length} (high: ${high.length})`,
-    totalFailures ? `failures by bucket: ${ALL_BUCKETS.filter((b) => bucketCounts[b]).map((b) => `${b}=${bucketCounts[b]}`).join(' ')} (${failureBuckets.classifiedPct}% classified${dominantBucket ? `, mostly ${dominantBucket}` : ''})` : '',
-    notes.length ? `evidence taxonomy: structured=${evidenceTaxonomy.counts.structured_locator} ocr=${evidenceTaxonomy.counts.ocr_locator} visual=${evidenceTaxonomy.counts.visual_match} ai_visual=${evidenceTaxonomy.counts.ai_visual_evidence} manual=${evidenceTaxonomy.counts.manual_review} calibration=${evidenceTaxonomy.calibration.status}` : '',
-    ...session.findings.map((f) => `  [${f.severity}] ${f.layer ?? '?'}/${f.kind}: ${redact(f.detail)}${f.evidence ? ` — "${redact(f.evidence)}"` : ''}${f.screenshotUri ? ` (${f.screenshotUri})` : ''}`),
-    notes.length ? `test outcomes: ${Object.entries(outcomeTally).map(([k, v]) => `${k}=${v}`).join(' ')}` : 'test outcomes: none recorded (qa_note)',
+    totalFailures
+      ? `failures by bucket: ${ALL_BUCKETS.filter((b) => bucketCounts[b])
+          .map((b) => `${b}=${bucketCounts[b]}`)
+          .join(' ')} (${failureBuckets.classifiedPct}% classified${dominantBucket ? `, mostly ${dominantBucket}` : ''})`
+      : '',
+    notes.length
+      ? `evidence taxonomy: structured=${evidenceTaxonomy.counts.structured_locator} ocr=${evidenceTaxonomy.counts.ocr_locator} visual=${evidenceTaxonomy.counts.visual_match} ai_visual=${evidenceTaxonomy.counts.ai_visual_evidence} manual=${evidenceTaxonomy.counts.manual_review} calibration=${evidenceTaxonomy.calibration.status}`
+      : '',
+    ...session.findings.map(
+      (f) =>
+        `  [${f.severity}] ${f.layer ?? '?'}/${f.kind}: ${redact(f.detail)}${f.evidence ? ` — "${redact(f.evidence)}"` : ''}${f.screenshotUri ? ` (${f.screenshotUri})` : ''}`,
+    ),
+    notes.length
+      ? `test outcomes: ${Object.entries(outcomeTally)
+          .map(([k, v]) => `${k}=${v}`)
+          .join(' ')}`
+      : 'test outcomes: none recorded (qa_note)',
     ...noteSummaryLines,
     persistentSuite
       ? `persistent suite: ${persistentSuite.totalCases} case(s) — +${(persistentSuite.created as string[]).length} created, ~${(persistentSuite.updated as string[]).length} updated, -${(persistentSuite.deprecated as string[]).length} deprecated, ${(persistentSuite.failed as string[]).length} failed, ${(persistentSuite.blocked as string[]).length} blocked, ${(persistentSuite.newlyAutomated as string[]).length} newly automated`
       : '',
     `auth: ${authState}`,
     session.fixtures.length ? `declared preconditions: ${session.fixtures.map((f) => f.name).join(', ')}` : '',
-    `timing: total=${phaseTimings.totalSec}s setup=${phaseTimings.setupSec}s active=${phaseTimings.activeSec}s${phaseTimings.timeToLoginSec != null ? ` toLogin=${phaseTimings.timeToLoginSec}s` : ''}${phaseTimings.diagnostics.waitSec != null ? ` wait=${phaseTimings.diagnostics.waitSec}s` : ''}${phaseTimings.diagnostics.flowRuntimeSec != null ? ` flows=${phaseTimings.diagnostics.flowRuntimeSec}s` : ''}${session.budgetProfile ? ` (profile=${session.budgetProfile})` : ''}`,
-    reportLinks ? `report links: baseline=${baseline ?? 'none'} trend=${trendRoot ?? session.root}${typeof reportLinks.comparison === 'string' ? ` comparison=${reportLinks.comparison}` : ''}` : '',
+    `timing: total=${secText(phaseTimings.totalMs)} setup=${secText(phaseTimings.setupMs)} active=${secText(phaseTimings.activeMs)}${phaseTimings.timeToLoginMs != null ? ` toLogin=${secText(phaseTimings.timeToLoginMs)}` : ''}${phaseTimings.diagnostics.waitMs != null ? ` wait=${secText(phaseTimings.diagnostics.waitMs)}` : ''}${phaseTimings.diagnostics.flowRuntimeMs != null ? ` flows=${secText(phaseTimings.diagnostics.flowRuntimeMs)}` : ''}${session.budgetProfile ? ` (profile=${session.budgetProfile})` : ''}`,
+    reportLinks
+      ? `report links: baseline=${baseline ?? 'none'} trend=${trendRoot ?? session.root}${typeof reportLinks.comparison === 'string' ? ` comparison=${reportLinks.comparison}` : ''}`
+      : '',
     `artifacts: ${session.artifacts.length} (${screenshots.length} screenshots)`,
     ...session.artifacts.map((art) => `  ${art.uri} (${art.kind}${art.label ? `: ${art.label}` : ''})`),
     dumpUri ? `current dump: ${dumpUri}` : '',
@@ -626,5 +805,16 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     exportUri && exportUri !== reportUri ? `${format} export: ${exportUri}` : '',
   ].filter(Boolean);
 
-  return { report, reportUri, manifestUri, manifest, dumpUri, reportLinks, exportUri, exportFormat: exportUri ? format : undefined, summaryText: lines.join('\n'), flowExportSkipped };
+  return {
+    report,
+    reportUri,
+    manifestUri,
+    manifest,
+    dumpUri,
+    reportLinks,
+    exportUri,
+    exportFormat: exportUri ? format : undefined,
+    summaryText: lines.join('\n'),
+    flowExportSkipped,
+  };
 }

@@ -17,12 +17,8 @@ dist/
 !CONTRIBUTING.md
 !CODE_OF_CONDUCT.md
 !SUPPORT.md
-!docs/
-!docs/README.md
-!docs/mcp-server.md
-!docs/tools.md
-!docs/assets/
-!docs/assets/swipium-lockup-ink-on-light.png
+!THREAT_MODEL.md
+/docs/
 
 # Private planning, memory, review, and AI-generated material.
 CLAUDE*.md
@@ -31,6 +27,5 @@ SWIPIUM-*.md
 IMPLEMENTATION*.md
 PHASE*.md
 DESIGN.md
-THREAT_MODEL.md
 CLIENT-SETUP.md
 requirements/

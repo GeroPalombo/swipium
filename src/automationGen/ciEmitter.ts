@@ -4,7 +4,7 @@
 
 import type { AutomationLanguage } from './projectProfile.js';
 
-export function emitCiExample(language: AutomationLanguage, opts: { appId?: string } = {}): string {
+export function emitCiExample(language: AutomationLanguage, _opts: { appId?: string } = {}): string {
   if (language === 'python') return pythonCi();
   return jsCi(language);
 }

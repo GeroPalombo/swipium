@@ -135,7 +135,8 @@ function remediationFor(el: { selectorKind: string; selector?: string; screen?: 
 
 function auditCodeFor(el: { selectorKind: string }): LocatorAuditCode | undefined {
   if (el.selectorKind === 'coords') return 'COORDINATE_ONLY';
-  if (el.selectorKind === 'text' || el.selectorKind === 'name' || el.selectorKind === 'predicate' || el.selectorKind === 'class_chain') return 'IOS_MISSING_ACCESSIBILITY_IDENTIFIER';
+  if (el.selectorKind === 'text' || el.selectorKind === 'name' || el.selectorKind === 'predicate' || el.selectorKind === 'class_chain')
+    return 'IOS_MISSING_ACCESSIBILITY_IDENTIFIER';
   return undefined;
 }
 
@@ -223,7 +224,13 @@ export function generatePom(
       case 'tap':
       case 'clear': {
         const element = ensureElement(page, a);
-        if (element) steps.push({ page: page.name, element, action: a.action === 'clear' ? 'inputText' : 'tap', ...(a.action === 'clear' ? { text: '' } : {}) });
+        if (element)
+          steps.push({
+            page: page.name,
+            element,
+            action: a.action === 'clear' ? 'inputText' : 'tap',
+            ...(a.action === 'clear' ? { text: '' } : {}),
+          });
         else steps.push({ page: page.name, action: 'tap', coords: [a.x ?? 0, a.y ?? 0] });
         break;
       }
@@ -267,12 +274,27 @@ export function generatePom(
   const entries: LocatorAuditEntry[] = [];
   for (const p of pages) {
     for (const e of p.elements) {
-      entries.push({ page: p.name, element: e.name, durability: e.durability, selectorKind: e.selectorKind, code: e.readinessCode, remediation: e.remediation });
+      entries.push({
+        page: p.name,
+        element: e.name,
+        durability: e.durability,
+        selectorKind: e.selectorKind,
+        code: e.readinessCode,
+        remediation: e.remediation,
+      });
     }
   }
   // coordinate-only steps also count against durability.
   for (const s of steps) {
-    if (!s.element && s.coords) entries.push({ page: s.page, element: `(coords ${s.coords[0]},${s.coords[1]})`, durability: 'brittle', selectorKind: 'coords', code: 'COORDINATE_ONLY', remediation: remediationFor({ selectorKind: 'coords' }) });
+    if (!s.element && s.coords)
+      entries.push({
+        page: s.page,
+        element: `(coords ${s.coords[0]},${s.coords[1]})`,
+        durability: 'brittle',
+        selectorKind: 'coords',
+        code: 'COORDINATE_ONLY',
+        remediation: remediationFor({ selectorKind: 'coords' }),
+      });
   }
   const durable = entries.filter((e) => e.durability === 'durable').length;
   const semi = entries.filter((e) => e.durability === 'semi').length;
@@ -299,7 +321,10 @@ export function generatePom(
       elementsYaml[e.name] = ev;
     }
     const pageObj = { name: p.name, platforms: ['android', 'ios'], screen: p.screen ?? undefined, elements: elementsYaml };
-    files.push({ path: `pages/${kebab(p.name)}.page.yaml`, content: `# Swipium page object — review before committing.\n${stringify(pageObj)}` });
+    files.push({
+      path: `pages/${kebab(p.name)}.page.yaml`,
+      content: `# Swipium page object — review before committing.\n${stringify(pageObj)}`,
+    });
   }
 
   const testObj: Record<string, unknown> = { name: opts.name };

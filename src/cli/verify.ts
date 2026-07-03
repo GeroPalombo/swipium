@@ -51,7 +51,9 @@ export async function runVerify(): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    console.log(`✅ verify OK — server starts, ${names.length} tools inject (all ${EXPECTED.length} expected present), schema ${schemaHash}, qa_doctor ${doctorRan ? 'ran' : 'ERRORED'}.`);
+    console.log(
+      `✅ verify OK — server starts, ${names.length} tools inject (all ${EXPECTED.length} expected present), schema ${schemaHash}, qa_doctor ${doctorRan ? 'ran' : 'ERRORED'}.`,
+    );
     console.log(`tools: ${names.join(', ')}`);
     console.log(
       missingPrompts.length

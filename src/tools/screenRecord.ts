@@ -17,6 +17,7 @@ import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { sensitiveRefusal } from '../lib/sensitive.js';
 import { run } from '../lib/spawn.js';
 import { getDriver } from '../session/attach.js';
+import { registerManagedProcess, unregisterManagedProcess } from '../session/processRegistry.js';
 import type { SessionStore } from '../session/store.js';
 
 type Backend = 'direct' | 'simulator' | 'wda_simulator';
@@ -47,11 +48,13 @@ export function activeRecording(sessionId: string): { backend: Backend; seconds:
 export async function stopAllRecordings(): Promise<void> {
   for (const [, rec] of active) {
     try {
-      if (rec.backend === 'direct') await run('adb', ['-s', rec.serial, 'shell', 'pkill', '-INT', 'screenrecord'], { timeoutMs: 5000 }).catch(() => {});
+      if (rec.backend === 'direct')
+        await run('adb', ['-s', rec.serial, 'shell', 'pkill', '-INT', 'screenrecord'], { timeoutMs: 5000 }).catch(() => {});
       rec.child.kill('SIGINT');
     } catch {
       /* best-effort */
     }
+    unregisterManagedProcess(rec.child.pid);
   }
   active.clear();
 }
@@ -66,7 +69,12 @@ export function registerScreenRecord(server: McpServer, sessions: SessionStore):
       inputSchema: {
         sessionId: z.string(),
         action: z.enum(['start', 'status', 'stop']),
-        save: z.enum(['always', 'on_failure']).optional().describe('Recording retention mode for action:"start". Defaults to always. Use on_failure in CI to discard videos when stop is called with failed:false.'),
+        save: z
+          .enum(['always', 'on_failure'])
+          .optional()
+          .describe(
+            'Recording retention mode for action:"start". Defaults to always. Use on_failure in CI to discard videos when stop is called with failed:false.',
+          ),
         failed: z.boolean().optional().describe('For action:"stop" with save:"on_failure": true saves the video, false discards it.'),
         consentId: z.string().optional(),
         approve: z.boolean().optional(),
@@ -77,11 +85,23 @@ export function registerScreenRecord(server: McpServer, sessions: SessionStore):
       const { driver } = session ? await getDriver(session) : { driver: undefined };
       const serial = driver?.currentDevice();
       if (!session || !driver || !serial) {
-        return qaError({ what: 'No device attached to this session', changedState: false, retrySafe: true, nextSteps: ['Call qa_prepare_target / qa_ios boot first.'] });
+        return qaError({
+          what: 'No device attached to this session',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Call qa_prepare_target / qa_ios boot first.'],
+        });
       }
-      const backend: Backend | null = driver.kind === 'direct' ? 'direct' : driver.kind === 'simulator' ? 'simulator' : driver.kind === 'wda' ? 'wda_simulator' : null;
+      const backend: Backend | null =
+        driver.kind === 'direct' ? 'direct' : driver.kind === 'simulator' ? 'simulator' : driver.kind === 'wda' ? 'wda_simulator' : null;
       if (!backend) {
-        return qaError({ what: 'Screen recording is not supported on this backend', changedState: false, retrySafe: false, failureCode: 'BACKEND_UNSUPPORTED', nextSteps: ['Use the Android, iOS-simulator, or WDA-backed iOS simulator backend.'] });
+        return qaError({
+          what: 'Screen recording is not supported on this backend',
+          changedState: false,
+          retrySafe: false,
+          failureCode: 'BACKEND_UNSUPPORTED',
+          nextSteps: ['Use the Android, iOS-simulator, or WDA-backed iOS simulator backend.'],
+        });
       }
 
       // ---- status ----
@@ -93,7 +113,14 @@ export function registerScreenRecord(server: McpServer, sessions: SessionStore):
         const ended = !!r?.endedAt;
         const seconds = r ? Math.round(((r.endedAt ?? Date.now()) - r.startedAt) / 1000) : 0;
         return qaOk(
-          { recording: !!r, capturing: !!r && !ended, autoStopped: ended, backend: r?.backend ?? null, saveMode: r?.saveMode ?? null, seconds },
+          {
+            recording: !!r,
+            capturing: !!r && !ended,
+            autoStopped: ended,
+            backend: r?.backend ?? null,
+            saveMode: r?.saveMode ?? null,
+            seconds,
+          },
           r
             ? ended
               ? `recording auto-stopped (${r.backend}, ${r.saveMode}, ~${seconds}s; Android time-limit reached) — qa_screen_record { action: "stop", failed:<bool> } to save the mp4.`
@@ -106,7 +133,12 @@ export function registerScreenRecord(server: McpServer, sessions: SessionStore):
       if (action === 'start') {
         if (session.sensitive) return sensitiveRefusal('Screen recording');
         if (active.has(sessionId)) {
-          return qaError({ what: 'A recording is already in progress for this session', changedState: false, retrySafe: true, nextSteps: ['Call qa_screen_record { action: "stop" } first (or "status").'] });
+          return qaError({
+            what: 'A recording is already in progress for this session',
+            changedState: false,
+            retrySafe: true,
+            nextSteps: ['Call qa_screen_record { action: "stop" } first (or "status").'],
+          });
         }
         const saveMode = save ?? 'always';
         const gate = consumeConsent(consentId, approve, { action: 'screen_record', affects: { device: serial } });
@@ -119,8 +151,17 @@ export function registerScreenRecord(server: McpServer, sessions: SessionStore):
             consent: { required: true, approved: false },
             status: 'requested',
           });
-          const cmd = backend === 'direct' ? `adb -s ${serial} shell screenrecord --time-limit 180 /sdcard/…mp4` : `xcrun simctl io ${serial} recordVideo …mp4`;
-          return requireConsent({ action: 'screen_record', risk: 'medium', exactCommand: cmd, affects: { device: serial }, explain: 'Record the device screen to a video? It captures everything shown — do NOT record password/OTP/payment screens.' });
+          const cmd =
+            backend === 'direct'
+              ? `adb -s ${serial} shell screenrecord --time-limit 180 /sdcard/…mp4`
+              : `xcrun simctl io ${serial} recordVideo …mp4`;
+          return requireConsent({
+            action: 'screen_record',
+            risk: 'medium',
+            exactCommand: cmd,
+            affects: { device: serial },
+            explain: 'Record the device screen to a video? It captures everything shown — do NOT record password/OTP/payment screens.',
+          });
         }
         sessions.recordMutation(session, {
           tool: 'qa_screen_record',
@@ -143,10 +184,12 @@ export function registerScreenRecord(server: McpServer, sessions: SessionStore):
           rec = { child, backend, serial, saveMode, hostPath, startedAt: Date.now() };
         }
         active.set(sessionId, rec);
+        registerManagedProcess(rec.child.pid, 'recording', sessionId); // reapable if this server crashes
         // Mark when the recorder exits on its own (Android `--time-limit 180`) so `status`
         // stops claiming it's still capturing. The entry stays so `stop` can still save the file.
         rec.child.once('exit', () => {
           if (!rec.endedAt) rec.endedAt = Date.now();
+          unregisterManagedProcess(rec.child.pid);
         });
         sessions.addEnvChange(session, `screen_record started (${backend}, ${saveMode})`);
         sessions.recordMutation(session, {
@@ -158,13 +201,21 @@ export function registerScreenRecord(server: McpServer, sessions: SessionStore):
           status: 'executed',
           detail: 'recording started',
         });
-        return qaOk({ recording: true, backend, saveMode }, `recording started (${backend}, ${saveMode})${backend === 'direct' ? ' (auto-stops after ~3 min)' : ''} — call qa_screen_record { action: "stop", failed:<bool> } to finalize${saveMode === 'on_failure' ? ' and keep only on failure' : ' and save the video'}.`);
+        return qaOk(
+          { recording: true, backend, saveMode },
+          `recording started (${backend}, ${saveMode})${backend === 'direct' ? ' (auto-stops after ~3 min)' : ''} — call qa_screen_record { action: "stop", failed:<bool> } to finalize${saveMode === 'on_failure' ? ' and keep only on failure' : ' and save the video'}.`,
+        );
       }
 
       // ---- stop ----
       const rec = active.get(sessionId);
       if (!rec) {
-        return qaError({ what: 'No active recording for this session', changedState: false, retrySafe: true, nextSteps: ['Start one with qa_screen_record { action: "start" } (or check "status").'] });
+        return qaError({
+          what: 'No active recording for this session',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Start one with qa_screen_record { action: "start" } (or check "status").'],
+        });
       }
       active.delete(sessionId);
       const localTmp = join(tmpdir(), `swipium-recpull-${Date.now()}.mp4`);
@@ -194,7 +245,17 @@ export function registerScreenRecord(server: McpServer, sessions: SessionStore):
             status: 'restored',
             detail: 'discarded recording',
           });
-          return qaOk({ recording: false, saved: false, discarded: true, seconds: Math.round((Date.now() - rec.startedAt) / 1000), backend: rec.backend, saveMode: rec.saveMode }, 'discarded recording because save mode is on_failure and failed:false');
+          return qaOk(
+            {
+              recording: false,
+              saved: false,
+              discarded: true,
+              seconds: Math.round((Date.now() - rec.startedAt) / 1000),
+              backend: rec.backend,
+              saveMode: rec.saveMode,
+            },
+            'discarded recording because save mode is on_failure and failed:false',
+          );
         }
         let buf: Buffer;
         if (rec.backend === 'direct') {
@@ -214,7 +275,14 @@ export function registerScreenRecord(server: McpServer, sessions: SessionStore):
           await new Promise((r) => setTimeout(r, 2000));
           buf = readFileSync(rec.hostPath!);
         }
-        const uri = sessions.saveArtifact(session, 'recording', `recording-${Date.now()}.mp4`, buf, 'video/mp4', `screen recording (${rec.backend}, ${Math.round((Date.now() - rec.startedAt) / 1000)}s)`);
+        const uri = sessions.saveArtifact(
+          session,
+          'recording',
+          `recording-${Date.now()}.mp4`,
+          buf,
+          'video/mp4',
+          `screen recording (${rec.backend}, ${Math.round((Date.now() - rec.startedAt) / 1000)}s)`,
+        );
         sessions.addEnvChange(session, 'screen_record stopped');
         sessions.recordMutation(session, {
           tool: 'qa_screen_record',
@@ -226,7 +294,18 @@ export function registerScreenRecord(server: McpServer, sessions: SessionStore):
           ledgerUri: uri,
           detail: 'saved recording',
         });
-        return qaOk({ recording: false, saved: true, uri, bytes: buf.length, seconds: Math.round((Date.now() - rec.startedAt) / 1000), backend: rec.backend, saveMode: rec.saveMode }, `saved recording (${buf.length} bytes) → ${uri}`);
+        return qaOk(
+          {
+            recording: false,
+            saved: true,
+            uri,
+            bytes: buf.length,
+            seconds: Math.round((Date.now() - rec.startedAt) / 1000),
+            backend: rec.backend,
+            saveMode: rec.saveMode,
+          },
+          `saved recording (${buf.length} bytes) → ${uri}`,
+        );
       } catch (e) {
         sessions.recordMutation(session, {
           tool: 'qa_screen_record',
@@ -237,7 +316,12 @@ export function registerScreenRecord(server: McpServer, sessions: SessionStore):
           status: 'blocked',
           detail: String(e),
         });
-        return qaError({ what: `Could not finalize the recording: ${String(e)}`, changedState: true, retrySafe: false, nextSteps: ['The backend may not support screen recording, or it stopped early. Try a shorter clip.'] });
+        return qaError({
+          what: `Could not finalize the recording: ${String(e)}`,
+          changedState: true,
+          retrySafe: false,
+          nextSteps: ['The backend may not support screen recording, or it stopped early. Try a shorter clip.'],
+        });
       } finally {
         try {
           rmSync(localTmp, { force: true });

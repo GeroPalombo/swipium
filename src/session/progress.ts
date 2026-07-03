@@ -66,5 +66,7 @@ export function startProgress(
 export function progressLine(p: ProgressModel | undefined): string | undefined {
   if (!p) return undefined;
   const sec = Math.round((p.updatedAt - p.startedAt) / 1000);
-  return `${p.phase} (${sec}s)${p.userActionRequired ? ' ⚠ needs you' : ''}: ${p.statusText}` + (p.nextExpected ? ` → ${p.nextExpected}` : '');
+  return (
+    `${p.phase} (${sec}s)${p.userActionRequired ? ' ⚠ needs you' : ''}: ${p.statusText}` + (p.nextExpected ? ` → ${p.nextExpected}` : '')
+  );
 }

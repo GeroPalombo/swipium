@@ -87,7 +87,12 @@ export function signingArgs(signing?: AabSigning): string[] {
 }
 
 /** PURE: build-apks argv for a DEVICE-SPECIFIC APK set (--connected-device), optionally targeting one serial + signing. */
-export function buildApksConnectedArgs(launcher: BundletoolLauncher, aabPath: string, apksOut: string, opts: { deviceId?: string; signing?: AabSigning } = {}): string[] {
+export function buildApksConnectedArgs(
+  launcher: BundletoolLauncher,
+  aabPath: string,
+  apksOut: string,
+  opts: { deviceId?: string; signing?: AabSigning } = {},
+): string[] {
   const args = [...launcher.prefix, 'build-apks', '--bundle', aabPath, '--output', apksOut, '--overwrite', '--connected-device'];
   if (opts.deviceId) args.push('--device-id', opts.deviceId);
   args.push(...signingArgs(opts.signing));
@@ -103,14 +108,17 @@ export function installApksArgs(launcher: BundletoolLauncher, apksPath: string, 
 
 /** PURE: classify a bundletool stderr/stdout for a given phase into a typed blocker. */
 export function classifyBundletoolError(output: string, phase: 'build' | 'install'): FailureCode {
-  if (/keystore|jarsigner|failed to (?:read|load) key|SigningConfig|password was incorrect|key.*alias/i.test(output)) return 'ANDROID_SIGNING_FAILED';
+  if (/keystore|jarsigner|failed to (?:read|load) key|SigningConfig|password was incorrect|key.*alias/i.test(output))
+    return 'ANDROID_SIGNING_FAILED';
   if (phase === 'install') {
-    if (/INSTALL_FAILED_UPDATE_INCOMPATIBLE|signatures do not match|INCONSISTENT_CERTIFICATES/i.test(output)) return 'ANDROID_SIGNATURE_CONFLICT';
+    if (/INSTALL_FAILED_UPDATE_INCOMPATIBLE|signatures do not match|INCONSISTENT_CERTIFICATES/i.test(output))
+      return 'ANDROID_SIGNATURE_CONFLICT';
     if (/INSTALL_FAILED_OLDER_SDK|INSTALL_FAILED_VERSION_DOWNGRADE/i.test(output)) return 'ANDROID_MIN_SDK_INCOMPATIBLE';
     if (/INSTALL_FAILED_NO_MATCHING_ABIS/i.test(output)) return 'APK_ARCH_INCOMPATIBLE';
     return 'AAB_INSTALL_FAILED';
   }
-  if (/No connected (?:Android )?device|Unable to connect to (?:adb|device)|connected device/i.test(output)) return 'AAB_DEVICE_SPEC_FAILED';
+  if (/No connected (?:Android )?device|Unable to connect to (?:adb|device)|connected device/i.test(output))
+    return 'AAB_DEVICE_SPEC_FAILED';
   return 'AAB_BUILD_APKS_FAILED';
 }
 
@@ -139,7 +147,12 @@ export async function buildAndInstallApkSet(
 ): Promise<ApkSetResult> {
   const launcher = await findBundletool();
   if (!launcher) {
-    return { ok: false, logText: '', failureCode: 'BUNDLETOOL_MISSING', error: 'bundletool not found (install it, set $BUNDLETOOL_JAR, or build an APK directly).' };
+    return {
+      ok: false,
+      logText: '',
+      failureCode: 'BUNDLETOOL_MISSING',
+      error: 'bundletool not found (install it, set $BUNDLETOOL_JAR, or build an APK directly).',
+    };
   }
   const base = basename(aabPath).replace(/\.aab$/i, '');
   const apksOut = join(projectRoot, '.swipium', 'artifacts', `${base}-${opts.deviceId ? sanitize(opts.deviceId) : 'device'}.apks`);
@@ -152,7 +165,9 @@ export async function buildAndInstallApkSet(
       if (statSync(apksOut).mtimeMs >= statSync(aabPath).mtimeMs && !opts.install) {
         return { ok: true, apksPath: apksOut, logText: 'using cached device APK set\n', installed: false };
       }
-    } catch { /* rebuild */ }
+    } catch {
+      /* rebuild */
+    }
   }
 
   const buildArgs = buildApksConnectedArgs(launcher, aabPath, apksOut, { deviceId: opts.deviceId, signing: opts.signing });
@@ -161,7 +176,14 @@ export async function buildAndInstallApkSet(
   const built = await run(launcher.cmd, buildArgs, { signal: opts.signal, timeoutMs });
   logText += built.stdout + built.stderr + '\n';
   if (built.code !== 0) {
-    return { ok: false, apksPath: existsSync(apksOut) ? apksOut : undefined, logText, buildCommand, failureCode: classifyBundletoolError(built.stdout + built.stderr, 'build'), error: built.stderr.trim() || built.stdout.trim() || `bundletool build-apks exited ${built.code}` };
+    return {
+      ok: false,
+      apksPath: existsSync(apksOut) ? apksOut : undefined,
+      logText,
+      buildCommand,
+      failureCode: classifyBundletoolError(built.stdout + built.stderr, 'build'),
+      error: built.stderr.trim() || built.stdout.trim() || `bundletool build-apks exited ${built.code}`,
+    };
   }
 
   if (!opts.install) {
@@ -174,7 +196,15 @@ export async function buildAndInstallApkSet(
   const installed = await run(launcher.cmd, installArgs, { signal: opts.signal, timeoutMs });
   logText += installed.stdout + installed.stderr + '\n';
   if (installed.code !== 0) {
-    return { ok: false, apksPath: apksOut, logText, buildCommand, installCommand, failureCode: classifyBundletoolError(installed.stdout + installed.stderr, 'install'), error: installed.stderr.trim() || installed.stdout.trim() || `bundletool install-apks exited ${installed.code}` };
+    return {
+      ok: false,
+      apksPath: apksOut,
+      logText,
+      buildCommand,
+      installCommand,
+      failureCode: classifyBundletoolError(installed.stdout + installed.stderr, 'install'),
+      error: installed.stderr.trim() || installed.stdout.trim() || `bundletool install-apks exited ${installed.code}`,
+    };
   }
   return { ok: true, apksPath: apksOut, logText, buildCommand, installCommand, installed: true };
 }
@@ -204,7 +234,11 @@ export async function convertAabToApk(
 
   const launcher = await findBundletool();
   if (!launcher) {
-    return { ok: false, failureCode: 'AAB_NEEDS_BUNDLETOOL', error: 'bundletool not found (install it, set $BUNDLETOOL_JAR, or build an APK directly).' };
+    return {
+      ok: false,
+      failureCode: 'AAB_NEEDS_BUNDLETOOL',
+      error: 'bundletool not found (install it, set $BUNDLETOOL_JAR, or build an APK directly).',
+    };
   }
 
   mkdirSync(join(projectRoot, '.swipium', 'artifacts'), { recursive: true });
@@ -215,13 +249,24 @@ export async function convertAabToApk(
 
   const built = await run(launcher.cmd, args, { signal: opts.signal, timeoutMs });
   if (built.code !== 0) {
-    return { ok: false, failureCode: 'AAB_BUILD_APKS_FAILED', error: built.stderr.trim() || built.stdout.trim() || `bundletool exited ${built.code}`, command };
+    return {
+      ok: false,
+      failureCode: 'AAB_BUILD_APKS_FAILED',
+      error: built.stderr.trim() || built.stdout.trim() || `bundletool exited ${built.code}`,
+      command,
+    };
   }
 
   // The .apks is a zip containing universal.apk — extract it (prefer `unzip`, else bundletool can't).
   const extracted = await extractUniversalApk(apksOut, apkPath, opts.signal);
   if (!extracted) {
-    return { ok: false, failureCode: 'AAB_BUILD_APKS_FAILED', error: 'built .apks but could not extract universal.apk (need `unzip` on PATH).', command, apksPath: apksOut };
+    return {
+      ok: false,
+      failureCode: 'AAB_BUILD_APKS_FAILED',
+      error: 'built .apks but could not extract universal.apk (need `unzip` on PATH).',
+      command,
+      apksPath: apksOut,
+    };
   }
   return { ok: true, apkPath, apksPath: apksOut, command };
 }

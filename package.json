@@ -1,6 +1,6 @@
 {
   "name": "swipium",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "private": false,
   "description": "Swipium MCP server for simulator-based mobile QA workflows, evidence capture, app maps, and generated test suites.",
   "keywords": [
@@ -28,7 +28,8 @@
   "files": [
     "dist",
     "docs",
-    "THREAT_MODEL.md"
+    "THREAT_MODEL.md",
+    "CHANGELOG.md"
   ],
   "engines": {
     "node": ">=20"
@@ -45,14 +46,18 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc && chmod +x dist/index.js",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && tsc && chmod +x dist/index.js",
     "dev": "tsc -w",
     "start": "node dist/index.js",
     "verify": "npm run build && node dist/index.js verify",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "test": "vitest run",
     "audit:prod": "npm audit --omit=dev --audit-level=moderate",
-    "release:check": "npm run typecheck && npm test && npm run audit:prod && npm pack --dry-run",
+    "release:check": "npm run typecheck && npm run lint && npm run format:check && npm test && npm run audit:prod && npm pack --dry-run",
     "prepack": "npm run build",
     "prepublishOnly": "npm run build",
     "inspector": "npm run build && npx @modelcontextprotocol/inspector node dist/index.js"
@@ -64,8 +69,12 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^22.10.2",
+    "eslint": "^10.6.0",
+    "prettier": "^3.9.4",
     "typescript": "^5.7.2",
+    "typescript-eslint": "^8.62.1",
     "vitest": "^4.1.7"
   }
 }

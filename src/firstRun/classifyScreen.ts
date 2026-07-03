@@ -9,14 +9,7 @@
 
 import type { SnapshotElement } from '../drivers/Driver.js';
 import { classifyRisk } from '../explore/policy.js';
-import type {
-  ScreenClassification,
-  ScreenPurpose,
-  InputRequirement,
-  FieldKind,
-  PlannedAction,
-  MapLink,
-} from './types.js';
+import type { ScreenClassification, ScreenPurpose, InputRequirement, FieldKind, PlannedAction, MapLink } from './types.js';
 
 export interface StaticScreenCandidate {
   id: string;
@@ -95,22 +88,21 @@ export function requiredInputsFor(elements: SnapshotElement[]): InputRequirement
 
 function visibleTextOf(obs: ScreenObservation): string {
   if (obs.visibleText) return obs.visibleText;
-  return obs.elements.map((e) => `${e.text ?? ''} ${e.label ?? ''}`).join(' ').trim();
-}
-
-interface Signal {
-  re: RegExp;
-  weight: number;
-  label: string;
+  return obs.elements
+    .map((e) => `${e.text ?? ''} ${e.label ?? ''}`)
+    .join(' ')
+    .trim();
 }
 
 // Lexical signals per purpose. Confidence is the summed weight of matched signals, squashed to 0..1.
 const LOGIN = /\b(sign\s?in|log\s?in)\b/i;
 const REGISTER = /\b(sign\s?up|create\s+(an?\s+|your\s+)?account|register|join now|join free|get\s+started\s+free)\b/i;
-const CREDENTIAL_SETUP = /\b(create\s+(a\s+)?password|set\s+(a\s+|your\s+)?password|choose\s+(a\s+)?password|create\s+(a\s+)?username|choose\s+(a\s+)?username|set\s+up\s+(your\s+)?(login|credentials?)|credential\s+setup)\b/i;
+const CREDENTIAL_SETUP =
+  /\b(create\s+(a\s+)?password|set\s+(a\s+|your\s+)?password|choose\s+(a\s+)?password|create\s+(a\s+)?username|choose\s+(a\s+)?username|set\s+up\s+(your\s+)?(login|credentials?)|credential\s+setup)\b/i;
 const OTP = /\b(verification code|one-?time|enter the code|otp|magic link|we sent|6-digit|verify your (email|phone|number))\b/i;
 const ONBOARDING = /\b(get started|next|skip|continue|welcome|let'?s go|swipe|tour|set up your)\b/i;
-const PAYWALL = /\b(subscribe|free trial|start trial|restore purchase|upgrade|premium|unlock|per month|per year|\/mo\b|\$\d|monthly|annually|billed)\b/i;
+const PAYWALL =
+  /\b(subscribe|free trial|start trial|restore purchase|upgrade|premium|unlock|per month|per year|\/mo\b|\$\d|monthly|annually|billed)\b/i;
 const PERMISSION = /\b(allow|don'?t allow|while using the app|location|camera|microphone|notifications?|photos|contacts|bluetooth)\b/i;
 const HOME = /\b(home|feed|dashboard|explore|search|profile|settings|library|inbox|for you)\b/i;
 const SETTINGS = /\b(settings|preferences|account settings|privacy|notifications)\b/i;
@@ -143,11 +135,14 @@ export function classifyCurrentScreen(obs: ScreenObservation): ScreenClassificat
   };
 
   // Hard error first.
-  if (obs.nativeError) { note('error', 5, 'native error/ANR/crash dialog'); }
+  if (obs.nativeError) {
+    note('error', 5, 'native error/ANR/crash dialog');
+  }
   if (obs.appError || ERROR.test(text)) note('error', 3, 'error/redbox copy on screen');
 
   // Auth family.
-  if (hasOtpField || OTP.test(text)) note('otp_or_email_verification', 3, hasOtpField ? 'OTP/code field present' : 'verification/one-time-code copy');
+  if (hasOtpField || OTP.test(text))
+    note('otp_or_email_verification', 3, hasOtpField ? 'OTP/code field present' : 'verification/one-time-code copy');
   // Credential-setup step: "create/set/choose password|username" copy, or a password (+confirm)
   // and/or username field with no email and no sign-in verb — a dedicated credential-creation step
   // inside a multi-step signup. Detected BEFORE the email+password auth branch so it wins when the
@@ -171,7 +166,8 @@ export function classifyCurrentScreen(obs: ScreenObservation): ScreenClassificat
 
   // Other gates.
   if (PAYWALL.test(text)) note('paywall', 3, 'subscribe/trial/restore/price copy');
-  if (PERMISSION.test(text) && /\b(allow|don'?t allow|while using)\b/i.test(text)) note('permissions_prompt', 2.5, 'permission dialog copy');
+  if (PERMISSION.test(text) && /\b(allow|don'?t allow|while using)\b/i.test(text))
+    note('permissions_prompt', 2.5, 'permission dialog copy');
   if (ONBOARDING.test(text) && !hasPassword) note('onboarding', 2, 'onboarding/get-started/next/skip copy');
   if (SETTINGS.test(text)) note('settings', 1, 'settings/preferences copy');
   if (HOME.test(text) && !hasPassword && !PAYWALL.test(text)) note('home', 1.5, 'home/feed/dashboard/tabs with no blocking gate');

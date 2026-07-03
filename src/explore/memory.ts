@@ -26,7 +26,12 @@ export interface ExploreMemory {
 }
 
 function safeName(value: string): string {
-  return value.trim().replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 120) || 'unknown-app';
+  return (
+    value
+      .trim()
+      .replace(/[^a-zA-Z0-9._-]+/g, '_')
+      .slice(0, 120) || 'unknown-app'
+  );
 }
 
 export function exploreHistoryPath(root: string, appId?: string): string {

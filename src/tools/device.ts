@@ -32,7 +32,12 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
       const { driver } = session ? await getDriver(session) : { driver: undefined };
       const serial = driver?.currentDevice();
       if (!session || !driver || !serial) {
-        return qaError({ what: 'No device attached to this session', changedState: false, retrySafe: true, nextSteps: ['Call qa_prepare_target first.'] });
+        return qaError({
+          what: 'No device attached to this session',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Call qa_prepare_target first.'],
+        });
       }
       const [props, screen, density, orientation, pkgs] = await Promise.all([
         getDeviceProps(serial),
@@ -76,12 +81,22 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
       const { driver } = session ? await getDriver(session) : { driver: undefined };
       const serial = driver?.currentDevice();
       if (!session || !driver || !serial) {
-        return qaError({ what: 'No device attached to this session', changedState: false, retrySafe: true, nextSteps: ['Call qa_prepare_target first.'] });
+        return qaError({
+          what: 'No device attached to this session',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Call qa_prepare_target first.'],
+        });
       }
       try {
         await setOrientation(serial, orientation);
       } catch (e) {
-        return qaError({ what: `Could not set orientation: ${String(e)}`, changedState: false, retrySafe: true, nextSteps: ['Confirm the device is online.'] });
+        return qaError({
+          what: `Could not set orientation: ${String(e)}`,
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Confirm the device is online.'],
+        });
       }
       sessions.addEnvChange(session, `orientation → ${orientation}`);
       const now = await getOrientation(serial);
@@ -93,7 +108,10 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
         consent: { required: false, approved: true },
         status: 'executed',
       });
-      return qaOk({ orientation, rotation: now?.rotation ?? null, autoRotate: now?.auto ?? null }, `orientation set to ${orientation}${now ? ` (rotation=${now.rotation}, auto=${now.auto})` : ''}`);
+      return qaOk(
+        { orientation, rotation: now?.rotation ?? null, autoRotate: now?.auto ?? null },
+        `orientation set to ${orientation}${now ? ` (rotation=${now.rotation}, auto=${now.auto})` : ''}`,
+      );
     },
   );
 
@@ -116,10 +134,21 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
       const { driver } = session ? await getDriver(session) : { driver: undefined };
       const serial = driver?.currentDevice();
       if (!session || !driver || !serial) {
-        return qaError({ what: 'No device attached to this session', changedState: false, retrySafe: true, nextSteps: ['Call qa_prepare_target first.'] });
+        return qaError({
+          what: 'No device attached to this session',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Call qa_prepare_target first.'],
+        });
       }
       if (driver.kind !== 'direct') {
-        return qaError({ what: 'Geolocation spoofing is only supported on the Android emulator backend', changedState: false, retrySafe: false, failureCode: 'BACKEND_UNSUPPORTED', nextSteps: ['On iOS, set a simulated location from the simulator UI; on real devices use a mock-location app.'] });
+        return qaError({
+          what: 'Geolocation spoofing is only supported on the Android emulator backend',
+          changedState: false,
+          retrySafe: false,
+          failureCode: 'BACKEND_UNSUPPORTED',
+          nextSteps: ['On iOS, set a simulated location from the simulator UI; on real devices use a mock-location app.'],
+        });
       }
       const gate = consumeConsent(consentId, approve, { action: 'geo_set', affects: { lat, lng } });
       if (!gate.approved) {
@@ -131,7 +160,13 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
           consent: { required: true, approved: false },
           status: 'requested',
         });
-        return requireConsent({ action: 'geo_set', risk: 'medium', exactCommand: `adb -s ${serial} emu geo fix ${lng} ${lat}`, affects: { lat, lng }, explain: `Spoof the device location to (${lat}, ${lng})? Affects any location-aware app.` });
+        return requireConsent({
+          action: 'geo_set',
+          risk: 'medium',
+          exactCommand: `adb -s ${serial} emu geo fix ${lng} ${lat}`,
+          affects: { lat, lng },
+          explain: `Spoof the device location to (${lat}, ${lng})? Affects any location-aware app.`,
+        });
       }
       sessions.recordMutation(session, {
         tool: 'qa_geolocation',
@@ -154,7 +189,12 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
           status: 'blocked',
           detail: String(e),
         });
-        return qaError({ what: `Could not set location: ${String(e)}${emulatorHint}`, changedState: false, retrySafe: true, nextSteps: ['Use an emulator for location spoofing.'] });
+        return qaError({
+          what: `Could not set location: ${String(e)}${emulatorHint}`,
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Use an emulator for location spoofing.'],
+        });
       }
       sessions.addEnvChange(session, `geolocation → (${lat}, ${lng})`);
       sessions.recordMutation(session, {

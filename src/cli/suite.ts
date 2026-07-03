@@ -50,7 +50,7 @@ export async function runSuite(args: string[]): Promise<void> {
   if (sub === 'lint') {
     const res = lintSuitePages(root);
     if (!res.exists) {
-      process.stdout.write(`No .swipium/pages under ${root}. Generate a suite first (qa_suite_generate via the MCP server).\n`);
+      process.stdout.write(`No .swipium/pages under ${root}. Generate a suite first (qa_generate target:"suite" via the MCP server).\n`);
       process.exitCode = 2;
       return;
     }
@@ -76,7 +76,7 @@ export async function runSuite(args: string[]): Promise<void> {
         'Swipium suites are generated from a recorded run (durable selectors > guesswork):',
         '  1. Start the MCP server and a session (qa_start_session).',
         '  2. Drive the app with qa_act (or qa_smoke) — every action is recorded.',
-        '  3. qa_suite_generate → writes .swipium/{pages,tests,suites,testcases,locators}.',
+        '  3. qa_generate target:"suite" → writes .swipium/{pages,tests,suites,testcases,locators}.',
         '  4. swipium suite lint — audit locator durability before committing.',
         '  5. swipium suite compile — POM → runnable Flow V2 under .swipium/flows.',
         '  6. Execute compiled flows through qa_flow_run from an MCP session.',

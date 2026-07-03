@@ -96,10 +96,8 @@ describe('dogfood regression fixes', () => {
 
     expect(pom.pages.map((p) => p.name)).toEqual(['SignupPage', 'OnboardingPage', 'PaywallPage']);
     expect(pom.steps.map((s) => s.page)).toEqual(['SignupPage', 'OnboardingPage', 'PaywallPage']);
-    expect(pom.files.map((f) => f.path)).toEqual(expect.arrayContaining([
-      'pages/signup-page.page.yaml',
-      'pages/onboarding-page.page.yaml',
-      'pages/paywall-page.page.yaml',
-    ]));
+    expect(pom.files.map((f) => f.path)).toEqual(
+      expect.arrayContaining(['pages/signup-page.page.yaml', 'pages/onboarding-page.page.yaml', 'pages/paywall-page.page.yaml']),
+    );
   });
 });

@@ -131,15 +131,31 @@ function generatorVarFor(field: FieldKind): string {
   return `SWIPIUM_GEN_${field.toUpperCase()}`;
 }
 
-function valueForField(session: Session, label?: string, locatorValue?: string, role?: string, secure?: boolean, gen?: GeneratedDataContext): FieldValue | undefined {
+function valueForField(
+  session: Session,
+  label?: string,
+  locatorValue?: string,
+  role?: string,
+  secure?: boolean,
+  gen?: GeneratedDataContext,
+): FieldValue | undefined {
   const key = `${label ?? ''} ${locatorValue ?? ''}`.toLowerCase();
   const fromStore = (varName: string, isSecret: boolean): FieldValue | undefined => {
     const value = session.inputValues.get(varName);
     return value ? { value, varName, secret: isSecret, source: 'secure_input' } : undefined;
   };
-  if (/pass/.test(key) || secure) { const v = fromStore('SWIPIUM_TEST_PASSWORD', true); if (v) return v; }
-  if (/email|user|account|login/.test(key)) { const v = fromStore('SWIPIUM_TEST_EMAIL', false); if (v) return v; }
-  if (/otp|code|2fa|mfa/.test(key)) { const v = fromStore('SWIPIUM_TEST_OTP', true); if (v) return v; }
+  if (/pass/.test(key) || secure) {
+    const v = fromStore('SWIPIUM_TEST_PASSWORD', true);
+    if (v) return v;
+  }
+  if (/email|user|account|login/.test(key)) {
+    const v = fromStore('SWIPIUM_TEST_EMAIL', false);
+    if (v) return v;
+  }
+  if (/otp|code|2fa|mfa/.test(key)) {
+    const v = fromStore('SWIPIUM_TEST_OTP', true);
+    if (v) return v;
+  }
   const resolved = resolveFixtureValue(session, label, locatorValue, { role });
   if (resolved) return resolved;
   // Built-in safe generator — only when generation is explicitly allowed for this environment.
@@ -150,7 +166,15 @@ function valueForField(session: Session, label?: string, locatorValue?: string, 
       const varName = generatorVarFor(field);
       session.inputValues.set(varName, g.value);
       if (g.secret) session.secrets.add(g.value);
-      session.generatedValues.push({ at: Date.now(), fixture: 'generated', field, varName, generator: g.generator, value: g.value, secret: g.secret });
+      session.generatedValues.push({
+        at: Date.now(),
+        fixture: 'generated',
+        field,
+        varName,
+        generator: g.generator,
+        value: g.value,
+        secret: g.secret,
+      });
       return { value: g.value, varName, secret: g.secret, fixture: 'generated', field, source: 'generator' };
     }
   }
@@ -189,7 +213,12 @@ function provenanceForCandidate(node: ScreenNode, candidate: RankedCandidate): S
   };
 }
 
-function destructiveMutationTarget(session: Session, node: ScreenNode, candidate: RankedCandidate, approval: ExploreOptions['destructiveApproval']): Record<string, unknown> {
+function destructiveMutationTarget(
+  session: Session,
+  node: ScreenNode,
+  candidate: RankedCandidate,
+  approval: ExploreOptions['destructiveApproval'],
+): Record<string, unknown> {
   return {
     sessionId: session.id,
     screenSignature: node.signature,
@@ -204,7 +233,13 @@ function destructiveMutationTarget(session: Session, node: ScreenNode, candidate
   };
 }
 
-export async function runExplore(sessions: SessionStore, session: Session, driver: Driver, opts: ExploreOptions, ctx: ExploreCtx = {}): Promise<ExploreResult> {
+export async function runExplore(
+  sessions: SessionStore,
+  session: Session,
+  driver: Driver,
+  opts: ExploreOptions,
+  ctx: ExploreCtx = {},
+): Promise<ExploreResult> {
   const platform = driver.kind === 'wda' || driver.kind === 'simulator' ? 'ios' : 'android';
   const graph = new ExploreGraph(platform);
   const safeMode: SafeMode = opts.safeMode === 'approved_destructive' ? 'strict' : (opts.safeMode ?? 'strict');
@@ -215,7 +250,10 @@ export async function runExplore(sessions: SessionStore, session: Session, drive
   // SWIPIUM-REQ-02: resolve the generated-data decision once. Only "allowed" when policy + the
   // classified environment (test/staging) permit safe throwaway data; otherwise generation is off.
   const genCtx: GeneratedDataContext | undefined = opts.allowGeneratedData
-    ? (() => { const r = resolveFirstRunPolicy(session, { testDataPolicyPath: opts.testDataPolicyPath, allowGeneratedAccount: true }); return { allowed: r.decision.allowed, policy: r.policy }; })()
+    ? (() => {
+        const r = resolveFirstRunPolicy(session, { testDataPolicyPath: opts.testDataPolicyPath, allowGeneratedAccount: true });
+        return { allowed: r.decision.allowed, policy: r.policy };
+      })()
     : undefined;
   const startedAt = Date.now();
   const deadline = startedAt + (opts.maxDurationMs ?? 6 * 60_000);
@@ -248,7 +286,14 @@ export async function runExplore(sessions: SessionStore, session: Session, drive
     sessions.addNote(session, { at: Date.now(), ...(n as object) } as Parameters<SessionStore['addNote']>[1]);
 
   /** Observe the current screen → a graph node (structured or visual-only). */
-  const observe = async (): Promise<{ node: ScreenNode; isNew: boolean; candidates: RankedCandidate[]; visual: boolean; authWall: boolean; actionLikeSkipped: SkippedActionLike[] }> => {
+  const observe = async (): Promise<{
+    node: ScreenNode;
+    isNew: boolean;
+    candidates: RankedCandidate[];
+    visual: boolean;
+    authWall: boolean;
+    actionLikeSkipped: SkippedActionLike[];
+  }> => {
     const foreground = await driver.foregroundOwner().catch(() => 'unknown');
     let xml = '';
     let elements: ReturnType<typeof parseSnapshot>['elements'] = [];
@@ -264,7 +309,10 @@ export async function runExplore(sessions: SessionStore, session: Session, drive
     const health = await checkHealth(driver, session.appId, xml || undefined);
     await recordHealthFindings(sessions, session, health.findings, driver, health.foreground);
     if (!health.nativeHealthy) summary.appErrors += 0; // native handled separately below
-    const healthSnap = { native: (health.nativeHealthy ? 'OK' : 'error') as 'OK' | 'error', app: health.appStatus === 'error' ? 'error' as const : health.appStatus === 'degraded' ? 'degraded' as const : 'OK' as const };
+    const healthSnap = {
+      native: (health.nativeHealthy ? 'OK' : 'error') as 'OK' | 'error',
+      app: health.appStatus === 'error' ? ('error' as const) : health.appStatus === 'degraded' ? ('degraded' as const) : ('OK' as const),
+    };
 
     let screenshotUri: string | undefined;
     let png: Buffer | undefined;
@@ -308,7 +356,20 @@ export async function runExplore(sessions: SessionStore, session: Session, drive
       authState: authWall ? 'auth_required' : undefined,
       visualOnlyReason: visual ? 'no reliable UI tree (canvas/map/webview or empty snapshot)' : undefined,
       locatorQuality: visual ? undefined : locatorQuality(elements),
-      elements: candidates.map((c) => ({ ref: c.ref, candidateSignature: c.signatureKey, label: c.label, role: c.role, bounds: c.bounds, locator: c.locator, actionType: c.actionType, risk: c.risk, riskClass: c.riskClass, stepUp: c.stepUp, requiresTwoStepConfirmation: c.requiresTwoStepConfirmation, reason: c.reason })),
+      elements: candidates.map((c) => ({
+        ref: c.ref,
+        candidateSignature: c.signatureKey,
+        label: c.label,
+        role: c.role,
+        bounds: c.bounds,
+        locator: c.locator,
+        actionType: c.actionType,
+        risk: c.risk,
+        riskClass: c.riskClass,
+        stepUp: c.stepUp,
+        requiresTwoStepConfirmation: c.requiresTwoStepConfirmation,
+        reason: c.reason,
+      })),
     });
     if (isNew) summary.screensVisited++;
     if (isNew && visual) summary.visualOnlyScreens++;
@@ -316,7 +377,15 @@ export async function runExplore(sessions: SessionStore, session: Session, drive
 
     // Visual-only screens get a recorded visual assertion as their oracle (Milestone E).
     if (visual && isNew) {
-      note({ workflow: 'guided_exploration', outcome: 'pass', category: undefined, reason: `visual-only screen "${foreground}" — verified by screenshot`, verifiedVisually: true, method: 'visual', artifactUris: screenshotUri ? [screenshotUri] : undefined });
+      note({
+        workflow: 'guided_exploration',
+        outcome: 'pass',
+        category: undefined,
+        reason: `visual-only screen "${foreground}" — verified by screenshot`,
+        verifiedVisually: true,
+        method: 'visual',
+        artifactUris: screenshotUri ? [screenshotUri] : undefined,
+      });
     }
     return { node, isNew, candidates, visual, authWall, actionLikeSkipped };
   };
@@ -359,20 +428,46 @@ export async function runExplore(sessions: SessionStore, session: Session, drive
   // ---- main loop ----
   let stoppedReason = 'exploration complete';
   while (true) {
-    if (signal?.aborted) { stoppedReason = 'cancelled'; break; }
-    if (summary.actionsTried >= maxActions) { stoppedReason = `action budget reached (${maxActions})`; break; }
-    if (graph.nodeCount() >= maxScreens) { stoppedReason = `screen budget reached (${maxScreens})`; break; }
-    if (Date.now() >= deadline) { stoppedReason = 'time budget reached'; break; }
+    if (signal?.aborted) {
+      stoppedReason = 'cancelled';
+      break;
+    }
+    if (summary.actionsTried >= maxActions) {
+      stoppedReason = `action budget reached (${maxActions})`;
+      break;
+    }
+    if (graph.nodeCount() >= maxScreens) {
+      stoppedReason = `screen budget reached (${maxScreens})`;
+      break;
+    }
+    if (Date.now() >= deadline) {
+      stoppedReason = 'time budget reached';
+      break;
+    }
     const budgetStop = sessions.budgetStop(session);
-    if (budgetStop) { stoppedReason = `session budget: ${budgetStop}`; break; }
+    if (budgetStop) {
+      stoppedReason = `session budget: ${budgetStop}`;
+      break;
+    }
 
     const obs = await observe();
     progress(`exploring: ${summary.screensVisited} screens, ${summary.actionsTried} actions${obs.visual ? ', visual-only' : ''}`);
     if (!planned && (opts.strategy === 'task_planner' || opts.strategy === 'hybrid')) {
       planned = true;
       const screenText = obs.candidates.map((c) => `${c.label ?? ''} ${c.locator?.value ?? ''}`).join(' ');
-      const domain = inferAppDomain({ packageId: session.appId, goal: opts.goal, screenText, fixtures: session.fixtures.map((f) => f.name) });
-      const tasks = proposeTasks({ packageId: session.appId, goal: opts.goal, screenText, fixtures: session.fixtures.map((f) => f.name), candidates: obs.candidates });
+      const domain = inferAppDomain({
+        packageId: session.appId,
+        goal: opts.goal,
+        screenText,
+        fixtures: session.fixtures.map((f) => f.name),
+      });
+      const tasks = proposeTasks({
+        packageId: session.appId,
+        goal: opts.goal,
+        screenText,
+        fixtures: session.fixtures.map((f) => f.name),
+        candidates: obs.candidates,
+      });
       graph.setTasks(tasks);
       graph.setHypotheses([`domain:${domain.domain}`, ...tasks.map((t) => `${t.feature}:${t.title}`)]);
       graph.setBlockedPreconditions([...new Set(tasks.flatMap((t) => t.preconditions))]);
@@ -380,9 +475,22 @@ export async function runExplore(sessions: SessionStore, session: Session, drive
 
     // App error → record + stop this path (do not hide bugs; do not keep crawling a broken screen).
     if (obs.node.health.app === 'error') {
-      note({ workflow: 'guided_exploration', outcome: 'fail', category: 'app_bug', reason: `app-layer error on "${obs.node.title}"`, artifactUris: obs.node.screenshotUri ? [obs.node.screenshotUri] : undefined });
+      note({
+        workflow: 'guided_exploration',
+        outcome: 'fail',
+        category: 'app_bug',
+        reason: `app-layer error on "${obs.node.title}"`,
+        artifactUris: obs.node.screenshotUri ? [obs.node.screenshotUri] : undefined,
+      });
       summary.blockers++;
-      if (lastNodeId) graph.addEdge({ from: lastNodeId, to: obs.node.id, action: { type: 'tap', targetDescription: 'prev action' }, outcome: 'app_error', evidenceUris: obs.node.screenshotUri ? [obs.node.screenshotUri] : [] });
+      if (lastNodeId)
+        graph.addEdge({
+          from: lastNodeId,
+          to: obs.node.id,
+          action: { type: 'tap', targetDescription: 'prev action' },
+          outcome: 'app_error',
+          evidenceUris: obs.node.screenshotUri ? [obs.node.screenshotUri] : [],
+        });
       stoppedReason = 'app-layer error encountered';
       break;
     }
@@ -394,11 +502,26 @@ export async function runExplore(sessions: SessionStore, session: Session, drive
 
     // Auth wall with no credentials.
     if (obs.authWall && !hasCredentials(session)) {
-      note({ workflow: 'guided_exploration', outcome: 'blocked', category: 'missing_test_data', reason: 'login required, no credentials available', missingPrecondition: 'test account credentials', recommendedSetup: 'Provide TEST_EMAIL/TEST_PASSWORD (qa_continue_from_blocker) or accept pre-login coverage.' });
+      note({
+        workflow: 'guided_exploration',
+        outcome: 'blocked',
+        category: 'missing_test_data',
+        reason: 'login required, no credentials available',
+        missingPrecondition: 'test account credentials',
+        recommendedSetup: 'Provide TEST_EMAIL/TEST_PASSWORD (qa_continue_from_blocker) or accept pre-login coverage.',
+      });
       summary.blockers++;
       if (stopOnAuth) {
         const suitePromotion = finalizeGraph(graph, summary, sameScreenEdges, destructiveCandidates, ['auth wall blocked exploration']);
-        return { graph, summary, needsInput: NeedsInput.credentials('Exploration hit a login screen.'), state: 'needs_input', stoppedReason: 'auth required (credentials missing)', suitePromotion, destructiveCandidates: [...destructiveCandidates.values()] };
+        return {
+          graph,
+          summary,
+          needsInput: NeedsInput.credentials('Exploration hit a login screen.'),
+          state: 'needs_input',
+          stoppedReason: 'auth required (credentials missing)',
+          suitePromotion,
+          destructiveCandidates: [...destructiveCandidates.values()],
+        };
       }
       // stopOnAuth:false → record blocked and stop crawling further (only public screens were reachable).
       stoppedReason = 'auth required — recorded blocked, no credentials to proceed';
@@ -414,7 +537,16 @@ export async function runExplore(sessions: SessionStore, session: Session, drive
     if (blockedCandidates.length && !skippedNotedScreens.has(obs.node.id)) {
       skippedNotedScreens.add(obs.node.id);
       const ex = blockedCandidates[0];
-      note({ workflow: 'guided_exploration', outcome: 'skipped', category: ex.risk === 'destructive' ? 'destructive_refused' : 'other', reason: `Skipped ${ex.risk} action "${ex.label ?? ex.locator?.value}": ${ex.reason}`, recommendedSetup: ex.risk === 'destructive' ? 'Run dry_run_destructive to list candidate-bound approvals, then approve one exact candidate with disposable test state.' : 'Add accessibilityLabel/testID so the action can be judged + automated.' });
+      note({
+        workflow: 'guided_exploration',
+        outcome: 'skipped',
+        category: ex.risk === 'destructive' ? 'destructive_refused' : 'other',
+        reason: `Skipped ${ex.risk} action "${ex.label ?? ex.locator?.value}": ${ex.reason}`,
+        recommendedSetup:
+          ex.risk === 'destructive'
+            ? 'Run dry_run_destructive to list candidate-bound approvals, then approve one exact candidate with disposable test state.'
+            : 'Add accessibilityLabel/testID so the action can be judged + automated.',
+      });
       summary.unsafeActionsSkipped += blockedCandidates.length;
     }
 
@@ -444,7 +576,12 @@ export async function runExplore(sessions: SessionStore, session: Session, drive
       // Nothing safe+new here. Go back to keep exploring; if we're at the root with nothing, stop.
       if (lastNodeId && obs.node.id !== graph.rootId && depth > 1) {
         await driver.pressKey('back').catch(() => {});
-        graph.addEdge({ from: obs.node.id, action: { type: 'back', targetDescription: 'back' }, outcome: 'changed_screen', evidenceUris: [] });
+        graph.addEdge({
+          from: obs.node.id,
+          action: { type: 'back', targetDescription: 'back' },
+          outcome: 'changed_screen',
+          evidenceUris: [],
+        });
         await settle(driver, { timeoutMs: 4000 }).catch(() => {});
         lastNodeId = obs.node.id;
         continue;
@@ -463,7 +600,14 @@ export async function runExplore(sessions: SessionStore, session: Session, drive
     if (pick.actionType === 'type') {
       const v = valueForField(session, pick.label, pick.locator?.value, pick.role, pick.secure, genCtx);
       if (!v) {
-        note({ workflow: 'guided_exploration', outcome: 'skipped', category: 'missing_test_data', reason: `text field "${pick.label ?? pick.locator?.value}" needs a value to exercise`, missingPrecondition: 'a fixture value or credential for this field', recommendedSetup: 'Provide credentials (qa_continue_from_blocker) or a fixture { name, value }.' });
+        note({
+          workflow: 'guided_exploration',
+          outcome: 'skipped',
+          category: 'missing_test_data',
+          reason: `text field "${pick.label ?? pick.locator?.value}" needs a value to exercise`,
+          missingPrecondition: 'a fixture value or credential for this field',
+          recommendedSetup: 'Provide credentials (qa_continue_from_blocker) or a fixture { name, value }.',
+        });
         summary.blockers++;
         continue;
       }
@@ -471,7 +615,12 @@ export async function runExplore(sessions: SessionStore, session: Session, drive
         await driver.tapXY(Math.round(cx), Math.round(cy)); // focus the field
         await driver.inputText(v.value);
       } catch {
-        graph.addEdge({ from: fromId, action: { type: 'type', targetDescription: pick.label ?? 'field' }, outcome: 'blocked', evidenceUris: [] });
+        graph.addEdge({
+          from: fromId,
+          action: { type: 'type', targetDescription: pick.label ?? 'field' },
+          outcome: 'blocked',
+          evidenceUris: [],
+        });
         continue;
       }
       summary.actionsTried++;
@@ -484,7 +633,19 @@ export async function runExplore(sessions: SessionStore, session: Session, drive
             session,
             'generated_data',
             `generated-${v.varName.toLowerCase()}-${Date.now()}.json`,
-            JSON.stringify({ schema: 'swipium.generated_value.v1', fixture: rec.fixture, field: rec.field, varName: rec.varName, generator: rec.generator, value: rec.secret ? '<redacted>' : rec.value, secret: rec.secret }, null, 2),
+            JSON.stringify(
+              {
+                schema: 'swipium.generated_value.v1',
+                fixture: rec.fixture,
+                field: rec.field,
+                varName: rec.varName,
+                generator: rec.generator,
+                value: rec.secret ? '<redacted>' : rec.value,
+                secret: rec.secret,
+              },
+              null,
+              2,
+            ),
             'application/json',
             `generated fixture value ${rec.fixture}.${rec.field}`,
           );
@@ -492,11 +653,27 @@ export async function runExplore(sessions: SessionStore, session: Session, drive
         }
       }
       if (pick.locator && pick.locator.strategy !== 'coordinate') {
-        sessions.addRecordedAction(session, { at: Date.now(), action: 'type', selector: pick.locator.value, selectorKind: strategyToKind(pick.locator.strategy), text: `\${${v.varName}}`, secret: v.secret, exportability: v.secret ? 'needs-human-data' : 'semantic', screen: obs.node.title, provenance: provenanceForCandidate(obs.node, pick) });
+        sessions.addRecordedAction(session, {
+          at: Date.now(),
+          action: 'type',
+          selector: pick.locator.value,
+          selectorKind: strategyToKind(pick.locator.strategy),
+          text: `\${${v.varName}}`,
+          secret: v.secret,
+          exportability: v.secret ? 'needs-human-data' : 'semantic',
+          screen: obs.node.title,
+          provenance: provenanceForCandidate(obs.node, pick),
+        });
       }
       await settle(driver, { timeoutMs: 5000 }).catch(() => {});
       const afterType = await observe();
-      graph.addEdge({ from: fromId, to: afterType.node.id, action: { type: 'type', targetDescription: pick.label ?? 'field' }, outcome: afterType.node.id === fromId ? 'same_screen' : 'changed_screen', evidenceUris: [] });
+      graph.addEdge({
+        from: fromId,
+        to: afterType.node.id,
+        action: { type: 'type', targetDescription: pick.label ?? 'field' },
+        outcome: afterType.node.id === fromId ? 'same_screen' : 'changed_screen',
+        evidenceUris: [],
+      });
       lastNodeId = afterType.node.id;
       continue;
     }
@@ -515,7 +692,12 @@ export async function runExplore(sessions: SessionStore, session: Session, drive
           detail: 'Approved destructive exploration candidate could not be tapped.',
         });
       }
-      graph.addEdge({ from: fromId, action: { type: 'tap', targetDescription: pick.label ?? pick.locator?.value ?? 'control' }, outcome: 'blocked', evidenceUris: [] });
+      graph.addEdge({
+        from: fromId,
+        action: { type: 'tap', targetDescription: pick.label ?? pick.locator?.value ?? 'control' },
+        outcome: 'blocked',
+        evidenceUris: [],
+      });
       continue;
     }
     if (pick.risk === 'destructive') {
@@ -531,9 +713,17 @@ export async function runExplore(sessions: SessionStore, session: Session, drive
     }
     summary.actionsTried++;
     sessions.bump(session, 'actions');
-    // Record durable taps so qa_suite_generate can promote the path (§9.3).
+    // Record durable taps so qa_generate target:"suite" can promote the path (§9.3).
     if (pick.locator && pick.locator.strategy !== 'coordinate') {
-      sessions.addRecordedAction(session, { at: Date.now(), action: 'tap', selector: pick.locator.value, selectorKind: strategyToKind(pick.locator.strategy), exportability: 'semantic', screen: obs.node.title, provenance: provenanceForCandidate(obs.node, pick) });
+      sessions.addRecordedAction(session, {
+        at: Date.now(),
+        action: 'tap',
+        selector: pick.locator.value,
+        selectorKind: strategyToKind(pick.locator.strategy),
+        exportability: 'semantic',
+        screen: obs.node.title,
+        provenance: provenanceForCandidate(obs.node, pick),
+      });
     }
     await settle(driver, { timeoutMs: 5000 }).catch(() => {});
 
@@ -547,13 +737,37 @@ export async function runExplore(sessions: SessionStore, session: Session, drive
       consecutiveNoChange++;
     }
     if (outcome === 'same_screen') sameScreenEdges++;
-    graph.addEdge({ from: fromId, to: after.node.id, action: { type: 'tap', targetDescription: pick.label ?? pick.locator?.value ?? 'control', locator: pick.locator as unknown as Record<string, unknown> }, outcome, evidenceUris: after.node.screenshotUri ? [after.node.screenshotUri] : [], riskDecision: pick.riskClass ?? pick.risk, preActionState: obs.node.signature, postActionState: after.node.signature, oracle: outcome === 'changed_screen' ? 'screen_signature_changed' : 'screen_signature_same' });
+    graph.addEdge({
+      from: fromId,
+      to: after.node.id,
+      action: {
+        type: 'tap',
+        targetDescription: pick.label ?? pick.locator?.value ?? 'control',
+        locator: pick.locator as unknown as Record<string, unknown>,
+      },
+      outcome,
+      evidenceUris: after.node.screenshotUri ? [after.node.screenshotUri] : [],
+      riskDecision: pick.riskClass ?? pick.risk,
+      preActionState: obs.node.signature,
+      postActionState: after.node.signature,
+      oracle: outcome === 'changed_screen' ? 'screen_signature_changed' : 'screen_signature_same',
+    });
     lastNodeId = after.node.id;
-    if (consecutiveNoChange >= 3) { stoppedReason = 'repeated no-change actions'; break; }
+    if (consecutiveNoChange >= 3) {
+      stoppedReason = 'repeated no-change actions';
+      break;
+    }
   }
 
   const suitePromotion = finalizeGraph(graph, summary, sameScreenEdges, destructiveCandidates, []);
-  return { graph, summary, state: summary.appErrors > 0 || summary.blockers > 0 ? 'blocked' : 'completed', stoppedReason, suitePromotion, destructiveCandidates: [...destructiveCandidates.values()] };
+  return {
+    graph,
+    summary,
+    state: summary.appErrors > 0 || summary.blockers > 0 ? 'blocked' : 'completed',
+    stoppedReason,
+    suitePromotion,
+    destructiveCandidates: [...destructiveCandidates.values()],
+  };
 }
 
 function finalizeGraph(
@@ -569,17 +783,19 @@ function finalizeGraph(
   summary.featureCoverage = features;
   summary.destructiveCandidates = destructiveCandidates.size;
   if (existing.tasks.length) {
-    graph.setTasks(existing.tasks.map((task) => ({
-      ...task,
-      status:
-        features[task.feature] === 'covered'
-          ? 'completed'
-          : features[task.feature] === 'unsafe'
-            ? 'unsafe'
-            : features[task.feature] === 'blocked' || features[task.feature] === 'needs_fixture'
-              ? 'blocked'
-              : 'not_applicable',
-    })));
+    graph.setTasks(
+      existing.tasks.map((task) => ({
+        ...task,
+        status:
+          features[task.feature] === 'covered'
+            ? 'completed'
+            : features[task.feature] === 'unsafe'
+              ? 'unsafe'
+              : features[task.feature] === 'blocked' || features[task.feature] === 'needs_fixture'
+                ? 'blocked'
+                : 'not_applicable',
+      })),
+    );
   }
   graph.setCoverageClaims(coverageClaimsFrom(features, nodes));
   graph.setReflection(reflectExploration(nodes, sameScreenEdges, reasons));

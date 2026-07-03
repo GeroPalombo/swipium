@@ -11,7 +11,14 @@
 import { recordObservation } from './index.js';
 import { getIndex } from './store.js';
 import { buildReportIssuesSection, type ReportIssuesSection } from './report.js';
-import { isIssueCategory, type IssueCategory, type IssueEnvironment, type IssueObservation, type IssuePlatform, type SourceRevision } from './schema.js';
+import {
+  isIssueCategory,
+  type IssueCategory,
+  type IssueEnvironment,
+  type IssueObservation,
+  type IssuePlatform,
+  type SourceRevision,
+} from './schema.js';
 
 export interface BridgeFinding {
   severity: string;
@@ -158,10 +165,25 @@ export function foldRunIntoLedger(
       findingToObservation(f),
       now,
       { environment: meta.environment },
-      { appId: meta.appId, appName: meta.appName, platform: meta.platform, environment: meta.environment, sourceRevision: meta.sourceRevision, run },
+      {
+        appId: meta.appId,
+        appName: meta.appName,
+        platform: meta.platform,
+        environment: meta.environment,
+        sourceRevision: meta.sourceRevision,
+        run,
+      },
     );
     recordedIssueIds.push(res.issueId);
-    recorded.push({ issueId: res.issueId, fingerprint: res.fingerprint, source: 'finding', category: res.record.category, severity: res.record.severity, state: res.record.state, reopened: res.reopened });
+    recorded.push({
+      issueId: res.issueId,
+      fingerprint: res.fingerprint,
+      source: 'finding',
+      category: res.record.category,
+      severity: res.record.severity,
+      state: res.record.state,
+      reopened: res.reopened,
+    });
     if (res.recurrenceMessage) recurrences.push(res.recurrenceMessage);
   }
 
@@ -175,10 +197,26 @@ export function foldRunIntoLedger(
       noteToObservation(n),
       now,
       { environment: meta.environment, categoryHint },
-      { appId: meta.appId, appName: meta.appName, platform: meta.platform, environment: meta.environment, sourceRevision: meta.sourceRevision, run: { ...run, testCaseId: n.workflow } },
+      {
+        appId: meta.appId,
+        appName: meta.appName,
+        platform: meta.platform,
+        environment: meta.environment,
+        sourceRevision: meta.sourceRevision,
+        run: { ...run, testCaseId: n.workflow },
+      },
     );
     recordedIssueIds.push(res.issueId);
-    recorded.push({ issueId: res.issueId, fingerprint: res.fingerprint, source: 'note', workflow: n.workflow, category: res.record.category, severity: res.record.severity, state: res.record.state, reopened: res.reopened });
+    recorded.push({
+      issueId: res.issueId,
+      fingerprint: res.fingerprint,
+      source: 'note',
+      workflow: n.workflow,
+      category: res.record.category,
+      severity: res.record.severity,
+      state: res.record.state,
+      reopened: res.reopened,
+    });
     if (res.recurrenceMessage) recurrences.push(res.recurrenceMessage);
   }
 

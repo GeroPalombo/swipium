@@ -1,0 +1,12 @@
+# Build output and dependencies
+dist/
+node_modules/
+coverage/
+*.tgz
+
+# Generated / lockfiles
+package-lock.json
+
+# Prose stays hand-formatted
+*.md
+docs/

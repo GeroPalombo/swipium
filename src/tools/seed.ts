@@ -30,15 +30,30 @@ export function registerSeed(server: McpServer, sessions: SessionStore): void {
     async ({ sessionId, fixture: fixtureName, consentId, approve }) => {
       const session = sessions.get(sessionId);
       if (!session) {
-        return qaError({ what: `Unknown sessionId ${sessionId}`, changedState: false, retrySafe: true, nextSteps: ['Call qa_start_session first.'] });
+        return qaError({
+          what: `Unknown sessionId ${sessionId}`,
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Call qa_start_session first.'],
+        });
       }
       const fixture = session.fixtures.find((f) => f.name === fixtureName);
       if (!fixture) {
-        return qaError({ what: `No declared fixture "${fixtureName}"`, changedState: false, retrySafe: true, nextSteps: ['Declare it in .swipium/fixtures.json or qa_start_session { fixtures }.'] });
+        return qaError({
+          what: `No declared fixture "${fixtureName}"`,
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Declare it in .swipium/fixtures.json or qa_start_session { fixtures }.'],
+        });
       }
       const seed = fixture.seed;
       if (!seed) {
-        return qaError({ what: `Fixture "${fixtureName}" has no seed spec`, changedState: false, retrySafe: true, nextSteps: ['Add a seed: { type: "deeplink"|"script"|"api", … } to the fixture to make it creatable.'] });
+        return qaError({
+          what: `Fixture "${fixtureName}" has no seed spec`,
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Add a seed: { type: "deeplink"|"script"|"api", … } to the fixture to make it creatable.'],
+        });
       }
       const git = seedGitScopeViolation(seed);
       if (git) {
@@ -83,7 +98,15 @@ export function registerSeed(server: McpServer, sessions: SessionStore): void {
       const result = await executeSeed(sessions, session, driver, fixtureName, seed);
       if (!result.ok) {
         // Record as a SETUP failure (not an app bug) so the report can't mislabel it.
-        sessions.addNote(session, { at: Date.now(), workflow: `seed:${fixtureName}`, outcome: 'blocked', category: 'missing_test_data', reason: `seed failed: ${result.detail}`, requiredState: fixture.requiredState, recommendedSetup: fixture.recommendedSetup });
+        sessions.addNote(session, {
+          at: Date.now(),
+          workflow: `seed:${fixtureName}`,
+          outcome: 'blocked',
+          category: 'missing_test_data',
+          reason: `seed failed: ${result.detail}`,
+          requiredState: fixture.requiredState,
+          recommendedSetup: fixture.recommendedSetup,
+        });
         sessions.recordMutation(session, {
           tool: 'qa_seed',
           action: 'seed_state',
@@ -93,9 +116,18 @@ export function registerSeed(server: McpServer, sessions: SessionStore): void {
           status: 'blocked',
           detail: result.detail,
         });
-        return qaFail('SEED_FAILED', { what: `Seeding "${fixtureName}" failed: ${result.detail}`, changedState: true, extra: { fixture: fixtureName, type: seed.type } });
+        return qaFail('SEED_FAILED', {
+          what: `Seeding "${fixtureName}" failed: ${result.detail}`,
+          changedState: true,
+          extra: { fixture: fixtureName, type: seed.type },
+        });
       }
-      sessions.addNote(session, { at: Date.now(), workflow: `seed:${fixtureName}`, outcome: 'pass', reason: `precondition created via ${seed.type}` });
+      sessions.addNote(session, {
+        at: Date.now(),
+        workflow: `seed:${fixtureName}`,
+        outcome: 'pass',
+        reason: `precondition created via ${seed.type}`,
+      });
       sessions.recordMutation(session, {
         tool: 'qa_seed',
         action: 'seed_state',

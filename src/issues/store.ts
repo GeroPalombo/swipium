@@ -157,7 +157,5 @@ export function eventCountForIssue(root: string, issueId: string): number {
 
 /** Find an index record by issue id or fingerprint. */
 export function findRecord(index: IssueIndex, key: { issueId?: string; fingerprint?: string }): IssueRecord | undefined {
-  return index.records.find(
-    (r) => (key.issueId && r.issueId === key.issueId) || (key.fingerprint && r.fingerprint === key.fingerprint),
-  );
+  return index.records.find((r) => (key.issueId && r.issueId === key.issueId) || (key.fingerprint && r.fingerprint === key.fingerprint));
 }

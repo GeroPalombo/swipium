@@ -150,24 +150,15 @@ function computeQuality(all: RawNode[], screen: [number, number]): SnapshotQuali
   const reasons: string[] = [];
   let verdict: SnapshotQuality['verdict'] = 'partial';
 
-  if (
-    nodeCount < 5 ||
-    opaqueWebview ||
-    unidentifiedClickableRatio > 0.6 ||
-    (composeNoTestTag && idCoverage < 0.1)
-  ) {
+  if (nodeCount < 5 || opaqueWebview || unidentifiedClickableRatio > 0.6 || (composeNoTestTag && idCoverage < 0.1)) {
     verdict = 'poor';
     if (nodeCount < 5) reasons.push(`only ${nodeCount} nodes (likely splash/canvas/not-rendered)`);
-    if (opaqueWebview) reasons.push(`a single WebView/SurfaceView covers ${(webviewDominance * 100) | 0}% of screen with no semantic children`);
+    if (opaqueWebview)
+      reasons.push(`a single WebView/SurfaceView covers ${(webviewDominance * 100) | 0}% of screen with no semantic children`);
     if (unidentifiedClickableRatio > 0.6)
       reasons.push(`${(unidentifiedClickableRatio * 100) | 0}% of clickable nodes have no id/label/text`);
     if (composeNoTestTag) reasons.push('Compose UI without testTagsAsResourceId (no stable ids)');
-  } else if (
-    nodeCount >= 15 &&
-    unidentifiedClickableRatio < 0.2 &&
-    idCoverage > 0.5 &&
-    webviewDominance < 0.4
-  ) {
+  } else if (nodeCount >= 15 && unidentifiedClickableRatio < 0.2 && idCoverage > 0.5 && webviewDominance < 0.4) {
     verdict = 'good';
     reasons.push('rich tree with good id coverage');
   } else {

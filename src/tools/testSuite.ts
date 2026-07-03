@@ -1,8 +1,10 @@
-// qa_test_suite_* — the MCP surface for the persistent, project-level QA test-case suite
+// qa_suite_* — the MCP surface for the persistent, project-level QA test-case suite
 // (SWIPIUM-REQ-06). These query, update, generate, export, and lint the canonical suite under
-// `.swipium/test-suite.json` independently of per-run suite generation. All persistence + merge
-// logic lives in src/testSuite/* (pure); these tools resolve a root/session, call that layer, and
-// surface the result. Time is read once per call here (the pure layer never reads the clock).
+// `.swipium/test-suite.json` independently of per-run asset generation (qa_generate). All
+// persistence + merge logic lives in src/testSuite/* (pure); these tools resolve a root/session,
+// call that layer, and surface the result. Time is read once per call here (the pure layer never
+// reads the clock). qa_suite_lint also folds in the generated-page-object lint (src/suite/lint.ts)
+// when .swipium/pages exists, so one call audits both the durable suite and generated pages.
 
 import { z } from 'zod';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -12,10 +14,11 @@ import { qaOk, qaError } from '../lib/result.js';
 import { loadProjectConfig } from '../cli/scan.js';
 import { pomForSession } from '../services/suiteGenerate.js';
 import { generateCanonicalCases, normalizeCase } from '../testSuite/generator.js';
-import { applyMerge, loadSuite, saveSuite, suiteResourceUri, runIdFromNow, suiteRoot } from '../testSuite/store.js';
+import { applyMerge, loadSuite, runIdFromNow, suiteRoot } from '../testSuite/store.js';
 import { exportSuite, type ExportFormat } from '../testSuite/exporter.js';
 import { lintSuite } from '../testSuite/lint.js';
-import type { CanonicalTestCase, CaseStatus, CreativityLevel, ProvenanceSource } from '../testSuite/schema.js';
+import { lintSuitePages } from '../suite/lint.js';
+import type { CanonicalTestCase, CreativityLevel, ProvenanceSource } from '../testSuite/schema.js';
 import type { Session, SessionStore } from '../session/store.js';
 
 interface Resolved {
@@ -32,7 +35,8 @@ function resolveRoot(sessions: SessionStore, sessionId?: string, projectRoot?: s
   return { root, appId, session };
 }
 
-const noRoot = () => qaError({ what: 'No project root', changedState: false, retrySafe: true, nextSteps: ['Pass sessionId or projectRoot.'] });
+const noRoot = () =>
+  qaError({ what: 'No project root', changedState: false, retrySafe: true, nextSteps: ['Pass sessionId or projectRoot.'] });
 
 /** Register the suite JSON as a session artifact so its resource URI resolves; returns the URI. */
 function publishSuiteArtifact(sessions: SessionStore, session: Session | undefined, json: string): string | undefined {
@@ -41,9 +45,9 @@ function publishSuiteArtifact(sessions: SessionStore, session: Session | undefin
 }
 
 export function registerTestSuite(server: McpServer, sessions: SessionStore): void {
-  // ---- qa_test_suite_read ----
+  // ---- qa_suite_read ----
   server.registerTool(
-    'qa_test_suite_read',
+    'qa_suite_read',
     {
       title: 'Read the persistent QA test suite',
       description:
@@ -74,7 +78,9 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
       const fmt = format ?? 'summary';
       const summaryText =
         `QA test suite: ${suite.cases.length} case(s) across ${Object.keys(byFunctionality).length} functionality area(s); ${cases.length} match filter.\n` +
-        Object.entries(byFunctionality).map(([k, n]) => `  ${k}: ${n}`).join('\n');
+        Object.entries(byFunctionality)
+          .map(([k, n]) => `  ${k}: ${n}`)
+          .join('\n');
 
       const payload: Record<string, unknown> = {
         totalCases: suite.cases.length,
@@ -90,9 +96,9 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
     },
   );
 
-  // ---- qa_test_suite_update ----
+  // ---- qa_suite_update ----
   server.registerTool(
-    'qa_test_suite_update',
+    'qa_suite_update',
     {
       title: 'Update the persistent QA test suite',
       description:
@@ -102,7 +108,10 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
         projectRoot: z.string().optional(),
         source: z.enum(['report', 'exploration', 'feature', 'ticket', 'manual', 'generate', 'suite']),
         sourceUri: z.string().optional(),
-        cases: z.array(z.record(z.any())).optional().describe('Canonical (or partial) test cases to merge. Partial cases are normalized with sane defaults.'),
+        cases: z
+          .array(z.record(z.any()))
+          .optional()
+          .describe('Canonical (or partial) test cases to merge. Partial cases are normalized with sane defaults.'),
         mergeMode: z.enum(['append', 'update', 'replace_generated']).optional(),
       },
     },
@@ -110,7 +119,12 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
       const r = resolveRoot(sessions, sessionId, projectRoot);
       if (!r) return noRoot();
       if (!cases || !cases.length) {
-        return qaError({ what: 'No cases provided to merge', changedState: false, retrySafe: true, nextSteps: ['Pass cases:[...], or use qa_test_suite_generate to build them from the app.'] });
+        return qaError({
+          what: 'No cases provided to merge',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Pass cases:[...], or use qa_suite_generate to build them from the app.'],
+        });
       }
       const now = new Date().toISOString();
       const incoming: CanonicalTestCase[] = cases.map((c) => {
@@ -119,7 +133,12 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
         if (source === 'manual') normalized.manuallyEdited = true;
         return normalized;
       });
-      const applied = applyMerge(r.root, incoming, { source: source as ProvenanceSource, mode: mergeMode ?? 'update', now, runId: runIdFromNow(now), sourceUri }, r.appId);
+      const applied = applyMerge(
+        r.root,
+        incoming,
+        { source: source as ProvenanceSource, mode: mergeMode ?? 'update', now, runId: runIdFromNow(now), sourceUri },
+        r.appId,
+      );
       const uri = publishSuiteArtifact(sessions, r.session, JSON.stringify(applied.result.suite, null, 2));
       const { created, updated, deprecated, conflicts } = applied.result;
       const summary =
@@ -141,13 +160,13 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
     },
   );
 
-  // ---- qa_test_suite_generate ----
+  // ---- qa_suite_generate ----
   server.registerTool(
-    'qa_test_suite_generate',
+    'qa_suite_generate',
     {
       title: 'Generate persistent suite cases from the app',
       description:
-        "Generate or refresh canonical test cases from this session's recorded actions (POM flow) + observed outcomes + guided-exploration coverage, then merge them into the persistent suite. Cases are grouped by functionality, carry a creativityLevel, expected vs. actual results, automation readiness, and traceability. Re-running updates existing cases instead of duplicating them. Returns generated cases + skipped/blocked features + map-coverage gaps.",
+        "Generate or refresh canonical test cases from this session's recorded actions (POM flow) + observed outcomes + guided-exploration coverage, then merge them into the persistent, DURABLE repo-level suite (.swipium/test-suite.json) that grows across runs. Cases are grouped by functionality, carry a creativityLevel, expected vs. actual results, automation readiness, and traceability. Re-running updates existing cases instead of duplicating them. Returns generated cases + skipped/blocked features + map-coverage gaps. Prefer qa_suite_generate for the durable repo-level suite / not for per-run generated assets (flow YAML, page objects, per-run POM suite, Appium code) — use qa_generate for those.",
       inputSchema: {
         sessionId: z.string().optional(),
         projectRoot: z.string().optional(),
@@ -160,14 +179,25 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
       const r = resolveRoot(sessions, sessionId, projectRoot);
       if (!r) return noRoot();
       if (!r.session) {
-        return qaError({ what: 'qa_test_suite_generate needs a session to read recorded actions', changedState: false, retrySafe: true, nextSteps: ['Pass sessionId of a session that drove the app (qa_act/qa_smoke/qa_explore).'] });
+        return qaError({
+          what: 'qa_suite_generate needs a session to read recorded actions',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Pass sessionId of a session that drove the app (qa_act/qa_smoke/qa_explore).'],
+        });
       }
       const session = r.session;
       const hasActions = session.recordedActions.length > 0;
       const hasExploration = !!session.exploration;
       if (!hasActions && !hasExploration) {
         return qaOk(
-          { generated: [], skipped: ['no recorded actions or exploration'], coverageGaps: ['Drive the app first (qa_act/qa_smoke/qa_explore) so cases can be generated.'], created: [], updated: [] },
+          {
+            generated: [],
+            skipped: ['no recorded actions or exploration'],
+            coverageGaps: ['Drive the app first (qa_act/qa_smoke/qa_explore) so cases can be generated.'],
+            created: [],
+            updated: [],
+          },
           'No recorded actions or exploration in this session — nothing to generate yet.',
         );
       }
@@ -188,11 +218,21 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
       const filtered = includeManualOnly === false ? incoming.filter((c) => c.automation.status !== 'manual') : incoming;
       const applied = applyMerge(r.root, filtered, { source: 'generate', mode: 'update', now, runId: runIdFromNow(now) }, r.appId);
       const uri = publishSuiteArtifact(sessions, session, JSON.stringify(applied.result.suite, null, 2));
-      const coverageGaps = pom ? pom.audit.entries.filter((e) => e.durability === 'brittle').map((e) => `${e.page}.${e.element}: ${e.remediation ?? 'brittle locator'}`) : [];
+      const coverageGaps = pom
+        ? pom.audit.entries
+            .filter((e) => e.durability === 'brittle')
+            .map((e) => `${e.page}.${e.element}: ${e.remediation ?? 'brittle locator'}`)
+        : [];
       const summary = `Generated ${filtered.length} case(s) → +${applied.result.created.length} new, ~${applied.result.updated.length} updated. Suite now ${applied.result.suite.cases.length} case(s).`;
       return qaOk(
         {
-          generated: filtered.map((c) => ({ functionality: c.functionality, title: c.title, type: c.type, creativityLevel: c.creativityLevel, automation: c.automation.status })),
+          generated: filtered.map((c) => ({
+            functionality: c.functionality,
+            title: c.title,
+            type: c.type,
+            creativityLevel: c.creativityLevel,
+            automation: c.automation.status,
+          })),
           created: applied.result.created,
           updated: applied.result.updated,
           deprecated: applied.result.deprecated,
@@ -205,9 +245,9 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
     },
   );
 
-  // ---- qa_test_suite_export ----
+  // ---- qa_suite_export ----
   server.registerTool(
-    'qa_test_suite_export',
+    'qa_suite_export',
     {
       title: 'Export the persistent QA test suite',
       description:
@@ -243,24 +283,33 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
         }
       }
       return qaOk(
-        { format, ...(result.content ? { content: result.content } : {}), ...(result.files ? { fileCount: result.files.length } : {}), written, totalCases: suite.cases.length },
+        {
+          format,
+          ...(result.content ? { content: result.content } : {}),
+          ...(result.files ? { fileCount: result.files.length } : {}),
+          written,
+          totalCases: suite.cases.length,
+        },
         `${result.summary}${written.length ? ` Wrote ${written.length} file(s).` : ''}`,
       );
     },
   );
 
-  // ---- qa_test_suite_lint ----
+  // ---- qa_suite_lint ----
   server.registerTool(
-    'qa_test_suite_lint',
+    'qa_suite_lint',
     {
       title: 'Lint the persistent QA test suite',
       description:
-        'Validate the persistent suite: missing expected results, missing actual results after a run, unlinked feature/screen, stale map links, duplicate ids, brittle automation above threshold, and adversarial cases lacking disposable-state/consent safety metadata. Returns errors (block) and warnings.',
+        'Validate the persistent suite: missing expected results, missing actual results after a run, unlinked feature/screen, stale map links, duplicate ids, brittle automation above threshold, and adversarial cases lacking disposable-state/consent safety metadata. Returns errors (block) and warnings. When generated page objects exist under .swipium/pages (from qa_generate), also lints them for durability problems (coordinate-only, copy/locale-fragile, dynamic-looking locators) and reports both sets of findings in one result.',
       inputSchema: {
         sessionId: z.string().optional(),
         projectRoot: z.string().optional(),
         brittleThreshold: z.enum(['C', 'D']).optional(),
-        liveFeatureIds: z.array(z.string()).optional().describe('Feature ids still present in the app map (enables the stale-map-link rule).'),
+        liveFeatureIds: z
+          .array(z.string())
+          .optional()
+          .describe('Feature ids still present in the app map (enables the stale-map-link rule).'),
       },
     },
     async ({ sessionId, projectRoot, brittleThreshold, liveFeatureIds }) => {
@@ -268,12 +317,38 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
       if (!r) return noRoot();
       const suite = loadSuite(r.root, r.appId);
       const result = lintSuite(suite, { brittleThreshold, liveFeatureIds });
+      // Fold in the generated-page-object lint (per-run assets from qa_generate) when pages exist,
+      // so one lint call audits both the durable suite and the generated POM pages.
+      const pages = lintSuitePages(r.root);
+      const pageErrors = pages.exists ? pages.items.filter((i) => i.severity === 'error').length : 0;
       const summary =
         `Linted ${suite.cases.length} case(s): ${result.errorCount} error(s), ${result.warnCount} warning(s).\n` +
         (result.findings.length
-          ? result.findings.slice(0, 25).map((f) => `  ${f.severity === 'error' ? '✗' : '⚠'} ${f.id ? `${f.id} ` : ''}[${f.rule}] ${f.message}`).join('\n')
-          : '  ✓ no issues.');
-      return qaOk({ ok: result.ok, errorCount: result.errorCount, warnCount: result.warnCount, findings: result.findings }, summary);
+          ? result.findings
+              .slice(0, 25)
+              .map((f) => `  ${f.severity === 'error' ? '✗' : '⚠'} ${f.id ? `${f.id} ` : ''}[${f.rule}] ${f.message}`)
+              .join('\n')
+          : '  ✓ no issues.') +
+        (pages.exists
+          ? `\nGenerated pages (.swipium/pages): ${pages.pageCount} page object(s), ${pages.items.length} issue(s) (${pageErrors} brittle).` +
+            (pages.items.length
+              ? '\n' +
+                pages.items
+                  .slice(0, 20)
+                  .map((i) => `  ${i.severity === 'error' ? '✗' : '⚠'} ${i.page}.${i.element}: ${i.message}`)
+                  .join('\n')
+              : '\n  ✓ all locators are durable.')
+          : '');
+      return qaOk(
+        {
+          ok: result.ok && pageErrors === 0,
+          errorCount: result.errorCount,
+          warnCount: result.warnCount,
+          findings: result.findings,
+          pagesLint: pages.exists ? { pageCount: pages.pageCount, items: pages.items, errorCount: pageErrors } : null,
+        },
+        summary,
+      );
     },
   );
 }

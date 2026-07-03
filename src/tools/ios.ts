@@ -48,12 +48,31 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
         'Control an iOS Simulator (macOS only) and attach an external WDA backend. actions: list (available simulators), boot (boot/select one — binds it to the session), install (a .app, consent-gated), launch (a bundle id), terminate, openurl (deep link), screenshot, logs, privacy_reset (consent-gated), erase (consent-gated, wipes the device), wda_status, wda_attach. After boot/launch, qa_screenshot / qa_assert_visual / qa_report work on the simulator. For structured iOS tap/type/snapshot, attach WDA with action:"wda_attach".',
       inputSchema: {
         sessionId: z.string(),
-        action: z.enum(['list', 'boot', 'install', 'launch', 'terminate', 'openurl', 'screenshot', 'logs', 'privacy_reset', 'erase', 'wda_status', 'wda_attach']),
-        device: z.string().optional().describe('Simulator udid or name substring (for boot/erase), or expected WDA device UDID for wda_attach.'),
+        action: z.enum([
+          'list',
+          'boot',
+          'install',
+          'launch',
+          'terminate',
+          'openurl',
+          'screenshot',
+          'logs',
+          'privacy_reset',
+          'erase',
+          'wda_status',
+          'wda_attach',
+        ]),
+        device: z
+          .string()
+          .optional()
+          .describe('Simulator udid or name substring (for boot/erase), or expected WDA device UDID for wda_attach.'),
         app: z.string().optional().describe('Path to a .app bundle (for install); absolute or relative to the project root.'),
         bundleId: z.string().optional().describe('App bundle id (for launch/terminate/privacy_reset/wda_attach).'),
         url: z.string().optional().describe('Deep link (for openurl).'),
-        webDriverAgentUrl: z.string().optional().describe('External WebDriverAgent base URL for wda_status/wda_attach. Defaults to http://127.0.0.1:8100.'),
+        webDriverAgentUrl: z
+          .string()
+          .optional()
+          .describe('External WebDriverAgent base URL for wda_status/wda_attach. Defaults to http://127.0.0.1:8100.'),
         allowNonLoopback: z.boolean().optional().describe('Required to use a non-loopback WDA URL.'),
         last: z.string().optional().describe('Time range for logs, e.g. 5m, 30m, 1h. Defaults to 5m.'),
         service: z.string().optional().describe('Privacy service for privacy_reset (e.g. location, photos, camera, all).'),
@@ -65,7 +84,12 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
       const { sessionId, action } = args;
       const session = sessions.get(sessionId);
       if (!session) {
-        return qaError({ what: `Unknown sessionId ${sessionId}`, changedState: false, retrySafe: true, nextSteps: ['Call qa_start_session first.'] });
+        return qaError({
+          what: `Unknown sessionId ${sessionId}`,
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Call qa_start_session first.'],
+        });
       }
 
       if (action === 'wda_status' || action === 'wda_attach') {
@@ -79,7 +103,9 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
             changedState: false,
             retrySafe: false,
             failureCode: 'DESTRUCTIVE_REFUSED',
-            nextSteps: ['Use a localhost WDA URL, pass allowNonLoopback with explicit consent, or add this exact URL to ios.wda.allowNonLoopbackUrls for a trusted isolated automation network.'],
+            nextSteps: [
+              'Use a localhost WDA URL, pass allowNonLoopback with explicit consent, or add this exact URL to ios.wda.allowNonLoopbackUrls for a trusted isolated automation network.',
+            ],
           });
         }
         if (!loopback && !configAllowed) {
@@ -103,34 +129,46 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
           driverKind: session.driver?.kind ?? null,
         };
         if (action === 'wda_status') {
-          return qaOk(base, `iOS WDA status: ${status.reachable ? 'reachable' : 'unreachable'} at ${url}${targetUdid ? ` device=${targetUdid}` : ''}`);
+          return qaOk(
+            base,
+            `iOS WDA status: ${status.reachable ? 'reachable' : 'unreachable'} at ${url}${targetUdid ? ` device=${targetUdid}` : ''}`,
+          );
         }
         if (!targetUdid) {
-          return qaError({
-            what: 'Refused ambiguous WDA attach without a device UDID',
-            changedState: false,
-            retrySafe: true,
-            failureCode: 'MULTIPLE_DEVICES',
-            nextSteps: ['Pass device with the simulator/device UDID, or bind the session to a simulator first.'],
-          }, base);
+          return qaError(
+            {
+              what: 'Refused ambiguous WDA attach without a device UDID',
+              changedState: false,
+              retrySafe: true,
+              failureCode: 'MULTIPLE_DEVICES',
+              nextSteps: ['Pass device with the simulator/device UDID, or bind the session to a simulator first.'],
+            },
+            base,
+          );
         }
         if (session.device && session.device !== targetUdid) {
-          return qaError({
-            what: `Refused ambiguous WDA/device mapping: session is bound to ${session.device}, but qa_ios wda_attach was asked to use ${targetUdid}`,
-            changedState: false,
-            retrySafe: false,
-            failureCode: 'STALE_WDA_DEVICE',
-            nextSteps: ['Use the session-bound device, or start a new session for the other WDA/device pair.'],
-          }, base);
+          return qaError(
+            {
+              what: `Refused ambiguous WDA/device mapping: session is bound to ${session.device}, but qa_ios wda_attach was asked to use ${targetUdid}`,
+              changedState: false,
+              retrySafe: false,
+              failureCode: 'STALE_WDA_DEVICE',
+              nextSteps: ['Use the session-bound device, or start a new session for the other WDA/device pair.'],
+            },
+            base,
+          );
         }
         if (!status.reachable) {
-          return qaError({
-            what: `WDA server unavailable at ${url}`,
-            changedState: false,
-            retrySafe: true,
-            failureCode: classifyWdaConnectionFailure(status.error ?? 'unreachable'),
-            nextSteps: ['Start WebDriverAgent externally, confirm /status responds, then retry qa_ios wda_attach.'],
-          }, base);
+          return qaError(
+            {
+              what: `WDA server unavailable at ${url}`,
+              changedState: false,
+              retrySafe: true,
+              failureCode: classifyWdaConnectionFailure(status.error ?? 'unreachable'),
+              nextSteps: ['Start WebDriverAgent externally, confirm /status responds, then retry qa_ios wda_attach.'],
+            },
+            base,
+          );
         }
         try {
           const bundleId = args.bundleId ?? session.appId ?? undefined;
@@ -153,15 +191,22 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
               status: 'blocked',
               detail: 'WDA reported a different device',
             });
-            return qaError({
-              what: `Refused stale WDA session: WDA reported device ${mismatchedUdid}, but qa_ios wda_attach requested ${targetUdid}`,
-              changedState: false,
-              retrySafe: false,
-              failureCode: 'STALE_WDA_DEVICE',
-              nextSteps: ['Stop the stale WDA process or start a new WDA session for the intended UDID.'],
-            }, { ...base, capabilities: created.capabilities ?? null, wdaSessionId: created.sessionId });
+            return qaError(
+              {
+                what: `Refused stale WDA session: WDA reported device ${mismatchedUdid}, but qa_ios wda_attach requested ${targetUdid}`,
+                changedState: false,
+                retrySafe: false,
+                failureCode: 'STALE_WDA_DEVICE',
+                nextSteps: ['Stop the stale WDA process or start a new WDA session for the intended UDID.'],
+              },
+              { ...base, capabilities: created.capabilities ?? null, wdaSessionId: created.sessionId },
+            );
           }
-          session.driver = new WdaDriver(url, { ...sessionOptions, sessionId: created.sessionId, onTiming: (kind, ms) => recordWdaTiming(session, kind, ms, sessions) });
+          session.driver = new WdaDriver(url, {
+            ...sessionOptions,
+            sessionId: created.sessionId,
+            onTiming: (kind, ms) => recordWdaTiming(session, kind, ms, sessions),
+          });
           session.device = targetUdid;
           if (bundleId) session.appId = bundleId;
           sessions.persist(session);
@@ -170,11 +215,20 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
             tool: 'qa_ios',
             action: 'wda_attach',
             risk: 'medium',
-            target: { webDriverAgentUrl: url, device: targetUdid, bundleId: bundleId ?? null, wdaSessionId: created.sessionId, capabilities: created.capabilities ?? null },
+            target: {
+              webDriverAgentUrl: url,
+              device: targetUdid,
+              bundleId: bundleId ?? null,
+              wdaSessionId: created.sessionId,
+              capabilities: created.capabilities ?? null,
+            },
             consent: { required: !loopback && !configAllowed, consentId: args.consentId, approved: true },
             status: 'executed',
           });
-          return qaOk({ ...base, sessionActive: true, wdaSessionId: created.sessionId, capabilities: created.capabilities ?? null }, `attached WDA structured iOS backend at ${url}\nNext: qa_snapshot / qa_act / qa_flow_run can use WDA-backed structured operations.`);
+          return qaOk(
+            { ...base, sessionActive: true, wdaSessionId: created.sessionId, capabilities: created.capabilities ?? null },
+            `attached WDA structured iOS backend at ${url}\nNext: qa_snapshot / qa_act / qa_flow_run can use WDA-backed structured operations.`,
+          );
         } catch (e) {
           const failureCode = classifyWdaConnectionFailure(String((e as Error).message ?? e));
           sessions.recordMutation(session, {
@@ -182,17 +236,24 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
             action: 'wda_attach',
             risk: 'medium',
             target: { webDriverAgentUrl: url, device: targetUdid, bundleId: args.bundleId ?? session.appId ?? null },
-            consent: { required: !loopback && !configAllowed, consentId: args.consentId, approved: !!configAllowed || loopback || !!args.approve },
+            consent: {
+              required: !loopback && !configAllowed,
+              consentId: args.consentId,
+              approved: !!configAllowed || loopback || !!args.approve,
+            },
             status: 'blocked',
             detail: String((e as Error).message ?? e),
           });
-          return qaError({
-            what: `WDA session creation failed: ${String((e as Error).message ?? e)}`,
-            changedState: false,
-            retrySafe: true,
-            failureCode,
-            nextSteps: ['Confirm WDA is paired with the intended simulator/device and that the app bundle id is installed.'],
-          }, base);
+          return qaError(
+            {
+              what: `WDA session creation failed: ${String((e as Error).message ?? e)}`,
+              changedState: false,
+              retrySafe: true,
+              failureCode,
+              nextSteps: ['Confirm WDA is paired with the intended simulator/device and that the app bundle id is installed.'],
+            },
+            base,
+          );
         }
       }
 
@@ -202,7 +263,9 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
           changedState: false,
           retrySafe: false,
           failureCode: 'BACKEND_UNSUPPORTED',
-          nextSteps: ['iOS support needs a macOS host with the `xcrun simctl` command-line tools. On Linux/Windows use the Android backend.'],
+          nextSteps: [
+            'iOS support needs a macOS host with the `xcrun simctl` command-line tools. On Linux/Windows use the Android backend.',
+          ],
         });
       }
 
@@ -212,7 +275,11 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
         const booted = sims.filter((s) => s.state === 'Booted');
         return qaOk(
           { simulators: sims, bootedCount: booted.length },
-          `${sims.length} available simulators (${booted.length} booted):\n` + sims.slice(0, 25).map((s) => `  ${s.state === 'Booted' ? '▶' : '·'} ${s.name} [${s.runtime}] ${s.udid}`).join('\n'),
+          `${sims.length} available simulators (${booted.length} booted):\n` +
+            sims
+              .slice(0, 25)
+              .map((s) => `  ${s.state === 'Booted' ? '▶' : '·'} ${s.name} [${s.runtime}] ${s.udid}`)
+              .join('\n'),
         );
       }
 
@@ -225,7 +292,14 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
           (args.device && sims.find((s) => s.udid === args.device || s.name.toLowerCase().includes(args.device!.toLowerCase()))) ||
           sims.find((s) => s.state === 'Booted') ||
           sims.find((s) => /iphone/i.test(s.name));
-        if (!pick) return qaError({ what: 'No matching simulator', changedState: false, retrySafe: true, failureCode: 'SIMULATOR_RUNTIME_MISSING', nextSteps: ['qa_ios { action: "list" } to see available simulators, or install an iOS simulator runtime in Xcode.'] });
+        if (!pick)
+          return qaError({
+            what: 'No matching simulator',
+            changedState: false,
+            retrySafe: true,
+            failureCode: 'SIMULATOR_RUNTIME_MISSING',
+            nextSteps: ['qa_ios { action: "list" } to see available simulators, or install an iOS simulator runtime in Xcode.'],
+          });
         try {
           sessions.milestone(session, 'simulator_boot_start');
           await sim.boot(pick.udid);
@@ -233,7 +307,15 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
         } catch (e) {
           const msg = String(e);
           const failureCode = /timed out|timeout/i.test(msg) ? 'SIMULATOR_BOOT_TIMEOUT' : 'SIMULATOR_BOOT_FAILED';
-          return qaError({ what: `Boot failed: ${msg}`, changedState: false, retrySafe: true, failureCode, nextSteps: ['Try another simulator from qa_ios list, erase the simulator if policy allows it, or boot a known-good simulator from Xcode.'] });
+          return qaError({
+            what: `Boot failed: ${msg}`,
+            changedState: false,
+            retrySafe: true,
+            failureCode,
+            nextSteps: [
+              'Try another simulator from qa_ios list, erase the simulator if policy allows it, or boot a known-good simulator from Xcode.',
+            ],
+          });
         }
         bind(sessions, session, pick.udid);
         sessions.addEnvChange(session, `ios boot ${pick.name} (${pick.udid})`);
@@ -245,20 +327,34 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
           consent: { required: false, approved: true },
           status: 'executed',
         });
-        return qaOk({ udid: pick.udid, name: pick.name, runtime: pick.runtime, bound: true }, `booted + bound ${pick.name} [${pick.runtime}]\nNext: qa_ios install/launch, then qa_screenshot / qa_assert_visual.`);
+        return qaOk(
+          { udid: pick.udid, name: pick.name, runtime: pick.runtime, bound: true },
+          `booted + bound ${pick.name} [${pick.runtime}]\nNext: qa_ios install/launch, then qa_screenshot / qa_assert_visual.`,
+        );
       }
 
       // everything below needs a bound simulator
       const udid = session.device;
       if (!udid || !(session.driver instanceof SimctlDriver)) {
-        return qaError({ what: 'No simulator bound to this session', changedState: false, retrySafe: true, nextSteps: ['Call qa_ios { action: "boot" } first.'] });
+        return qaError({
+          what: 'No simulator bound to this session',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Call qa_ios { action: "boot" } first.'],
+        });
       }
 
       if (action === 'install') {
         const e = need(args.app, 'app (a .app path)');
         if (e) return e;
         const appPath = isAbsolute(args.app!) ? args.app! : join(session.root, args.app!);
-        if (!existsSync(appPath)) return qaError({ what: `.app not found: ${appPath}`, changedState: false, retrySafe: true, nextSteps: ['Provide an existing .app bundle path.'] });
+        if (!existsSync(appPath))
+          return qaError({
+            what: `.app not found: ${appPath}`,
+            changedState: false,
+            retrySafe: true,
+            nextSteps: ['Provide an existing .app bundle path.'],
+          });
         const gate = consumeConsent(args.consentId, args.approve, { action: 'install_app', affects: { appPath } });
         if (!gate.approved) {
           sessions.recordMutation(session, {
@@ -269,7 +365,13 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
             consent: { required: true, approved: false },
             status: 'requested',
           });
-          return requireConsent({ action: 'install_app', risk: 'medium', exactCommand: `xcrun simctl install ${udid} ${appPath}`, affects: { appPath }, explain: `Install ${appPath} onto the simulator? It runs third-party app code.` });
+          return requireConsent({
+            action: 'install_app',
+            risk: 'medium',
+            exactCommand: `xcrun simctl install ${udid} ${appPath}`,
+            affects: { appPath },
+            explain: `Install ${appPath} onto the simulator? It runs third-party app code.`,
+          });
         }
         sessions.recordMutation(session, {
           tool: 'qa_ios',
@@ -294,7 +396,17 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
             status: 'blocked',
             detail: `${failureCode}: ${String(err)}`,
           });
-          return qaError({ what: `Install failed: ${String(err)}`, changedState: false, retrySafe: true, failureCode, nextSteps: [failureCode === 'WRONG_ARCH' ? 'Rebuild the .app for the iOS Simulator SDK, not a physical device SDK.' : 'Confirm the .app is valid, signed as needed, and built for a simulator (not a device) SDK.'] });
+          return qaError({
+            what: `Install failed: ${String(err)}`,
+            changedState: false,
+            retrySafe: true,
+            failureCode,
+            nextSteps: [
+              failureCode === 'WRONG_ARCH'
+                ? 'Rebuild the .app for the iOS Simulator SDK, not a physical device SDK.'
+                : 'Confirm the .app is valid, signed as needed, and built for a simulator (not a device) SDK.',
+            ],
+          });
         }
         const bundleId = await sim.bundleIdFromApp(appPath);
         if (bundleId) session.appId = bundleId;
@@ -307,7 +419,10 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
           consent: { required: true, consentId: args.consentId, approved: true },
           status: 'executed',
         });
-        return qaOk({ installed: true, appPath, bundleId: bundleId ?? null }, `installed${bundleId ? ` (${bundleId})` : ''}. Next: qa_ios { action: "launch" }.`);
+        return qaOk(
+          { installed: true, appPath, bundleId: bundleId ?? null },
+          `installed${bundleId ? ` (${bundleId})` : ''}. Next: qa_ios { action: "launch" }.`,
+        );
       }
 
       if (action === 'launch') {
@@ -319,7 +434,13 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
           await sim.launchApp(udid, bundleId!);
           sessions.milestone(session, 'app_launch_end');
         } catch (err) {
-          return qaError({ what: `Launch failed: ${String(err)}`, changedState: false, retrySafe: true, failureCode: 'BUNDLE_ID_NOT_FOUND', nextSteps: ['Confirm the app is installed (qa_ios install) and that bundleId is correct.'] });
+          return qaError({
+            what: `Launch failed: ${String(err)}`,
+            changedState: false,
+            retrySafe: true,
+            failureCode: 'BUNDLE_ID_NOT_FOUND',
+            nextSteps: ['Confirm the app is installed (qa_ios install) and that bundleId is correct.'],
+          });
         }
         session.appId = bundleId!;
         sessions.persist(session);
@@ -356,7 +477,12 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
         try {
           await sim.openUrl(udid, args.url!);
         } catch (err) {
-          return qaError({ what: `openurl failed: ${String(err)}`, changedState: false, retrySafe: true, nextSteps: ['Check the deep-link scheme is registered by an installed app.'] });
+          return qaError({
+            what: `openurl failed: ${String(err)}`,
+            changedState: false,
+            retrySafe: true,
+            nextSteps: ['Check the deep-link scheme is registered by an installed app.'],
+          });
         }
         sessions.addEnvChange(session, `ios openurl ${args.url}`);
         sessions.recordMutation(session, {
@@ -378,9 +504,17 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
           const uri = sessions.saveArtifact(session, 'screenshot', `ios-${n}.png`, png, 'image/png', 'iOS simulator screenshot');
           sessions.bump(session, 'screenshots');
           const coordinateSpace = await captureCoordinateSpace(session.driver, png);
-          return qaOk({ uri, bytes: png.length, coordinateSpace }, `screenshot → ${uri} (${coordinateSpace.screenshot?.width}x${coordinateSpace.screenshot?.height})`);
+          return qaOk(
+            { uri, bytes: png.length, coordinateSpace },
+            `screenshot → ${uri} (${coordinateSpace.screenshot?.width}x${coordinateSpace.screenshot?.height})`,
+          );
         } catch (err) {
-          return qaError({ what: `Screenshot failed: ${String(err)}`, changedState: false, retrySafe: true, nextSteps: ['Confirm the simulator is booted (qa_ios list).'] });
+          return qaError({
+            what: `Screenshot failed: ${String(err)}`,
+            changedState: false,
+            retrySafe: true,
+            nextSteps: ['Confirm the simulator is booted (qa_ios list).'],
+          });
         }
       }
 
@@ -389,10 +523,25 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
         const bundleId = args.bundleId ?? session.appId ?? undefined;
         try {
           const text = await sim.simulatorLogs(udid, { last: args.last, bundleId });
-          const uri = sessions.saveArtifact(session, 'logs', `ios-simulator-${Date.now()}.log`, text.slice(-120_000), 'text/plain', `iOS simulator logs${bundleId ? ` for ${bundleId}` : ''}`);
-          return qaOk({ uri, bytes: text.length, last: args.last ?? '5m', bundleId: bundleId ?? null }, `captured iOS simulator logs → ${uri}`);
+          const uri = sessions.saveArtifact(
+            session,
+            'logs',
+            `ios-simulator-${Date.now()}.log`,
+            text.slice(-120_000),
+            'text/plain',
+            `iOS simulator logs${bundleId ? ` for ${bundleId}` : ''}`,
+          );
+          return qaOk(
+            { uri, bytes: text.length, last: args.last ?? '5m', bundleId: bundleId ?? null },
+            `captured iOS simulator logs → ${uri}`,
+          );
         } catch (err) {
-          return qaError({ what: `log capture failed: ${String(err)}`, changedState: false, retrySafe: true, nextSteps: ['Confirm the simulator is booted and try a shorter last range such as last:"1m".'] });
+          return qaError({
+            what: `log capture failed: ${String(err)}`,
+            changedState: false,
+            retrySafe: true,
+            nextSteps: ['Confirm the simulator is booted and try a shorter last range such as last:"1m".'],
+          });
         }
       }
 
@@ -400,7 +549,10 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
         const e = need(args.service, 'service (e.g. location, photos, camera, all)');
         if (e) return e;
         const bundleId = args.bundleId ?? session.appId ?? undefined;
-        const gate = consumeConsent(args.consentId, args.approve, { action: 'privacy_reset', affects: { service: args.service, bundleId } });
+        const gate = consumeConsent(args.consentId, args.approve, {
+          action: 'privacy_reset',
+          affects: { service: args.service, bundleId },
+        });
         if (!gate.approved) {
           sessions.recordMutation(session, {
             tool: 'qa_ios',
@@ -410,7 +562,13 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
             consent: { required: true, approved: false },
             status: 'requested',
           });
-          return requireConsent({ action: 'privacy_reset', risk: 'low', exactCommand: `xcrun simctl privacy ${udid} reset ${args.service}${bundleId ? ` ${bundleId}` : ''}`, affects: { service: args.service, bundleId }, explain: `Reset the "${args.service}" privacy permission${bundleId ? ` for ${bundleId}` : ''} on the simulator?` });
+          return requireConsent({
+            action: 'privacy_reset',
+            risk: 'low',
+            exactCommand: `xcrun simctl privacy ${udid} reset ${args.service}${bundleId ? ` ${bundleId}` : ''}`,
+            affects: { service: args.service, bundleId },
+            explain: `Reset the "${args.service}" privacy permission${bundleId ? ` for ${bundleId}` : ''} on the simulator?`,
+          });
         }
         sessions.recordMutation(session, {
           tool: 'qa_ios',
@@ -432,7 +590,12 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
             status: 'blocked',
             detail: String(err),
           });
-          return qaError({ what: `privacy reset failed: ${String(err)}`, changedState: false, retrySafe: true, nextSteps: ['Check the service name (location/photos/camera/contacts/all).'] });
+          return qaError({
+            what: `privacy reset failed: ${String(err)}`,
+            changedState: false,
+            retrySafe: true,
+            nextSteps: ['Check the service name (location/photos/camera/contacts/all).'],
+          });
         }
         sessions.addEnvChange(session, `ios privacy reset ${args.service}${bundleId ? ` ${bundleId}` : ''}`);
         sessions.recordMutation(session, {
@@ -459,7 +622,13 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
             consent: { required: true, approved: false },
             status: 'requested',
           });
-          return requireConsent({ action: 'erase_device', risk: 'high', exactCommand: `xcrun simctl erase ${target}`, affects: { udid: target }, explain: `Erase all content and settings on simulator ${target}? This wipes installed apps and data.` });
+          return requireConsent({
+            action: 'erase_device',
+            risk: 'high',
+            exactCommand: `xcrun simctl erase ${target}`,
+            affects: { udid: target },
+            explain: `Erase all content and settings on simulator ${target}? This wipes installed apps and data.`,
+          });
         }
         sessions.recordMutation(session, {
           tool: 'qa_ios',
@@ -481,7 +650,12 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
             status: 'blocked',
             detail: String(err),
           });
-          return qaError({ what: `erase failed: ${String(err)}`, changedState: true, retrySafe: true, nextSteps: ['Shut the simulator down and retry.'] });
+          return qaError({
+            what: `erase failed: ${String(err)}`,
+            changedState: true,
+            retrySafe: true,
+            nextSteps: ['Shut the simulator down and retry.'],
+          });
         }
         sessions.addEnvChange(session, `ios erase ${target}`);
         sessions.recordMutation(session, {

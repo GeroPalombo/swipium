@@ -40,7 +40,9 @@ function tailLines(text: string, lines: number): string {
 }
 
 function errorSummary(e: unknown): string {
-  return String((e as Error)?.message ?? e).replace(/\s+/g, ' ').slice(0, 300);
+  return String((e as Error)?.message ?? e)
+    .replace(/\s+/g, ' ')
+    .slice(0, 300);
 }
 
 export class WdaDriver implements Driver {
@@ -54,7 +56,14 @@ export class WdaDriver implements Driver {
   private readonly settings?: Record<string, unknown>;
   private readonly onTiming?: (kind: WdaTimingKind, durationMs: number) => void;
 
-  constructor(baseUrl: string, opts: WdaSessionOptions & { sessionId?: string; simulator?: SimulatorControl; onTiming?: (kind: WdaTimingKind, durationMs: number) => void } = {}) {
+  constructor(
+    baseUrl: string,
+    opts: WdaSessionOptions & {
+      sessionId?: string;
+      simulator?: SimulatorControl;
+      onTiming?: (kind: WdaTimingKind, durationMs: number) => void;
+    } = {},
+  ) {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
     this.simulator = opts.simulator ?? sim;
     this.udid = opts.udid;
@@ -76,7 +85,14 @@ export class WdaDriver implements Driver {
 
   private async ensureSession(): Promise<string> {
     if (this.sessionId) return this.sessionId;
-    const s = await this.timed('session_create', () => createWdaSession(this.baseUrl, { bundleId: this.bundleId, udid: this.udid, capabilities: this.capabilities, settings: this.settings }));
+    const s = await this.timed('session_create', () =>
+      createWdaSession(this.baseUrl, {
+        bundleId: this.bundleId,
+        udid: this.udid,
+        capabilities: this.capabilities,
+        settings: this.settings,
+      }),
+    );
     const mismatchedUdid = wdaSessionUdidMismatch(s.capabilities, this.udid);
     if (mismatchedUdid) {
       throw new Error(`STALE_WDA_DEVICE: WDA session is bound to ${mismatchedUdid}, not requested device ${this.udid}.`);
@@ -171,7 +187,10 @@ export class WdaDriver implements Driver {
     if (!this.udid) return this.no('iOS simulator log capture without a simulator UDID');
     const raw = await this.simulator.simulatorLogs(this.udid, { last: '5m', bundleId: this.bundleId });
     const filtered = grep
-      ? raw.split(/\r?\n/).filter((line) => new RegExp(grep, 'i').test(line)).join('\n')
+      ? raw
+          .split(/\r?\n/)
+          .filter((line) => new RegExp(grep, 'i').test(line))
+          .join('\n')
       : raw;
     return tailLines(filtered, lines);
   }
@@ -218,7 +237,10 @@ export class WdaDriver implements Driver {
       await this.timed('type', () => typeWdaKeys(this.baseUrl, sid, text));
       return;
     } catch (keysError) {
-      throw new Error(`TEXT_INPUT_UNSUPPORTED: WDA could not type into the focused input. focused-element path failed: ${errorSummary(focusedError)}; /wda/keys path failed: ${errorSummary(keysError)}`);
+      throw new Error(
+        `TEXT_INPUT_UNSUPPORTED: WDA could not type into the focused input. focused-element path failed: ${errorSummary(focusedError)}; /wda/keys path failed: ${errorSummary(keysError)}`,
+        { cause: keysError },
+      );
     }
   }
   async clearFocusedText(approxLen = 40): Promise<void> {
@@ -234,7 +256,10 @@ export class WdaDriver implements Driver {
     try {
       await this.timed('clear', () => clearWdaFocusedByKeys(this.baseUrl, sid, approxLen));
     } catch (keysError) {
-      throw new Error(`TEXT_INPUT_UNSUPPORTED: WDA could not clear the focused field. element-clear path failed: ${errorSummary(clearError)}; keyboard-backspace path failed: ${errorSummary(keysError)}`);
+      throw new Error(
+        `TEXT_INPUT_UNSUPPORTED: WDA could not clear the focused field. element-clear path failed: ${errorSummary(clearError)}; keyboard-backspace path failed: ${errorSummary(keysError)}`,
+        { cause: keysError },
+      );
     }
   }
   async pressKey(key: 'back' | 'home' | 'enter'): Promise<void> {

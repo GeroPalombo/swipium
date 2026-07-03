@@ -11,17 +11,25 @@ const PHRASE = {
     'I can launch and inspect the app in the iOS simulator, but this backend cannot run structured taps. Attach WDA or Appium for selector-based automation.',
   androidDirect:
     'I can run this on Android using resource-id/accessibility/text selectors. Unicode text input needs a stronger backend or fixture adjustment.',
-  appiumRequired:
-    'This flow needs an Appium backend because it uses a WebView context or gesture that the current backend cannot perform.',
-  visualFallback:
-    'I can continue with visual/OCR evidence, but that is candidate-level evidence and not a structured locator proof.',
+  appiumRequired: 'This flow needs an Appium backend because it uses a WebView context or gesture that the current backend cannot perform.',
+  visualFallback: 'I can continue with visual/OCR evidence, but that is candidate-level evidence and not a structured locator proof.',
 } as const;
 
 // Structured interaction/assertion kinds — the ones that produce structured-locator proof. Lifecycle
 // and control steps (openUrl, pressKey, waitForIdle, lifecycle) do NOT make a flow "ready" on their own.
 const STRUCTURED_PROOF_KINDS = new Set<ActionKind>([
-  'tap', 'longPress', 'doubleTap', 'inputText', 'clearText', 'scrollUntilVisible',
-  'swipe', 'drag', 'pinch', 'waitForVisible', 'waitForNotVisible', 'assertVisible',
+  'tap',
+  'longPress',
+  'doubleTap',
+  'inputText',
+  'clearText',
+  'scrollUntilVisible',
+  'swipe',
+  'drag',
+  'pinch',
+  'waitForVisible',
+  'waitForNotVisible',
+  'assertVisible',
 ]);
 
 function providesStructuredProof(step: PlanStep): boolean {

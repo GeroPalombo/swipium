@@ -35,19 +35,37 @@ const NOISE_ID = /(^android:id\/)|(:id\/(content|action_bar|decor_content_parent
 const isMeaningful = (s?: string): s is string => !!s && s.trim().length > 0;
 
 function roleStem(role: string): string {
-  const cleaned = role.split('.').pop()?.replace(/^XCUIElementType/i, '') || role;
-  const stem = cleaned.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  const cleaned =
+    role
+      .split('.')
+      .pop()
+      ?.replace(/^XCUIElementType/i, '') || role;
+  const stem = cleaned
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
   return stem || 'element';
 }
 
 function textStem(value: string | undefined): string | null {
   if (!isMeaningful(value)) return null;
-  const stem = value.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40).replace(/_+$/g, '');
+  const stem = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 40)
+    .replace(/_+$/g, '');
   return stem.length >= 2 ? stem : null;
 }
 
 function refStem(ref: string): string {
-  return ref.replace(/[^a-z0-9]+/gi, '_').replace(/^_+|_+$/g, '').toLowerCase() || 'control';
+  return (
+    ref
+      .replace(/[^a-z0-9]+/gi, '_')
+      .replace(/^_+|_+$/g, '')
+      .toLowerCase() || 'control'
+  );
 }
 
 function suggestedHandle(el: SnapshotElement, platform: LocatorPlatform): string {
@@ -62,7 +80,11 @@ function dynamicTextReason(value: string | undefined): string | null {
   const text = value.trim();
   if (text.length > 60) return 'text is long and likely to change with content or localization';
   if (/\b\d{1,2}[:/.-]\d{1,2}([:/.-]\d{2,4})?\b/.test(text)) return 'text contains a date/time-like value';
-  if (/\b\d+(?:[.,]\d+)?\b/.test(text) && /[$€£¥%]|\b(items?|results?|messages?|notifications?|total|balance|km|mi|min|sec|hours?)\b/i.test(text)) return 'text contains count, currency, percent, or measurement data';
+  if (
+    /\b\d+(?:[.,]\d+)?\b/.test(text) &&
+    /[$€£¥%]|\b(items?|results?|messages?|notifications?|total|balance|km|mi|min|sec|hours?)\b/i.test(text)
+  )
+    return 'text contains count, currency, percent, or measurement data';
   if (/[0-9a-f]{8,}/i.test(text)) return 'text contains an id/hash-like token';
   return null;
 }
@@ -74,40 +96,142 @@ export function suggestLocator(el: SnapshotElement, opts: { platform?: LocatorPl
     // iOS/XCUITest priority: accessibilityIdentifier first. Labels/names are useful, but copy
     // and localization often change them; clickable controls without identifiers still need work.
     if (isMeaningful(el.id) && !NOISE_ID.test(el.id)) {
-      return { ...base, platform, locatorKind: 'accessibility_identifier', tier: 'accessibility', durability: TIER_DURABILITY.accessibility, locator: el.id, rationale: 'accessibilityIdentifier — preferred durable iOS/XCUITest locator', needsTestId: false };
+      return {
+        ...base,
+        platform,
+        locatorKind: 'accessibility_identifier',
+        tier: 'accessibility',
+        durability: TIER_DURABILITY.accessibility,
+        locator: el.id,
+        rationale: 'accessibilityIdentifier — preferred durable iOS/XCUITest locator',
+        needsTestId: false,
+      };
     }
     if (isMeaningful(el.label)) {
-      return { ...base, platform, locatorKind: 'accessibility_label', tier: 'accessibility', durability: 78, locator: el.label, rationale: 'accessibility label/name — usable, but add an accessibilityIdentifier for CI-stable iOS flows', needsTestId: el.clickable, suggestedTestId: el.clickable ? suggestedHandle(el, platform) : undefined };
+      return {
+        ...base,
+        platform,
+        locatorKind: 'accessibility_label',
+        tier: 'accessibility',
+        durability: 78,
+        locator: el.label,
+        rationale: 'accessibility label/name — usable, but add an accessibilityIdentifier for CI-stable iOS flows',
+        needsTestId: el.clickable,
+        suggestedTestId: el.clickable ? suggestedHandle(el, platform) : undefined,
+      };
     }
     if (isMeaningful(el.text)) {
       const short = el.text.trim().length <= 2 || /^\d+$/.test(el.text.trim());
-      return { ...base, platform, locatorKind: 'visible_text', tier: 'visible_text', durability: short ? 35 : 58, locator: el.text, rationale: short ? 'visible value/text is short or numeric — brittle on iOS; add an accessibilityIdentifier' : 'visible value/text — usable but copy/localization dependent; prefer accessibilityIdentifier', needsTestId: el.clickable, suggestedTestId: el.clickable ? suggestedHandle(el, platform) : undefined };
+      return {
+        ...base,
+        platform,
+        locatorKind: 'visible_text',
+        tier: 'visible_text',
+        durability: short ? 35 : 58,
+        locator: el.text,
+        rationale: short
+          ? 'visible value/text is short or numeric — brittle on iOS; add an accessibilityIdentifier'
+          : 'visible value/text — usable but copy/localization dependent; prefer accessibilityIdentifier',
+        needsTestId: el.clickable,
+        suggestedTestId: el.clickable ? suggestedHandle(el, platform) : undefined,
+      };
     }
     if (el.clickable) {
-      return { ...base, platform, locatorKind: 'structure', tier: 'structure', durability: TIER_DURABILITY.structure, locator: null, rationale: 'hittable control has no accessibilityIdentifier, label, or text — predicate/class-chain/coordinates only; add an accessibilityIdentifier', needsTestId: true, suggestedTestId: suggestedHandle(el, platform) };
+      return {
+        ...base,
+        platform,
+        locatorKind: 'structure',
+        tier: 'structure',
+        durability: TIER_DURABILITY.structure,
+        locator: null,
+        rationale:
+          'hittable control has no accessibilityIdentifier, label, or text — predicate/class-chain/coordinates only; add an accessibilityIdentifier',
+        needsTestId: true,
+        suggestedTestId: suggestedHandle(el, platform),
+      };
     }
-    return { ...base, platform, locatorKind: 'coordinate', tier: 'coordinate', durability: TIER_DURABILITY.coordinate, locator: null, rationale: 'no durable iOS handle — visual/coordinate targeting only', needsTestId: el.clickable, suggestedTestId: el.clickable ? suggestedHandle(el, platform) : undefined };
+    return {
+      ...base,
+      platform,
+      locatorKind: 'coordinate',
+      tier: 'coordinate',
+      durability: TIER_DURABILITY.coordinate,
+      locator: null,
+      rationale: 'no durable iOS handle — visual/coordinate targeting only',
+      needsTestId: el.clickable,
+      suggestedTestId: el.clickable ? suggestedHandle(el, platform) : undefined,
+    };
   }
 
   // 1) accessibility id / content description (most durable; survives copy + layout changes)
   if (isMeaningful(el.label)) {
-    return { ...base, platform, locatorKind: 'accessibility_label', tier: 'accessibility', durability: TIER_DURABILITY.accessibility, locator: el.label, rationale: 'content-desc / accessibility label — durable and a11y-friendly', needsTestId: false };
+    return {
+      ...base,
+      platform,
+      locatorKind: 'accessibility_label',
+      tier: 'accessibility',
+      durability: TIER_DURABILITY.accessibility,
+      locator: el.label,
+      rationale: 'content-desc / accessibility label — durable and a11y-friendly',
+      needsTestId: false,
+    };
   }
   // 2) resource-id / test tag (durable when it's a real testID, not framework noise)
   if (isMeaningful(el.id) && !NOISE_ID.test(el.id)) {
-    return { ...base, platform, locatorKind: 'resource_id', tier: 'resource_id', durability: TIER_DURABILITY.resource_id, locator: el.id, rationale: 'resource-id / testID — durable', needsTestId: false };
+    return {
+      ...base,
+      platform,
+      locatorKind: 'resource_id',
+      tier: 'resource_id',
+      durability: TIER_DURABILITY.resource_id,
+      locator: el.id,
+      rationale: 'resource-id / testID — durable',
+      needsTestId: false,
+    };
   }
   // 3) stable visible text (works, but copy/localization can change it)
   if (isMeaningful(el.text)) {
     const short = el.text.trim().length <= 2 || /^\d+$/.test(el.text.trim());
-    return { ...base, platform, locatorKind: 'visible_text', tier: 'visible_text', durability: short ? 40 : TIER_DURABILITY.visible_text, locator: el.text, rationale: short ? 'visible text, but very short/numeric — brittle; add a testID' : 'visible text — usable but breaks if copy/localization changes', needsTestId: el.clickable, suggestedTestId: el.clickable ? suggestedHandle(el, platform) : undefined };
+    return {
+      ...base,
+      platform,
+      locatorKind: 'visible_text',
+      tier: 'visible_text',
+      durability: short ? 40 : TIER_DURABILITY.visible_text,
+      locator: el.text,
+      rationale: short
+        ? 'visible text, but very short/numeric — brittle; add a testID'
+        : 'visible text — usable but breaks if copy/localization changes',
+      needsTestId: el.clickable,
+      suggestedTestId: el.clickable ? suggestedHandle(el, platform) : undefined,
+    };
   }
   // 4) relative structure (no handle at all on an interactive control)
   if (el.clickable) {
-    return { ...base, platform, locatorKind: 'structure', tier: 'structure', durability: TIER_DURABILITY.structure, locator: null, rationale: 'clickable but has no id/label/text — only structural/coordinate targeting; add a testID', needsTestId: true, suggestedTestId: suggestedHandle(el, platform) };
+    return {
+      ...base,
+      platform,
+      locatorKind: 'structure',
+      tier: 'structure',
+      durability: TIER_DURABILITY.structure,
+      locator: null,
+      rationale: 'clickable but has no id/label/text — only structural/coordinate targeting; add a testID',
+      needsTestId: true,
+      suggestedTestId: suggestedHandle(el, platform),
+    };
   }
   // 5) coordinate / image (last resort)
-  return { ...base, platform, locatorKind: 'coordinate', tier: 'coordinate', durability: TIER_DURABILITY.coordinate, locator: null, rationale: 'no durable handle — coordinate/image match only', needsTestId: el.clickable, suggestedTestId: el.clickable ? suggestedHandle(el, platform) : undefined };
+  return {
+    ...base,
+    platform,
+    locatorKind: 'coordinate',
+    tier: 'coordinate',
+    durability: TIER_DURABILITY.coordinate,
+    locator: null,
+    rationale: 'no durable handle — coordinate/image match only',
+    needsTestId: el.clickable,
+    suggestedTestId: el.clickable ? suggestedHandle(el, platform) : undefined,
+  };
 }
 
 export type ReadinessGrade = 'A' | 'B' | 'C' | 'D';
@@ -121,7 +245,11 @@ export interface AutomationReadiness {
   platform?: LocatorPlatform;
 }
 
-export function automationReadiness(suggestions: LocatorSuggestion[], elements: SnapshotElement[], opts: { platform?: LocatorPlatform } = {}): AutomationReadiness {
+export function automationReadiness(
+  suggestions: LocatorSuggestion[],
+  elements: SnapshotElement[],
+  opts: { platform?: LocatorPlatform } = {},
+): AutomationReadiness {
   const platform = opts.platform ?? 'generic';
   const interactive = elements.filter((e) => e.clickable);
   const byRef = new Map(suggestions.map((s) => [s.ref, s]));
@@ -135,7 +263,14 @@ export function automationReadiness(suggestions: LocatorSuggestion[], elements: 
   const grade: ReadinessGrade = durablePct >= 90 ? 'A' : durablePct >= 70 ? 'B' : durablePct >= 50 ? 'C' : 'D';
   const needTestIds = suggestions
     .filter((s) => s.needsTestId)
-    .map((s) => ({ ref: s.ref, role: s.role, hint: byRef.get(s.ref)?.locator ? `currently targeted by ${byRef.get(s.ref)!.tier}: "${byRef.get(s.ref)!.locator}"` : 'no durable handle', suggestedTestId: s.suggestedTestId }));
+    .map((s) => ({
+      ref: s.ref,
+      role: s.role,
+      hint: byRef.get(s.ref)?.locator
+        ? `currently targeted by ${byRef.get(s.ref)!.tier}: "${byRef.get(s.ref)!.locator}"`
+        : 'no durable handle',
+      suggestedTestId: s.suggestedTestId,
+    }));
   return { grade, durablePct, interactiveCount: interactive.length, durableCount: durable.length, needTestIds, platform };
 }
 
@@ -148,7 +283,11 @@ export interface LocatorReadinessIssue {
   suggestedTestIds?: Array<{ ref: string; name: string }>;
 }
 
-export function locatorReadinessIssues(suggestions: LocatorSuggestion[], elements: SnapshotElement[], opts: { platform?: LocatorPlatform } = {}): LocatorReadinessIssue[] {
+export function locatorReadinessIssues(
+  suggestions: LocatorSuggestion[],
+  elements: SnapshotElement[],
+  opts: { platform?: LocatorPlatform } = {},
+): LocatorReadinessIssue[] {
   const platform = opts.platform ?? 'generic';
   const issues: LocatorReadinessIssue[] = [];
   const byRef = new Map(elements.map((e) => [e.ref, e]));
@@ -168,7 +307,10 @@ export function locatorReadinessIssues(suggestions: LocatorSuggestion[], element
         suggestion: 'Add SwiftUI .accessibilityIdentifier(...), UIKit accessibilityIdentifier, or React Native testID for these controls.',
         suggestedTestIds: missing
           .filter((s) => s.suggestedTestId)
-          .map((s) => ({ ref: s.ref, name: nameCounts[s.suggestedTestId!] > 1 ? `${s.suggestedTestId}_${refStem(s.ref)}` : s.suggestedTestId! })),
+          .map((s) => ({
+            ref: s.ref,
+            name: nameCounts[s.suggestedTestId!] > 1 ? `${s.suggestedTestId}_${refStem(s.ref)}` : s.suggestedTestId!,
+          })),
       });
     }
     const labels = new Map<string, string[]>();
@@ -210,7 +352,10 @@ export function locatorReadinessIssues(suggestions: LocatorSuggestion[], element
       severity: 'warn',
       message: `${coordinateOnly.length} element(s) have no semantic locator and would require structure, image, or coordinates.`,
       refs: coordinateOnly.map((s) => s.ref),
-      suggestion: platform === 'ios' ? 'Add accessibilityIdentifier values before relying on these controls in CI.' : 'Add testID/resource-id/content-desc values before relying on these controls in CI.',
+      suggestion:
+        platform === 'ios'
+          ? 'Add accessibilityIdentifier values before relying on these controls in CI.'
+          : 'Add testID/resource-id/content-desc values before relying on these controls in CI.',
     });
   }
 

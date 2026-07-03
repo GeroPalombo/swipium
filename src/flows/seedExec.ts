@@ -75,7 +75,10 @@ export async function executeSeed(
   const redact = makeRedactor(session.secrets);
   const { argv, deprecated, parseError } = normalizeCommand(seed.command);
   const warnings: string[] = [];
-  if (seed.type === 'script' && deprecated) warnings.push('string `command` is deprecated; it is parsed with shell-style quoting for compatibility, but argv arrays avoid ambiguous escaping, e.g. command: ["node", "scripts/seed.js"].');
+  if (seed.type === 'script' && deprecated)
+    warnings.push(
+      'string `command` is deprecated; it is parsed with shell-style quoting for compatibility, but argv arrays avoid ambiguous escaping, e.g. command: ["node", "scripts/seed.js"].',
+    );
 
   try {
     if (seed.type === 'deeplink') {
@@ -88,10 +91,23 @@ export async function executeSeed(
       const git = gitScopeViolation(argv);
       if (git) return { ok: false, detail: `Git is outside Swipium's QA scope; refused seed command "${git}"`, warnings };
       const bad = outsideRoot(argv, session.root);
-      if (bad) return { ok: false, detail: `seed script references a path outside the project root ("${bad}") — seed scripts must live under the project root`, warnings };
+      if (bad)
+        return {
+          ok: false,
+          detail: `seed script references a path outside the project root ("${bad}") — seed scripts must live under the project root`,
+          warnings,
+        };
       const r = await run(argv[0], argv.slice(1), { cwd: session.root, timeoutMs: 60000 });
       const log = redact([r.stdout, r.stderr].filter(Boolean).join('\n').slice(0, 8000)) ?? '';
-      if (log) sessions.saveArtifact(session, 'seed', `seed-${fixtureName}-${Date.now()}.log`, log, 'text/plain', `seed script output (${fixtureName})`);
+      if (log)
+        sessions.saveArtifact(
+          session,
+          'seed',
+          `seed-${fixtureName}-${Date.now()}.log`,
+          log,
+          'text/plain',
+          `seed script output (${fixtureName})`,
+        );
       if (r.code !== 0) return { ok: false, detail: `script exited ${r.code}: ${redact(r.stderr.trim().slice(0, 300)) ?? ''}`, warnings };
     } else {
       if (!seed.url) return { ok: false, detail: 'no url in seed', warnings };

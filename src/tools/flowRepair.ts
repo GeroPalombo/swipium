@@ -25,7 +25,13 @@ export function registerFlowRepair(server: McpServer, sessions: SessionStore): v
     async ({ sessionId, flow, flowYaml, failedStep, apply }) => {
       const session = sessions.get(sessionId);
       const { driver } = session ? await getDriver(session) : { driver: undefined };
-      if (!session || !driver) return qaError({ what: 'No device attached to this session', changedState: false, retrySafe: true, nextSteps: ['Call qa_prepare_target / qa_ios + qa_wda first.'] });
+      if (!session || !driver)
+        return qaError({
+          what: 'No device attached to this session',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Call qa_prepare_target / qa_ios + qa_wda first.'],
+        });
       if (driver.kind === 'simulator' || session.mode === 'visual-fallback') {
         return qaError({
           what: 'Flow repair needs a structured UI tree',
@@ -39,22 +45,39 @@ export function registerFlowRepair(server: McpServer, sessions: SessionStore): v
       try {
         xml = await driver.dumpXml();
       } catch (e) {
-        return qaError({ what: `Could not read current UI tree: ${String(e)}`, changedState: false, retrySafe: true, failureCode: 'SNAPSHOT_FAILED', nextSteps: ['Settle the app and retry qa_flow_repair.'] });
+        return qaError({
+          what: `Could not read current UI tree: ${String(e)}`,
+          changedState: false,
+          retrySafe: true,
+          failureCode: 'SNAPSHOT_FAILED',
+          nextSteps: ['Settle the app and retry qa_flow_repair.'],
+        });
       }
       const parsed = parseSnapshot(xml, { interactiveOnly: false });
-      session.lastSnapshot = { fullByRef: parsed.fullByRef, signatures: new Set(parsed.elements.map(signature)), allNodes: parsed.allNodes };
-      const platform: LocatorPlatform = driver.kind === 'wda' ? 'ios' : driver.kind === 'direct' || driver.kind === 'remote' ? 'android' : 'generic';
+      session.lastSnapshot = {
+        fullByRef: parsed.fullByRef,
+        signatures: new Set(parsed.elements.map(signature)),
+        allNodes: parsed.allNodes,
+      };
+      const platform: LocatorPlatform =
+        driver.kind === 'wda' ? 'ios' : driver.kind === 'direct' || driver.kind === 'remote' ? 'android' : 'generic';
       const repaired = repairFlow({ root: session.root, flow, flowYaml, failedStep, elements: parsed.elements, apply, platform });
-      if ('error' in repaired) return qaError({ what: repaired.error, changedState: false, retrySafe: true, nextSteps: ['Pass a valid flow and failedStep from qa_flow_run.'] });
+      if ('error' in repaired)
+        return qaError({
+          what: repaired.error,
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Pass a valid flow and failedStep from qa_flow_run.'],
+        });
       const proposalArtifactUri = repaired.proposal
         ? sessions.saveArtifact(
-          session,
-          'repair',
-          `flow-repair-${repaired.flow.replace(/[^a-z0-9_.-]+/gi, '_').slice(0, 40) || 'flow'}-${failedStep}-${Date.now()}.json`,
-          JSON.stringify(repaired.proposal, null, 2),
-          'application/json',
-          `Reviewable flow repair proposal for ${repaired.flow} step ${failedStep}`,
-        )
+            session,
+            'repair',
+            `flow-repair-${repaired.flow.replace(/[^a-z0-9_.-]+/gi, '_').slice(0, 40) || 'flow'}-${failedStep}-${Date.now()}.json`,
+            JSON.stringify(repaired.proposal, null, 2),
+            'application/json',
+            `Reviewable flow repair proposal for ${repaired.flow} step ${failedStep}`,
+          )
         : undefined;
       if (repaired.patched) {
         sessions.recordMutation(session, {

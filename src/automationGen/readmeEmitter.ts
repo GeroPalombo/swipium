@@ -46,11 +46,15 @@ export function emitReadme(input: ReadmeInput): string {
   lines.push('');
   lines.push('## What this is');
   lines.push('');
-  lines.push(`A Page/Screen Object Model Appium suite (${input.language}). Selectors live in screen objects; tests call action methods only.`);
+  lines.push(
+    `A Page/Screen Object Model Appium suite (${input.language}). Selectors live in screen objects; tests call action methods only.`,
+  );
   lines.push('');
   lines.push(`- **Language:** ${input.language}`);
   lines.push(`- **Runner:** ${profile.testFramework}`);
-  lines.push(`- **Default backend:** ${profile.defaultBackend}${profile.secondaryBackend ? ` (secondary: ${profile.secondaryBackend})` : ''}`);
+  lines.push(
+    `- **Default backend:** ${profile.defaultBackend}${profile.secondaryBackend ? ` (secondary: ${profile.secondaryBackend})` : ''}`,
+  );
   lines.push(`- **Platform coverage in this suite:** ${platformCoverage.join(', ') || 'none detected'}`);
   lines.push(`- **Screens:** ${model.screens.map((s) => s.className).join(', ') || 'none'}`);
   lines.push('');
@@ -64,15 +68,21 @@ export function emitReadme(input: ReadmeInput): string {
   lines.push('');
   lines.push('## Locator readiness');
   lines.push('');
-  lines.push(`Locator durability: ${model.audit.durable} durable / ${model.audit.semi} semi / ${brittle} brittle (${model.audit.brittlePct}% brittle).`);
+  lines.push(
+    `Locator durability: ${model.audit.durable} durable / ${model.audit.semi} semi / ${brittle} brittle (${model.audit.brittlePct}% brittle).`,
+  );
   if (brittle > 0) {
     lines.push('');
-    lines.push(`⚠ ${brittle} brittle/coordinate locator(s) are marked non-release-grade in the screen objects. Add a durable accessibility id / resource-id / testID before gating CI on this suite.`);
+    lines.push(
+      `⚠ ${brittle} brittle/coordinate locator(s) are marked non-release-grade in the screen objects. Add a durable accessibility id / resource-id / testID before gating CI on this suite.`,
+    );
   }
   lines.push('');
   lines.push('## Honest coverage note');
   lines.push('');
-  lines.push('iOS selectors/capabilities are emitted from app-map evidence where available, but iOS coverage is NOT proven unless the suite was actually run on iOS. XPath is never generated.');
+  lines.push(
+    'iOS selectors/capabilities are emitted from app-map evidence where available, but iOS coverage is NOT proven unless the suite was actually run on iOS. XPath is never generated.',
+  );
   lines.push('');
   return lines.join('\n');
 }

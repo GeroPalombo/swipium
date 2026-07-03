@@ -61,7 +61,7 @@ function unique(values: string[]): string[] {
 
 export function detectFramework(root: string): Framework {
   const pkg = readJson(join(root, 'package.json'));
-  const deps = pkg ? { ...(pkg.dependencies as object), ...(pkg.devDependencies as object) } as Record<string, unknown> : {};
+  const deps = pkg ? ({ ...(pkg.dependencies as object), ...(pkg.devDependencies as object) } as Record<string, unknown>) : {};
   const hasRN = 'react-native' in deps;
   const hasExpo = 'expo' in deps;
 
@@ -69,10 +69,7 @@ export function detectFramework(root: string): Framework {
   if (hasExpo) return 'expo';
   if (hasRN) return 'bare-react-native';
   if (hasAny(root, ['settings.gradle', 'settings.gradle.kts', 'build.gradle', 'build.gradle.kts'])) return 'native-android';
-  if (
-    existsSync(join(root, 'Package.swift')) ||
-    readdirSync(root).some((f) => f.endsWith('.xcworkspace') || f.endsWith('.xcodeproj'))
-  )
+  if (existsSync(join(root, 'Package.swift')) || readdirSync(root).some((f) => f.endsWith('.xcworkspace') || f.endsWith('.xcodeproj')))
     return 'native-ios';
   return 'unknown';
 }
@@ -115,7 +112,10 @@ export async function detectContext(projectRoot: string): Promise<DetectedContex
   if (resolvedArtifacts) {
     artifacts.apks = unique([...artifacts.apks, ...resolvedArtifacts.candidates.filter((c) => c.type === 'apk').map((c) => c.path)]);
     artifacts.ipas = unique([...artifacts.ipas, ...resolvedArtifacts.candidates.filter((c) => c.type === 'ipa').map((c) => c.path)]);
-    artifacts.appBundles = unique([...artifacts.appBundles, ...resolvedArtifacts.candidates.filter((c) => c.type === 'app').map((c) => c.path)]);
+    artifacts.appBundles = unique([
+      ...artifacts.appBundles,
+      ...resolvedArtifacts.candidates.filter((c) => c.type === 'app').map((c) => c.path),
+    ]);
   }
 
   const [adb, emulator, javaLine, xcodebuild] = await Promise.all([
@@ -139,14 +139,21 @@ export async function detectContext(projectRoot: string): Promise<DetectedContex
   };
 
   const blockers: string[] = [];
-  if (framework === 'unknown') blockers.push('Could not identify a mobile project here — pass an explicit projectRoot, or this is not a supported framework.');
+  if (framework === 'unknown')
+    blockers.push('Could not identify a mobile project here — pass an explicit projectRoot, or this is not a supported framework.');
   if (monorepo) blockers.push('Monorepo detected — specify which app target to use (avoids guessing).');
   if (!toolchain.adb) blockers.push('adb not found — install Android platform-tools.');
   if (framework === 'native-android' && artifacts.apks.length === 0) {
     blockers.push('No prebuilt Android APK found — drop an APK under apps/android, build Gradle output, or pass apk=.');
   } else if (framework === 'native-ios' && artifacts.ipas.length === 0 && artifacts.appBundles.length === 0) {
     blockers.push('No prebuilt iOS app artifact found — build a simulator .app or provide an .ipa for a real device lane.');
-  } else if (framework !== 'native-android' && framework !== 'native-ios' && artifacts.apks.length === 0 && artifacts.ipas.length === 0 && artifacts.appBundles.length === 0) {
+  } else if (
+    framework !== 'native-android' &&
+    framework !== 'native-ios' &&
+    artifacts.apks.length === 0 &&
+    artifacts.ipas.length === 0 &&
+    artifacts.appBundles.length === 0
+  ) {
     blockers.push('No prebuilt app artifact found — build an APK for Android or a simulator .app for iOS, then run swipium scan again.');
   }
   if (toolchain.adb && devices.androidOnline.length === 0 && devices.avds.length === 0)

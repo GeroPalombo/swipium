@@ -12,14 +12,7 @@
 export const ISSUE_SCHEMA_VERSION = 1 as const;
 
 /** Lifecycle state of an issue (Sentry-style triage states). */
-export type IssueState =
-  | 'open'
-  | 'observed_again'
-  | 'fixed'
-  | 'reopened'
-  | 'suppressed'
-  | 'expected_environment_noise'
-  | 'needs_triage';
+export type IssueState = 'open' | 'observed_again' | 'fixed' | 'reopened' | 'suppressed' | 'expected_environment_noise' | 'needs_triage';
 
 /** How a developer triages an issue. */
 export type IssueCategory =
@@ -46,26 +39,11 @@ export type IssueEnvironment = 'simulator' | 'emulator' | 'device' | 'ci' | 'unk
 /** Release impact of an issue or of a whole run's issue memory. */
 export type ReleaseImpact = 'block' | 'warn' | 'pass';
 
-export type IssueEventType =
-  | 'observed'
-  | 'classified'
-  | 'triaged'
-  | 'fixed'
-  | 'reopened'
-  | 'suppressed'
-  | 'linked_run'
-  | 'note_added';
+export type IssueEventType = 'observed' | 'classified' | 'triaged' | 'fixed' | 'reopened' | 'suppressed' | 'linked_run' | 'note_added';
 
 /** Source revision metadata. Git is NEVER required; `unknown` is a valid provider. */
 export interface SourceRevision {
-  provider:
-    | 'explicit'
-    | 'github_actions'
-    | 'gitlab_ci'
-    | 'bitbucket_ci'
-    | 'app_build'
-    | 'git_readonly'
-    | 'unknown';
+  provider: 'explicit' | 'github_actions' | 'gitlab_ci' | 'bitbucket_ci' | 'app_build' | 'git_readonly' | 'unknown';
   commit?: string;
   branch?: string;
   tag?: string;

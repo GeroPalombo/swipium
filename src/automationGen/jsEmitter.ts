@@ -17,14 +17,23 @@ export interface JsEmitInput {
 const DEFAULT_TIMEOUT = 15000;
 
 function pascal(s: string): string {
-  const parts = s.replace(/[^A-Za-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean);
+  const parts = s
+    .replace(/[^A-Za-z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
   return parts.map((p) => p[0].toUpperCase() + p.slice(1)).join('') || 'X';
 }
 
 /** Env var (SWIPIUM_TEST_PASSWORD) → a stable testData key (password). */
 export function varToKey(v: string): string {
   const stripped = v.replace(/^SWIPIUM_(TEST_)?/i, '');
-  const parts = stripped.replace(/[^A-Za-z0-9]+/g, ' ').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const parts = stripped
+    .replace(/[^A-Za-z0-9]+/g, ' ')
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
   if (!parts.length) return 'value';
   return parts.map((p, i) => (i === 0 ? p : p[0].toUpperCase() + p.slice(1))).join('');
 }
@@ -106,22 +115,24 @@ function packageJson(input: JsEmitInput): string {
 }
 
 function tsconfigJson(): string {
-  return JSON.stringify(
-    {
-      compilerOptions: {
-        target: 'ES2022',
-        module: 'NodeNext',
-        moduleResolution: 'NodeNext',
-        types: ['node', '@wdio/globals/types', '@wdio/mocha-framework'],
-        strict: true,
-        esModuleInterop: true,
-        skipLibCheck: true,
+  return (
+    JSON.stringify(
+      {
+        compilerOptions: {
+          target: 'ES2022',
+          module: 'NodeNext',
+          moduleResolution: 'NodeNext',
+          types: ['node', '@wdio/globals/types', '@wdio/mocha-framework'],
+          strict: true,
+          esModuleInterop: true,
+          skipLibCheck: true,
+        },
+        include: ['src/**/*.ts', 'test/**/*.ts', 'wdio.conf.ts'],
       },
-      include: ['src/**/*.ts', 'test/**/*.ts', 'wdio.conf.ts'],
-    },
-    null,
-    2,
-  ) + '\n';
+      null,
+      2,
+    ) + '\n'
+  );
 }
 
 function wdioConf(ts: boolean, ext: string): string {
@@ -151,7 +162,6 @@ export const config${cfgType} = {
 
 function capabilities(input: JsEmitInput, ts: boolean): string {
   const android = input.model.platforms.android;
-  const ios = input.model.platforms.ios;
   const ret = ts ? ': WebdriverIO.Capabilities' : '';
   const appId = input.appId ?? '';
   const lines: string[] = [];
@@ -160,28 +170,28 @@ function capabilities(input: JsEmitInput, ts: boolean): string {
   lines.push('');
   lines.push(`export function buildCapabilities()${ret} {`);
   lines.push(`  const platform = (process.env.SWIPIUM_PLATFORM || ${JSON.stringify(android ? 'android' : 'ios')}).toLowerCase();`);
-  lines.push('  if (platform === \'ios\') {');
+  lines.push("  if (platform === 'ios') {");
   lines.push('    return {');
-  lines.push('      platformName: \'iOS\',');
-  lines.push('      \'appium:automationName\': \'XCUITest\',');
-  lines.push('      \'appium:deviceName\': process.env.IOS_DEVICE_NAME || \'iPhone 15\',');
-  lines.push('      \'appium:platformVersion\': process.env.IOS_PLATFORM_VERSION,');
+  lines.push("      platformName: 'iOS',");
+  lines.push("      'appium:automationName': 'XCUITest',");
+  lines.push("      'appium:deviceName': process.env.IOS_DEVICE_NAME || 'iPhone 15',");
+  lines.push("      'appium:platformVersion': process.env.IOS_PLATFORM_VERSION,");
   lines.push(`      'appium:bundleId': process.env.IOS_BUNDLE_ID${appId ? ` || ${JSON.stringify(appId)}` : ''},`);
-  lines.push('      \'appium:app\': process.env.IOS_APP_PATH,');
-  lines.push('      \'appium:udid\': process.env.IOS_UDID,');
-  lines.push('      \'appium:noReset\': process.env.SWIPIUM_NO_RESET === \'true\',');
+  lines.push("      'appium:app': process.env.IOS_APP_PATH,");
+  lines.push("      'appium:udid': process.env.IOS_UDID,");
+  lines.push("      'appium:noReset': process.env.SWIPIUM_NO_RESET === 'true',");
   lines.push('    };');
   lines.push('  }');
   lines.push('  // Android UiAutomator2 (default).');
   lines.push('  return {');
-  lines.push('    platformName: \'Android\',');
-  lines.push('    \'appium:automationName\': \'UiAutomator2\',');
-  lines.push('    \'appium:deviceName\': process.env.ANDROID_DEVICE_NAME || \'Android Emulator\',');
+  lines.push("    platformName: 'Android',");
+  lines.push("    'appium:automationName': 'UiAutomator2',");
+  lines.push("    'appium:deviceName': process.env.ANDROID_DEVICE_NAME || 'Android Emulator',");
   lines.push(`    'appium:appPackage': process.env.ANDROID_APP_PACKAGE${appId ? ` || ${JSON.stringify(appId)}` : ''},`);
-  lines.push('    \'appium:appActivity\': process.env.ANDROID_APP_ACTIVITY,');
-  lines.push('    \'appium:app\': process.env.ANDROID_APP_PATH,');
-  lines.push('    \'appium:udid\': process.env.ANDROID_UDID,');
-  lines.push('    \'appium:noReset\': process.env.SWIPIUM_NO_RESET === \'true\',');
+  lines.push("    'appium:appActivity': process.env.ANDROID_APP_ACTIVITY,");
+  lines.push("    'appium:app': process.env.ANDROID_APP_PATH,");
+  lines.push("    'appium:udid': process.env.ANDROID_UDID,");
+  lines.push("    'appium:noReset': process.env.SWIPIUM_NO_RESET === 'true',");
   lines.push('  };');
   lines.push('}');
   lines.push('');
@@ -339,7 +349,9 @@ function methodName(action: AppiumStep['action'], element: string): string {
 function screenClass(screen: AppiumScreen, steps: AppiumStep[], ts: boolean, t: (a: string) => string): string {
   const locImport = ts ? `import type { PlatformLocator } from '../utils/locators.js';\n` : '';
   const lines: string[] = [];
-  lines.push(`// Generated by Swipium. Screen object for ${screen.pageName}${screen.screenSignature ? ` (${screen.screenSignature})` : ''}.`);
+  lines.push(
+    `// Generated by Swipium. Screen object for ${screen.pageName}${screen.screenSignature ? ` (${screen.screenSignature})` : ''}.`,
+  );
   lines.push('// Selectors are centralized here; tests call the action methods below.');
   lines.push(locImport.trimEnd());
   lines.push(`import { BaseScreen } from './BaseScreen.js';`);
@@ -402,7 +414,7 @@ function testData(model: AppiumSuiteModel, ts: boolean): string {
   return lines.join('\n');
 }
 
-function smokeTest(model: AppiumSuiteModel, ts: boolean): string {
+function smokeTest(model: AppiumSuiteModel, _ts: boolean): string {
   const classes = [...new Set(model.steps.map((s) => s.screen))];
   const lines: string[] = [];
   lines.push('// Generated by Swipium. Smoke test driving the recorded flow through the screen objects.');

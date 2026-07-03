@@ -34,7 +34,13 @@ export function registerResolveArtifact(server: McpServer, sessions: SessionStor
       if (!root) {
         const resolved = await resolveProjectRoot(server, projectRoot);
         if (!resolved.root) {
-          return qaError({ what: 'Could not resolve a project root', changedState: false, retrySafe: true, nextSteps: ['Pass projectRoot="/abs/path", or call qa_start_session first.'], clientHint: resolved.hint });
+          return qaError({
+            what: 'Could not resolve a project root',
+            changedState: false,
+            retrySafe: true,
+            nextSteps: ['Pass projectRoot="/abs/path", or call qa_start_session first.'],
+            clientHint: resolved.hint,
+          });
         }
         root = resolved.root;
       }
@@ -59,13 +65,10 @@ export function registerResolveArtifact(server: McpServer, sessions: SessionStor
 
       if (result.failureCode) {
         return qaFail(result.failureCode, {
-          what:
-            result.failureCode === 'NO_BUILD_ARTIFACT'
-              ? `No installable artifact found under ${root}`
-              : result.warnings[0],
+          what: result.failureCode === 'NO_BUILD_ARTIFACT' ? `No installable artifact found under ${root}` : result.warnings[0],
           nextSteps: [
             ...(result.warnings.length ? result.warnings : []),
-            'Build from source: qa_build_plan → qa_build.',
+            'Build from source: qa_build { mode:"plan" } → qa_build { mode:"run" }.',
             `Searched: ${result.searchedLocations.slice(0, 8).join('; ')}${result.searchedLocations.length > 8 ? ' …' : ''}`,
           ],
           extra: { searchedLocations: result.searchedLocations, candidates: result.candidates.slice(0, 5) },

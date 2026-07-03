@@ -2,7 +2,7 @@ name: release
 
 on:
   push:
-    tags: ["v*"]
+    tags: ['v*']
 
 permissions:
   contents: read
@@ -25,10 +25,7 @@ jobs:
             echo "Tag ${GITHUB_REF_NAME} does not match package version ${PACKAGE_VERSION}."
             exit 1
           fi
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run audit:prod
-      - run: npm run build
+      - run: npm run release:check
       - name: Check npm version
         id: npm_version
         run: |

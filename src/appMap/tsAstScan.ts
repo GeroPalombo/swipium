@@ -60,13 +60,18 @@ export function tsAstAvailable(): boolean {
 
 function scriptKindFor(ts: typeof import('typescript'), fileName: string): import('typescript').ScriptKind {
   switch (extname(fileName).toLowerCase()) {
-    case '.tsx': return ts.ScriptKind.TSX;
-    case '.ts': return ts.ScriptKind.TS;
-    case '.jsx': return ts.ScriptKind.JSX;
+    case '.tsx':
+      return ts.ScriptKind.TSX;
+    case '.ts':
+      return ts.ScriptKind.TS;
+    case '.jsx':
+      return ts.ScriptKind.JSX;
     case '.mjs':
     case '.cjs':
-    case '.js': return ts.ScriptKind.JS;
-    default: return ts.ScriptKind.TSX;
+    case '.js':
+      return ts.ScriptKind.JS;
+    default:
+      return ts.ScriptKind.TSX;
   }
 }
 
@@ -107,7 +112,11 @@ export function scanTsSource(fileName: string, text: string): TsScanResult {
         if (ts.isIdentifier(decl.name) && decl.initializer && ts.isObjectLiteralExpression(decl.initializer)) {
           const objName = decl.name.text;
           for (const prop of decl.initializer.properties) {
-            if (ts.isPropertyAssignment(prop) && (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)) && ts.isStringLiteralLike(prop.initializer)) {
+            if (
+              ts.isPropertyAssignment(prop) &&
+              (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)) &&
+              ts.isStringLiteralLike(prop.initializer)
+            ) {
               const key = (prop.name as import('typescript').Identifier | import('typescript').StringLiteral).text;
               const value = prop.initializer.text;
               constMap.set(`${objName}.${key}`, value);
@@ -155,7 +164,14 @@ export function scanTsSource(fileName: string, text: string): TsScanResult {
     if (ts.isExportAssignment(node) && !node.isExportEquals) {
       const expr = node.expression;
       const name = ts.isIdentifier(expr) ? expr.text : undefined;
-      if (name) addScreen({ name, kind: SCREEN_SUFFIX.test(name) ? 'screen' : 'component', component: name, confidence: 0.7, reasons: ['ast_default_export_component'] });
+      if (name)
+        addScreen({
+          name,
+          kind: SCREEN_SUFFIX.test(name) ? 'screen' : 'component',
+          component: name,
+          confidence: 0.7,
+          reasons: ['ast_default_export_component'],
+        });
     }
 
     // function/class components, incl. `export default function FooScreen()` spanning lines.
@@ -163,7 +179,13 @@ export function scanTsSource(fileName: string, text: string): TsScanResult {
       const name = node.name.text;
       const isDefault = node.modifiers?.some((m) => m.kind === ts.SyntaxKind.DefaultKeyword);
       if (SCREEN_SUFFIX.test(name) || isDefault) {
-        addScreen({ name, kind: SCREEN_SUFFIX.test(name) ? 'screen' : 'component', component: name, confidence: SCREEN_SUFFIX.test(name) ? 0.75 : 0.6, reasons: [isDefault ? 'ast_default_export_function' : 'ast_function_component'] });
+        addScreen({
+          name,
+          kind: SCREEN_SUFFIX.test(name) ? 'screen' : 'component',
+          component: name,
+          confidence: SCREEN_SUFFIX.test(name) ? 0.75 : 0.6,
+          reasons: [isDefault ? 'ast_default_export_function' : 'ast_function_component'],
+        });
       }
     }
     if (ts.isClassDeclaration(node) && node.name && SCREEN_SUFFIX.test(node.name.text)) {
@@ -172,7 +194,12 @@ export function scanTsSource(fileName: string, text: string): TsScanResult {
     // const FooScreen = (...) => (...)  /  = function () {}
     if (ts.isVariableStatement(node)) {
       for (const decl of node.declarationList.declarations) {
-        if (ts.isIdentifier(decl.name) && SCREEN_SUFFIX.test(decl.name.text) && decl.initializer && (ts.isArrowFunction(decl.initializer) || ts.isFunctionExpression(decl.initializer))) {
+        if (
+          ts.isIdentifier(decl.name) &&
+          SCREEN_SUFFIX.test(decl.name.text) &&
+          decl.initializer &&
+          (ts.isArrowFunction(decl.initializer) || ts.isFunctionExpression(decl.initializer))
+        ) {
           addScreen({ name: decl.name.text, kind: 'screen', component: decl.name.text, confidence: 0.7, reasons: ['ast_arrow_component'] });
         }
       }

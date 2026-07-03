@@ -33,11 +33,36 @@ export interface HealthResult {
 
 // APP-layer surfaces (JS/UI). Order matters: the first fatal RedBox variant wins over LogBox.
 const APP_SURFACES: Array<{ re: RegExp; kind: string; severity: 'high' | 'medium'; detail: string }> = [
-  { re: /unable to load script|could not connect to development server|loadJSBundleFromAssets|index\.android\.bundle/i, kind: 'rn_redbox', severity: 'high', detail: 'RN RedBox — JS bundle failed to load (Metro/bundle issue)' },
-  { re: /unhandled (js|javascript) exception|invariant violation|TypeError:|ReferenceError|undefined is not an object|is not a function/i, kind: 'rn_redbox', severity: 'high', detail: 'RN RedBox — unhandled JS exception' },
-  { re: /we encountered an error|something went wrong|this screen (crashed|encountered)|oops[!,. ].{0,40}(wrong|error|crash)/i, kind: 'app_error_boundary', severity: 'high', detail: 'app ErrorBoundary fallback UI (process alive, screen broken)' },
-  { re: /net::ERR_|webpage not available|this site can.?t be reached|ERR_INTERNET_DISCONNECTED|ERR_NAME_NOT_RESOLVED|ERR_CONNECTION/i, kind: 'webview_error', severity: 'medium', detail: 'WebView error page' },
-  { re: /console error|\b[1-9]\d* errors?\b/i, kind: 'rn_logbox_error', severity: 'medium', detail: 'RN LogBox error overlay (app running but logging errors)' },
+  {
+    re: /unable to load script|could not connect to development server|loadJSBundleFromAssets|index\.android\.bundle/i,
+    kind: 'rn_redbox',
+    severity: 'high',
+    detail: 'RN RedBox — JS bundle failed to load (Metro/bundle issue)',
+  },
+  {
+    re: /unhandled (js|javascript) exception|invariant violation|TypeError:|ReferenceError|undefined is not an object|is not a function/i,
+    kind: 'rn_redbox',
+    severity: 'high',
+    detail: 'RN RedBox — unhandled JS exception',
+  },
+  {
+    re: /we encountered an error|something went wrong|this screen (crashed|encountered)|oops[!,. ].{0,40}(wrong|error|crash)/i,
+    kind: 'app_error_boundary',
+    severity: 'high',
+    detail: 'app ErrorBoundary fallback UI (process alive, screen broken)',
+  },
+  {
+    re: /net::ERR_|webpage not available|this site can.?t be reached|ERR_INTERNET_DISCONNECTED|ERR_NAME_NOT_RESOLVED|ERR_CONNECTION/i,
+    kind: 'webview_error',
+    severity: 'medium',
+    detail: 'WebView error page',
+  },
+  {
+    re: /console error|\b[1-9]\d* errors?\b/i,
+    kind: 'rn_logbox_error',
+    severity: 'medium',
+    detail: 'RN LogBox error overlay (app running but logging errors)',
+  },
 ];
 
 // A conservative last-resort generic error surface (only when nothing more specific matched).
@@ -80,10 +105,22 @@ export async function checkHealth(driver: Driver, appId?: string, xml?: string):
     nativeStatus = 'wda_unreachable';
   }
   if (ANR_RE.test(joined)) {
-    findings.push({ severity: 'high', layer: 'native', kind: 'anr', detail: 'Application Not Responding dialog', evidence: firstMatch(nodes, ANR_RE) });
+    findings.push({
+      severity: 'high',
+      layer: 'native',
+      kind: 'anr',
+      detail: 'Application Not Responding dialog',
+      evidence: firstMatch(nodes, ANR_RE),
+    });
     nativeStatus = 'anr';
   } else if (CRASH_RE.test(joined)) {
-    findings.push({ severity: 'high', layer: 'native', kind: 'native_crash', detail: 'native crash dialog', evidence: firstMatch(nodes, CRASH_RE) });
+    findings.push({
+      severity: 'high',
+      layer: 'native',
+      kind: 'native_crash',
+      detail: 'native crash dialog',
+      evidence: firstMatch(nodes, CRASH_RE),
+    });
     nativeStatus = 'native_crash';
   }
 
@@ -92,25 +129,58 @@ export async function checkHealth(driver: Driver, appId?: string, xml?: string):
     const alert = /XCUIElementTypeAlert/i.test(joined);
     const permission = /would like to|allow|don.?t allow|while using|permission/i.test(joined) && alert;
     if (springboard) {
-      findings.push({ severity: 'high', layer: 'native', kind: 'wrong_foreground_app', detail: 'iOS SpringBoard is foreground (app not active or crashed)', evidence: firstMatch(nodes, /SpringBoard/i) });
+      findings.push({
+        severity: 'high',
+        layer: 'native',
+        kind: 'wrong_foreground_app',
+        detail: 'iOS SpringBoard is foreground (app not active or crashed)',
+        evidence: firstMatch(nodes, /SpringBoard/i),
+      });
       if (nativeStatus === 'ok') nativeStatus = 'wrong_foreground_app';
     } else if (permission) {
-      findings.push({ severity: 'medium', layer: 'native', kind: 'permission_dialog', detail: 'iOS runtime permission dialog is visible', evidence: firstMatch(nodes, /would like to|allow|don.?t allow|while using|permission/i) });
+      findings.push({
+        severity: 'medium',
+        layer: 'native',
+        kind: 'permission_dialog',
+        detail: 'iOS runtime permission dialog is visible',
+        evidence: firstMatch(nodes, /would like to|allow|don.?t allow|while using|permission/i),
+      });
     } else if (alert) {
-      findings.push({ severity: 'medium', layer: 'native', kind: 'native_alert', detail: 'iOS native alert is visible', evidence: firstMatch(nodes, /.+/) });
+      findings.push({
+        severity: 'medium',
+        layer: 'native',
+        kind: 'native_alert',
+        detail: 'iOS native alert is visible',
+        evidence: firstMatch(nodes, /.+/),
+      });
     }
   }
 
   if (appId && !foreground.startsWith(appId) && foreground !== 'unknown') {
     if (/launcher/i.test(foreground)) {
-      findings.push({ severity: 'high', layer: 'native', kind: 'wrong_foreground_app', detail: `app left to the launcher (possible crash) — foreground=${foreground}` });
+      findings.push({
+        severity: 'high',
+        layer: 'native',
+        kind: 'wrong_foreground_app',
+        detail: `app left to the launcher (possible crash) — foreground=${foreground}`,
+      });
       if (nativeStatus === 'ok') nativeStatus = 'wrong_foreground_app';
     } else if (/permissioncontroller/i.test(foreground)) {
-      findings.push({ severity: 'medium', layer: 'native', kind: 'permission_dialog', detail: `Android runtime permission dialog is visible — foreground=${foreground}` });
+      findings.push({
+        severity: 'medium',
+        layer: 'native',
+        kind: 'permission_dialog',
+        detail: `Android runtime permission dialog is visible — foreground=${foreground}`,
+      });
     } else if (/packageinstaller|systemui|com\.android\.|inputmethod/i.test(foreground)) {
       findings.push({ severity: 'info', layer: 'native', kind: 'system_surface', detail: foreground });
     } else {
-      findings.push({ severity: 'medium', layer: 'native', kind: 'wrong_foreground_app', detail: `foreground is a different app — foreground=${foreground}` });
+      findings.push({
+        severity: 'medium',
+        layer: 'native',
+        kind: 'wrong_foreground_app',
+        detail: `foreground is a different app — foreground=${foreground}`,
+      });
       if (nativeStatus === 'ok') nativeStatus = 'wrong_foreground_app';
     }
   }
@@ -130,7 +200,13 @@ export async function checkHealth(driver: Driver, appId?: string, xml?: string):
       }
     }
     if (!matched && GENERIC_ERROR_RE.test(joined)) {
-      findings.push({ severity: 'medium', layer: 'app', kind: 'unknown_error_surface', detail: 'generic error copy on screen (low confidence)', evidence: firstMatch(nodes, GENERIC_ERROR_RE) });
+      findings.push({
+        severity: 'medium',
+        layer: 'app',
+        kind: 'unknown_error_surface',
+        detail: 'generic error copy on screen (low confidence)',
+        evidence: firstMatch(nodes, GENERIC_ERROR_RE),
+      });
       appStatus = 'degraded';
     }
   }

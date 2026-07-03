@@ -26,14 +26,27 @@ export function registerGetArtifact(server: McpServer, sessions: SessionStore): 
     async ({ uri, mode }): Promise<CallToolResult> => {
       const found = sessions.findArtifact(uri);
       if (!found) {
-        return qaError({ what: `Unknown artifact ${uri}`, changedState: false, retrySafe: true, nextSteps: ['List artifacts via qa_report, or check the URI.'] });
+        return qaError({
+          what: `Unknown artifact ${uri}`,
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['List artifacts via qa_report, or check the URI.'],
+        });
       }
       const { rec } = found;
       const resolved = chooseMode(rec.mime, mode);
       try {
         if (resolved === 'metadata') {
           const bytes = statSync(rec.path).size;
-          const meta = { uri: rec.uri, mime: rec.mime, kind: rec.kind, bytes, path: rec.path, hint: rec.mime.startsWith('image/') ? 'pass mode:"inline" to fetch the image bytes' : 'pass mode:"inline" to fetch contents' };
+          const meta = {
+            uri: rec.uri,
+            mime: rec.mime,
+            kind: rec.kind,
+            bytes,
+            path: rec.path,
+            redaction: rec.redaction ?? null,
+            hint: rec.mime.startsWith('image/') ? 'pass mode:"inline" to fetch the image bytes' : 'pass mode:"inline" to fetch contents',
+          };
           return { content: [{ type: 'text', text: `${rec.uri}\n${JSON.stringify(meta, null, 2)}` }], structuredContent: meta };
         }
         if (rec.mime.startsWith('image/')) {
@@ -41,7 +54,12 @@ export function registerGetArtifact(server: McpServer, sessions: SessionStore): 
         }
         return { content: [{ type: 'text', text: readFileSync(rec.path, 'utf8') }] };
       } catch (e) {
-        return qaError({ what: `Could not read artifact: ${String(e)}`, changedState: false, retrySafe: true, nextSteps: ['The file may have been cleaned up.'] });
+        return qaError({
+          what: `Could not read artifact: ${String(e)}`,
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['The file may have been cleaned up.'],
+        });
       }
     },
   );

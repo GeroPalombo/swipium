@@ -3,13 +3,7 @@
 // Builds the `issues` section of a QA report from the derived index, and renders the Markdown
 // "Issue Memory" block. PURE — takes records + now, returns data/strings.
 
-import {
-  APP_BUG_CATEGORIES,
-  combineReleaseImpact,
-  defaultReleaseImpact,
-  type IssueRecord,
-  type ReleaseImpact,
-} from './schema.js';
+import { APP_BUG_CATEGORIES, combineReleaseImpact, defaultReleaseImpact, type IssueRecord, type ReleaseImpact } from './schema.js';
 
 export interface ReportIssuesSection {
   summary: {
@@ -44,7 +38,9 @@ export function buildReportIssuesSection(
 ): ReportIssuesSection {
   const inRun = (r: IssueRecord) => !runIssueIds || runIssueIds.has(r.issueId);
 
-  const newIssues = records.filter((r) => inRun(r) && (r.state === 'open' || r.state === 'observed_again') && r.observationCount <= 1 && !r.lastRecurrenceMessage);
+  const newIssues = records.filter(
+    (r) => inRun(r) && (r.state === 'open' || r.state === 'observed_again') && r.observationCount <= 1 && !r.lastRecurrenceMessage,
+  );
   const openIssues = records.filter((r) => inRun(r) && (r.state === 'open' || r.state === 'observed_again'));
   const recurringIssues = records.filter((r) => inRun(r) && (r.state === 'reopened' || Boolean(r.lastRecurrenceMessage)));
   // "Verified this run" requires CURRENT-RUN pass evidence (a verified_fixed linked_run). REQ-08:
@@ -52,11 +48,11 @@ export function buildReportIssuesSection(
   // a run scope is supplied but no verification set, nothing is claimed verified; with neither (a
   // whole-history view) all fixed issues are listed.
   const fixedIssuesVerified = records.filter(
-    (r) =>
-      r.state === 'fixed' &&
-      (verifiedFixedIssueIds ? verifiedFixedIssueIds.has(r.issueId) : runIssueIds ? false : true),
+    (r) => r.state === 'fixed' && (verifiedFixedIssueIds ? verifiedFixedIssueIds.has(r.issueId) : runIssueIds ? false : true),
   );
-  const knownNoise = records.filter((r) => r.state === 'expected_environment_noise' || r.state === 'suppressed' || r.category === 'environment_noise');
+  const knownNoise = records.filter(
+    (r) => r.state === 'expected_environment_noise' || r.state === 'suppressed' || r.category === 'environment_noise',
+  );
   const hardGates = records.filter((r) => inRun(r) && r.category === 'hard_gate');
   const improvements = records.filter((r) => inRun(r) && (r.category === 'improvement' || r.category === 'accessibility_readiness'));
 
@@ -65,7 +61,14 @@ export function buildReportIssuesSection(
   for (const r of records) {
     if (!inRun(r)) continue;
     if (r.state === 'suppressed' || r.state === 'expected_environment_noise' || r.state === 'fixed') continue;
-    if (APP_BUG_CATEGORIES.includes(r.category) || r.category === 'security_privacy' || r.category === 'store_compliance' || r.category === 'improvement' || r.category === 'accessibility_readiness' || r.category === 'hard_gate') {
+    if (
+      APP_BUG_CATEGORIES.includes(r.category) ||
+      r.category === 'security_privacy' ||
+      r.category === 'store_compliance' ||
+      r.category === 'improvement' ||
+      r.category === 'accessibility_readiness' ||
+      r.category === 'hard_gate'
+    ) {
       impacts.push(defaultReleaseImpact(r.category, r.severity));
     }
   }
@@ -107,7 +110,9 @@ export function issuesSectionToMarkdown(section: ReportIssuesSection): string {
   lines.push('');
   lines.push(`Release impact: **${section.releaseImpact.toUpperCase()}**`);
 
-  const blockingBugs = section.newIssues.filter((r) => r.category === 'blocker_app_bug' || (r.category === 'app_bug' && (r.severity === 'blocker' || r.severity === 'high')));
+  const blockingBugs = section.newIssues.filter(
+    (r) => r.category === 'blocker_app_bug' || (r.category === 'app_bug' && (r.severity === 'blocker' || r.severity === 'high')),
+  );
   if (blockingBugs.length) {
     lines.push('', '### Blocking App Bugs');
     for (const r of blockingBugs) lines.push(`- \`${r.issueId}\` (${r.severity}): ${r.summary}`);
@@ -125,7 +130,8 @@ export function issuesSectionToMarkdown(section: ReportIssuesSection): string {
   }
   if (section.knownNoise.length) {
     lines.push('', '### Environment Noise');
-    for (const r of section.knownNoise) lines.push(`- \`${r.issueId}\`: ${r.summary}${r.suppressionReason ? ` (suppressed: ${r.suppressionReason})` : ''}.`);
+    for (const r of section.knownNoise)
+      lines.push(`- \`${r.issueId}\`: ${r.summary}${r.suppressionReason ? ` (suppressed: ${r.suppressionReason})` : ''}.`);
   }
   if (section.improvements.length) {
     lines.push('', '### Improvements & Precautions');
@@ -133,7 +139,8 @@ export function issuesSectionToMarkdown(section: ReportIssuesSection): string {
   }
   if (section.fixedIssuesVerified.length) {
     lines.push('', '### Fixed Issues Verified This Run');
-    for (const r of section.fixedIssuesVerified) lines.push(`- \`${r.issueId}\`: ${r.summary}${r.fixedInCommit ? ` (fixed in \`${r.fixedInCommit}\`)` : ''}.`);
+    for (const r of section.fixedIssuesVerified)
+      lines.push(`- \`${r.issueId}\`: ${r.summary}${r.fixedInCommit ? ` (fixed in \`${r.fixedInCommit}\`)` : ''}.`);
   }
   return lines.join('\n');
 }

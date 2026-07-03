@@ -41,7 +41,9 @@ export function describeZodField(schema: unknown, depth = 0): string {
       case 'ZodEnum':
         return `enum(${[...((def.values as string[]) ?? [])].sort().join('|')})`;
       case 'ZodNativeEnum':
-        return `nenum(${Object.values((def.values as Record<string, unknown>) ?? {}).sort().join('|')})`;
+        return `nenum(${Object.values((def.values as Record<string, unknown>) ?? {})
+          .sort()
+          .join('|')})`;
       case 'ZodArray':
         return `array<${describeZodField(def.type, depth + 1)}>`;
       case 'ZodRecord':
@@ -49,7 +51,8 @@ export function describeZodField(schema: unknown, depth = 0): string {
       case 'ZodUnion':
         return `union(${((def.options as unknown[]) ?? []).map((o) => describeZodField(o, depth + 1)).join('|')})`;
       case 'ZodObject': {
-        const shape = typeof def.shape === 'function' ? (def.shape as () => Record<string, unknown>)() : (def.shape as Record<string, unknown>) ?? {};
+        const shape =
+          typeof def.shape === 'function' ? (def.shape as () => Record<string, unknown>)() : ((def.shape as Record<string, unknown>) ?? {});
         return `obj{${Object.keys(shape).sort().join(',')}}`;
       }
       default:

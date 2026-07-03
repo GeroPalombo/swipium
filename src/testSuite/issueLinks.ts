@@ -6,13 +6,7 @@
 // passed case/run objects, takes `now` as input, never touches the clock or fs.
 
 import type { IssueCategory, IssueRecord } from '../issues/schema.js';
-import type {
-  CanonicalTestCase,
-  TestCaseIssueRef,
-  TestCaseIssueRelationship,
-  TestCaseRunIssueLink,
-  TestCaseRunIssueRelationship,
-} from './schema.js';
+import type { CanonicalTestCase, TestCaseIssueRelationship, TestCaseRunIssueLink, TestCaseRunIssueRelationship } from './schema.js';
 
 /** Map an issue category + case outcome to the durable case→issue relationship. */
 export function relationshipForCase(category: IssueCategory): TestCaseIssueRelationship {

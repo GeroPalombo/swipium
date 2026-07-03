@@ -147,8 +147,14 @@ export function computeIssueMetrics(events: IssueEvent[], opts: MetricsOptions =
     if (e.eventType === 'suppressed' && within) suppressed++;
   }
 
-  const noiseIssues = records.filter((r) => (opts.includeSuppressed || r.state !== 'suppressed') && (r.category === 'environment_noise' || r.state === 'expected_environment_noise'));
-  const openRecords = records.filter((r) => r.state === 'open' || r.state === 'observed_again' || r.state === 'reopened' || r.state === 'needs_triage');
+  const noiseIssues = records.filter(
+    (r) =>
+      (opts.includeSuppressed || r.state !== 'suppressed') &&
+      (r.category === 'environment_noise' || r.state === 'expected_environment_noise'),
+  );
+  const openRecords = records.filter(
+    (r) => r.state === 'open' || r.state === 'observed_again' || r.state === 'reopened' || r.state === 'needs_triage',
+  );
   const ages = openRecords.map((r) => ageDays(r.firstSeenAt, until)).sort((a, b) => a - b);
   const avgAgeDays = ages.length ? Number((ages.reduce((s, v) => s + v, 0) / ages.length).toFixed(2)) : 0;
   const p95AgeDays = Number(percentile(ages, 95).toFixed(2));

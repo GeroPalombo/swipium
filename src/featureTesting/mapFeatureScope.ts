@@ -1,12 +1,25 @@
 // Vision Gap Fix 3 — app-map-FIRST feature scoping. The product principle is "read the durable app
-// map before deciding what to do". qa_feature_scope / qa_feature_test_plan / qa_test_feature must scope
+// map before deciding what to do". qa_app_map_feature_scope / qa_test_feature must scope
 // from `.swipium/app-map.json` (features, static + runtime topology, tickets, persistent suite) BEFORE
 // falling back to a fresh code scan. This shared service builds an app-map-enriched FeatureScopeInput
 // and reuses the deterministic ranker in featureScope.ts, then reconciles the result back to a known
 // map feature id so scope ids stay compatible with qa_app_map_feature_scope.
 
-import { buildFeatureIndex, tokenize, classifySymbol, type FeatureIndex, type SourceSymbol, type RouteRef, type SourceFileEntry } from '../appMap/featureIndex.js';
-import { buildFeatureScope, type FeatureScopeInput, type FeatureScopeResult, type RuntimeScreenInput, type TestCaseRef } from './featureScope.js';
+import {
+  buildFeatureIndex,
+  tokenize,
+  type FeatureIndex,
+  type SourceSymbol,
+  type RouteRef,
+  type SourceFileEntry,
+} from '../appMap/featureIndex.js';
+import {
+  buildFeatureScope,
+  type FeatureScopeInput,
+  type FeatureScopeResult,
+  type RuntimeScreenInput,
+  type TestCaseRef,
+} from './featureScope.js';
 import { loadAppMap } from '../appMap/store.js';
 import { appMapResourceUri } from '../appMap/store.js';
 import { loadSuite } from '../testSuite/store.js';
@@ -40,7 +53,14 @@ export interface MapFeatureScopeResult extends FeatureScopeResult {
 
 function fallbackProject(root: string): ProjectIdentity {
   const fw = detectFramework(root);
-  return { root, gitRemote: null, packageName: null, workspaceTarget: null, framework: fw, platforms: fw === 'native-android' ? ['android'] : fw === 'native-ios' ? ['ios'] : ['android', 'ios'] };
+  return {
+    root,
+    gitRemote: null,
+    packageName: null,
+    workspaceTarget: null,
+    framework: fw,
+    platforms: fw === 'native-android' ? ['android'] : fw === 'native-ios' ? ['ios'] : ['android', 'ios'],
+  };
 }
 
 /** Synthesize index entries from the durable map so a feature that exists ONLY in the app map is found. */
@@ -97,8 +117,16 @@ function testsFromSuite(root: string): { tests: TestCaseRef[]; symbols: SourceSy
     for (const c of suite.cases) {
       if (c.status === 'deprecated') continue;
       tests.push({ id: c.id, title: c.title, source: 'suite' });
-      const tokens = [...new Set([...tokenize(c.functionality), ...tokenize(c.title), ...tokenize(c.featureId), ...tokenize(c.objective ?? '')])];
-      symbols.push({ name: (c.functionality || c.title).replace(/[^A-Za-z0-9]+/g, '') || c.id, kind: 'screen', file: `suite:${c.id}`, line: 0, tokens });
+      const tokens = [
+        ...new Set([...tokenize(c.functionality), ...tokenize(c.title), ...tokenize(c.featureId), ...tokenize(c.objective ?? '')]),
+      ];
+      symbols.push({
+        name: (c.functionality || c.title).replace(/[^A-Za-z0-9]+/g, '') || c.id,
+        kind: 'screen',
+        file: `suite:${c.id}`,
+        line: 0,
+        tokens,
+      });
     }
   } catch {
     /* best-effort */
@@ -146,7 +174,14 @@ export function buildMapFeatureScope(input: MapFeatureScopeInput): MapFeatureSco
   if (!map) {
     // No durable map yet — still layer the persistent suite on top of the pure code-scan scope.
     const idx: FeatureIndex = { ...baseIndex, symbols: [...baseIndex.symbols, ...suite.symbols] };
-    const res = buildFeatureScope({ query: input.query, index: idx, runtimeScreens: input.runtimeScreens, existingTests: [...(input.existingTests ?? []), ...suite.tests], platform: input.platform, limit: input.limit });
+    const res = buildFeatureScope({
+      query: input.query,
+      index: idx,
+      runtimeScreens: input.runtimeScreens,
+      existingTests: [...(input.existingTests ?? []), ...suite.tests],
+      platform: input.platform,
+      limit: input.limit,
+    });
     return { ...res, appMapUri, ticketRefs: [], runtimeSource: input.runtimeScreens?.length ? 'session' : 'none' };
   }
 
@@ -161,7 +196,14 @@ export function buildMapFeatureScope(input: MapFeatureScopeInput): MapFeatureSco
   }
   const existingTests = [...(input.existingTests ?? []), ...testsFromMap(map), ...suite.tests];
 
-  const scopeInput: FeatureScopeInput = { query: input.query, index: enrichedIndex, runtimeScreens, existingTests, platform: input.platform, limit: input.limit };
+  const scopeInput: FeatureScopeInput = {
+    query: input.query,
+    index: enrichedIndex,
+    runtimeScreens,
+    existingTests,
+    platform: input.platform,
+    limit: input.limit,
+  };
   const result = buildFeatureScope(scopeInput);
 
   // Reconcile to a known map feature so the scope id matches qa_app_map_feature_scope's id.

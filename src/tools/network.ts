@@ -80,14 +80,22 @@ export function registerNetwork(server: McpServer, sessions: SessionStore): void
       const airplane = await d.airplaneOn();
       if (action === 'status') {
         return qaOk(
-          { network: airplane ? 'offline' : 'online', airplaneOn: airplane, changedBySwipium: !!session.network?.changed, restoreAvailable: !!session.network?.changed },
+          {
+            network: airplane ? 'offline' : 'online',
+            airplaneOn: airplane,
+            changedBySwipium: !!session.network?.changed,
+            restoreAvailable: !!session.network?.changed,
+          },
           `network=${airplane ? 'offline (airplane on)' : 'online'}${session.network?.changed ? ' (changed by Swipium — will restore)' : ''}`,
         );
       }
 
       if (action === 'restore') {
         const msg = await restoreNetwork(sessions, session, d);
-        return qaOk({ network: (await d.airplaneOn()) ? 'offline' : 'online', restored: !!msg }, msg ? `network ${msg}` : 'nothing to restore (Swipium did not change the network)');
+        return qaOk(
+          { network: (await d.airplaneOn()) ? 'offline' : 'online', restored: !!msg },
+          msg ? `network ${msg}` : 'nothing to restore (Swipium did not change the network)',
+        );
       }
 
       // offline / online — consent-gated, records original on first change.

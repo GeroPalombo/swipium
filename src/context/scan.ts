@@ -38,7 +38,8 @@ export interface ProjectScan {
 }
 
 const AUTH_DEP = /(^|[/@])(auth|next-auth|expo-auth-session|react-native-app-auth|amazon-cognito|@clerk|supabase|firebase)/i;
-const HARD_BLOCKER = /adb not found|could not identify|no online device|no prebuilt (apk|app artifact|android apk|ios app artifact)|no build artifact/i;
+const HARD_BLOCKER =
+  /adb not found|could not identify|no online device|no prebuilt (apk|app artifact|android apk|ios app artifact)|no build artifact/i;
 
 function isDebugRN(fw: Framework): boolean {
   return fw === 'expo' || fw === 'bare-react-native';

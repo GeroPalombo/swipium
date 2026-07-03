@@ -44,16 +44,29 @@ export interface PrepareIosCtx {
   onProgress?: (text: string) => void;
 }
 
-export async function prepareIos(sessions: SessionStore, session: Session, args: PrepareIosArgs, ctx: PrepareIosCtx = {}): Promise<PrepareIosResult> {
+export async function prepareIos(
+  sessions: SessionStore,
+  session: Session,
+  args: PrepareIosArgs,
+  ctx: PrepareIosCtx = {},
+): Promise<PrepareIosResult> {
   const progress = (t: string) => ctx.onProgress?.(t);
 
   if (!(await sim.simctlAvailable())) {
-    return { ok: false, failureCode: 'SIMULATOR_RUNTIME_MISSING', error: 'simctl unavailable (macOS + Xcode required for iOS simulators).' };
+    return {
+      ok: false,
+      failureCode: 'SIMULATOR_RUNTIME_MISSING',
+      error: 'simctl unavailable (macOS + Xcode required for iOS simulators).',
+    };
   }
 
   // .ipa on the simulator is the classic mistake — refuse with the right explanation.
   if (args.app && /\.ipa$/i.test(args.app)) {
-    return { ok: false, failureCode: 'IPA_NEEDS_REAL_DEVICE', error: 'A .ipa cannot be installed on the simulator; public v1 needs a simulator-SDK .app.' };
+    return {
+      ok: false,
+      failureCode: 'IPA_NEEDS_REAL_DEVICE',
+      error: 'A .ipa cannot be installed on the simulator; public v1 needs a simulator-SDK .app.',
+    };
   }
 
   // ---- pick + boot simulator ----
@@ -63,7 +76,12 @@ export async function prepareIos(sessions: SessionStore, session: Session, args:
     (args.simulator && sims.find((s) => s.udid === args.simulator || s.name.toLowerCase().includes(args.simulator!.toLowerCase()))) ||
     sims.find((s) => s.state === 'Booted') ||
     sims.find((s) => /iphone/i.test(s.name));
-  if (!pick) return { ok: false, failureCode: 'SIMULATOR_RUNTIME_MISSING', error: 'No iOS simulator available — install a runtime / create one in Xcode.' };
+  if (!pick)
+    return {
+      ok: false,
+      failureCode: 'SIMULATOR_RUNTIME_MISSING',
+      error: 'No iOS simulator available — install a runtime / create one in Xcode.',
+    };
 
   if (pick.state !== 'Booted') {
     progress(`booting ${pick.name}`);
@@ -73,7 +91,11 @@ export async function prepareIos(sessions: SessionStore, session: Session, args:
       sessions.milestone(session, 'simulator_boot_end');
     } catch (e) {
       const msg = String(e);
-      return { ok: false, failureCode: /timed out|timeout/i.test(msg) ? 'SIMULATOR_BOOT_TIMEOUT' : 'SIMULATOR_BOOT_FAILED', error: `Boot failed: ${msg}` };
+      return {
+        ok: false,
+        failureCode: /timed out|timeout/i.test(msg) ? 'SIMULATOR_BOOT_TIMEOUT' : 'SIMULATOR_BOOT_FAILED',
+        error: `Boot failed: ${msg}`,
+      };
     }
   }
   // bind a SimctlDriver
@@ -101,7 +123,13 @@ export async function prepareIos(sessions: SessionStore, session: Session, args:
     // A device-SDK (iphoneos) .app cannot run on the simulator — catch it before the opaque
     // simctl install error so the blocker is IOS_APP_WRONG_ARCH (build a simulator .app).
     if (appBuildDestination(appPath) === 'device') {
-      return { ok: false, failureCode: 'IOS_APP_WRONG_ARCH', error: `${appPath} is a device build (iphoneos) — the simulator needs a simulator-SDK .app (iphonesimulator). Real-device workflows are outside the public v1 scope.`, udid: pick.udid, name: pick.name };
+      return {
+        ok: false,
+        failureCode: 'IOS_APP_WRONG_ARCH',
+        error: `${appPath} is a device build (iphoneos) — the simulator needs a simulator-SDK .app (iphonesimulator). Real-device workflows are outside the public v1 scope.`,
+        udid: pick.udid,
+        name: pick.name,
+      };
     }
     progress('installing .app');
     try {
@@ -159,7 +187,14 @@ export async function prepareIos(sessions: SessionStore, session: Session, args:
         status: 'blocked',
         detail: String(err),
       });
-      return { ok: false, failureCode: 'BUNDLE_ID_NOT_FOUND', error: `Launch failed: ${String(err)}`, udid: pick.udid, name: pick.name, bundleId };
+      return {
+        ok: false,
+        failureCode: 'BUNDLE_ID_NOT_FOUND',
+        error: `Launch failed: ${String(err)}`,
+        udid: pick.udid,
+        name: pick.name,
+        bundleId,
+      };
     }
     sessions.recordMutation(session, {
       tool: 'qa_prepare_ios_target',
@@ -184,7 +219,12 @@ export async function prepareIos(sessions: SessionStore, session: Session, args:
     wda = { reachable: !!status.reachable, url: wdaUrl };
     if (status.reachable) {
       try {
-        const sessionOptions = { bundleId: bundleId ?? undefined, udid: pick.udid, capabilities: wdaCfg?.capabilities, settings: wdaCfg?.settings };
+        const sessionOptions = {
+          bundleId: bundleId ?? undefined,
+          udid: pick.udid,
+          capabilities: wdaCfg?.capabilities,
+          settings: wdaCfg?.settings,
+        };
         const created = await createWdaSession(wdaUrl, sessionOptions);
         const mismatched = wdaSessionUdidMismatch(created.capabilities, pick.udid);
         if (mismatched) throw new Error(`WDA reported device ${mismatched}, but this session targets ${pick.udid}.`);
@@ -203,13 +243,35 @@ export async function prepareIos(sessions: SessionStore, session: Session, args:
         wdaSessionId = created.sessionId;
       } catch (e) {
         if (attach === 'required') {
-          return { ok: false, failureCode: 'WDA_SESSION_FAILED', error: `WDA is reachable at ${wdaUrl} but session creation failed: ${String(e)}. Confirm WDA is paired with ${pick.name} and the app bundle id is installed, then retry.`, udid: pick.udid, name: pick.name, bundleId, installed, launched, wda };
+          return {
+            ok: false,
+            failureCode: 'WDA_SESSION_FAILED',
+            error: `WDA is reachable at ${wdaUrl} but session creation failed: ${String(e)}. Confirm WDA is paired with ${pick.name} and the app bundle id is installed, then retry.`,
+            udid: pick.udid,
+            name: pick.name,
+            bundleId,
+            installed,
+            launched,
+            wda,
+          };
         }
         requiresAttach = true;
-        sessions.addWorkaround(session, `WDA reachable but session attach failed (${String(e)}). iOS verification is visual-only until qa_wda attach succeeds`);
+        sessions.addWorkaround(
+          session,
+          `WDA reachable but session attach failed (${String(e)}). iOS verification is visual-only until qa_wda attach succeeds`,
+        );
       }
     } else if (attach === 'required') {
-      return { ok: false, failureCode: 'WDA_UNREACHABLE', error: `WDA required but unreachable at ${wdaUrl}. Start WebDriverAgent (qa_wda) then retry.`, udid: pick.udid, name: pick.name, bundleId, installed, launched };
+      return {
+        ok: false,
+        failureCode: 'WDA_UNREACHABLE',
+        error: `WDA required but unreachable at ${wdaUrl}. Start WebDriverAgent (qa_wda) then retry.`,
+        udid: pick.udid,
+        name: pick.name,
+        bundleId,
+        installed,
+        launched,
+      };
     } else {
       sessions.addWorkaround(session, 'WDA not reachable — iOS verification is visual-only (screenshots), not structured');
     }
@@ -219,7 +281,16 @@ export async function prepareIos(sessions: SessionStore, session: Session, args:
 
   const nextHint = requiresAttach ? ' (WDA reachable, run qa_wda attach to enable structured snapshot and action tools)' : '';
   return {
-    ok: true, udid: pick.udid, name: pick.name, bundleId, installed, launched, mode, wda, wdaSessionId, requiresAttach,
+    ok: true,
+    udid: pick.udid,
+    name: pick.name,
+    bundleId,
+    installed,
+    launched,
+    mode,
+    wda,
+    wdaSessionId,
+    requiresAttach,
     resultText: `${launched ? 'ready' : 'launched=false'} iOS ${pick.name}${bundleId ? ` / ${bundleId}` : ''}: ${mode === 'structured' ? 'WDA structured' : 'visual-only'}${installed ? ' (installed)' : ''}${nextHint}.`,
   };
 }

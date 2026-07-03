@@ -1,4 +1,4 @@
-// App Knowledge Map MCP tools. Public v1 reads, builds, queries, scopes, and validates the
+// App Knowledge Map MCP tools. Public v1 reads, builds, queries, and scopes the
 // durable `.swipium/app-map.json`. Large map data is returned by RESOURCE
 // URI (swipium://project/<id>/app-map…) rather than flooded into the text channel; compact,
 // structured data is returned inline. All heavy logic lives in src/appMap/*; these are thin.
@@ -7,14 +7,14 @@ import { existsSync, readFileSync } from 'node:fs';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { qaOk, qaError } from '../lib/result.js';
+import { qaNeedsInput } from '../lib/needsInput.js';
 import { resolveProjectRoot } from '../context/projectRoot.js';
 import { buildAppMap, summarizeMap, type BuildMode } from '../appMap/build.js';
 import { queryAppMap } from '../appMap/query.js';
-import { loadAppMap, loadCodeIndex, saveAppMap, saveIndexes, validateAppMap, appMapResourceUri, appMapPath, projectId } from '../appMap/store.js';
+import { loadAppMap, loadCodeIndex, saveAppMap, saveIndexes, appMapResourceUri, appMapPath, projectId } from '../appMap/store.js';
 import { addProvenance, makeProvenance, recomputeConfidence } from '../appMap/provenance.js';
-import { diffAppMaps } from '../appMap/diff.js';
-import { migrateAppMap } from '../appMap/migrations.js';
 import { rememberProject, lookupRoot } from '../appMap/projectRegistry.js';
+import { resolveFeatureContext } from './featureTesting.js';
 import { detectFramework } from '../context/detect.js';
 import type { AppKnowledgeMap, ProjectIdentity } from '../appMap/schema.js';
 import type { SerializedGraph } from '../explore/graph.js';
@@ -47,7 +47,11 @@ function nowIso(): string {
 }
 
 /** Resolve a project root from an explicit arg or a session. */
-async function rootFor(server: McpServer, sessions: SessionStore, args: { projectRoot?: string; sessionId?: string }): Promise<{ root?: string; session?: Session; hint?: string }> {
+async function rootFor(
+  server: McpServer,
+  sessions: SessionStore,
+  args: { projectRoot?: string; sessionId?: string },
+): Promise<{ root?: string; session?: Session; hint?: string }> {
   if (args.sessionId) {
     const s = sessions.get(args.sessionId);
     if (!s) return { hint: `Unknown sessionId ${args.sessionId}` };
@@ -60,7 +64,14 @@ async function rootFor(server: McpServer, sessions: SessionStore, args: { projec
 
 function fallbackProject(root: string): ProjectIdentity {
   const fw = detectFramework(root);
-  return { root, gitRemote: null, packageName: null, workspaceTarget: null, framework: fw, platforms: fw === 'native-android' ? ['android'] : fw === 'native-ios' ? ['ios'] : ['android', 'ios'] };
+  return {
+    root,
+    gitRemote: null,
+    packageName: null,
+    workspaceTarget: null,
+    framework: fw,
+    platforms: fw === 'native-android' ? ['android'] : fw === 'native-ios' ? ['ios'] : ['android', 'ios'],
+  };
 }
 
 /** Read an existing map WITHOUT rescanning. Returns null when no map file exists yet. */
@@ -91,15 +102,27 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
       inputSchema: {
         projectRoot: z.string().optional().describe('Absolute project root. Omit to use a session root or the MCP workspace root.'),
         sessionId: z.string().optional().describe('Reuse a session (its root + latest exploration graph).'),
-        mode: z.enum(['static_only', 'runtime_merge', 'full']).optional().describe('static_only: code scan only; runtime_merge: merge the session exploration graph only; full (default): both.'),
+        mode: z
+          .enum(['static_only', 'runtime_merge', 'full'])
+          .optional()
+          .describe('static_only: code scan only; runtime_merge: merge the session exploration graph only; full (default): both.'),
         includeCodeIndex: z.boolean().optional().describe('Persist a code symbol index for queries (default true).'),
         forceRescan: z.boolean().optional().describe('Re-run the static scan even if an up-to-date map exists (default false).'),
       },
-      outputSchema: { ok: z.boolean(), appMapUri: z.string().optional(), staticScreens: z.number().optional(), runtimeScreens: z.number().optional() },
+      // NOTE: no outputSchema — a declared (closed) output schema makes strict MCP clients
+      // reject BOTH the rich qaOk payload and the qaError envelope as "additional properties"
+      // (caught by test/errorContract.test.ts). structuredContent stays self-describing.
     },
     async ({ projectRoot, sessionId, mode, includeCodeIndex, forceRescan }) => {
       const { root, session, hint } = await rootFor(server, sessions, { projectRoot, sessionId });
-      if (!root) return qaError({ what: 'Could not resolve a project root', changedState: false, retrySafe: true, nextSteps: ['Pass projectRoot="/abs/path" or a valid sessionId.'], clientHint: hint });
+      if (!root)
+        return qaError({
+          what: 'Could not resolve a project root',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Pass projectRoot="/abs/path" or a valid sessionId.'],
+          clientHint: hint,
+        });
       remember(root);
       const m = (mode ?? 'full') as BuildMode;
       const exploreGraph = m === 'static_only' ? null : latestExploreGraph(sessions, session);
@@ -110,7 +133,9 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
         const text =
           `🗺️ app map built (${m}) for ${root}\n` +
           `framework=${res.map.project.framework} router=${res.map.staticTopology.router ?? 'none'} · static screens=${res.map.staticTopology.screens.length} · runtime screens=${res.map.runtimeTopology.screens.length}\n` +
-          (merge ? `merge: +${merge.newRuntimeScreens} new, ~${merge.updatedRuntimeScreens} updated, ${merge.linkedScreens} linked, ${merge.unmappedRuntimeScreens} unmapped\n` : '') +
+          (merge
+            ? `merge: +${merge.newRuntimeScreens} new, ~${merge.updatedRuntimeScreens} updated, ${merge.linkedScreens} linked, ${merge.unmappedRuntimeScreens} unmapped\n`
+            : '') +
           `confidence=${res.map.confidence.overall} · features=${res.map.features.length}\n` +
           (Array.isArray(summary.topGaps) && summary.topGaps.length ? `gaps: ${(summary.topGaps as string[]).join('; ')}\n` : '') +
           `appMapUri: ${res.save?.resourceUri}`;
@@ -129,7 +154,12 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
           text,
         );
       } catch (e) {
-        return qaError({ what: `App map build failed: ${String(e)}`, changedState: false, retrySafe: true, nextSteps: ['Check the project root is a supported mobile project.'] });
+        return qaError({
+          what: `App map build failed: ${String(e)}`,
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Check the project root is a supported mobile project.'],
+        });
       }
     },
   );
@@ -148,39 +178,92 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
         featureId: z.string().optional(),
         screenId: z.string().optional(),
       },
-      outputSchema: { ok: z.boolean(), appMapUri: z.string().optional(), section: z.string().optional() },
     },
     async ({ projectRoot, sessionId, section, featureId, screenId }) => {
       const { root, hint } = await rootFor(server, sessions, { projectRoot, sessionId });
-      if (!root) return qaError({ what: 'Could not resolve a project root', changedState: false, retrySafe: true, nextSteps: ['Pass projectRoot or sessionId.'], clientHint: hint });
+      if (!root)
+        return qaError({
+          what: 'Could not resolve a project root',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Pass projectRoot or sessionId.'],
+          clientHint: hint,
+        });
       remember(root);
       const map = readExistingMap(root);
-      if (!map) return qaError({ what: 'No app map yet', changedState: false, retrySafe: true, nextSteps: ['Run qa_app_map_build first.'], failureCode: 'NO_APP_MAP' });
+      if (!map)
+        return qaError({
+          what: 'No app map yet',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Run qa_app_map_build first.'],
+          failureCode: 'NO_APP_MAP',
+        });
       const uri = appMapResourceUri(root);
       const sec = section ?? 'summary';
 
       if (featureId) {
         const f = map.features.find((x) => x.id === featureId);
-        if (!f) return qaError({ what: `Unknown featureId ${featureId}`, changedState: false, retrySafe: true, nextSteps: ['Call qa_app_map_read { section:"features" } to list ids.'] });
-        return qaOk({ appMapUri: uri, section: 'feature', feature: f, featureResourceUri: `${uri}/feature/${featureId}` }, `feature ${f.title} — ${f.testCoverage} coverage, ${f.status}, confidence ${f.confidence}`);
+        if (!f)
+          return qaError({
+            what: `Unknown featureId ${featureId}`,
+            changedState: false,
+            retrySafe: true,
+            nextSteps: ['Call qa_app_map_read { section:"features" } to list ids.'],
+          });
+        return qaOk(
+          { appMapUri: uri, section: 'feature', feature: f, featureResourceUri: `${uri}/feature/${featureId}` },
+          `feature ${f.title} — ${f.testCoverage} coverage, ${f.status}, confidence ${f.confidence}`,
+        );
       }
       if (screenId) {
         const s = map.staticTopology.screens.find((x) => x.id === screenId);
         const r = map.runtimeTopology.screens.find((x) => x.id === screenId);
-        if (!s && !r) return qaError({ what: `Unknown screenId ${screenId}`, changedState: false, retrySafe: true, nextSteps: ['Call qa_app_map_read { section:"screens" } to list ids.'] });
-        return qaOk({ appMapUri: uri, section: 'screen', staticScreen: s ?? null, runtimeScreen: r ?? null, screenResourceUri: `${uri}/screen/${screenId}` }, `screen ${screenId}`);
+        if (!s && !r)
+          return qaError({
+            what: `Unknown screenId ${screenId}`,
+            changedState: false,
+            retrySafe: true,
+            nextSteps: ['Call qa_app_map_read { section:"screens" } to list ids.'],
+          });
+        return qaOk(
+          {
+            appMapUri: uri,
+            section: 'screen',
+            staticScreen: s ?? null,
+            runtimeScreen: r ?? null,
+            screenResourceUri: `${uri}/screen/${screenId}`,
+          },
+          `screen ${screenId}`,
+        );
       }
 
       switch (sec) {
         case 'summary':
-          return qaOk({ appMapUri: uri, section: sec, summary: summarizeMap(map) }, `app map summary (${map.staticTopology.screens.length} static / ${map.runtimeTopology.screens.length} runtime screens). Full map: ${uri}`);
+          return qaOk(
+            { appMapUri: uri, section: sec, summary: summarizeMap(map) },
+            `app map summary (${map.staticTopology.screens.length} static / ${map.runtimeTopology.screens.length} runtime screens). Full map: ${uri}`,
+          );
         case 'screens':
           return qaOk(
             {
               appMapUri: uri,
               section: sec,
-              staticScreens: map.staticTopology.screens.map((s) => ({ id: s.id, name: s.name, route: s.route, kind: s.kind, confidence: s.confidence })),
-              runtimeScreens: map.runtimeTopology.screens.map((r) => ({ id: r.id, title: r.title, visits: r.visits, linkedStaticScreenId: r.linkedStaticScreenId, unmapped: r.unmapped, locatorReadiness: r.locatorReadiness })),
+              staticScreens: map.staticTopology.screens.map((s) => ({
+                id: s.id,
+                name: s.name,
+                route: s.route,
+                kind: s.kind,
+                confidence: s.confidence,
+              })),
+              runtimeScreens: map.runtimeTopology.screens.map((r) => ({
+                id: r.id,
+                title: r.title,
+                visits: r.visits,
+                linkedStaticScreenId: r.linkedStaticScreenId,
+                unmapped: r.unmapped,
+                locatorReadiness: r.locatorReadiness,
+              })),
               unvisitedStaticScreens: map.runtimeTopology.unvisitedStaticScreens,
             },
             `${map.staticTopology.screens.length} static / ${map.runtimeTopology.screens.length} runtime screens; ${map.runtimeTopology.unvisitedStaticScreens.length} unvisited`,
@@ -188,15 +271,29 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
         case 'features':
           return qaOk({ appMapUri: uri, section: sec, features: map.features }, `${map.features.length} features`);
         case 'auth':
-          return qaOk({ appMapUri: uri, section: sec, auth: map.auth, onboarding: map.onboarding, paywalls: map.paywalls }, `auth=${map.auth.hasAuth} onboarding=${!!map.onboarding} paywalls=${map.paywalls.length}`);
+          return qaOk(
+            { appMapUri: uri, section: sec, auth: map.auth, onboarding: map.onboarding, paywalls: map.paywalls },
+            `auth=${map.auth.hasAuth} onboarding=${!!map.onboarding} paywalls=${map.paywalls.length}`,
+          );
         case 'automation':
-          return qaOk({ appMapUri: uri, section: sec, automation: map.automation }, `${map.automation.suites.length} suite(s), ${map.automation.flows.length} flow(s)`);
+          return qaOk(
+            { appMapUri: uri, section: sec, automation: map.automation },
+            `${map.automation.suites.length} suite(s), ${map.automation.flows.length} flow(s)`,
+          );
         case 'testSuite':
           return qaOk({ appMapUri: uri, section: sec, testSuite: map.testSuite }, `${map.testSuite.cases.length} test case(s)`);
         case 'full':
         default:
           // Protect context: point at the resource instead of inlining the whole map.
-          return qaOk({ appMapUri: uri, section: 'full', summary: summarizeMap(map), note: 'Full map omitted from text to protect context — read the appMapUri resource for everything.' }, `Full map at resource: ${uri}`);
+          return qaOk(
+            {
+              appMapUri: uri,
+              section: 'full',
+              summary: summarizeMap(map),
+              note: 'Full map omitted from text to protect context — read the appMapUri resource for everything.',
+            },
+            `Full map at resource: ${uri}`,
+          );
       }
     },
   );
@@ -214,17 +311,36 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
         intent: z.enum(['feature', 'screen', 'code', 'test', 'freeform']).optional(),
         limit: z.number().optional(),
       },
-      outputSchema: { ok: z.boolean(), total: z.number().optional() },
     },
     async ({ query, projectRoot, sessionId, intent, limit }) => {
       const { root, hint } = await rootFor(server, sessions, { projectRoot, sessionId });
-      if (!root) return qaError({ what: 'Could not resolve a project root', changedState: false, retrySafe: true, nextSteps: ['Pass projectRoot or sessionId.'], clientHint: hint });
+      if (!root)
+        return qaError({
+          what: 'Could not resolve a project root',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Pass projectRoot or sessionId.'],
+          clientHint: hint,
+        });
       remember(root);
       const map = readExistingMap(root);
-      if (!map) return qaError({ what: 'No app map yet', changedState: false, retrySafe: true, nextSteps: ['Run qa_app_map_build first.'], failureCode: 'NO_APP_MAP' });
+      if (!map)
+        return qaError({
+          what: 'No app map yet',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Run qa_app_map_build first.'],
+          failureCode: 'NO_APP_MAP',
+        });
       const codeIndex = loadCodeIndex(root);
       const out = queryAppMap(map, codeIndex, { query, intent, limit });
-      const top = out.results.slice(0, 5).map((r, i) => `  ${i + 1}. [${r.type}] ${r.title} (score ${r.score}${r.confidence !== undefined ? `, conf ${r.confidence}` : ''}) → ${r.recommendedNextTool.tool}`).join('\n');
+      const top = out.results
+        .slice(0, 5)
+        .map(
+          (r, i) =>
+            `  ${i + 1}. [${r.type}] ${r.title} (score ${r.score}${r.confidence !== undefined ? `, conf ${r.confidence}` : ''}) → ${r.recommendedNextTool.tool}`,
+        )
+        .join('\n');
       return qaOk({ ...out, appMapUri: appMapResourceUri(root) }, `🔎 "${query}" — ${out.total} result(s)\n${top || '  (no matches)'}`);
     },
   );
@@ -234,37 +350,141 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
     {
       title: 'Scope testing to a feature',
       description:
-        'Resolve a feature (by featureId or free-text query) to a focused test scope: its source files, static + runtime screens, current coverage, blockers, and a recommended Swipium plan.',
+        'Resolve a feature (by featureId or free-text query) to a focused test scope. READ-ONLY — no device, no mutation. With query (e.g. "weather analysis"), it scopes app-map-FIRST and falls back to a fresh code-index scan + the latest exploration screen graph when no map exists yet — returning ranked code symbols, static + runtime screens, existing tests, an inferred objective model, coverage gaps, a recommended test strategy, and ALL plausible candidates with confidence (asking ONE disambiguation question only when genuinely-different features tie). With featureId, it returns that map feature\'s source files, screens, coverage, blockers, and a recommended plan (requires an existing map). Pass sessionId (preferred — adds runtime evidence) or projectRoot.',
       inputSchema: {
-        projectRoot: z.string().optional(),
-        sessionId: z.string().optional(),
-        featureId: z.string().optional(),
-        query: z.string().optional().describe('Free-text feature description, e.g. "checkout flow".'),
+        projectRoot: z.string().optional().describe('Project root when no session exists.'),
+        sessionId: z.string().optional().describe('Session to scope against (adds runtime screen-graph evidence).'),
+        featureId: z.string().optional().describe('Exact app-map feature id (requires an existing map). Provide this OR query.'),
+        query: z.string().optional().describe('Free-text feature description, e.g. "checkout flow" or "weather analysis".'),
+        platform: z.enum(['android', 'ios']).optional(),
+        includeCode: z.boolean().optional().describe('Query mode: scan source for code-aware matches (default true).'),
+        limit: z.number().optional().describe('Query mode: max items per list in the scope (default 8).'),
       },
-      outputSchema: { ok: z.boolean(), featureId: z.string().optional() },
     },
-    async ({ projectRoot, sessionId, featureId, query }) => {
-      const { root, hint } = await rootFor(server, sessions, { projectRoot, sessionId });
-      if (!root) return qaError({ what: 'Could not resolve a project root', changedState: false, retrySafe: true, nextSteps: ['Pass projectRoot or sessionId.'], clientHint: hint });
-      remember(root);
-      const map = readExistingMap(root);
-      if (!map) return qaError({ what: 'No app map yet', changedState: false, retrySafe: true, nextSteps: ['Run qa_app_map_build first.'], failureCode: 'NO_APP_MAP' });
-
-      let features = map.features;
-      if (featureId) {
-        features = map.features.filter((f) => f.id === featureId);
-        if (!features.length) return qaError({ what: `Unknown featureId ${featureId}`, changedState: false, retrySafe: true, nextSteps: ['List ids with qa_app_map_read { section:"features" }.'] });
-      } else if (query) {
-        const out = queryAppMap(map, loadCodeIndex(root), { query, intent: 'feature', limit: 5 });
-        const ids = new Set(out.results.filter((r) => r.type === 'feature').map((r) => r.id));
-        features = map.features.filter((f) => ids.has(f.id));
-        if (!features.length) return qaError({ what: `No feature matched "${query}"`, changedState: false, retrySafe: true, nextSteps: ['Try qa_app_map_query for broader matches, or qa_app_map_build to refresh.'] });
-      } else {
-        return qaError({ what: 'Provide one of: featureId or query', changedState: false, retrySafe: true, nextSteps: ['e.g. qa_app_map_feature_scope { query:"login" }'] });
+    async ({ projectRoot, sessionId, featureId, query, platform, includeCode, limit }) => {
+      if (!featureId && !query) {
+        return qaError({
+          what: 'Provide one of: featureId or query',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['e.g. qa_app_map_feature_scope { query:"login" }'],
+        });
       }
 
+      // Free-text QUERY path: full feature scoping (app-map-first, code-index + runtime-graph
+      // fallback, objective model, candidate disambiguation). Works without an existing map.
+      if (!featureId) {
+        const r = await resolveFeatureContext(server, sessions, { sessionId, projectRoot, feature: query!, platform, includeCode, limit });
+        if (!r.ok) return r.result;
+        remember(r.ctx.root);
+        const { scopeResult, objective, index } = r.ctx;
+        const scope = scopeResult.primary;
+
+        if (!scopeResult.found) {
+          return qaOk(
+            {
+              sessionId: sessionId ?? null,
+              query,
+              found: false,
+              scope,
+              searched: scopeResult.searched,
+              nextRecommendedAction: {
+                tool: 'qa_test_this',
+                args: { ...(sessionId ? { sessionId } : { projectRoot: r.ctx.root }), goal: 'explore' },
+                why: 'Grow the map with an initial run, then re-scope the feature',
+              },
+            },
+            `🔎 No feature matched "${query}". Searched ${scopeResult.searched.symbols} symbols, ${scopeResult.searched.routes} routes, ${scopeResult.searched.files} files, ${scopeResult.searched.runtimeScreens} runtime screens with terms: ${scopeResult.searched.terms.slice(0, 12).join(', ')}. Run qa_test_this/qa_explore to grow coverage, or refine the feature name.`,
+          );
+        }
+
+        if (scopeResult.needsInput) {
+          return qaNeedsInput(
+            {
+              needsInput: true,
+              kind: 'monorepo_target',
+              question: scopeResult.needsInput.question,
+              fields: [{ name: 'query', description: 'The exact feature to test', example: scopeResult.candidates[0]?.title }],
+              fallbackOptions: scopeResult.needsInput.options,
+              resume: { tool: 'qa_app_map_feature_scope', args: {} },
+              attempted: [`scoped "${query}" — matched ${scopeResult.candidates.length} distinct candidates that tie`],
+              ifDeclined: 'Swipium scopes the highest-confidence candidate and records the others as alternatives.',
+            },
+            { sessionId: sessionId ?? undefined, candidates: scopeResult.candidates },
+          );
+        }
+
+        const nextRecommendedAction =
+          scope.recommendedStrategy === 'manual_blocked'
+            ? {
+                tool: 'qa_test_feature',
+                args: { ...(sessionId ? { sessionId } : { projectRoot: r.ctx.root }), feature: query, mode: 'plan' },
+                why: 'Review the plan + setup needed before any automated execution',
+              }
+            : {
+                tool: 'qa_test_feature',
+                args: { sessionId: sessionId ?? '${sessionId}', feature: query, mode: 'execute' },
+                why: 'Run a focused test of this feature',
+              };
+
+        return qaOk(
+          {
+            sessionId: sessionId ?? null,
+            query,
+            found: true,
+            featureId: scope.featureId,
+            scope,
+            objective,
+            appMapUri: r.ctx.appMapUri,
+            mapFeatureId: scopeResult.mapFeatureId ?? null,
+            ticketRefs: scopeResult.ticketRefs,
+            runtimeSource: scopeResult.runtimeSource,
+            candidates: scopeResult.candidates,
+            searched: scopeResult.searched,
+            codeIndex: { scannedFiles: index.scannedFiles, truncated: index.truncated },
+            nextRecommendedAction,
+          },
+          `🔎 ${scope.title} (confidence ${Math.round(scope.confidence * 100)}%, strategy ${scope.recommendedStrategy}) — ` +
+            `${scope.staticScreens.length} static screen(s), ${scope.runtimeScreens.length} runtime screen(s), ${scope.functions.length} symbol(s), ${scope.existingTests.length} existing test(s).` +
+            (scopeResult.candidates.length > 1 ? ` ${scopeResult.candidates.length} candidate(s).` : ''),
+        );
+      }
+
+      // FEATURE-ID path: exact map lookup (requires an existing map).
+      const { root, hint } = await rootFor(server, sessions, { projectRoot, sessionId });
+      if (!root)
+        return qaError({
+          what: 'Could not resolve a project root',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Pass projectRoot or sessionId.'],
+          clientHint: hint,
+        });
+      remember(root);
+      const map = readExistingMap(root);
+      if (!map)
+        return qaError({
+          what: 'No app map yet',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Run qa_app_map_build first, or pass query= for map-free scoping.'],
+          failureCode: 'NO_APP_MAP',
+        });
+
+      const features = map.features.filter((f) => f.id === featureId);
+      if (!features.length)
+        return qaError({
+          what: `Unknown featureId ${featureId}`,
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['List ids with qa_app_map_read { section:"features" }, or pass query= for free-text scoping.'],
+        });
+
       const scope = features.map((f) => {
-        const staticScreens = f.staticScreens.map((id) => map.staticTopology.screens.find((s) => s.id === id)).filter(Boolean).map((s) => ({ id: s!.id, name: s!.name, route: s!.route, sourceFiles: s!.sourceFiles }));
+        const staticScreens = f.staticScreens
+          .map((id) => map.staticTopology.screens.find((s) => s.id === id))
+          .filter(Boolean)
+          .map((s) => ({ id: s!.id, name: s!.name, route: s!.route, sourceFiles: s!.sourceFiles }));
         const needsCreds = f.id === 'feature:auth' || f.blockers.some((b) => /credential/i.test(b));
         const recommendedGoal = f.id === 'feature:auth' ? 'test_login' : 'reproduce_bug';
         return {
@@ -281,44 +501,29 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
           blockers: f.blockers,
           recommendedPlan: {
             tool: 'qa_test_this',
-            args: { mode: 'execute', goal: recommendedGoal, goalText: f.title, explore: true, ...(needsCreds ? { stopOnNeedsInput: true } : {}) },
-            why: needsCreds ? `Drive "${f.title}"; will stop for test credentials (fixture) — ${f.testCoverage} coverage today` : `Drive "${f.title}" with focused exploration — ${f.testCoverage} coverage today`,
+            args: {
+              mode: 'execute',
+              goal: recommendedGoal,
+              goalText: f.title,
+              explore: true,
+              ...(needsCreds ? { stopOnNeedsInput: true } : {}),
+            },
+            why: needsCreds
+              ? `Drive "${f.title}"; will stop for test credentials (fixture) — ${f.testCoverage} coverage today`
+              : `Drive "${f.title}" with focused exploration — ${f.testCoverage} coverage today`,
           },
         };
       });
 
       const text =
         `scope: ${scope.length} feature(s)\n` +
-        scope.map((s) => `  • ${s.title} [${s.testCoverage}] — ${s.staticScreens.length} screen(s), ${s.sourceFiles.length} file(s)${s.blockers.length ? ` · blockers: ${s.blockers.join(', ')}` : ''}\n    → ${s.recommendedPlan.tool} ${JSON.stringify(s.recommendedPlan.args)}`).join('\n');
+        scope
+          .map(
+            (s) =>
+              `  • ${s.title} [${s.testCoverage}] — ${s.staticScreens.length} screen(s), ${s.sourceFiles.length} file(s)${s.blockers.length ? ` · blockers: ${s.blockers.join(', ')}` : ''}\n    → ${s.recommendedPlan.tool} ${JSON.stringify(s.recommendedPlan.args)}`,
+          )
+          .join('\n');
       return qaOk({ appMapUri: appMapResourceUri(root), featureId: scope[0]?.featureId, scope }, text);
-    },
-  );
-
-  // --------------------------------------------------------------- validate
-  server.registerTool(
-    'qa_app_map_validate',
-    {
-      title: 'Validate the app knowledge map',
-      description:
-        'Validate the app map: schema version, provenance completeness, missing/dangling links, duplicate ids, impossible states (e.g. covered-without-runtime), and (optionally) stale source fingerprints. Returns errors + warnings with codes. Use before trusting an old map for feature-focused testing.',
-      inputSchema: {
-        projectRoot: z.string().optional(),
-        sessionId: z.string().optional(),
-        checkFingerprint: z.boolean().optional().describe('Also re-hash fingerprinted source files to detect a stale map (default false).'),
-      },
-      outputSchema: { ok: z.boolean(), valid: z.boolean().optional(), errors: z.number().optional(), warnings: z.number().optional() },
-    },
-    async ({ projectRoot, sessionId, checkFingerprint }) => {
-      const { root, hint } = await rootFor(server, sessions, { projectRoot, sessionId });
-      if (!root) return qaError({ what: 'Could not resolve a project root', changedState: false, retrySafe: true, nextSteps: ['Pass projectRoot or sessionId.'], clientHint: hint });
-      remember(root);
-      const map = readExistingMap(root);
-      if (!map) return qaError({ what: 'No app map yet', changedState: false, retrySafe: true, nextSteps: ['Run qa_app_map_build first.'], failureCode: 'NO_APP_MAP' });
-      const v = validateAppMap(map, { checkFingerprint, root });
-      const text =
-        `${v.ok ? '✅' : '❌'} app map ${v.ok ? 'valid' : 'INVALID'} — ${v.errors} error(s), ${v.warnings} warning(s)\n` +
-        v.issues.slice(0, 12).map((i) => `  ${i.severity === 'error' ? '✗' : '⚠'} ${i.code}: ${i.detail}`).join('\n');
-      return qaOk({ valid: v.ok, errors: v.errors, warnings: v.warnings, issues: v.issues, appMapUri: appMapResourceUri(root) }, text);
     },
   );
 
@@ -333,19 +538,52 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
         projectRoot: z.string().optional(),
         sessionId: z.string().optional(),
         note: z.string().optional().describe('A free-text user note added with user_note provenance.'),
-        testCases: z.array(z.object({ id: z.string(), title: z.string(), featureId: z.string().optional(), screenId: z.string().optional(), status: z.string().optional(), source: z.string().optional(), stale: z.boolean().optional() })).optional(),
-        automationSuite: z.object({ name: z.string(), path: z.string(), framework: z.string().optional(), linkedFeatureIds: z.array(z.string()).optional(), linkedScreenIds: z.array(z.string()).optional() }).optional(),
+        testCases: z
+          .array(
+            z.object({
+              id: z.string(),
+              title: z.string(),
+              featureId: z.string().optional(),
+              screenId: z.string().optional(),
+              status: z.string().optional(),
+              source: z.string().optional(),
+              stale: z.boolean().optional(),
+            }),
+          )
+          .optional(),
+        automationSuite: z
+          .object({
+            name: z.string(),
+            path: z.string(),
+            framework: z.string().optional(),
+            linkedFeatureIds: z.array(z.string()).optional(),
+            linkedScreenIds: z.array(z.string()).optional(),
+          })
+          .optional(),
         environment: z.string().optional().describe("App environment, e.g. 'test' | 'staging'."),
         featureCoverage: z.object({ featureId: z.string(), coverage: z.enum(['none', 'partial', 'covered']) }).optional(),
       },
-      outputSchema: { ok: z.boolean(), appMapUri: z.string().optional(), applied: z.array(z.string()).optional() },
     },
     async ({ projectRoot, sessionId, note, testCases, automationSuite, environment, featureCoverage }) => {
       const { root, hint } = await rootFor(server, sessions, { projectRoot, sessionId });
-      if (!root) return qaError({ what: 'Could not resolve a project root', changedState: false, retrySafe: true, nextSteps: ['Pass projectRoot or sessionId.'], clientHint: hint });
+      if (!root)
+        return qaError({
+          what: 'Could not resolve a project root',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Pass projectRoot or sessionId.'],
+          clientHint: hint,
+        });
       remember(root);
       const map = readExistingMap(root);
-      if (!map) return qaError({ what: 'No app map yet', changedState: false, retrySafe: true, nextSteps: ['Run qa_app_map_build first.'], failureCode: 'NO_APP_MAP' });
+      if (!map)
+        return qaError({
+          what: 'No app map yet',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Run qa_app_map_build first.'],
+          failureCode: 'NO_APP_MAP',
+        });
       const at = nowIso();
       const applied: string[] = [];
 
@@ -366,7 +604,13 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
         const existing = map.automation.suites.find((s) => s.path === automationSuite.path);
         if (existing) Object.assign(existing, automationSuite);
         else map.automation.suites.push(automationSuite);
-        addProvenance(map, makeProvenance('test_case', at, `Automation suite ${automationSuite.name} linked`, { targetType: 'test', refs: [automationSuite.path] }));
+        addProvenance(
+          map,
+          makeProvenance('test_case', at, `Automation suite ${automationSuite.name} linked`, {
+            targetType: 'test',
+            refs: [automationSuite.path],
+          }),
+        );
         applied.push('automationSuite');
       }
       if (environment) {
@@ -375,13 +619,28 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
       }
       if (featureCoverage) {
         const f = map.features.find((x) => x.id === featureCoverage.featureId);
-        if (!f) return qaError({ what: `Unknown featureId ${featureCoverage.featureId}`, changedState: false, retrySafe: true, nextSteps: ['List ids with qa_app_map_read { section:"features" }.'] });
+        if (!f)
+          return qaError({
+            what: `Unknown featureId ${featureCoverage.featureId}`,
+            changedState: false,
+            retrySafe: true,
+            nextSteps: ['List ids with qa_app_map_read { section:"features" }.'],
+          });
         f.testCoverage = featureCoverage.coverage;
-        addProvenance(map, makeProvenance('user_note', at, `coverage(${f.id})=${featureCoverage.coverage}`, { targetType: 'feature', targetId: f.id }));
+        addProvenance(
+          map,
+          makeProvenance('user_note', at, `coverage(${f.id})=${featureCoverage.coverage}`, { targetType: 'feature', targetId: f.id }),
+        );
         applied.push('featureCoverage');
       }
 
-      if (!applied.length) return qaError({ what: 'No update fields provided', changedState: false, retrySafe: true, nextSteps: ['Pass at least one of: note, testCases, automationSuite, environment, featureCoverage.'] });
+      if (!applied.length)
+        return qaError({
+          what: 'No update fields provided',
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Pass at least one of: note, testCases, automationSuite, environment, featureCoverage.'],
+        });
 
       map.updatedAt = at;
       map.coverage.staleTests = map.testSuite.cases.filter((c) => c.stale).length;
@@ -389,55 +648,6 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
       const save = saveAppMap(root, map);
       saveIndexes(root, loadCodeIndex(root), map.features);
       return qaOk({ appMapUri: save.resourceUri, applied }, `app map updated: ${applied.join(', ')}\nappMapUri: ${save.resourceUri}`);
-    },
-  );
-
-  // ------------------------------------------------------------------- diff
-  server.registerTool(
-    'qa_app_map_diff',
-    {
-      title: 'Diff two app map snapshots',
-      description:
-        'Compare two App Knowledge Map snapshots and report added/removed/changed screens, feature coverage changes, locator-readiness changes, stale test cases, and new untested code areas. With no paths, compares the most recent history snapshot (baseline) against the current map.',
-      inputSchema: {
-        projectRoot: z.string().optional(),
-        sessionId: z.string().optional(),
-        baseline: z.string().optional().describe('Path to a baseline app-map.json (or history snapshot). Defaults to the latest history snapshot.'),
-        current: z.string().optional().describe('Path to the current app-map.json. Defaults to .swipium/app-map.json.'),
-      },
-      outputSchema: { ok: z.boolean(), summary: z.string().optional() },
-    },
-    async ({ projectRoot, sessionId, baseline, current }) => {
-      const { root, hint } = await rootFor(server, sessions, { projectRoot, sessionId });
-      if (!root) return qaError({ what: 'Could not resolve a project root', changedState: false, retrySafe: true, nextSteps: ['Pass projectRoot or sessionId.'], clientHint: hint });
-      remember(root);
-      const readMap = (p: string): AppKnowledgeMap | null => {
-        if (!existsSync(p)) return null;
-        try {
-          const raw = JSON.parse(readFileSync(p, 'utf8'));
-          return migrateAppMap(raw, fallbackProject(root), nowIso()).map;
-        } catch {
-          return null;
-        }
-      };
-      const currentMap = current ? readMap(current) : readExistingMap(root);
-      if (!currentMap) return qaError({ what: 'No current app map to diff', changedState: false, retrySafe: true, nextSteps: ['Run qa_app_map_build first, or pass current=.'], failureCode: 'NO_APP_MAP' });
-      let baselineMap: AppKnowledgeMap | null = baseline ? readMap(baseline) : null;
-      if (!baselineMap && !baseline) {
-        const { appMapHistoryDir } = await import('../appMap/store.js');
-        const dir = appMapHistoryDir(root);
-        try {
-          const { readdirSync } = await import('node:fs');
-          const snaps = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.json')).sort() : [];
-          const prev = snaps.length >= 2 ? snaps[snaps.length - 2] : snaps[0];
-          if (prev) baselineMap = readMap(`${dir}/${prev}`);
-        } catch {
-          /* none */
-        }
-      }
-      if (!baselineMap) return qaError({ what: 'No baseline snapshot available to diff against', changedState: false, retrySafe: true, nextSteps: ['Build the map at least twice, or pass baseline=path-to-app-map.json.'] });
-      const diff = diffAppMaps(baselineMap, currentMap);
-      return qaOk({ ...diff, appMapUri: appMapResourceUri(root) }, `app map diff: ${diff.summary}`);
     },
   );
 }

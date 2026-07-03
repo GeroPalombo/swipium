@@ -17,16 +17,52 @@ interface FeaturePattern {
 
 // Ordered, lightweight semantic patterns matched against screen names/routes + source files.
 const PATTERNS: FeaturePattern[] = [
-  { id: 'feature:auth', title: 'Authentication', objective: 'Sign in / sign up / sign out', re: /login|signin|sign-in|signup|sign-up|register|auth|password|forgot/i, risk: 'high' },
-  { id: 'feature:onboarding', title: 'Onboarding', objective: 'First-run welcome / tutorial', re: /onboard|welcome|intro|get-?started|walkthrough|tutorial/i, risk: 'low' },
-  { id: 'feature:paywall', title: 'Paywall / Subscription', objective: 'Purchase or subscribe', re: /paywall|subscribe|subscription|premium|upgrade|pricing|plans?|purchase|checkout|billing/i, risk: 'high' },
+  {
+    id: 'feature:auth',
+    title: 'Authentication',
+    objective: 'Sign in / sign up / sign out',
+    re: /login|signin|sign-in|signup|sign-up|register|auth|password|forgot/i,
+    risk: 'high',
+  },
+  {
+    id: 'feature:onboarding',
+    title: 'Onboarding',
+    objective: 'First-run welcome / tutorial',
+    re: /onboard|welcome|intro|get-?started|walkthrough|tutorial/i,
+    risk: 'low',
+  },
+  {
+    id: 'feature:paywall',
+    title: 'Paywall / Subscription',
+    objective: 'Purchase or subscribe',
+    re: /paywall|subscribe|subscription|premium|upgrade|pricing|plans?|purchase|checkout|billing/i,
+    risk: 'high',
+  },
   { id: 'feature:search', title: 'Search', objective: 'Search / discover content', re: /search|explore|discover|browse/i, risk: 'low' },
   { id: 'feature:profile', title: 'Profile', objective: 'View / edit the user profile', re: /profile|account|\bme\b/i, risk: 'medium' },
   { id: 'feature:settings', title: 'Settings', objective: 'Adjust app settings', re: /settings|preferences|config/i, risk: 'medium' },
-  { id: 'feature:notifications', title: 'Notifications', objective: 'View / manage notifications', re: /notification|alerts?|inbox/i, risk: 'low' },
-  { id: 'feature:create', title: 'Create / Add', objective: 'Create or add an item', re: /create|new|add|compose|post|upload/i, risk: 'medium' },
+  {
+    id: 'feature:notifications',
+    title: 'Notifications',
+    objective: 'View / manage notifications',
+    re: /notification|alerts?|inbox/i,
+    risk: 'low',
+  },
+  {
+    id: 'feature:create',
+    title: 'Create / Add',
+    objective: 'Create or add an item',
+    re: /create|new|add|compose|post|upload/i,
+    risk: 'medium',
+  },
   { id: 'feature:detail', title: 'Detail / View', objective: 'View an item detail', re: /detail|view|show|info/i, risk: 'low' },
-  { id: 'feature:checkout', title: 'Cart / Checkout', objective: 'Cart and checkout', re: /cart|checkout|order|payment|\bpay\b/i, risk: 'high' },
+  {
+    id: 'feature:checkout',
+    title: 'Cart / Checkout',
+    objective: 'Cart and checkout',
+    re: /cart|checkout|order|payment|\bpay\b/i,
+    risk: 'high',
+  },
   { id: 'feature:map', title: 'Map / Location', objective: 'Map or location features', re: /\bmap\b|location|nearby|geo/i, risk: 'low' },
   { id: 'feature:media', title: 'Media', objective: 'Photos / video / camera', re: /camera|photo|video|gallery|media/i, risk: 'low' },
 ];

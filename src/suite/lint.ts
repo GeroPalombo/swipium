@@ -42,15 +42,35 @@ export function lintSuitePages(root: string): SuiteLintResult {
     for (const [name, el] of Object.entries(elements)) {
       const durability = el.durability as string | undefined;
       const hasLocator = el['accessibility id'] || el['resource-id'] || el.text || el.name;
-      const readinessCode = typeof el.readinessCode === 'string' ? el.readinessCode as SuiteLintItem['code'] : undefined;
+      const readinessCode = typeof el.readinessCode === 'string' ? (el.readinessCode as SuiteLintItem['code']) : undefined;
       if (durability === 'brittle' || !hasLocator) {
-        items.push({ page: pageName, element: name, severity: 'error', code: readinessCode ?? 'COORDINATE_ONLY', message: (el.remediation as string) ?? 'no durable locator (coordinate-only) — add a testID/accessibilityIdentifier' });
+        items.push({
+          page: pageName,
+          element: name,
+          severity: 'error',
+          code: readinessCode ?? 'COORDINATE_ONLY',
+          message: (el.remediation as string) ?? 'no durable locator (coordinate-only) — add a testID/accessibilityIdentifier',
+        });
       } else if (durability === 'semi' || el.text) {
-        const code = readinessCode ?? ((el.text || el.name) && !el['accessibility id'] ? 'IOS_MISSING_ACCESSIBILITY_IDENTIFIER' : undefined);
-        items.push({ page: pageName, element: name, severity: 'warning', code, message: (el.remediation as string) ?? 'text/locale-fragile selector — add an accessibilityIdentifier/testID for CI-stable replay' });
+        const code =
+          readinessCode ?? ((el.text || el.name) && !el['accessibility id'] ? 'IOS_MISSING_ACCESSIBILITY_IDENTIFIER' : undefined);
+        items.push({
+          page: pageName,
+          element: name,
+          severity: 'warning',
+          code,
+          message:
+            (el.remediation as string) ?? 'text/locale-fragile selector — add an accessibilityIdentifier/testID for CI-stable replay',
+        });
       }
       if (typeof el.text === 'string' && /\d{3,}|[0-9a-f]{8,}/i.test(el.text)) {
-        items.push({ page: pageName, element: name, severity: 'warning', code: 'DYNAMIC_TEXT_LOCATOR', message: `selector "${el.text}" looks dynamic (contains digits/ids) — prefer a stable identifier` });
+        items.push({
+          page: pageName,
+          element: name,
+          severity: 'warning',
+          code: 'DYNAMIC_TEXT_LOCATOR',
+          message: `selector "${el.text}" looks dynamic (contains digits/ids) — prefer a stable identifier`,
+        });
       }
     }
   }

@@ -99,11 +99,12 @@ async function wdaFetch<T>(baseUrl: string, path: string, init?: RequestInit): P
     throw new Error(`WDA returned non-JSON ${res.status}: ${body.slice(0, 200)}`);
   }
   if (!res.ok) {
-    const msg = typeof (json as { value?: { message?: unknown }; message?: unknown }).value?.message === 'string'
-      ? (json as { value: { message: string } }).value.message
-      : typeof (json as { message?: unknown }).message === 'string'
-        ? (json as { message: string }).message
-        : body.slice(0, 200);
+    const msg =
+      typeof (json as { value?: { message?: unknown }; message?: unknown }).value?.message === 'string'
+        ? (json as { value: { message: string } }).value.message
+        : typeof (json as { message?: unknown }).message === 'string'
+          ? (json as { message: string }).message
+          : body.slice(0, 200);
     throw new WdaHttpError(res.status, msg, body);
   }
   return json as T;
@@ -115,9 +116,7 @@ function valueOf<T>(json: unknown): T {
 
 function settingsCapabilities(settings: Record<string, unknown> | undefined): Record<string, unknown> {
   if (!settings) return {};
-  return Object.fromEntries(
-    Object.entries(settings).map(([key, value]) => [`settings[${key}]`, value]),
-  );
+  return Object.fromEntries(Object.entries(settings).map(([key, value]) => [`settings[${key}]`, value]));
 }
 
 export async function checkWda(baseUrl: string, timeoutMs = 5000): Promise<WdaStatus> {
@@ -132,9 +131,9 @@ export async function checkWda(baseUrl: string, timeoutMs = 5000): Promise<WdaSt
       reachable: res.ok,
       ready: res.ok && (value.ready === true || json.status === 0 || value.state === 'success'),
       message: typeof value.message === 'string' ? value.message : undefined,
-      build: typeof value.build === 'object' && value.build ? value.build as Record<string, unknown> : undefined,
-      os: typeof value.os === 'object' && value.os ? value.os as Record<string, unknown> : undefined,
-      ios: typeof value.ios === 'object' && value.ios ? value.ios as Record<string, unknown> : undefined,
+      build: typeof value.build === 'object' && value.build ? (value.build as Record<string, unknown>) : undefined,
+      os: typeof value.os === 'object' && value.os ? (value.os as Record<string, unknown>) : undefined,
+      ios: typeof value.ios === 'object' && value.ios ? (value.ios as Record<string, unknown>) : undefined,
     };
   } catch (e) {
     return { reachable: false, ready: false, error: String((e as Error).message ?? e) };
@@ -143,7 +142,11 @@ export async function checkWda(baseUrl: string, timeoutMs = 5000): Promise<WdaSt
   }
 }
 
-export async function waitForWdaReady(baseUrl: string, timeoutMs: number, intervalMs = 1000): Promise<{ ready: boolean; status: WdaStatus; durationMs: number }> {
+export async function waitForWdaReady(
+  baseUrl: string,
+  timeoutMs: number,
+  intervalMs = 1000,
+): Promise<{ ready: boolean; status: WdaStatus; durationMs: number }> {
   const started = Date.now();
   let status: WdaStatus = { reachable: false, ready: false, error: 'not checked yet' };
   while (Date.now() - started < timeoutMs) {
@@ -218,9 +221,12 @@ export function discoverWdaProjects(root: string, extraCandidates: string[] = []
 
 export function managedWdaBuildArgs(opts: ManagedWdaOptions): string[] {
   return [
-    '-project', opts.projectPath,
-    '-scheme', opts.scheme ?? 'WebDriverAgentRunner',
-    '-destination', `id=${opts.udid}`,
+    '-project',
+    opts.projectPath,
+    '-scheme',
+    opts.scheme ?? 'WebDriverAgentRunner',
+    '-destination',
+    `id=${opts.udid}`,
     ...(opts.derivedDataPath ? ['-derivedDataPath', opts.derivedDataPath] : []),
     ...(opts.allowProvisioningUpdates ? ['-allowProvisioningUpdates'] : []),
     ...(opts.allowProvisioningDeviceRegistration ? ['-allowProvisioningDeviceRegistration'] : []),
@@ -236,9 +242,12 @@ export function managedWdaBuildArgs(opts: ManagedWdaOptions): string[] {
 
 export function managedWdaStartArgs(opts: ManagedWdaOptions): string[] {
   return [
-    '-project', opts.projectPath,
-    '-scheme', opts.scheme ?? 'WebDriverAgentRunner',
-    '-destination', `id=${opts.udid}`,
+    '-project',
+    opts.projectPath,
+    '-scheme',
+    opts.scheme ?? 'WebDriverAgentRunner',
+    '-destination',
+    `id=${opts.udid}`,
     ...(opts.derivedDataPath ? ['-derivedDataPath', opts.derivedDataPath] : []),
     ...(opts.developmentTeam ? [`DEVELOPMENT_TEAM=${opts.developmentTeam}`] : []),
     ...(opts.bundleId ? [`PRODUCT_BUNDLE_IDENTIFIER=${opts.bundleId}`] : []),
@@ -248,7 +257,11 @@ export function managedWdaStartArgs(opts: ManagedWdaOptions): string[] {
 }
 
 export function classifyWdaBuildFailure(log: string): FailureCode {
-  if (/Signing for .* requires a development team|No profiles for|provisioning profile|Code signing is required|requires a provisioning profile|No signing certificate|No Accounts|Development Team/i.test(log)) {
+  if (
+    /Signing for .* requires a development team|No profiles for|provisioning profile|Code signing is required|requires a provisioning profile|No signing certificate|No Accounts|Development Team/i.test(
+      log,
+    )
+  ) {
     return 'WDA_SIGNING_FAILED';
   }
   return 'WDA_BUILD_FAILED';
@@ -257,7 +270,12 @@ export function classifyWdaBuildFailure(log: string): FailureCode {
 export function classifyWdaConnectionFailure(message: string): FailureCode {
   if (/EADDRINUSE|address already in use|port .*in use|bind.*address/i.test(message)) return 'WDA_PORT_CONFLICT';
   if (/ECONNREFUSED|fetch failed|timed out|aborted|network|socket|unreachable/i.test(message)) return 'WDA_UNREACHABLE';
-  if (/bundle id|bundle identifier|application.*not.*installed|app.*not.*installed|no such application|could not.*launch.*app|failed to launch.*app/i.test(message)) return 'BUNDLE_ID_NOT_FOUND';
+  if (
+    /bundle id|bundle identifier|application.*not.*installed|app.*not.*installed|no such application|could not.*launch.*app|failed to launch.*app/i.test(
+      message,
+    )
+  )
+    return 'BUNDLE_ID_NOT_FOUND';
   return 'WDA_SESSION_FAILED';
 }
 
@@ -275,7 +293,10 @@ export async function createWdaSession(baseUrl: string, opts: WdaSessionOptions 
   const v = valueOf<Record<string, unknown>>(json);
   const sessionId = String((json as { sessionId?: unknown }).sessionId ?? v.sessionId ?? '');
   if (!sessionId) throw new Error('WDA did not return a sessionId.');
-  return { sessionId, capabilities: typeof v.capabilities === 'object' && v.capabilities ? v.capabilities as Record<string, unknown> : undefined };
+  return {
+    sessionId,
+    capabilities: typeof v.capabilities === 'object' && v.capabilities ? (v.capabilities as Record<string, unknown>) : undefined,
+  };
 }
 
 export function wdaSessionUdid(capabilities: Record<string, unknown> | undefined): string | undefined {
@@ -287,7 +308,10 @@ export function wdaSessionUdid(capabilities: Record<string, unknown> | undefined
   return undefined;
 }
 
-export function wdaSessionUdidMismatch(capabilities: Record<string, unknown> | undefined, expectedUdid: string | undefined): string | undefined {
+export function wdaSessionUdidMismatch(
+  capabilities: Record<string, unknown> | undefined,
+  expectedUdid: string | undefined,
+): string | undefined {
   if (!expectedUdid) return undefined;
   const actual = wdaSessionUdid(capabilities);
   return actual && actual !== expectedUdid ? actual : undefined;
@@ -366,7 +390,9 @@ export async function findFocusedWdaElement(baseUrl: string, sessionId: string):
       lastErr = e;
     }
   }
-  throw new Error(`No keyboard-focused element found after trying ${WDA_FOCUSED_PREDICATES.join(', ')}: ${String((lastErr as Error)?.message ?? lastErr)}`);
+  throw new Error(
+    `No keyboard-focused element found after trying ${WDA_FOCUSED_PREDICATES.join(', ')}: ${String((lastErr as Error)?.message ?? lastErr)}`,
+  );
 }
 
 export async function clearWdaFocusedByKeys(baseUrl: string, sessionId: string, approxLen = 40): Promise<void> {
@@ -394,7 +420,15 @@ export async function tapWdaPoint(baseUrl: string, sessionId: string, x: number,
   }
 }
 
-export async function dragWdaPoint(baseUrl: string, sessionId: string, x1: number, y1: number, x2: number, y2: number, duration = 0.3): Promise<void> {
+export async function dragWdaPoint(
+  baseUrl: string,
+  sessionId: string,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  duration = 0.3,
+): Promise<void> {
   await wdaFetch(baseUrl, `/session/${sessionId}/wda/dragfromtoforduration`, {
     method: 'POST',
     body: JSON.stringify({ fromX: x1, fromY: y1, toX: x2, toY: y2, duration }),
@@ -440,7 +474,7 @@ function normalizeNode(node: Record<string, unknown>): Record<string, unknown> {
   const clickable = node.hittable == null ? enabled && visible && typeLooksInteractive : bool(node.hittable);
   const childValues = Object.entries(node)
     .filter(([k]) => k === 'children' || k.startsWith('XCUIElementType'))
-    .flatMap(([, v]) => Array.isArray(v) ? v : v ? [v] : []);
+    .flatMap(([, v]) => (Array.isArray(v) ? v : v ? [v] : []));
   const out: Record<string, unknown> = {
     class: type,
     text: value || label,
@@ -460,11 +494,15 @@ function normalizeNode(node: Record<string, unknown>): Record<string, unknown> {
 }
 
 function esc(v: unknown): string {
-  return String(v ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(v ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 function nodeXml(node: Record<string, unknown>): string {
-  const children = Array.isArray(node.node) ? node.node as Record<string, unknown>[] : [];
+  const children = Array.isArray(node.node) ? (node.node as Record<string, unknown>[]) : [];
   const attrs = Object.entries(node)
     .filter(([k]) => k !== 'node')
     .map(([k, v]) => `${k}="${esc(v)}"`)
@@ -473,7 +511,11 @@ function nodeXml(node: Record<string, unknown>): string {
 }
 
 export function normalizeWdaSource(xml: string): string {
-  const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '', isArray: (name) => name.startsWith('XCUIElementType') || name === 'children' });
+  const parser = new XMLParser({
+    ignoreAttributes: false,
+    attributeNamePrefix: '',
+    isArray: (name) => name.startsWith('XCUIElementType') || name === 'children',
+  });
   const doc = parser.parse(xml) as Record<string, unknown>;
   const rootKey = Object.keys(doc).find((k) => k.startsWith('XCUIElementType'));
   if (!rootKey) return xml;

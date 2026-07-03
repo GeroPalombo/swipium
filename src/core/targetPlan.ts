@@ -23,7 +23,11 @@ export interface TargetInputs {
   artifactPlatform?: ArtifactPlatform;
   artifactInstallTargets?: InstallTarget[];
   android: { online: string[]; avds: string[] };
-  ios: { bootedSimulators: Array<{ udid: string; name: string }>; availableSimulators: Array<{ udid: string; name: string }>; realDevices?: string[] };
+  ios: {
+    bootedSimulators: Array<{ udid: string; name: string }>;
+    availableSimulators: Array<{ udid: string; name: string }>;
+    realDevices?: string[];
+  };
   /** Whether WebDriverAgent is available (structured iOS automation needs it). */
   wdaAvailable?: boolean;
 }
@@ -60,48 +64,123 @@ function planAndroid(i: TargetInputs, reasonPrefix: string): TargetPlan {
   const emu = online.find((s) => isEmulatorSerial(s));
 
   if (i.preferRealDevice && real) {
-    return { selected: 'android-real', device: real, reason: `${reasonPrefix}real device ${real} is online.`, alternatives: emu ? ['android-emulator'] : [], preconditions: [], willBoot: false };
+    return {
+      selected: 'android-real',
+      device: real,
+      reason: `${reasonPrefix}real device ${real} is online.`,
+      alternatives: emu ? ['android-emulator'] : [],
+      preconditions: [],
+      willBoot: false,
+    };
   }
   if (emu) {
-    return { selected: 'android-emulator', device: emu, reason: `${reasonPrefix}emulator ${emu} is already online (fastest).`, alternatives: real ? ['android-real'] : [], preconditions: [], willBoot: false };
+    return {
+      selected: 'android-emulator',
+      device: emu,
+      reason: `${reasonPrefix}emulator ${emu} is already online (fastest).`,
+      alternatives: real ? ['android-real'] : [],
+      preconditions: [],
+      willBoot: false,
+    };
   }
   if (real) {
-    return { selected: 'android-real', device: real, reason: `${reasonPrefix}device ${real} is online.`, alternatives: [], preconditions: [], willBoot: false };
+    return {
+      selected: 'android-real',
+      device: real,
+      reason: `${reasonPrefix}device ${real} is online.`,
+      alternatives: [],
+      preconditions: [],
+      willBoot: false,
+    };
   }
   if (i.android.avds.length) {
-    return { selected: 'android-emulator', reason: `${reasonPrefix}no device online — will boot AVD "${i.android.avds[0]}".`, alternatives: [], preconditions: ['emulator boot (~30-60s)'], willBoot: true, bootTarget: i.android.avds[0] };
+    return {
+      selected: 'android-emulator',
+      reason: `${reasonPrefix}no device online — will boot AVD "${i.android.avds[0]}".`,
+      alternatives: [],
+      preconditions: ['emulator boot (~30-60s)'],
+      willBoot: true,
+      bootTarget: i.android.avds[0],
+    };
   }
-  return { selected: null, reason: `${reasonPrefix}no Android device online and no AVD to boot.`, alternatives: [], preconditions: [], willBoot: false, blocked: { failureCode: 'NO_DEVICE', detail: 'No Android device online and no AVD available — create one (qa_doctor).' } };
+  return {
+    selected: null,
+    reason: `${reasonPrefix}no Android device online and no AVD to boot.`,
+    alternatives: [],
+    preconditions: [],
+    willBoot: false,
+    blocked: { failureCode: 'NO_DEVICE', detail: 'No Android device online and no AVD available — create one (qa_doctor).' },
+  };
 }
 
 function planIos(i: TargetInputs, reasonPrefix: string): TargetPlan {
   const iosPre = i.wdaAvailable === false ? ['WDA required for structured iOS tap/type/snapshot (qa_wda); else visual-only'] : [];
   if (i.preferRealDevice && i.ios.realDevices?.length) {
-    return { selected: 'ios-real', device: i.ios.realDevices[0], reason: `${reasonPrefix}real iOS device requested and available.`, alternatives: ['ios-simulator'], preconditions: ['Apple code signing required', ...iosPre], willBoot: false };
+    return {
+      selected: 'ios-real',
+      device: i.ios.realDevices[0],
+      reason: `${reasonPrefix}real iOS device requested and available.`,
+      alternatives: ['ios-simulator'],
+      preconditions: ['Apple code signing required', ...iosPre],
+      willBoot: false,
+    };
   }
   if (i.ios.bootedSimulators.length) {
     const s = i.ios.bootedSimulators[0];
-    return { selected: 'ios-simulator', device: s.udid, reason: `${reasonPrefix}simulator "${s.name}" is already booted (fastest).`, alternatives: [], preconditions: iosPre, willBoot: false };
+    return {
+      selected: 'ios-simulator',
+      device: s.udid,
+      reason: `${reasonPrefix}simulator "${s.name}" is already booted (fastest).`,
+      alternatives: [],
+      preconditions: iosPre,
+      willBoot: false,
+    };
   }
   if (i.ios.availableSimulators.length) {
     const s = i.ios.availableSimulators[0];
-    return { selected: 'ios-simulator', reason: `${reasonPrefix}no simulator booted — will boot "${s.name}".`, alternatives: [], preconditions: ['simulator boot (~10-30s)', ...iosPre], willBoot: true, bootTarget: s.udid };
+    return {
+      selected: 'ios-simulator',
+      reason: `${reasonPrefix}no simulator booted — will boot "${s.name}".`,
+      alternatives: [],
+      preconditions: ['simulator boot (~10-30s)', ...iosPre],
+      willBoot: true,
+      bootTarget: s.udid,
+    };
   }
-  return { selected: null, reason: `${reasonPrefix}no iOS simulator booted or available.`, alternatives: [], preconditions: [], willBoot: false, blocked: { failureCode: 'SIMULATOR_RUNTIME_MISSING', detail: 'No iOS simulator available — install a runtime / create a simulator in Xcode.' } };
+  return {
+    selected: null,
+    reason: `${reasonPrefix}no iOS simulator booted or available.`,
+    alternatives: [],
+    preconditions: [],
+    willBoot: false,
+    blocked: {
+      failureCode: 'SIMULATOR_RUNTIME_MISSING',
+      detail: 'No iOS simulator available — install a runtime / create a simulator in Xcode.',
+    },
+  };
 }
 
 /** PURE: the typed blocker for an artifact that can never install on the chosen target, or null. */
-export function artifactTargetMismatch(selected: TargetSelection, installTargets: InstallTarget[] | undefined): { failureCode: FailureCode; detail: string } | null {
+export function artifactTargetMismatch(
+  selected: TargetSelection,
+  installTargets: InstallTarget[] | undefined,
+): { failureCode: FailureCode; detail: string } | null {
   if (!installTargets || installTargets.length === 0) return null; // unknown / archive-only → don't second-guess here
   if (installTargets.includes(selected as InstallTarget)) return null;
   // Specific, common impossibilities get a precise code.
   if (selected === 'ios-simulator' && installTargets.includes('ios-real')) {
-    return { failureCode: 'IPA_NEEDS_REAL_DEVICE', detail: 'The resolved artifact installs only on a real iOS device, but the plan selected the simulator.' };
+    return {
+      failureCode: 'IPA_NEEDS_REAL_DEVICE',
+      detail: 'The resolved artifact installs only on a real iOS device, but the plan selected the simulator.',
+    };
   }
   if (selected === 'ios-real' && installTargets.includes('ios-simulator')) {
     return { failureCode: 'IOS_APP_WRONG_ARCH', detail: 'The resolved artifact is a simulator .app, but the plan selected a real device.' };
   }
-  return { failureCode: 'WRONG_ARCH', detail: `The resolved artifact installs on [${installTargets.join(', ')}], not the selected ${selected}.` };
+  return {
+    failureCode: 'WRONG_ARCH',
+    detail: `The resolved artifact installs on [${installTargets.join(', ')}], not the selected ${selected}.`,
+  };
 }
 
 export function planTarget(i: TargetInputs): TargetPlan {
@@ -124,14 +203,53 @@ function planTargetCore(i: TargetInputs): TargetPlan {
     if (i.android.online.includes(dev) || i.android.avds.includes(dev)) {
       const online = i.android.online.includes(dev);
       const sel: TargetSelection = !isEmulatorSerial(dev) && online ? 'android-real' : 'android-emulator';
-      return { selected: sel, device: online ? dev : undefined, reason: `Honoring requested device "${dev}".`, alternatives: [], preconditions: [], willBoot: !online, bootTarget: online ? undefined : dev };
+      return {
+        selected: sel,
+        device: online ? dev : undefined,
+        reason: `Honoring requested device "${dev}".`,
+        alternatives: [],
+        preconditions: [],
+        willBoot: !online,
+        bootTarget: online ? undefined : dev,
+      };
     }
     const simBooted = i.ios.bootedSimulators.find((s) => s.udid === dev || s.name === dev);
     const simAvail = i.ios.availableSimulators.find((s) => s.udid === dev || s.name === dev);
-    if (simBooted) return { selected: 'ios-simulator', device: simBooted.udid, reason: `Honoring requested simulator "${dev}".`, alternatives: [], preconditions: [], willBoot: false };
-    if (simAvail) return { selected: 'ios-simulator', reason: `Honoring requested simulator "${dev}" — will boot it.`, alternatives: [], preconditions: ['simulator boot'], willBoot: true, bootTarget: simAvail.udid };
-    if (i.ios.realDevices?.includes(dev)) return { selected: 'ios-real', device: dev, reason: `Honoring requested real iOS device "${dev}".`, alternatives: [], preconditions: ['Apple code signing required'], willBoot: false };
-    return { selected: null, reason: `Requested device "${dev}" is not online/available.`, alternatives: [], preconditions: [], willBoot: false, blocked: { failureCode: 'NO_DEVICE', detail: `Device "${dev}" not found among online devices/simulators.` } };
+    if (simBooted)
+      return {
+        selected: 'ios-simulator',
+        device: simBooted.udid,
+        reason: `Honoring requested simulator "${dev}".`,
+        alternatives: [],
+        preconditions: [],
+        willBoot: false,
+      };
+    if (simAvail)
+      return {
+        selected: 'ios-simulator',
+        reason: `Honoring requested simulator "${dev}" — will boot it.`,
+        alternatives: [],
+        preconditions: ['simulator boot'],
+        willBoot: true,
+        bootTarget: simAvail.udid,
+      };
+    if (i.ios.realDevices?.includes(dev))
+      return {
+        selected: 'ios-real',
+        device: dev,
+        reason: `Honoring requested real iOS device "${dev}".`,
+        alternatives: [],
+        preconditions: ['Apple code signing required'],
+        willBoot: false,
+      };
+    return {
+      selected: null,
+      reason: `Requested device "${dev}" is not online/available.`,
+      alternatives: [],
+      preconditions: [],
+      willBoot: false,
+      blocked: { failureCode: 'NO_DEVICE', detail: `Device "${dev}" not found among online devices/simulators.` },
+    };
   }
 
   // 2. Explicit platform, else artifact-constrained platform.
@@ -162,5 +280,15 @@ function planTargetCore(i: TargetInputs): TargetPlan {
     p.alternatives = [...new Set<TargetSelection>([...p.alternatives, ...viable.filter((v) => v !== 'android-emulator')])];
     return p;
   }
-  return { selected: null, reason: 'No device or simulator is online or bootable on this machine.', alternatives: [], preconditions: [], willBoot: false, blocked: { failureCode: 'NO_DEVICE', detail: 'No Android emulator/device and no iOS simulator available — set one up (qa_doctor / Xcode).' } };
+  return {
+    selected: null,
+    reason: 'No device or simulator is online or bootable on this machine.',
+    alternatives: [],
+    preconditions: [],
+    willBoot: false,
+    blocked: {
+      failureCode: 'NO_DEVICE',
+      detail: 'No Android emulator/device and no iOS simulator available — set one up (qa_doctor / Xcode).',
+    },
+  };
 }

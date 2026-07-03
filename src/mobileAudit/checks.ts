@@ -35,13 +35,26 @@ export async function checkLaunch(ctx: AuditEvidenceCtx): Promise<RawCheckResult
     await ctx.driver.terminateApp(ctx.appId).catch(() => {});
     await ctx.driver.launchApp(ctx.appId);
   } catch (e) {
-    return { status: 'fail', category: 'app_bug', severity: 'blocker', reason: `app failed to launch: ${String((e as Error).message ?? e)}`, evidenceUris: [], nextStep: 'Confirm the app is installed and (for debug builds) Metro is reachable.' };
+    return {
+      status: 'fail',
+      category: 'app_bug',
+      severity: 'blocker',
+      reason: `app failed to launch: ${String((e as Error).message ?? e)}`,
+      evidenceUris: [],
+      nextStep: 'Confirm the app is installed and (for debug builds) Metro is reachable.',
+    };
   }
   const fg = await foreground(ctx);
   const shot = await captureScreenshot(ctx, 'audit launch');
   const evidence = shot ? [shot] : [];
   if (fg && ctx.appId && fg.includes(ctx.appId.split('/')[0])) return ok(`launched, foreground=${fg}`, evidence);
-  return { status: 'fail', category: 'app_bug', severity: 'high', reason: `expected ${ctx.appId} foreground, saw ${fg}`, evidenceUris: evidence };
+  return {
+    status: 'fail',
+    category: 'app_bug',
+    severity: 'high',
+    reason: `expected ${ctx.appId} foreground, saw ${fg}`,
+    evidenceUris: evidence,
+  };
 }
 
 export async function checkHealthScan(ctx: AuditEvidenceCtx): Promise<RawCheckResult> {
@@ -50,10 +63,25 @@ export async function checkHealthScan(ctx: AuditEvidenceCtx): Promise<RawCheckRe
   const evidence = shot ? [shot] : [];
   if (!h.nativeHealthy) {
     const crash = h.nativeStatus === 'native_crash' || h.nativeStatus === 'anr';
-    return { status: 'fail', category: 'blocker_app_bug', severity: 'blocker', reason: `native ${h.nativeStatus}`, evidenceUris: evidence, nextStep: crash ? 'Capture the crash/ANR log and fix it; do not blindly retry.' : undefined };
+    return {
+      status: 'fail',
+      category: 'blocker_app_bug',
+      severity: 'blocker',
+      reason: `native ${h.nativeStatus}`,
+      evidenceUris: evidence,
+      nextStep: crash ? 'Capture the crash/ANR log and fix it; do not blindly retry.' : undefined,
+    };
   }
-  if (h.appStatus === 'error') return { status: 'fail', category: 'blocker_app_bug', severity: 'blocker', reason: 'app error surface (RedBox/error boundary)', evidenceUris: evidence };
-  if (h.appStatus === 'degraded') return { status: 'fail', category: 'app_bug', severity: 'medium', reason: 'recoverable app warning (LogBox)', evidenceUris: evidence };
+  if (h.appStatus === 'error')
+    return {
+      status: 'fail',
+      category: 'blocker_app_bug',
+      severity: 'blocker',
+      reason: 'app error surface (RedBox/error boundary)',
+      evidenceUris: evidence,
+    };
+  if (h.appStatus === 'degraded')
+    return { status: 'fail', category: 'app_bug', severity: 'medium', reason: 'recoverable app warning (LogBox)', evidenceUris: evidence };
   return ok(`healthy (foreground=${h.foreground})`, evidence);
 }
 
@@ -66,7 +94,15 @@ export async function checkNavigation(ctx: AuditEvidenceCtx): Promise<RawCheckRe
   }
   let elements;
   try {
-    elements = parseSnapshot(xml).allNodes.map((n, i) => ({ ref: `@n${i}`, role: n.cls, label: n.desc || undefined, text: n.text || undefined, id: n.id || undefined, clickable: n.clickable === true, bounds: n.bounds }));
+    elements = parseSnapshot(xml).allNodes.map((n, i) => ({
+      ref: `@n${i}`,
+      role: n.cls,
+      label: n.desc || undefined,
+      text: n.text || undefined,
+      id: n.id || undefined,
+      clickable: n.clickable === true,
+      bounds: n.bounds,
+    }));
   } catch {
     return skip('could not parse the UI tree');
   }
@@ -80,7 +116,14 @@ export async function checkNavigation(ctx: AuditEvidenceCtx): Promise<RawCheckRe
     return skip('navigation tap not supported on this backend');
   }
   const h = await health(ctx);
-  if (!h.healthy) return { status: 'fail', category: 'app_bug', severity: 'high', reason: `navigation tap "${safe.label ?? ''}" produced ${h.nativeStatus}/${h.appStatus}`, evidenceUris: [] };
+  if (!h.healthy)
+    return {
+      status: 'fail',
+      category: 'app_bug',
+      severity: 'high',
+      reason: `navigation tap "${safe.label ?? ''}" produced ${h.nativeStatus}/${h.appStatus}`,
+      evidenceUris: [],
+    };
   const after = await foreground(ctx);
   return ok(`navigated safely via "${safe.label ?? safe.locator?.value ?? 'control'}" (${before}→${after})`);
 }
@@ -94,27 +137,56 @@ function found(text: string, ...needles: string[]): boolean {
 export async function checkPrivacyLink(ctx: AuditEvidenceCtx, text: string): Promise<RawCheckResult> {
   const shot = await captureScreenshot(ctx, 'audit privacy');
   if (found(text, 'privacy policy', 'privacy notice')) return ok('Privacy Policy surface found', shot ? [shot] : []);
-  return { status: 'fail', category: 'store_compliance', severity: 'high', reason: 'no Privacy Policy link found on the inspected screens', evidenceUris: shot ? [shot] : [], nextStep: 'Expose a Privacy Policy link (required for app stores).' };
+  return {
+    status: 'fail',
+    category: 'store_compliance',
+    severity: 'high',
+    reason: 'no Privacy Policy link found on the inspected screens',
+    evidenceUris: shot ? [shot] : [],
+    nextStep: 'Expose a Privacy Policy link (required for app stores).',
+  };
 }
 
 export async function checkTermsLink(ctx: AuditEvidenceCtx, text: string): Promise<RawCheckResult> {
   const shot = await captureScreenshot(ctx, 'audit terms');
-  if (found(text, 'terms of service', 'terms of use', 'terms and conditions', 'terms')) return ok('Terms surface found', shot ? [shot] : []);
-  return { status: 'fail', category: 'store_compliance', severity: 'medium', reason: 'no Terms link found on the inspected screens', evidenceUris: shot ? [shot] : [] };
+  if (found(text, 'terms of service', 'terms of use', 'terms and conditions', 'terms'))
+    return ok('Terms surface found', shot ? [shot] : []);
+  return {
+    status: 'fail',
+    category: 'store_compliance',
+    severity: 'medium',
+    reason: 'no Terms link found on the inspected screens',
+    evidenceUris: shot ? [shot] : [],
+  };
 }
 
 export async function checkAccountDeletion(ctx: AuditEvidenceCtx, text: string): Promise<RawCheckResult> {
   const hasAccountContext = found(text, 'account', 'profile', 'sign out', 'log out', 'settings');
   if (!hasAccountContext) return na('no account/profile surface observed — account deletion not applicable here');
-  if (found(text, 'delete account', 'delete your account', 'data deletion', 'close account', 'remove account')) return ok('account deletion / data-deletion path found');
-  return { status: 'fail', category: 'store_compliance', severity: 'high', reason: 'account surface present but no delete-account / data-deletion path found', evidenceUris: [], nextStep: 'Expose an account/data deletion flow (required where the app has accounts).' };
+  if (found(text, 'delete account', 'delete your account', 'data deletion', 'close account', 'remove account'))
+    return ok('account deletion / data-deletion path found');
+  return {
+    status: 'fail',
+    category: 'store_compliance',
+    severity: 'high',
+    reason: 'account surface present but no delete-account / data-deletion path found',
+    evidenceUris: [],
+    nextStep: 'Expose an account/data deletion flow (required where the app has accounts).',
+  };
 }
 
 export async function checkSubscriptionManagement(ctx: AuditEvidenceCtx, text: string): Promise<RawCheckResult> {
   const hasSub = found(text, 'subscribe', 'subscription', 'premium', 'free trial', 'upgrade');
   if (!hasSub) return na('no subscription/paywall surface observed');
-  if (found(text, 'restore purchase', 'restore purchases', 'manage subscription', 'manage your subscription')) return ok('restore / manage-subscription path found');
-  return { status: 'fail', category: 'store_compliance', severity: 'medium', reason: 'subscription surface present but no restore-purchase / manage-subscription path found', evidenceUris: [] };
+  if (found(text, 'restore purchase', 'restore purchases', 'manage subscription', 'manage your subscription'))
+    return ok('restore / manage-subscription path found');
+  return {
+    status: 'fail',
+    category: 'store_compliance',
+    severity: 'medium',
+    reason: 'subscription surface present but no restore-purchase / manage-subscription path found',
+    evidenceUris: [],
+  };
 }
 
 export async function checkPaywall(ctx: AuditEvidenceCtx, text: string): Promise<RawCheckResult> {
@@ -122,7 +194,14 @@ export async function checkPaywall(ctx: AuditEvidenceCtx, text: string): Promise
   if (!isPaywall) return na('no paywall observed');
   const hasFreePath = found(text, 'not now', 'maybe later', 'skip', 'continue free', 'no thanks', 'close', 'dismiss');
   if (hasFreePath) return ok('soft paywall with a free/dismiss path');
-  return { status: 'blocked', category: 'hard_gate', severity: 'medium', reason: 'hard paywall with no permitted test path — recorded without purchase', evidenceUris: [], nextStep: 'A hard gate stops only this workflow, not the whole run.' };
+  return {
+    status: 'blocked',
+    category: 'hard_gate',
+    severity: 'medium',
+    reason: 'hard paywall with no permitted test path — recorded without purchase',
+    evidenceUris: [],
+    nextStep: 'A hard gate stops only this workflow, not the whole run.',
+  };
 }
 
 export function checkExternalLinks(): RawCheckResult {
@@ -143,7 +222,14 @@ export async function checkOfflineEntry(ctx: AuditEvidenceCtx): Promise<RawCheck
   const text = await snapshotText(ctx);
   const shot = await captureScreenshot(ctx, 'audit offline');
   const evidence = shot ? [shot] : [];
-  if (!h.healthy) return { status: 'fail', category: 'app_bug', severity: 'high', reason: `app unhealthy offline (${h.nativeStatus}/${h.appStatus})`, evidenceUris: evidence };
+  if (!h.healthy)
+    return {
+      status: 'fail',
+      category: 'app_bug',
+      severity: 'high',
+      reason: `app unhealthy offline (${h.nativeStatus}/${h.appStatus})`,
+      evidenceUris: evidence,
+    };
   if (found(text, ...OFFLINE_COPY)) return ok('app shows an expected offline state', evidence);
   return ok('app stayed healthy offline (no explicit offline message observed)', evidence);
 }
@@ -155,7 +241,14 @@ export async function checkNetworkRestoration(ctx: AuditEvidenceCtx): Promise<Ra
     return { status: 'blocked', reason: 'network manipulation unavailable on this backend', evidenceUris: [] };
   }
   const h = await health(ctx);
-  if (!h.healthy) return { status: 'fail', category: 'app_bug', severity: 'high', reason: `app did not recover after connectivity returned (${h.nativeStatus}/${h.appStatus})`, evidenceUris: [] };
+  if (!h.healthy)
+    return {
+      status: 'fail',
+      category: 'app_bug',
+      severity: 'high',
+      reason: `app did not recover after connectivity returned (${h.nativeStatus}/${h.appStatus})`,
+      evidenceUris: [],
+    };
   return ok('app recovered after network restoration');
 }
 
@@ -165,11 +258,24 @@ export async function checkProcessRelaunch(ctx: AuditEvidenceCtx): Promise<RawCh
     await ctx.driver.terminateApp(ctx.appId);
     await ctx.driver.launchApp(ctx.appId);
   } catch (e) {
-    return { status: 'fail', category: 'app_bug', severity: 'high', reason: `relaunch failed: ${String((e as Error).message ?? e)}`, evidenceUris: [] };
+    return {
+      status: 'fail',
+      category: 'app_bug',
+      severity: 'high',
+      reason: `relaunch failed: ${String((e as Error).message ?? e)}`,
+      evidenceUris: [],
+    };
   }
   const h = await health(ctx);
   const shot = await captureScreenshot(ctx, 'audit relaunch');
-  if (!h.healthy) return { status: 'fail', category: 'app_bug', severity: 'high', reason: `app unhealthy after relaunch (${h.nativeStatus}/${h.appStatus})`, evidenceUris: shot ? [shot] : [] };
+  if (!h.healthy)
+    return {
+      status: 'fail',
+      category: 'app_bug',
+      severity: 'high',
+      reason: `app unhealthy after relaunch (${h.nativeStatus}/${h.appStatus})`,
+      evidenceUris: shot ? [shot] : [],
+    };
   return ok('app returned to a sane state after kill/relaunch', shot ? [shot] : []);
 }
 
@@ -232,9 +338,29 @@ export async function findAndTapLogout(ctx: AuditEvidenceCtx, disposableAccount:
 export function checkForgotPassword(loggedOutText: string): RawCheckResult {
   const isAuthSurface = /sign\s?in|log\s?in|email|password|username|forgot|create account/.test(loggedOutText);
   const hasForgot = /forgot.?password|reset.?password|forgot your password|trouble signing in/.test(loggedOutText);
-  if (hasForgot) return { status: 'pass', reason: 'forgot-password entrypoint is present on the logged-out auth surface (not exercised — Swipium never consumes email/OTP)', evidenceUris: [], workflow: 'account_cycle' };
-  if (isAuthSurface) return { status: 'fail', category: 'improvement', severity: 'low', reason: 'no forgot-password entrypoint on the logged-out login screen', evidenceUris: [], workflow: 'account_cycle', nextStep: 'Add a forgot/reset-password entrypoint on the login screen.' };
-  return { status: 'blocked', reason: 'logout not confirmed — could not reach the logged-out auth surface to check the forgot-password entrypoint', evidenceUris: [], workflow: 'account_cycle' };
+  if (hasForgot)
+    return {
+      status: 'pass',
+      reason: 'forgot-password entrypoint is present on the logged-out auth surface (not exercised — Swipium never consumes email/OTP)',
+      evidenceUris: [],
+      workflow: 'account_cycle',
+    };
+  if (isAuthSurface)
+    return {
+      status: 'fail',
+      category: 'improvement',
+      severity: 'low',
+      reason: 'no forgot-password entrypoint on the logged-out login screen',
+      evidenceUris: [],
+      workflow: 'account_cycle',
+      nextStep: 'Add a forgot/reset-password entrypoint on the login screen.',
+    };
+  return {
+    status: 'blocked',
+    reason: 'logout not confirmed — could not reach the logged-out auth surface to check the forgot-password entrypoint',
+    evidenceUris: [],
+    workflow: 'account_cycle',
+  };
 }
 
 // ---- readiness -----------------------------------------------------------------------------
@@ -257,5 +383,12 @@ export async function checkLocatorReadiness(ctx: AuditEvidenceCtx): Promise<RawC
   const durable = clickable.filter((n) => n.id || n.desc);
   const pct = Math.round((durable.length / clickable.length) * 100);
   if (pct >= 70) return ok(`${pct}% of interactive controls have durable locators`);
-  return { status: 'fail', category: 'accessibility_readiness', severity: 'low', reason: `only ${pct}% of interactive controls have durable locators (testID/accessibility id)`, evidenceUris: [], nextStep: 'Add accessibility identifiers / testIDs to important controls.' };
+  return {
+    status: 'fail',
+    category: 'accessibility_readiness',
+    severity: 'low',
+    reason: `only ${pct}% of interactive controls have durable locators (testID/accessibility id)`,
+    evidenceUris: [],
+    nextStep: 'Add accessibility identifiers / testIDs to important controls.',
+  };
 }

@@ -32,7 +32,8 @@ export function parsePack(yamlText: string): ParsePackResult {
   const d = doc as Record<string, unknown>;
   const errors: string[] = [];
   if (typeof d.name !== 'string' || !d.name.trim()) errors.push('pack needs a non-empty `name`.');
-  if (!Array.isArray(d.flows) || d.flows.length === 0 || !d.flows.every((f) => typeof f === 'string')) errors.push('pack needs a non-empty `flows` list of flow names.');
+  if (!Array.isArray(d.flows) || d.flows.length === 0 || !d.flows.every((f) => typeof f === 'string'))
+    errors.push('pack needs a non-empty `flows` list of flow names.');
   if (errors.length) return { errors };
   return { pack: { name: d.name as string, flows: d.flows as string[], parallel: d.parallel === true }, errors: [] };
 }
@@ -50,7 +51,8 @@ export function listPackFiles(root: string): Array<{ name: string; path: string 
 }
 
 function flowPath(root: string, name: string): string | null {
-  for (const p of [join(root, '.swipium', 'flows', `${name}.yaml`), join(root, '.swipium', 'flows', `${name}.yml`)]) if (existsSync(p)) return p;
+  for (const p of [join(root, '.swipium', 'flows', `${name}.yaml`), join(root, '.swipium', 'flows', `${name}.yml`)])
+    if (existsSync(p)) return p;
   return null;
 }
 
@@ -76,12 +78,28 @@ export async function runPack(
   for (const name of pack.flows) {
     const p = flowPath(root, name);
     if (!p) {
-      results.push({ name, passed: false, reason: `flow not found: ${name}`, failureCode: 'NO_ARTIFACT', steps: [], durationSec: 0, counters: session.counters });
+      results.push({
+        name,
+        passed: false,
+        reason: `flow not found: ${name}`,
+        failureCode: 'NO_ARTIFACT',
+        steps: [],
+        durationMs: 0,
+        counters: session.counters,
+      });
       continue;
     }
     const { flow, errors } = parseFlow(readFileSync(p, 'utf8'));
     if (errors.length || !flow) {
-      results.push({ name, passed: false, reason: `invalid flow: ${errors[0] ?? 'parse error'}`, failureCode: 'UNKNOWN', steps: [], durationSec: 0, counters: session.counters });
+      results.push({
+        name,
+        passed: false,
+        reason: `invalid flow: ${errors[0] ?? 'parse error'}`,
+        failureCode: 'UNKNOWN',
+        steps: [],
+        durationMs: 0,
+        counters: session.counters,
+      });
       continue;
     }
     results.push(await runFlow(sessions, session, driver, flow, opts));

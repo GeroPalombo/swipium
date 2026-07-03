@@ -31,12 +31,26 @@ export function parseOcrOutput(stdout: string): { text: string; regions: OcrRegi
   if (!trimmed) return { text: '', regions: [] };
   try {
     const json = JSON.parse(trimmed) as unknown;
-    const arr = Array.isArray(json) ? json : Array.isArray((json as { regions?: unknown })?.regions) ? (json as { regions: unknown[] }).regions : [];
+    const arr = Array.isArray(json)
+      ? json
+      : Array.isArray((json as { regions?: unknown })?.regions)
+        ? (json as { regions: unknown[] }).regions
+        : [];
     const regions = arr
       .map((r) => r as Partial<OcrRegion>)
-      .filter((r): r is OcrRegion => typeof r.text === 'string' && typeof r.confidence === 'number' && !!r.bbox && typeof r.bbox.x === 'number' && typeof r.bbox.y === 'number' && typeof r.bbox.width === 'number' && typeof r.bbox.height === 'number')
+      .filter(
+        (r): r is OcrRegion =>
+          typeof r.text === 'string' &&
+          typeof r.confidence === 'number' &&
+          !!r.bbox &&
+          typeof r.bbox.x === 'number' &&
+          typeof r.bbox.y === 'number' &&
+          typeof r.bbox.width === 'number' &&
+          typeof r.bbox.height === 'number',
+      )
       .map((r) => ({ ...r, coordinateSpace: 'screenshot_px' as const }));
-    const text = typeof (json as { text?: unknown })?.text === 'string' ? (json as { text: string }).text : regions.map((r) => r.text).join('\n');
+    const text =
+      typeof (json as { text?: unknown })?.text === 'string' ? (json as { text: string }).text : regions.map((r) => r.text).join('\n');
     return { text, regions };
   } catch {
     return { text: trimmed, regions: [] };
@@ -52,12 +66,17 @@ export async function runOcr(driver: Driver, root: string, command: VisualProvid
     writeFileSync(imgPath, png);
     const masking = await maskScreenshotForProvider(root, imgPath, { task: 'ocr' });
     cleanup.push(...masking.tempPaths);
-    const { resolved, result } = await runVisualProvider(command, { image: masking.imagePath }, {
-      task: 'ocr',
-      imagePath: masking.imagePath,
-      coordinateSpace,
-      masking: { providerConfigured: masking.providerConfigured, masksApplied: masking.masksApplied },
-    }, 30000);
+    const { resolved, result } = await runVisualProvider(
+      command,
+      { image: masking.imagePath },
+      {
+        task: 'ocr',
+        imagePath: masking.imagePath,
+        coordinateSpace,
+        masking: { providerConfigured: masking.providerConfigured, masksApplied: masking.masksApplied },
+      },
+      30000,
+    );
     return {
       ...parseOcrOutput(result.stdout),
       coordinateSpace,
@@ -75,7 +94,11 @@ export async function runOcr(driver: Driver, root: string, command: VisualProvid
   }
 }
 
-export function findOcrRegion(result: OcrResult, query: string, minConfidence = 0.8): { region: OcrRegion; devicePoint: { x: number; y: number } } | null {
+export function findOcrRegion(
+  result: OcrResult,
+  query: string,
+  minConfidence = 0.8,
+): { region: OcrRegion; devicePoint: { x: number; y: number } } | null {
   const q = query.toLowerCase();
   const region = result.regions
     .filter((r) => r.confidence >= minConfidence && r.text.toLowerCase().includes(q))

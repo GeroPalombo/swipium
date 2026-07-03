@@ -44,8 +44,26 @@ export interface FeatureIndex {
 
 const SOURCE_EXT = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.swift', '.kt', '.java', '.dart', '.vue']);
 const SKIP_DIRS = new Set([
-  'node_modules', '.git', '.svn', '.hg', 'dist', 'build', 'out', 'coverage', '.next', '.expo',
-  '.gradle', 'Pods', 'DerivedData', 'vendor', '.swipium', '__snapshots__', '.cache', 'tmp', '.idea', '.vscode',
+  'node_modules',
+  '.git',
+  '.svn',
+  '.hg',
+  'dist',
+  'build',
+  'out',
+  'coverage',
+  '.next',
+  '.expo',
+  '.gradle',
+  'Pods',
+  'DerivedData',
+  'vendor',
+  '.swipium',
+  '__snapshots__',
+  '.cache',
+  'tmp',
+  '.idea',
+  '.vscode',
 ]);
 
 /** Split an identifier (camelCase / PascalCase / snake_case / kebab-case) into lowercase word tokens. */
@@ -66,11 +84,6 @@ export function classifySymbol(name: string): SymbolKind {
   if (/(Component|Card|Button|List|Modal|Sheet|Header|Footer|Item|Row|Tile|Widget)$/.test(name)) return 'component';
   if (/^[A-Z]/.test(name)) return 'component'; // PascalCase default → likely a component/class
   return 'function';
-}
-
-interface RawSymbol {
-  name: string;
-  line: number;
 }
 
 /** Extract declared symbol names from a source file's text (JS/TS/Swift/Kotlin/Java/Dart). PURE. */

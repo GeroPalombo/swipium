@@ -8,9 +8,20 @@ import type { FeatureScope } from './featureScope.js';
 import type { CanonicalTestCase, AppMapLink, ActualStatus, CasePlatform, AutomationStatus } from '../testSuite/schema.js';
 import { normalizeCase } from '../testSuite/generator.js';
 
-const ACTUAL_STATUS: Record<string, ActualStatus> = { not_run: 'not_run', pass: 'pass', fail: 'fail', blocked: 'blocked', skipped: 'skipped' };
+const ACTUAL_STATUS: Record<string, ActualStatus> = {
+  not_run: 'not_run',
+  pass: 'pass',
+  fail: 'fail',
+  blocked: 'blocked',
+  skipped: 'skipped',
+};
 
-export function featureCasesToCanonical(cases: FeatureTestCase[], scope: FeatureScope, now: string, platform?: 'android' | 'ios'): CanonicalTestCase[] {
+export function featureCasesToCanonical(
+  cases: FeatureTestCase[],
+  scope: FeatureScope,
+  now: string,
+  platform?: 'android' | 'ios',
+): CanonicalTestCase[] {
   const platforms: CasePlatform[] = [platform ?? 'android'];
   return cases.map((c) => {
     const mapLinks: AppMapLink[] = [

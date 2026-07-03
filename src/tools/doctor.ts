@@ -74,16 +74,20 @@ export function registerDoctor(server: McpServer): void {
           .enum(['android', 'ios', 'both'])
           .optional()
           .describe('Which simulator environment to evaluate. Defaults to android for backward compatibility.'),
-        client: z
-          .enum(['claude', 'gemini', 'codex'])
-          .optional()
-          .describe('Optional: tailor hints to a specific MCP client.'),
+        client: z.enum(['claude', 'gemini', 'codex']).optional().describe('Optional: tailor hints to a specific MCP client.'),
         expectedToolCount: z
           .number()
           .optional()
-          .describe('What your docs/setup expect this server to expose. If it differs from the running server, your client is on a STALE build — restart it.'),
+          .describe(
+            'What your docs/setup expect this server to expose. If it differs from the running server, your client is on a STALE build — restart it.',
+          ),
         expectedVersion: z.string().optional().describe('Swipium version your docs expect; mismatch ⇒ stale client.'),
-        expectedSchemaHash: z.string().optional().describe('Tool-surface hash your docs expect; mismatch ⇒ the client is on a build with a different surface (same tool count can still be stale).'),
+        expectedSchemaHash: z
+          .string()
+          .optional()
+          .describe(
+            'Tool-surface hash your docs expect; mismatch ⇒ the client is on a build with a different surface (same tool count can still be stale).',
+          ),
       },
     },
     async ({ platform = 'android', client, expectedToolCount, expectedVersion, expectedSchemaHash }) => {
@@ -166,8 +170,16 @@ export function registerDoctor(server: McpServer): void {
         androidChecks.push({
           name: 'android-target',
           ok: devices.length > 0 || (hasEmulator && avds.length > 0),
-          detail: devices.length > 0 ? 'online device/emulator available' : hasEmulator && avds.length > 0 ? 'bootable AVD available' : 'no online target or bootable AVD',
-          fix: devices.length > 0 || (hasEmulator && avds.length > 0) ? undefined : 'Create or boot an Android Emulator, then rerun qa_doctor.',
+          detail:
+            devices.length > 0
+              ? 'online device/emulator available'
+              : hasEmulator && avds.length > 0
+                ? 'bootable AVD available'
+                : 'no online target or bootable AVD',
+          fix:
+            devices.length > 0 || (hasEmulator && avds.length > 0)
+              ? undefined
+              : 'Create or boot an Android Emulator, then rerun qa_doctor.',
         });
 
         const java = await firstLine('java', ['-version']);
@@ -218,8 +230,13 @@ export function registerDoctor(server: McpServer): void {
           name: 'wda-server',
           ok: wda.reachable && wda.ready,
           optional: true,
-          detail: wda.reachable ? `${wda.ready ? 'ready' : 'reachable but not ready'} at ${wdaConfig.url}` : `not reachable at ${wdaConfig.url}`,
-          fix: wda.reachable && wda.ready ? undefined : 'For structured iOS flows, run qa_wda doctor/build/start or attach an external WDA URL.',
+          detail: wda.reachable
+            ? `${wda.ready ? 'ready' : 'reachable but not ready'} at ${wdaConfig.url}`
+            : `not reachable at ${wdaConfig.url}`,
+          fix:
+            wda.reachable && wda.ready
+              ? undefined
+              : 'For structured iOS flows, run qa_wda doctor/build/start or attach an external WDA URL.',
         });
         iosChecks.push({
           name: 'wda-project-cache',
@@ -230,17 +247,22 @@ export function registerDoctor(server: McpServer): void {
             : discovery.candidates.length
               ? `project candidates: ${discovery.candidates.slice(0, 3).join(', ')}`
               : `no WDA project found; checked cache ${wdaProduct.checkedPath}`,
-          fix: discovery.candidates.length > 0 || wdaProduct.built ? undefined : 'Install appium-webdriveragent or configure ios.wda.derivedDataPath / wdaProjectPath.',
+          fix:
+            discovery.candidates.length > 0 || wdaProduct.built
+              ? undefined
+              : 'Install appium-webdriveragent or configure ios.wda.derivedDataPath / wdaProjectPath.',
         });
         checks.push(...iosChecks);
         iosReady = iosChecks.filter((c) => !c.optional).every((c) => c.ok);
-        wdaSummary = { config: { url: wdaConfig.url, mode: wdaConfig.mode, derivedDataPath: wdaConfig.derivedDataPath }, status: wda, projectDiscovery: discovery, buildProduct: wdaProduct };
+        wdaSummary = {
+          config: { url: wdaConfig.url, mode: wdaConfig.mode, derivedDataPath: wdaConfig.derivedDataPath },
+          status: wda,
+          projectDiscovery: discovery,
+          buildProduct: wdaProduct,
+        };
       }
 
-      const requiredOk =
-        requested === 'android' ? androidReady :
-          requested === 'ios' ? iosReady :
-            androidReady && iosReady;
+      const requiredOk = requested === 'android' ? androidReady : requested === 'ios' ? iosReady : androidReady && iosReady;
       const clientHint = client ? CLIENT_HINTS[client] : undefined;
 
       const table = checks.map(checkLine).join('\n');
@@ -259,7 +281,15 @@ export function registerDoctor(server: McpServer): void {
           platformReady: { android: wantsAndroid ? androidReady : null, ios: wantsIos ? iosReady : null },
           clientFreshness:
             expectedToolCount != null || expectedVersion != null || expectedSchemaHash != null
-              ? { stale: versionMismatch || toolCountMismatch || schemaHashMismatch, runningVersion: SWIPIUM_VERSION, runningToolCount: TOOL_COUNT, runningSchemaHash: schemaHash, expectedVersion: expectedVersion ?? null, expectedToolCount: expectedToolCount ?? null, expectedSchemaHash: expectedSchemaHash ?? null }
+              ? {
+                  stale: versionMismatch || toolCountMismatch || schemaHashMismatch,
+                  runningVersion: SWIPIUM_VERSION,
+                  runningToolCount: TOOL_COUNT,
+                  runningSchemaHash: schemaHash,
+                  expectedVersion: expectedVersion ?? null,
+                  expectedToolCount: expectedToolCount ?? null,
+                  expectedSchemaHash: expectedSchemaHash ?? null,
+                }
               : undefined,
           checks,
           checksByPlatform: { android: androidChecks, ios: iosChecks },

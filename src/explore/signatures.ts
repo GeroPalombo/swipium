@@ -25,7 +25,9 @@ function ctxSuffix(ctx: SignatureContext): string {
  */
 export function structuredSignature(elements: SnapshotElement[], ctx: SignatureContext = {}): string {
   const ids = [...new Set(elements.map((e) => e.id).filter(Boolean))].sort();
-  const labels = [...new Set(elements.map((e) => (e.label || e.text || '').trim().toLowerCase()).filter((t) => t.length > 0 && t.length <= 40))].sort();
+  const labels = [
+    ...new Set(elements.map((e) => (e.label || e.text || '').trim().toLowerCase()).filter((t) => t.length > 0 && t.length <= 40)),
+  ].sort();
   // Coarse count bucket so one extra list row doesn't fork the screen identity.
   const bucket = Math.min(10, Math.floor(elements.length / 5));
   const body = `ids:${ids.join(',')}|labels:${labels.slice(0, 25).join(',')}|n:${bucket}`;

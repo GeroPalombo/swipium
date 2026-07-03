@@ -53,11 +53,7 @@ function hasFile(root: string, ...rel: string[]): boolean {
 
 /** Pick the package manager from lockfiles (npm default). */
 function nodeInstallStep(root: string): BuildStep {
-  const pm = existsSync(join(root, 'pnpm-lock.yaml'))
-    ? 'pnpm'
-    : existsSync(join(root, 'yarn.lock'))
-      ? 'yarn'
-      : 'npm';
+  const pm = existsSync(join(root, 'pnpm-lock.yaml')) ? 'pnpm' : existsSync(join(root, 'yarn.lock')) ? 'yarn' : 'npm';
   const argv = pm === 'npm' ? ['npm', 'install'] : [pm, 'install'];
   return { label: 'install JS dependencies', command: argv.join(' '), argv, cwd: root, optionalIfPresent: 'node_modules' };
 }
@@ -109,8 +105,16 @@ export async function buildPlan(opts: BuildPlanOptions): Promise<BuildPlan> {
   const missingToolchain: string[] = [];
 
   const base = (over: Partial<BuildPlan> = {}): BuildPlan => ({
-    framework, platform, variant, prerequisites, build: null,
-    expectedArtifactGlobs: [], toolchainOk: missingToolchain.length === 0, missingToolchain, notes, ...over,
+    framework,
+    platform,
+    variant,
+    prerequisites,
+    build: null,
+    expectedArtifactGlobs: [],
+    toolchainOk: missingToolchain.length === 0,
+    missingToolchain,
+    notes,
+    ...over,
   });
 
   if (framework === 'unknown') {
@@ -130,14 +134,22 @@ export async function buildPlan(opts: BuildPlanOptions): Promise<BuildPlan> {
       case 'expo': {
         // No native android dir → expo run:android prebuilds; otherwise it reuses it.
         if (!hasFile(root, 'android')) notes.push('No android/ directory — expo run:android will prebuild it (EXPO_PREBUILD).');
-        notes.push('Expo Android local run compiles native code, installs the app, and starts Metro. First run can take several minutes; later JS/TS-only work should usually reuse the installed development build with Metro.');
+        notes.push(
+          'Expo Android local run compiles native code, installs the app, and starts Metro. First run can take several minutes; later JS/TS-only work should usually reuse the installed development build with Metro.',
+        );
         const argv = ['npx', 'expo', 'run:android', '--variant', variant];
-        return base({ build: { label: 'Expo Android local run', command: argv.join(' '), argv, cwd: root }, expectedArtifactGlobs: apkGlobs });
+        return base({
+          build: { label: 'Expo Android local run', command: argv.join(' '), argv, cwd: root },
+          expectedArtifactGlobs: apkGlobs,
+        });
       }
       case 'bare-react-native':
       case 'native-android': {
         if (!hasFile(root, 'android/gradlew', 'gradlew')) {
-          return base({ failureCode: 'BUILD_COMMAND_UNAVAILABLE', notes: ['No gradlew found — run from the Android project or add the Gradle wrapper.'] });
+          return base({
+            failureCode: 'BUILD_COMMAND_UNAVAILABLE',
+            notes: ['No gradlew found — run from the Android project or add the Gradle wrapper.'],
+          });
         }
         const cwd = existsSync(join(root, 'android')) ? join(root, 'android') : root;
         const argv = ['./gradlew', gradleArg];
@@ -147,7 +159,11 @@ export async function buildPlan(opts: BuildPlanOptions): Promise<BuildPlan> {
         if (!(await which('flutter'))) missingToolchain.push('flutter');
         prerequisites.unshift({ label: 'flutter pub get', command: 'flutter pub get', argv: ['flutter', 'pub', 'get'], cwd: root });
         const argv = ['flutter', 'build', 'apk', `--${variant}`];
-        return base({ build: { label: 'flutter build apk', command: argv.join(' '), argv, cwd: root }, expectedArtifactGlobs: flutterGlobs, toolchainOk: missingToolchain.length === 0 });
+        return base({
+          build: { label: 'flutter build apk', command: argv.join(' '), argv, cwd: root },
+          expectedArtifactGlobs: flutterGlobs,
+          toolchainOk: missingToolchain.length === 0,
+        });
       }
       default:
         return base({ failureCode: 'BUILD_COMMAND_UNAVAILABLE' });
@@ -162,7 +178,10 @@ export async function buildPlan(opts: BuildPlanOptions): Promise<BuildPlan> {
     case 'expo': {
       if (!hasFile(root, 'ios')) notes.push('No ios/ directory — expo run:ios will prebuild it (EXPO_PREBUILD).');
       const argv = ['npx', 'expo', 'run:ios', '--no-bundler'];
-      return base({ build: { label: 'build + run iOS simulator (Expo)', command: argv.join(' '), argv, cwd: root }, expectedArtifactGlobs: appGlobs });
+      return base({
+        build: { label: 'build + run iOS simulator (Expo)', command: argv.join(' '), argv, cwd: root },
+        expectedArtifactGlobs: appGlobs,
+      });
     }
     case 'bare-react-native':
     case 'native-ios': {
@@ -177,7 +196,11 @@ export async function buildPlan(opts: BuildPlanOptions): Promise<BuildPlan> {
       if (!(await which('flutter'))) missingToolchain.push('flutter');
       prerequisites.unshift({ label: 'flutter pub get', command: 'flutter pub get', argv: ['flutter', 'pub', 'get'], cwd: root });
       const argv = ['flutter', 'build', 'ios', '--simulator', `--${variant}`];
-      return base({ build: { label: 'flutter build ios --simulator', command: argv.join(' '), argv, cwd: root }, expectedArtifactGlobs: ['build/ios/iphonesimulator/*.app'], toolchainOk: missingToolchain.length === 0 });
+      return base({
+        build: { label: 'flutter build ios --simulator', command: argv.join(' '), argv, cwd: root },
+        expectedArtifactGlobs: ['build/ios/iphonesimulator/*.app'],
+        toolchainOk: missingToolchain.length === 0,
+      });
     }
     default:
       return base({ failureCode: 'BUILD_COMMAND_UNAVAILABLE' });

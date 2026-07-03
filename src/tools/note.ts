@@ -23,19 +23,45 @@ export function registerNote(server: McpServer, sessions: SessionStore): void {
         sessionId: z.string(),
         workflow: z.string().describe('the workflow/test this outcome is about, e.g. "Delete saved flight"'),
         outcome: z.enum(OUTCOMES).describe('WHAT happened (independent of category).'),
-        category: z.enum(CATEGORIES).optional().describe('WHY / classification — an INDEPENDENT axis from outcome (e.g. a not_applicable outcome may be category=intentionally_skipped). The report cross-tabs the two; they are not folded together.'),
+        category: z
+          .enum(CATEGORIES)
+          .optional()
+          .describe(
+            'WHY / classification — an INDEPENDENT axis from outcome (e.g. a not_applicable outcome may be category=intentionally_skipped). The report cross-tabs the two; they are not folded together.',
+          ),
         reason: z.string().optional(),
         missingPrecondition: z.string().optional().describe('what state was required but absent, e.g. "no saved flight exists"'),
         requiredState: z.string().optional().describe('the state the test needs, e.g. "at least one saved flight"'),
         recommendedSetup: z.string().optional().describe('how to satisfy the precondition next time'),
         artifactUris: z.array(z.string()).optional(),
-        verifiedVisually: z.boolean().optional().describe('pass was confirmed from a screenshot (animated/map/canvas screen with no structured tree) — counts as a real pass, not a weak one. Attach the screenshot in artifactUris.'),
+        verifiedVisually: z
+          .boolean()
+          .optional()
+          .describe(
+            'pass was confirmed from a screenshot (animated/map/canvas screen with no structured tree) — counts as a real pass, not a weak one. Attach the screenshot in artifactUris.',
+          ),
       },
     },
-    async ({ sessionId, workflow, outcome, category, reason, missingPrecondition, requiredState, recommendedSetup, artifactUris, verifiedVisually }) => {
+    async ({
+      sessionId,
+      workflow,
+      outcome,
+      category,
+      reason,
+      missingPrecondition,
+      requiredState,
+      recommendedSetup,
+      artifactUris,
+      verifiedVisually,
+    }) => {
       const session = sessions.get(sessionId);
       if (!session) {
-        return qaError({ what: `Unknown sessionId ${sessionId}`, changedState: false, retrySafe: true, nextSteps: ['Call qa_start_session first.'] });
+        return qaError({
+          what: `Unknown sessionId ${sessionId}`,
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Call qa_start_session first.'],
+        });
       }
       // A visual-only pass should carry its evidence so the report isn't taking it on faith.
       if (verifiedVisually && outcome === 'pass' && !(artifactUris && artifactUris.length)) {
@@ -59,7 +85,9 @@ export function registerNote(server: McpServer, sessions: SessionStore): void {
       // If a declared fixture matches this workflow/precondition, borrow its recommendedSetup
       // so a blocked outcome carries the setup guidance the agent already declared (P1.4).
       const fx = session.fixtures.find(
-        (f) => f.name.toLowerCase() === workflow.toLowerCase() || (missingPrecondition && f.name.toLowerCase() === missingPrecondition.toLowerCase()),
+        (f) =>
+          f.name.toLowerCase() === workflow.toLowerCase() ||
+          (missingPrecondition && f.name.toLowerCase() === missingPrecondition.toLowerCase()),
       );
       sessions.addNote(session, {
         at: Date.now(),
@@ -76,7 +104,11 @@ export function registerNote(server: McpServer, sessions: SessionStore): void {
       const tally = session.notes.reduce<Record<string, number>>((a, n) => ((a[n.outcome] = (a[n.outcome] ?? 0) + 1), a), {});
       return qaOk(
         { recorded: { workflow, outcome, category }, tally },
-        `noted: "${workflow}" → ${outcome}${category ? ` (${category})` : ''}${missingPrecondition ? ` — missing: ${missingPrecondition}` : ''}\ntally: ${Object.entries(tally).map(([k, v]) => `${k}=${v}`).join(' ')}`,
+        `noted: "${workflow}" → ${outcome}${category ? ` (${category})` : ''}${missingPrecondition ? ` — missing: ${missingPrecondition}` : ''}\ntally: ${Object.entries(
+          tally,
+        )
+          .map(([k, v]) => `${k}=${v}`)
+          .join(' ')}`,
       );
     },
   );

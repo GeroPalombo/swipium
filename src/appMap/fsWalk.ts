@@ -6,8 +6,25 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
 const IGNORE_DIRS = new Set([
-  'node_modules', '.git', '.swipium', 'build', 'dist', 'out', '.next', '.expo', 'Pods', 'DerivedData',
-  '.gradle', '.idea', 'vendor', 'coverage', '__pycache__', '.dart_tool', '.venv', 'venv', 'Carthage',
+  'node_modules',
+  '.git',
+  '.swipium',
+  'build',
+  'dist',
+  'out',
+  '.next',
+  '.expo',
+  'Pods',
+  'DerivedData',
+  '.gradle',
+  '.idea',
+  'vendor',
+  'coverage',
+  '__pycache__',
+  '.dart_tool',
+  '.venv',
+  'venv',
+  'Carthage',
 ]);
 
 export interface WalkOptions {

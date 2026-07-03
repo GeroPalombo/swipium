@@ -14,17 +14,19 @@ import type { IssueCategory, IssueObservation, IssuePlatform } from './schema.js
 
 /** Replace volatile tokens (timestamps, uuids, emails, ids, tokens) with stable placeholders. */
 export function scrubVolatile(text: string): string {
-  return text
-    .replace(/\d{4}-\d{2}-\d{2}(?:[t ]\d{2}:\d{2}:\d{2}(?:\.\d+)?z?)?/gi, ':ts') // ISO date/datetime
-    .replace(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/gi, ':uuid') // UUID
-    .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, ':email') // email
-    .replace(/\bBearer\s+[\w.\-]+/gi, ':token')
-    // Any token containing a digit is treated as a volatile id (session id, request id, hash,
-    // numeric id, hex). Status codes / version-like signals travel through structural fields, not
-    // free text, so over-scrubbing free text here is safe and maximizes fingerprint stability.
-    .replace(/\b[\w-]*\d[\w.-]*\b/gi, ':id')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return (
+    text
+      .replace(/\d{4}-\d{2}-\d{2}(?:[t ]\d{2}:\d{2}:\d{2}(?:\.\d+)?z?)?/gi, ':ts') // ISO date/datetime
+      .replace(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/gi, ':uuid') // UUID
+      .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, ':email') // email
+      .replace(/\bBearer\s+[\w.-]+/gi, ':token')
+      // Any token containing a digit is treated as a volatile id (session id, request id, hash,
+      // numeric id, hex). Status codes / version-like signals travel through structural fields, not
+      // free text, so over-scrubbing free text here is safe and maximizes fingerprint stability.
+      .replace(/\b[\w-]*\d[\w.-]*\b/gi, ':id')
+      .replace(/\s+/g, ' ')
+      .trim()
+  );
 }
 
 /** Normalize a URL/endpoint to a route template: drop host, replace id-ish path segments. */
@@ -56,7 +58,10 @@ export function normalizeException(type?: string, message?: string, topFrame?: s
     if (reading) {
       m = `cannot_read_property ${reading[1]}`;
     } else {
-      m = scrubVolatile(m).replace(/[^a-z0-9 _]/g, ' ').replace(/\s+/g, ' ').trim();
+      m = scrubVolatile(m)
+        .replace(/[^a-z0-9 _]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
       // keep it short — a few meaningful words
       m = m.split(' ').slice(0, 6).join(' ');
     }
@@ -64,7 +69,10 @@ export function normalizeException(type?: string, message?: string, topFrame?: s
   }
   if (topFrame) {
     // keep the file/function name, strip line:col numbers
-    const frame = topFrame.replace(/:\d+(:\d+)?$/, '').replace(/^at\s+/, '').trim();
+    const frame = topFrame
+      .replace(/:\d+(:\d+)?$/, '')
+      .replace(/^at\s+/, '')
+      .trim();
     parts.push(frame.split(/[\\/]/).pop() ?? frame);
   }
   return parts.join(' ').trim();

@@ -1,4 +1,4 @@
-// Canonical-case generator (SWIPIUM-REQ-06 "qa_test_suite_generate" + integration hooks). PURE:
+// Canonical-case generator (SWIPIUM-REQ-06 "qa_suite_generate" + integration hooks). PURE:
 // turns a generated POM, the session's observed outcomes (notes), declared fixtures, and guided
 // exploration coverage into CanonicalTestCase candidates with a blank id (`''`) — merge.ts assigns a
 // stable id and dedupes. Mirrors src/suite/testcase.ts's intent vs. actual discipline but emits the
@@ -133,7 +133,12 @@ export function caseFromPom(input: GenerateInput): CanonicalTestCase | null {
     fixtures: fixtures.map((f) => f.name),
     testData: [
       ...fixtures.flatMap((f) =>
-        Object.entries(f.fields ?? {}).map(([k, v]) => ({ name: k, value: v.secret ? undefined : v.value, secret: v.secret, source: f.name })),
+        Object.entries(f.fields ?? {}).map(([k, v]) => ({
+          name: k,
+          value: v.secret ? undefined : v.value,
+          secret: v.secret,
+          source: f.name,
+        })),
       ),
       ...pom.variables.map((v) => ({ name: v, secret: true as const, source: 'flow-variable' })),
     ],
@@ -193,7 +198,14 @@ export function casesFromExploration(input: GenerateInput): CanonicalTestCase[] 
       preconditions: ['app installed'],
       fixtures: [],
       testData: [],
-      steps: [{ index: 1, action: 'explore', target: functionality, expected: `${functionality} is reachable and renders without an error surface` }],
+      steps: [
+        {
+          index: 1,
+          action: 'explore',
+          target: functionality,
+          expected: `${functionality} is reachable and renders without an error surface`,
+        },
+      ],
       expectedResult: [`${functionality} is reachable and renders without an error surface`],
       actualResult: {
         status: (exp!.summary.appErrors > 0 ? 'fail' : 'pass') as ActualStatus,
@@ -201,7 +213,14 @@ export function casesFromExploration(input: GenerateInput): CanonicalTestCase[] 
         lastRunAt: input.now,
         evidence: [],
       },
-      automation: { status: 'candidate', framework: 'swipium_flow', pageObjects: [], testFiles: [], locatorReadiness: 'D', replayStatus: 'not_replayed' },
+      automation: {
+        status: 'candidate',
+        framework: 'swipium_flow',
+        pageObjects: [],
+        testFiles: [],
+        locatorReadiness: 'D',
+        replayStatus: 'not_replayed',
+      },
       status,
       risk: [],
       cleanup: [],
@@ -218,7 +237,7 @@ export function casesFromExploration(input: GenerateInput): CanonicalTestCase[] 
   });
 }
 
-/** Fill a partial/manual case (e.g. from qa_test_suite_update input) into a complete CanonicalTestCase. */
+/** Fill a partial/manual case (e.g. from qa_suite_update input) into a complete CanonicalTestCase. */
 export function normalizeCase(input: Partial<CanonicalTestCase> & { functionality?: string }, now: string): CanonicalTestCase {
   const functionality = input.functionality ?? input.title ?? 'general';
   const featureId = input.featureId ?? functionalitySlug(functionality);
@@ -240,7 +259,13 @@ export function normalizeCase(input: Partial<CanonicalTestCase> & { functionalit
     steps: (input.steps ?? []).map((s, i) => ({ ...s, index: s.index ?? i + 1 })),
     expectedResult: input.expectedResult ?? [],
     actualResult: input.actualResult ?? { status: 'not_run', summary: 'Authored manually; not yet run.', evidence: [] },
-    automation: input.automation ?? { status: 'manual', pageObjects: [], testFiles: [], locatorReadiness: 'D', replayStatus: 'not_replayed' },
+    automation: input.automation ?? {
+      status: 'manual',
+      pageObjects: [],
+      testFiles: [],
+      locatorReadiness: 'D',
+      replayStatus: 'not_replayed',
+    },
     status: input.status ?? 'draft',
     risk: input.risk ?? [],
     cleanup: input.cleanup ?? [],

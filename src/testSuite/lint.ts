@@ -1,4 +1,4 @@
-// Linter for the persistent suite (SWIPIUM-REQ-06 "qa_test_suite_lint"). PURE. Catches the failure
+// Linter for the persistent suite (SWIPIUM-REQ-06 "qa_suite_lint"). PURE. Catches the failure
 // modes that make a maintained suite untrustworthy: missing expected/actual results, unlinked or
 // stale map links, duplicate ids, brittle automation above threshold, and — most importantly —
 // `adversarial` cases that lack the safety metadata Swipium requires before it will ever run them.
@@ -65,7 +65,8 @@ export function lintSuite(suite: TestSuiteFile, opts: LintOptions = {}): LintRes
 
     if (live) {
       const stale = c.mapLinks.filter((l) => l.kind === 'feature' && !live.has(l.id));
-      if (stale.length) add('warn', 'stale_map_link', `Case links to feature(s) no longer in the app map: ${stale.map((l) => l.id).join(', ')}`, c.id);
+      if (stale.length)
+        add('warn', 'stale_map_link', `Case links to feature(s) no longer in the app map: ${stale.map((l) => l.id).join(', ')}`, c.id);
     }
 
     if (c.automation.status === 'automated' && brittleGrades.includes(c.automation.locatorReadiness)) {
@@ -76,7 +77,12 @@ export function lintSuite(suite: TestSuiteFile, opts: LintOptions = {}): LintRes
     }
 
     if (c.creativityLevel === 'adversarial' && !hasAdversarialSafety(c)) {
-      add('error', 'unsafe_adversarial', 'Adversarial case lacks disposable-state/consent safety metadata — Swipium will refuse to run it', c.id);
+      add(
+        'error',
+        'unsafe_adversarial',
+        'Adversarial case lacks disposable-state/consent safety metadata — Swipium will refuse to run it',
+        c.id,
+      );
     }
   }
 

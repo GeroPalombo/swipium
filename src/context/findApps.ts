@@ -37,8 +37,22 @@ export interface FindAppsResult {
 }
 
 const SKIP_DIRS = new Set([
-  'node_modules', '.git', '.swipium', '.expo', '.gradle', '.idea', '.vscode',
-  'build', 'dist', 'out', 'DerivedData', 'Pods', 'vendor', 'coverage', '.next', '.turbo',
+  'node_modules',
+  '.git',
+  '.swipium',
+  '.expo',
+  '.gradle',
+  '.idea',
+  '.vscode',
+  'build',
+  'dist',
+  'out',
+  'DerivedData',
+  'Pods',
+  'vendor',
+  'coverage',
+  '.next',
+  '.turbo',
 ]);
 
 /** Conventional parents whose immediate subdirectories may each hold a mobile app. */
@@ -80,9 +94,7 @@ function appConfigPresent(dir: string, fw: Framework): boolean {
     case 'bare-react-native':
       return existsSync(join(dir, 'package.json'));
     case 'native-android':
-      return ['app/build.gradle', 'app/build.gradle.kts', 'settings.gradle', 'settings.gradle.kts'].some((f) =>
-        existsSync(join(dir, f)),
-      );
+      return ['app/build.gradle', 'app/build.gradle.kts', 'settings.gradle', 'settings.gradle.kts'].some((f) => existsSync(join(dir, f)));
     case 'native-ios':
       return readdirSafe(dir).some((f) => f.endsWith('.xcodeproj') || f.endsWith('.xcworkspace')) || existsSync(join(dir, 'Package.swift'));
     case 'flutter':

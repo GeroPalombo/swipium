@@ -73,9 +73,7 @@ export const DEFAULT_POLICY_PATH = '.swipium/test-data-policy.json';
 /** Load `.swipium/test-data-policy.json` from the project root (or an explicit path), deep-merged
  *  over the safe default. A missing/corrupt file falls back to the default — never throws. */
 export function loadTestDataPolicy(root: string, explicitPath?: string): { policy: TestDataPolicy; source: string } {
-  const path = explicitPath
-    ? (explicitPath.startsWith('/') ? explicitPath : join(root, explicitPath))
-    : join(root, DEFAULT_POLICY_PATH);
+  const path = explicitPath ? (explicitPath.startsWith('/') ? explicitPath : join(root, explicitPath)) : join(root, DEFAULT_POLICY_PATH);
   if (!existsSync(path)) return { policy: DEFAULT_TEST_DATA_POLICY, source: 'default' };
   try {
     const raw = JSON.parse(readFileSync(path, 'utf8')) as Partial<TestDataPolicy>;
@@ -119,7 +117,8 @@ export interface EnvironmentClassification {
 const TEST_TOKEN = /\b(test|qa|uat|sandbox|staging|stage|dev|develop|development|debug|internal|preview|nonprod|non-prod)\b/i;
 const STAGING_TOKEN = /\b(staging|stage|uat|preprod|pre-prod)\b/i;
 const PROD_TOKEN = /\b(prod|production|release|live|www)\b/i;
-const PROD_HOST = /https?:\/\/(?:api\.|www\.)?(?!.*(?:staging|stage|test|qa|uat|sandbox|dev|preprod|localhost|127\.0\.0\.1|10\.|192\.168)).+\.(?:com|net|org|io|app|co)\b/i;
+const PROD_HOST =
+  /https?:\/\/(?:api\.|www\.)?(?!.*(?:staging|stage|test|qa|uat|sandbox|dev|preprod|localhost|127\.0\.0\.1|10\.|192\.168)).+\.(?:com|net|org|io|app|co)\b/i;
 
 /** Classify the environment from app id / build / config signals. Conservative: when nothing rules
  *  production out, `productionRisk` is true so the caller asks before creating an account. */
@@ -151,20 +150,41 @@ export function classifyEnvironment(input: EnvironmentSignalsInput): Environment
 
   // 2. Production signals (any one of these flips productionRisk on).
   let prodHits = 0;
-  if (PROD_TOKEN.test(idHay)) { signals.push(`app id "${input.appId}" contains a production-like token`); prodHits++; }
+  if (PROD_TOKEN.test(idHay)) {
+    signals.push(`app id "${input.appId}" contains a production-like token`);
+    prodHits++;
+  }
   for (const url of input.apiBaseUrls ?? []) {
     if (STAGING_TOKEN.test(url) || TEST_TOKEN.test(url)) continue;
-    if (PROD_HOST.test(url) || PROD_TOKEN.test(url)) { signals.push(`API base URL looks production: ${url}`); prodHits++; }
+    if (PROD_HOST.test(url) || PROD_TOKEN.test(url)) {
+      signals.push(`API base URL looks production: ${url}`);
+      prodHits++;
+    }
   }
 
   // 3. Test/staging signals.
   let testHits = 0;
   let stagingHits = 0;
-  if (STAGING_TOKEN.test(idHay) || STAGING_TOKEN.test(apiHay)) { signals.push('app id / API contains a staging token'); stagingHits++; }
-  if (TEST_TOKEN.test(idHay)) { signals.push(`app id "${input.appId}" contains a test/dev token`); testHits++; }
-  if (TEST_TOKEN.test(apiHay)) { signals.push('API base URL contains a test/dev token'); testHits++; }
-  if (input.buildType && /debug/i.test(input.buildType)) { signals.push('build type is debug'); testHits++; }
-  if (TEST_TOKEN.test(cfgHay)) { signals.push('app config contains a test/dev token'); testHits++; }
+  if (STAGING_TOKEN.test(idHay) || STAGING_TOKEN.test(apiHay)) {
+    signals.push('app id / API contains a staging token');
+    stagingHits++;
+  }
+  if (TEST_TOKEN.test(idHay)) {
+    signals.push(`app id "${input.appId}" contains a test/dev token`);
+    testHits++;
+  }
+  if (TEST_TOKEN.test(apiHay)) {
+    signals.push('API base URL contains a test/dev token');
+    testHits++;
+  }
+  if (input.buildType && /debug/i.test(input.buildType)) {
+    signals.push('build type is debug');
+    testHits++;
+  }
+  if (TEST_TOKEN.test(cfgHay)) {
+    signals.push('app config contains a test/dev token');
+    testHits++;
+  }
 
   if (stagingHits > 0 && prodHits === 0) {
     return { environment: 'staging', confidence: 0.75, signals, productionRisk: false };
@@ -188,7 +208,11 @@ export interface GeneratedAccountDecision {
 }
 
 /** Combine policy + environment into the single "may Swipium create a throwaway account?" verdict. */
-export function decideGeneratedAccount(policy: TestDataPolicy, env: EnvironmentClassification, override?: boolean): GeneratedAccountDecision {
+export function decideGeneratedAccount(
+  policy: TestDataPolicy,
+  env: EnvironmentClassification,
+  override?: boolean,
+): GeneratedAccountDecision {
   if (override === false) {
     return { allowed: false, reason: 'generated-account creation was explicitly disabled for this run', environment: env };
   }
@@ -198,9 +222,10 @@ export function decideGeneratedAccount(policy: TestDataPolicy, env: EnvironmentC
   if (env.productionRisk && override !== true) {
     return {
       allowed: false,
-      reason: env.environment === 'production'
-        ? 'environment classified as production — refusing automatic account creation'
-        : 'environment could not be confirmed as non-production — refusing automatic account creation',
+      reason:
+        env.environment === 'production'
+          ? 'environment classified as production — refusing automatic account creation'
+          : 'environment could not be confirmed as non-production — refusing automatic account creation',
       environment: env,
     };
   }
@@ -208,13 +233,21 @@ export function decideGeneratedAccount(policy: TestDataPolicy, env: EnvironmentC
     return { allowed: false, reason: 'policy disallows generated accounts (allowGeneratedAccounts="never")', environment: env };
   }
   if (policy.allowGeneratedAccounts === 'always' || override === true) {
-    return { allowed: true, reason: override === true ? 'generated account explicitly approved for this run' : 'policy allows generated accounts (always)', environment: env };
+    return {
+      allowed: true,
+      reason: override === true ? 'generated account explicitly approved for this run' : 'policy allows generated accounts (always)',
+      environment: env,
+    };
   }
   // test_or_staging_only
   if (env.environment === 'test' || env.environment === 'staging') {
     return { allowed: true, reason: `policy allows generated accounts in ${env.environment} (test_or_staging_only)`, environment: env };
   }
-  return { allowed: false, reason: `policy allows generated accounts only in test/staging; environment is "${env.environment}"`, environment: env };
+  return {
+    allowed: false,
+    reason: `policy allows generated accounts only in test/staging; environment is "${env.environment}"`,
+    environment: env,
+  };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -258,7 +291,11 @@ export function generateFieldValue(field: FieldKind, policy: TestDataPolicy, opt
     case 'confirm_password':
       return { value: policy.password.value, secret: policy.password.secret, generator: policy.password.generator };
     case 'name':
-      return { value: `${GIVEN_NAMES[ts % GIVEN_NAMES.length]} ${FAMILY_NAMES[ts % FAMILY_NAMES.length]}`, secret: false, generator: 'name_default' };
+      return {
+        value: `${GIVEN_NAMES[ts % GIVEN_NAMES.length]} ${FAMILY_NAMES[ts % FAMILY_NAMES.length]}`,
+        secret: false,
+        generator: 'name_default',
+      };
     case 'first_name':
       return { value: GIVEN_NAMES[ts % GIVEN_NAMES.length], secret: false, generator: 'name_default' };
     case 'last_name':

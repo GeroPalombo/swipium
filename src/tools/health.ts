@@ -34,7 +34,9 @@ export function registerCheckHealth(server: McpServer, sessions: SessionStore): 
         `native health: ${health.nativeHealthy ? '✅ OK' : `❌ ${health.nativeStatus}`} · ` +
         `app health: ${health.appStatus === 'ok' ? '✅ OK' : health.appStatus === 'degraded' ? '⚠ degraded' : '❌ error'} — foreground=${health.foreground}\n` +
         (health.findings.length
-          ? health.findings.map((f) => `[${f.severity}] ${f.layer ?? '?'}/${f.kind}: ${f.detail}${f.evidence ? ` — "${f.evidence}"` : ''}`).join('\n')
+          ? health.findings
+              .map((f) => `[${f.severity}] ${f.layer ?? '?'}/${f.kind}: ${f.detail}${f.evidence ? ` — "${f.evidence}"` : ''}`)
+              .join('\n')
           : 'no findings');
       return qaOk(
         {

@@ -16,7 +16,8 @@ export type HighImpactClass =
   | 'generic_destructive';
 
 // Verbs that mutate data, money, identity, or messaging — never auto-tapped in strict mode.
-const DESTRUCTIVE = /\b(delete|remove|clear|reset|wipe|erase|discard|pay|buy|purchase|checkout|subscribe|unsubscribe|place\s+order|submit\s+order|send|invite|log\s?out|sign\s?out|deactivate|deregister|block|report|withdraw|transfer|export|share|permission|allow|deny)\b/i;
+const DESTRUCTIVE =
+  /\b(delete|remove|clear|reset|wipe|erase|discard|pay|buy|purchase|checkout|subscribe|unsubscribe|place\s+order|submit\s+order|send|invite|log\s?out|sign\s?out|deactivate|deregister|block|report|withdraw|transfer|export|share|permission|allow|deny)\b/i;
 const HIGH_IMPACT: Array<[HighImpactClass, RegExp]> = [
   ['payment', /\b(pay|buy|purchase|checkout|subscribe|place\s+order|submit\s+order|transfer|withdraw)\b/i],
   ['message_send', /\b(send|message|sms|email)\b/i],
@@ -31,7 +32,8 @@ const HIGH_IMPACT: Array<[HighImpactClass, RegExp]> = [
 // (skipped in strict) unless paired with a destructive verb.
 const CONFIRM = /\b(confirm|submit|proceed|ok|yes|agree|accept|continue)\b/i;
 // Clearly-safe navigation/inspection words.
-const SAFE = /\b(home|back|close|cancel|dismiss|settings?|search|menu|profile|account|info|details?|tab|next|explore|discover|map|list|history|help|about|notifications?|messages?|filter|sort|view|open|show|more|overview|dashboard|library|feed|favou?rites?)\b/i;
+const SAFE =
+  /\b(home|back|close|cancel|dismiss|settings?|search|menu|profile|account|info|details?|tab|next|explore|discover|map|list|history|help|about|notifications?|messages?|filter|sort|view|open|show|more|overview|dashboard|library|feed|favou?rites?)\b/i;
 
 export interface RiskInput {
   label?: string; // visible text / content-desc / accessibility label
@@ -43,7 +45,9 @@ export interface RiskInput {
  * Classify an action's risk. Destructive verbs win; a bare confirm/submit is `unknown` (skipped in
  * strict); recognizable navigation is `safe`; everything else is `unknown`.
  */
-export function classifyHighImpact(i: RiskInput): { riskClass: HighImpactClass; stepUp: boolean; requiresTwoStepConfirmation: boolean } | undefined {
+export function classifyHighImpact(
+  i: RiskInput,
+): { riskClass: HighImpactClass; stepUp: boolean; requiresTwoStepConfirmation: boolean } | undefined {
   const hay = `${i.label ?? ''} ${i.id ?? ''}`.trim();
   for (const [riskClass, re] of HIGH_IMPACT) {
     if (!re.test(hay)) continue;
@@ -54,15 +58,28 @@ export function classifyHighImpact(i: RiskInput): { riskClass: HighImpactClass; 
   return undefined;
 }
 
-export function classifyRisk(i: RiskInput): { risk: Risk; reason: string; riskClass?: HighImpactClass; stepUp?: boolean; requiresTwoStepConfirmation?: boolean } {
+export function classifyRisk(i: RiskInput): {
+  risk: Risk;
+  reason: string;
+  riskClass?: HighImpactClass;
+  stepUp?: boolean;
+  requiresTwoStepConfirmation?: boolean;
+} {
   const hay = `${i.label ?? ''} ${i.id ?? ''}`.trim();
   if (!hay) return { risk: 'unknown', reason: 'unlabeled control — no text/accessibility id to judge safety' };
   const impact = classifyHighImpact(i);
   if (impact) return { risk: 'destructive', reason: `matches a high-impact action (${impact.riskClass})`, ...impact };
-  if (DESTRUCTIVE.test(hay)) return { risk: 'destructive', reason: `matches a destructive action ("${(hay.match(DESTRUCTIVE) ?? [''])[0]}")`, riskClass: 'generic_destructive', requiresTwoStepConfirmation: true };
+  if (DESTRUCTIVE.test(hay))
+    return {
+      risk: 'destructive',
+      reason: `matches a destructive action ("${(hay.match(DESTRUCTIVE) ?? [''])[0]}")`,
+      riskClass: 'generic_destructive',
+      requiresTwoStepConfirmation: true,
+    };
   // Android dialog negative button is safe (backs out); positive button is the confirm.
   if (/(^|[:/])button2$/i.test(i.id ?? '')) return { risk: 'safe', reason: 'dialog negative/cancel button' };
-  if (/(^|[:/])button1$/i.test(i.id ?? '') || CONFIRM.test(hay)) return { risk: 'unknown', reason: 'confirmation control — risky as the YES of a destructive dialog; skipped in strict mode' };
+  if (/(^|[:/])button1$/i.test(i.id ?? '') || CONFIRM.test(hay))
+    return { risk: 'unknown', reason: 'confirmation control — risky as the YES of a destructive dialog; skipped in strict mode' };
   if (SAFE.test(hay)) return { risk: 'safe', reason: `recognized navigation/inspection control ("${(hay.match(SAFE) ?? [''])[0]}")` };
   return { risk: 'unknown', reason: 'unrecognized control — risk cannot be inferred from its label' };
 }

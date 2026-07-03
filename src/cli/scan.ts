@@ -39,7 +39,7 @@ export async function runScan(args: string[]): Promise<void> {
   const configPath = join(swipiumDir, 'config.json');
   const fixturesPath = join(swipiumDir, 'fixtures.json');
   const flowsDir = join(swipiumDir, 'flows');
-  let fixturesNote = existsSync(fixturesPath) ? 'kept existing' : 'created (empty template)';
+  const fixturesNote = existsSync(fixturesPath) ? 'kept existing' : 'created (empty template)';
   if (write) {
     mkdirSync(swipiumDir, { recursive: true });
 

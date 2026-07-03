@@ -15,15 +15,8 @@ import { registerCheckHealth } from './tools/health.js';
 import { registerNetwork, restoreAllNetwork } from './tools/network.js';
 import { registerScreenRecord, stopAllRecordings } from './tools/screenRecord.js';
 import { registerDevice } from './tools/device.js';
-import { registerPermissions } from './tools/permissions.js';
 import { registerMetro, stopAllMetro } from './tools/metro.js';
 import { registerAppControl } from './tools/appControl.js';
-import { registerScreenInfo } from './tools/screenInfo.js';
-import { registerVisual } from './tools/visual.js';
-import { registerVisualText } from './tools/visualText.js';
-import { registerSeed } from './tools/seed.js';
-import { registerState } from './tools/state.js';
-import { registerHistory } from './tools/history.js';
 import { registerIos } from './tools/ios.js';
 import { registerWda } from './tools/wda.js';
 import { registerClearOverlay } from './tools/clearOverlay.js';
@@ -32,7 +25,7 @@ import { registerGetArtifact } from './tools/getArtifact.js';
 import { registerNote } from './tools/note.js';
 import { registerAssertVisual } from './tools/assertVisual.js';
 import { registerFlow } from './tools/flow.js';
-import { registerFlowGenerate } from './tools/flowGenerate.js';
+import { registerGenerate } from './tools/generate.js';
 import { registerSmoke } from './tools/smoke.js';
 import { registerReport } from './tools/report.js';
 import { registerTestThis } from './tools/testThis.js';
@@ -40,17 +33,12 @@ import { registerPrepareIosTarget } from './tools/prepareIosTarget.js';
 import { registerSuite } from './tools/suite.js';
 import { registerExplore } from './tools/explore.js';
 import { registerFirstRun } from './tools/firstRun.js';
-import { registerAutomationGenerate } from './tools/automationGenerate.js';
 import { registerAgentTools } from './tools/agent.js';
 import { registerAppMap, resolveAppMapRoot, readAppMapResource } from './tools/appMap.js';
 import { registerIssues } from './tools/issues.js';
 import { registerTestSuite } from './tools/testSuite.js';
 import { registerFlowRepair } from './tools/flowRepair.js';
-import { registerLocator } from './tools/locator.js';
 import { registerWait } from './tools/wait.js';
-import { registerIdling } from './tools/idling.js';
-import { registerInputCapabilities } from './tools/inputCapabilities.js';
-import { registerMaestro } from './tools/maestro.js';
 import { registerMobileAudit } from './tools/mobileAudit.js';
 import { registerFeatureTesting } from './tools/featureTesting.js';
 import { registerResolveArtifact } from './tools/resolveArtifact.js';
@@ -61,7 +49,8 @@ import { registerPrompts } from './prompts/index.js';
 import { log } from './lib/logger.js';
 import { runWithResponseMode } from './lib/result.js';
 import { computeSchemaHash, describeZodField, setSchemaHash, type ToolSurfaceEntry } from './lib/schemaHash.js';
-import { SWIPIUM_VERSION, TOOL_COUNT, TOOL_NAME_SET } from './version.js';
+import { SWIPIUM_VERSION, TOOL_COUNT, TOOL_NAMES, TOOL_NAME_SET } from './version.js';
+import { reapOrphanedProcesses } from './session/processRegistry.js';
 
 export interface ServerContext {
   server: McpServer;
@@ -73,11 +62,12 @@ export interface ServerContext {
  * (PHASE3-PLAN §2.1). Resolved once, centrally — individual tools stay mode-agnostic.
  * `compact` shrinks the text channel; `structuredContent` is always full.
  */
-function installResponseModeWrapper(server: McpServer, sessions: SessionStore, surface: ToolSurfaceEntry[]): void {
+function installResponseModeWrapper(server: McpServer, sessions: SessionStore, surface: ToolSurfaceEntry[], attempted: Set<string>): void {
   const orig = server.registerTool.bind(server) as (name: string, config: unknown, handler: (...a: unknown[]) => unknown) => unknown;
   const valid = (m: unknown): m is 'compact' | 'normal' | 'verbose' => m === 'compact' || m === 'normal' || m === 'verbose';
   (server as unknown as { registerTool: typeof orig }).registerTool = (name, config, handler) => {
-    if (!TOOL_NAME_SET.has(name)) return undefined;
+    attempted.add(name);
+    if (!TOOL_NAME_SET.has(name)) return undefined; // assertToolSurface() makes this drop loud at startup
     // Capture the tool surface (name + description + per-field type descriptors) for the schema hash
     // (3.3 A/§5). Encoding each field's zod shape catches nested enum/type/optionality changes.
     const cfg = config as { description?: string; inputSchema?: Record<string, unknown> } | undefined;
@@ -94,12 +84,29 @@ function installResponseModeWrapper(server: McpServer, sessions: SessionStore, s
   };
 }
 
+/** Startup assertion (P0 §2 "silent tool-drop gate"): every registerTool() call must be
+ * allowlisted in TOOL_NAMES, and every TOOL_NAMES entry must actually get registered.
+ * Without this, a tool missing from the allowlist is silently discarded by the wrapper
+ * above, and a stale TOOL_NAMES entry silently over-reports the surface. Fail LOUDLY. */
+function assertToolSurface(attempted: ReadonlySet<string>): void {
+  const missing = TOOL_NAMES.filter((n) => !attempted.has(n));
+  const extra = [...attempted].filter((n) => !TOOL_NAME_SET.has(n));
+  if (missing.length === 0 && extra.length === 0 && attempted.size === TOOL_NAMES.length) return;
+  throw new Error(
+    `Tool surface mismatch: ${attempted.size} tools registered vs ${TOOL_NAMES.length} in TOOL_NAMES (src/version.ts).` +
+      (missing.length ? `\n  Missing (allowlisted but never registered): ${missing.join(', ')}` : '') +
+      (extra.length ? `\n  Extra (registered but not in TOOL_NAMES — they would be silently dropped): ${extra.join(', ')}` : '') +
+      '\nFix: add/remove the tool in TOOL_NAMES and CAPABILITY_GROUPS, or register it in createServer().',
+  );
+}
+
 /** Construct the server and register all tools + the artifact resource. Exported for tests. */
 export function createServer(): ServerContext {
   const server = new McpServer({ name: 'swipium', version: SWIPIUM_VERSION });
   const sessions = new SessionStore();
   const surface: ToolSurfaceEntry[] = [];
-  installResponseModeWrapper(server, sessions, surface);
+  const attemptedToolNames = new Set<string>();
+  installResponseModeWrapper(server, sessions, surface, attemptedToolNames);
 
   // Setup / context
   registerDoctor(server);
@@ -112,11 +119,9 @@ export function createServer(): ServerContext {
   registerWda(server, sessions);
   // Device / app environment parity (Phase 5)
   registerDevice(server, sessions);
-  registerPermissions(server, sessions);
   registerNetwork(server, sessions);
   registerMetro(server, sessions);
   registerAppControl(server, sessions);
-  registerScreenInfo(server, sessions);
   registerScreenRecord(server, sessions);
   // Observation / action / oracle
   registerScreenshot(server, sessions);
@@ -124,29 +129,20 @@ export function createServer(): ServerContext {
   registerAct(server, sessions);
   registerClearOverlay(server, sessions);
   registerCheckHealth(server, sessions);
-  // Visual intelligence (Phase 8, local-first)
-  registerVisual(server, sessions);
-  registerVisualText(server, sessions);
-  // Seeded state (Phase 9)
-  registerSeed(server, sessions);
-  registerState(server, sessions);
   // Jobs / artifacts / reporting (M6)
   registerJobs(server, sessions);
   registerGetArtifact(server, sessions);
   registerNote(server, sessions);
   registerAssertVisual(server, sessions);
   registerFlow(server, sessions);
-  registerFlowGenerate(server, sessions);
+  registerGenerate(server, sessions);
   registerSmoke(server, sessions);
   registerReport(server, sessions);
-  // Report 2.0: history + comparison (Phase 10)
-  registerHistory(server, sessions);
   registerTestThis(server, sessions);
   registerPrepareIosTarget(server, sessions);
   registerSuite(server, sessions);
   registerExplore(server, sessions);
   registerFirstRun(server, sessions);
-  registerAutomationGenerate(server, sessions);
   registerAgentTools(server, sessions);
   registerAppMap(server, sessions);
   // Durable QA memory + repeatable assets (v3)
@@ -154,7 +150,6 @@ export function createServer(): ServerContext {
   registerMobileAudit(server, sessions);
   registerTestSuite(server, sessions);
   registerFlowRepair(server, sessions);
-  registerMaestro(server, sessions);
   // Feature-focused testing + local build/artifact resolution (v4)
   registerFeatureTesting(server, sessions);
   registerResolveArtifact(server, sessions);
@@ -162,12 +157,11 @@ export function createServer(): ServerContext {
   registerBuild(server, sessions);
   registerBundletool(server, sessions);
   // Agent-efficiency helpers (v3)
-  registerLocator(server, sessions);
   registerWait(server, sessions);
-  registerIdling(server, sessions);
-  registerInputCapabilities(server, sessions);
 
-  // Tool surface is now fully registered. Freeze its content fingerprint.
+  // Tool surface is now fully registered. Fail loudly on any allowlist mismatch, then
+  // freeze the surface's content fingerprint.
+  assertToolSurface(attemptedToolNames);
   setSchemaHash(computeSchemaHash(surface));
 
   // Reusable workflow templates (MCP prompts capability) — thin orchestration of the tools above.
@@ -225,6 +219,19 @@ export async function startServer(): Promise<void> {
   const { server, sessions } = createServer();
   const transport = new StdioServerTransport();
 
+  // Reap long-lived children (Metro, managed WDA, recorders) left behind by a crashed
+  // previous server run. Ownership + `ps` command checks make this safe next to a live
+  // concurrent instance and against recycled PIDs.
+  try {
+    reapOrphanedProcesses();
+  } catch (e) {
+    log('warn', 'orphaned-process sweep failed', { err: String(e) });
+  }
+
+  // Persistence is debounced (SessionStore.persist) — make sure a graceful exit never
+  // loses the trailing write. 'exit' handlers must be synchronous; flushAll is.
+  process.once('exit', () => sessions.flushAll());
+
   // Best-effort: restore any network state Swipium changed, on shutdown / client disconnect
   // (so a budget-stop or crash mid-offline doesn't leave the emulator offline). Idempotent.
   let restoring = false;
@@ -241,10 +248,11 @@ export async function startServer(): Promise<void> {
     } catch (e) {
       log('warn', 'shutdown: restore failed', { err: String(e) });
     }
+    sessions.flushAll(); // write any debounced session state before exiting
     process.exit(code);
   };
-  process.once('SIGINT', () => void restoreThenExit(130, "SIGINT"));
-  process.once('SIGTERM', () => void restoreThenExit(143, "SIGTERM"));
+  process.once('SIGINT', () => void restoreThenExit(130, 'SIGINT'));
+  process.once('SIGTERM', () => void restoreThenExit(143, 'SIGTERM'));
 
   // Startup banner (P1.8): version + tool count on stderr so a stale build is obvious in logs.
   log('info', 'swipium starting', { version: SWIPIUM_VERSION, tools: TOOL_COUNT });
@@ -255,7 +263,7 @@ export async function startServer(): Promise<void> {
   const sdkOnClose = transport.onclose;
   transport.onclose = () => {
     sdkOnClose?.();
-    void restoreThenExit(0, "transport-close");
+    void restoreThenExit(0, 'transport-close');
   };
   log('info', 'swipium connected over stdio');
 }

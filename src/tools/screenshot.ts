@@ -17,8 +17,12 @@ export function registerScreenshot(server: McpServer, sessions: SessionStore): v
     {
       title: 'Capture a screenshot',
       description:
-        'Capture the current screen, save it as a session artifact, and return a resource URI (swipium://…) — not inline image bytes. If a secure field (password/OTP) is on screen the capture is withheld unless force:true, since screenshot pixels can\'t be redacted. Requires qa_prepare_target.',
-      inputSchema: { sessionId: z.string(), force: z.boolean().optional(), reason: z.string().optional().describe('Short label of what this screenshot documents (shown in qa_report).') },
+        "Capture the current screen, save it as a session artifact, and return a resource URI (swipium://…) — not inline image bytes. If a secure field (password/OTP) is on screen the capture is withheld unless force:true, since screenshot pixels can't be redacted. Requires qa_prepare_target.",
+      inputSchema: {
+        sessionId: z.string(),
+        force: z.boolean().optional(),
+        reason: z.string().optional().describe('Short label of what this screenshot documents (shown in qa_report).'),
+      },
     },
     async ({ sessionId, force, reason }) => {
       const session = sessions.get(sessionId);
@@ -38,9 +42,7 @@ export function registerScreenshot(server: McpServer, sessions: SessionStore): v
       if (stopReason) return qaStop(stopReason, { counters: session.counters, mode: session.mode });
 
       // Sensitive screen guard (M6): based on the latest snapshot's nodes.
-      const hasSecure = session.lastSnapshot
-        ? [...session.lastSnapshot.fullByRef.values()].some((n) => isSecureNode(n))
-        : false;
+      const hasSecure = session.lastSnapshot ? [...session.lastSnapshot.fullByRef.values()].some((n) => isSecureNode(n)) : false;
       if (hasSecure && !force) {
         return qaError({
           what: 'Screenshot withheld — a secure field (password/OTP) is on screen',
@@ -58,9 +60,24 @@ export function registerScreenshot(server: McpServer, sessions: SessionStore): v
         sessions.bump(session, 'screenshots');
         const coordinateSpace = await captureCoordinateSpace(driver, png);
         const budgetReached = sessions.budgetStop(session);
+        // Pixels are never redacted (redaction: "not-applied" on the artifact). When force:true
+        // captured a screen with a secure field, say so explicitly so the agent can treat the
+        // artifact as sensitive.
+        const secureWarning = hasSecure
+          ? '\n⚠ A secure field (password/OTP) was on screen and screenshot pixels are NOT redacted — treat this artifact as sensitive.'
+          : '';
         return qaOk(
-          { uri, path: rec.path, bytes: png.length, coordinateSpace, sensitiveForced: hasSecure ? true : undefined, counters: session.counters, ...(budgetReached ? { budgetReached } : {}) },
-          `Saved screenshot #${n} (${png.length} bytes) → ${uri}\ncoordinate space: ${coordinateSpace.screenshot?.width}x${coordinateSpace.screenshot?.height} screenshot px, scale ${coordinateSpace.scale}, ${coordinateSpace.orientation}${budgetReached ? `\n⏹ budget reached: ${budgetReached} — call qa_report.` : ''}`,
+          {
+            uri,
+            path: rec.path,
+            bytes: png.length,
+            coordinateSpace,
+            redaction: rec.redaction,
+            sensitiveForced: hasSecure ? true : undefined,
+            counters: session.counters,
+            ...(budgetReached ? { budgetReached } : {}),
+          },
+          `Saved screenshot #${n} (${png.length} bytes) → ${uri}${secureWarning}\ncoordinate space: ${coordinateSpace.screenshot?.width}x${coordinateSpace.screenshot?.height} screenshot px, scale ${coordinateSpace.scale}, ${coordinateSpace.orientation}${budgetReached ? `\n⏹ budget reached: ${budgetReached} — call qa_report.` : ''}`,
         );
       } catch (e) {
         return qaError({

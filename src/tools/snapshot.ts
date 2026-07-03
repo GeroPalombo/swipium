@@ -18,13 +18,22 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
     {
       title: 'Snapshot the screen',
       description:
-        'Capture the current screen as compact, addressable elements (@e1, @e2 …) with a snapshotQuality verdict (good/partial/poor — whether the app is automation-friendly). Defaults to interactive-only and NO screenshot to stay cheap. Use the @eN refs as targets for qa_act. Re-snapshot after navigation because refs invalidate.',
+        'Capture the current screen as compact, addressable elements (@e1, @e2 …) with a snapshotQuality verdict (good/partial/poor — whether the app is automation-friendly). Defaults to interactive-only and NO screenshot to stay cheap. Very busy screens are capped to the most interaction-relevant elements — pass `filter` to see the rest. Use the @eN refs as targets for qa_act. Re-snapshot after navigation because refs invalidate.',
       inputSchema: {
         sessionId: z.string(),
-        diff: z.boolean().optional().describe('Return only what changed vs the previous snapshot (needs a prior snapshot in this session).'),
+        diff: z
+          .boolean()
+          .optional()
+          .describe('Return only what changed vs the previous snapshot (needs a prior snapshot in this session).'),
+        filter: z
+          .string()
+          .optional()
+          .describe(
+            "Case-insensitive substring matched against each element's text/label/id/role; only matching elements are returned. Use when elements were omitted by the presented-element cap.",
+          ),
       },
     },
-    async ({ sessionId, diff }) => {
+    async ({ sessionId, diff, filter }) => {
       const session = sessions.get(sessionId);
       const { driver, rehydrated } = session ? await getDriver(session) : { driver: undefined, rehydrated: false };
       if (!session || !driver) {
@@ -93,7 +102,11 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
       const prev = session.lastSnapshot;
       const newSigs = new Set(parsed.elements.map(signature));
       const redact = makeRedactor(session.secrets);
-      const { elements: shown, rendered } = presentElements(parsed.elements, redact);
+      const f = filter?.trim().toLowerCase();
+      const pool = f
+        ? parsed.elements.filter((e) => [e.text, e.label, e.id, e.role].some((v) => v?.toLowerCase().includes(f)))
+        : parsed.elements;
+      const { elements: shown, rendered, omitted } = presentElements(pool, redact);
 
       let diffText = '';
       let diffPayload: { added: string[]; removed: string[] } | undefined;
@@ -111,7 +124,8 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
       // Auth-state awareness (P1.5): note login screens; the FIRST screen seen sets authedAtStart.
       const auth = detectAuthScreen(parsed.allNodes);
       if (session.auth.authedAtStart === undefined) sessions.markAuth(session, { authedAtStart: !auth.isLoginScreen });
-      if (auth.isLoginScreen && !session.auth.loginScreenSeen) sessions.markAuth(session, { loginScreenSeen: true, loginScreenSeenAt: Date.now() });
+      if (auth.isLoginScreen && !session.auth.loginScreenSeen)
+        sessions.markAuth(session, { loginScreenSeen: true, loginScreenSeenAt: Date.now() });
 
       // Overlay awareness (CR4): tree overlays (LogBox/dialog/snackbar) + keyboard + foreground class.
       const overlays = detectTreeOverlays(parsed.allNodes, parsed.screen);
@@ -123,7 +137,7 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
       const header =
         (rehydrated ? REHYDRATE_NOTE + '\n' : '') +
         `quality=${q.verdict} (${q.reasons.join('; ')})\n` +
-        `screen=${parsed.screen[0]}x${parsed.screen[1]} elements=${parsed.elements.length} totalNodes=${parsed.total}` +
+        `screen=${parsed.screen[0]}x${parsed.screen[1]} elements=${parsed.elements.length}${f ? ` (filter "${filter}" matched ${pool.length})` : ''} totalNodes=${parsed.total}` +
         (overlays.length ? `\noverlays: ${overlays.map((o) => o.type).join(', ')} (clear with qa_clear_overlay)` : '');
 
       return qaOk(
@@ -133,6 +147,8 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
           qualitySignals: q.signals,
           screen: parsed.screen,
           elementCount: parsed.elements.length,
+          ...(f ? { filter, filterMatches: pool.length } : {}),
+          elementsOmitted: omitted,
           totalNodes: parsed.total,
           overlays,
           elements: shown,
@@ -165,10 +181,10 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
       // Sensitive-mode: a secure field's value is masked; otherwise scrub known secrets.
       const secure = isSecureNode(node);
       const redact = makeRedactor(session.secrets);
-      const m = (v: string) => (secure && v ? '«secure»' : redact(v) ?? '');
+      const m = (v: string) => (secure && v ? '«secure»' : (redact(v) ?? ''));
       const maskedAttrs: Record<string, string> = {};
       for (const [k, v] of Object.entries(node.attrs)) {
-        maskedAttrs[k] = (k === 'text' || k === 'content-desc') ? m(v) : v;
+        maskedAttrs[k] = k === 'text' || k === 'content-desc' ? m(v) : v;
       }
       return qaOk(
         {

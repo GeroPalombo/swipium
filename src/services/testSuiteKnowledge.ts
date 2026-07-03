@@ -37,7 +37,14 @@ const EMPTY: SuiteMergeResult = { ok: true, created: [], updated: [], deprecated
 
 function fallbackProject(root: string): ProjectIdentity {
   const fw = detectFramework(root);
-  return { root, gitRemote: null, packageName: null, workspaceTarget: null, framework: fw, platforms: fw === 'native-android' ? ['android'] : fw === 'native-ios' ? ['ios'] : ['android', 'ios'] };
+  return {
+    root,
+    gitRemote: null,
+    packageName: null,
+    workspaceTarget: null,
+    framework: fw,
+    platforms: fw === 'native-android' ? ['android'] : fw === 'native-ios' ? ['ios'] : ['android', 'ios'],
+  };
 }
 
 /**
@@ -88,7 +95,14 @@ export function mergeCanonical(root: string, cases: CanonicalTestCase[], ctx: Me
     const applied = applyMerge(
       root,
       cases,
-      { source: ctx.source, mode: ctx.mode ?? 'update', now: ctx.now, runId: ctx.runId, sourceUri: ctx.sourceUri, liveFeatureIds: ctx.liveFeatureIds },
+      {
+        source: ctx.source,
+        mode: ctx.mode ?? 'update',
+        now: ctx.now,
+        runId: ctx.runId,
+        sourceUri: ctx.sourceUri,
+        liveFeatureIds: ctx.liveFeatureIds,
+      },
       ctx.appId,
     );
     const delta = suiteDelta(applied.result.suite, applied.result);
@@ -154,11 +168,27 @@ export function mergeFromAutomation(root: string, session: Session, input: Autom
     const pageObjects = assembled.files.filter((f) => /page|screen|pages\//i.test(f.path)).map((f) => join(assembled.outputDir, f.path));
     const testFiles = assembled.files.filter((f) => /test|spec|smoke|\.e2e\./i.test(f.path)).map((f) => join(assembled.outputDir, f.path));
     const status: AutomationStatus = !input.validationOk ? 'partial' : assembled.model.audit.brittle > 0 ? 'partial' : 'automated';
-    const automation = { status, framework, pageObjects, testFiles, locatorReadiness: readinessGrade(assembled.model.audit.brittlePct), replayStatus: 'not_replayed' as const };
+    const automation = {
+      status,
+      framework,
+      pageObjects,
+      testFiles,
+      locatorReadiness: readinessGrade(assembled.model.audit.brittlePct),
+      replayStatus: 'not_replayed' as const,
+    };
 
     const { pom } = pomForSession(session);
-    const platforms = ([assembled.profile.platforms.android.level !== 'none' ? 'android' : null, assembled.profile.platforms.ios.level !== 'none' ? 'ios' : null].filter(Boolean) as Array<'android' | 'ios'>);
-    const base = caseFromPom({ pom, appId: session.appId, source: 'generate', now: ctx.now, platforms: platforms.length ? platforms : ['android'] });
+    const platforms = [
+      assembled.profile.platforms.android.level !== 'none' ? 'android' : null,
+      assembled.profile.platforms.ios.level !== 'none' ? 'ios' : null,
+    ].filter(Boolean) as Array<'android' | 'ios'>;
+    const base = caseFromPom({
+      pom,
+      appId: session.appId,
+      source: 'generate',
+      now: ctx.now,
+      platforms: platforms.length ? platforms : ['android'],
+    });
     if (!base) return EMPTY;
     // Group the POM case under the linked map feature so it doesn't fork from existing feature cases.
     if (links?.featureIds.length) {
@@ -181,7 +211,13 @@ export function mergeFromAutomation(root: string, session: Session, input: Autom
       const suite = loadSuite(root, ctx.appId);
       for (const c of suite.cases) {
         if (c.status === 'deprecated' || c.id === base.id) continue;
-        const overlaps = feat.has(c.featureId) || c.mapLinks.some((l) => (l.kind === 'feature' && feat.has(l.id)) || ((l.kind === 'screen' || l.kind === 'static_screen' || l.kind === 'runtime_screen') && scr.has(l.id)));
+        const overlaps =
+          feat.has(c.featureId) ||
+          c.mapLinks.some(
+            (l) =>
+              (l.kind === 'feature' && feat.has(l.id)) ||
+              ((l.kind === 'screen' || l.kind === 'static_screen' || l.kind === 'runtime_screen') && scr.has(l.id)),
+          );
         if (!overlaps) continue;
         cases.push({ ...c, automation, provenance: [] });
       }

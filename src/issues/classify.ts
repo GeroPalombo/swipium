@@ -128,7 +128,14 @@ export function classifyObservation(obs: IssueObservation, ctx: ClassifyContext 
   if (ctx.forceCategory) {
     const category = ctx.forceCategory;
     const severity = ctx.severityHint ?? 'medium';
-    return { category, severity, owner: OWNER_BY_CATEGORY[category], confidence: 0.95, reason: 'classified by the observing audit check', releaseImpact: defaultReleaseImpact(category, severity) };
+    return {
+      category,
+      severity,
+      owner: OWNER_BY_CATEGORY[category],
+      confidence: 0.95,
+      reason: 'classified by the observing audit check',
+      releaseImpact: defaultReleaseImpact(category, severity),
+    };
   }
 
   // --- 1. User-supplied policy rules win first (most specific intent) ---
@@ -162,7 +169,11 @@ export function classifyObservation(obs: IssueObservation, ctx: ClassifyContext 
   if (/storekit/.test(hay) && /(sandbox|test|simulator)/.test(hay) && isSim) {
     return mk('environment_noise', 'info', 'StoreKit sandbox/test warning on simulator — expected');
   }
-  if (/billing_unavailable|billing service unavailable|billing.*unavailable/.test(hay) && env === 'emulator' && !ctx.realDevicePurchaseFlow) {
+  if (
+    /billing_unavailable|billing service unavailable|billing.*unavailable/.test(hay) &&
+    env === 'emulator' &&
+    !ctx.realDevicePurchaseFlow
+  ) {
     return mk('environment_noise', 'info', 'Google Play billing unavailable on emulator — environment, not an app bug');
   }
   if (/missing.*(product|offering|sku)/.test(hay) && isSim && !ctx.realDevicePurchaseFlow) {
@@ -170,10 +181,7 @@ export function classifyObservation(obs: IssueObservation, ctx: ClassifyContext 
   }
 
   // --- 4. Real billing/entitlement failure on device or during release-gate purchase ---
-  if (
-    (obs.subsystem && BILLING_SUBSYSTEMS.has(obs.subsystem)) ||
-    /checkout|subscription|entitlement|purchase/.test(hay)
-  ) {
+  if ((obs.subsystem && BILLING_SUBSYSTEMS.has(obs.subsystem)) || /checkout|subscription|entitlement|purchase/.test(hay)) {
     if (ctx.realDevicePurchaseFlow || env === 'device') {
       return mk('app_bug', 'high', 'Checkout/subscription/entitlement failure on a real device or release-gate purchase flow');
     }
@@ -184,7 +192,8 @@ export function classifyObservation(obs: IssueObservation, ctx: ClassifyContext 
   if (fc === 'REDBOX' || /red\s?box/.test(hay)) return mk('blocker_app_bug', 'blocker', 'React Native RedBox — fatal JS/runtime error');
   if (fc === 'NATIVE_CRASH' || /native crash|sigsegv|sigabrt/.test(hay)) return mk('blocker_app_bug', 'blocker', 'Fatal native crash');
   if (fc === 'ANR' || /\banr\b|not responding/.test(hay)) return mk('blocker_app_bug', 'blocker', 'Application not responding (ANR)');
-  if (fc === 'ERROR_BOUNDARY' || /error boundary/.test(hay)) return mk('app_bug', 'high', 'Error boundary fallback shown during a normal workflow');
+  if (fc === 'ERROR_BOUNDARY' || /error boundary/.test(hay))
+    return mk('app_bug', 'high', 'Error boundary fallback shown during a normal workflow');
   if (obs.exception?.type || /unhandled (js )?exception|typeerror|referenceerror|cannot read propert/.test(hay)) {
     return mk('app_bug', 'high', 'Unhandled JS exception during a user workflow');
   }
@@ -196,7 +205,8 @@ export function classifyObservation(obs: IssueObservation, ctx: ClassifyContext 
   const status = obs.http?.status;
   if (status != null) {
     if (status >= 500) return mk('app_bug', 'high', `HTTP ${status} from app-owned backend`, 'backend');
-    if (status === 404 || status === 410) return mk('app_bug', 'high', `HTTP ${status} for an app route/content endpoint that should exist`, 'backend');
+    if (status === 404 || status === 410)
+      return mk('app_bug', 'high', `HTTP ${status} for an app route/content endpoint that should exist`, 'backend');
     if ((status === 401 || status === 403) && !ctx.authNegativeTest) {
       return mk('app_bug', 'high', `HTTP ${status} with invalid/missing/expired app token (not an auth-negative test)`, 'backend');
     }

@@ -83,7 +83,6 @@ export interface ResolveResult {
 
 const MIN_APK_BYTES = 1024 * 1024; // <1MB .apk is almost always a Git-LFS pointer
 const SKIP_DIRS = new Set(['node_modules', '.git', '.swipium', 'Pods', '.gradle', 'DerivedData', '.expo']);
-const ART_EXT = /\.(apk|aab|ipa|app)$/i;
 
 function classifyBuildType(path: string): BuildType {
   const p = path.toLowerCase();
@@ -105,16 +104,27 @@ function iosAppInstallTargets(path: string): { targets: InstallTarget[]; warning
   return { targets: ['ios-simulator'], warnings: ['could not infer simulator vs device from path — assuming simulator'] };
 }
 
-function baseInstallTargets(type: ArtifactType, path: string): { targets: InstallTarget[]; warnings: string[]; convertibleTo?: ArtifactType[]; requiresTool?: string } {
+function baseInstallTargets(
+  type: ArtifactType,
+  path: string,
+): { targets: InstallTarget[]; warnings: string[]; convertibleTo?: ArtifactType[]; requiresTool?: string } {
   switch (type) {
     case 'apk':
       return { targets: ['android-emulator', 'android-real'], warnings: [] };
     case 'aab':
       // An .aab is NOT directly installable. It must be converted to an APK set (bundletool).
       // installableOn stays [] so it never flows into an install path as if it were ready.
-      return { targets: [], warnings: ['.aab is not directly installable — convert to an APK with bundletool first'], convertibleTo: ['apk'], requiresTool: 'bundletool' };
+      return {
+        targets: [],
+        warnings: ['.aab is not directly installable — convert to an APK with bundletool first'],
+        convertibleTo: ['apk'],
+        requiresTool: 'bundletool',
+      };
     case 'ipa':
-      return { targets: ['ios-real'], warnings: ['.ipa installs only on a real device (with signing) — use a simulator .app for the simulator'] };
+      return {
+        targets: ['ios-real'],
+        warnings: ['.ipa installs only on a real device (with signing) — use a simulator .app for the simulator'],
+      };
     case 'app':
       return iosAppInstallTargets(path);
   }
@@ -193,14 +203,7 @@ function sourceLabel(relDir: string, type: ArtifactType): string {
  * directory it descends into so the caller can report exact search locations. `.app` is a
  * directory — we record it as a hit and do NOT descend into it.
  */
-function walk(
-  root: string,
-  projectRoot: string,
-  maxDepth: number,
-  out: ArtifactCandidate[],
-  searched: Set<string>,
-  depth = 0,
-): void {
+function walk(root: string, projectRoot: string, maxDepth: number, out: ArtifactCandidate[], searched: Set<string>, depth = 0): void {
   if (depth > maxDepth) return;
   let entries;
   try {
@@ -291,7 +294,12 @@ export async function enrichCandidates(candidates: ArtifactCandidate[], limit = 
 }
 
 /** Read identity + version + supported platforms from a .app's Info.plist (XML plists only). */
-export function appInfoPlistMeta(appDir: string): { bundleId: string | null; versionName: string | null; versionCode: string | null; supportedPlatforms: string[] } {
+export function appInfoPlistMeta(appDir: string): {
+  bundleId: string | null;
+  versionName: string | null;
+  versionCode: string | null;
+  supportedPlatforms: string[];
+} {
   const plist = join(appDir, 'Info.plist');
   if (!existsSync(plist)) return { bundleId: null, versionName: null, versionCode: null, supportedPlatforms: [] };
   try {
@@ -364,11 +372,24 @@ export async function resolveArtifact(opts: ResolveOptions, enrich = true): Prom
   if (opts.explicitPath && opts.explicitPath.trim()) {
     const v = validateExplicit(opts.explicitPath.trim(), projectRoot);
     if ('error' in v) {
-      return { candidates: [], best: null, newest: null, searchedLocations: [opts.explicitPath.trim()], warnings: [v.error], failureCode: v.code };
+      return {
+        candidates: [],
+        best: null,
+        newest: null,
+        searchedLocations: [opts.explicitPath.trim()],
+        warnings: [v.error],
+        failureCode: v.code,
+      };
     }
     const ranked = rankCandidates([v], opts);
     if (enrich) await enrichCandidates(ranked, 1);
-    return { candidates: ranked, best: ranked[0], newest: ranked[0], searchedLocations: ['explicit: ' + opts.explicitPath.trim()], warnings: ranked[0].warnings };
+    return {
+      candidates: ranked,
+      best: ranked[0],
+      newest: ranked[0],
+      searchedLocations: ['explicit: ' + opts.explicitPath.trim()],
+      warnings: ranked[0].warnings,
+    };
   }
 
   const found: ArtifactCandidate[] = [];
@@ -419,14 +440,22 @@ export async function resolveArtifact(opts: ResolveOptions, enrich = true): Prom
     if (inside) {
       best = inside;
     } else {
-      return { candidates: ranked, best: null, newest: byNewest(ranked), searchedLocations, warnings: [`Best artifact is outside the project root: ${ranked[0].path}`], failureCode: 'ARTIFACT_OUTSIDE_ROOT_REQUIRES_APPROVAL' };
+      return {
+        candidates: ranked,
+        best: null,
+        newest: byNewest(ranked),
+        searchedLocations,
+        warnings: [`Best artifact is outside the project root: ${ranked[0].path}`],
+        failureCode: 'ARTIFACT_OUTSIDE_ROOT_REQUIRES_APPROVAL',
+      };
     }
   }
 
   // Ambiguity: several same-platform installable candidates within a hair of each other.
   const topPlat = best?.platform;
   const close = ranked.filter((c) => c.platform === topPlat && best && Math.abs(c.score - best.score) <= 5);
-  if (close.length > 1) warnings.push(`${close.length} similar ${topPlat} artifacts found — picked the newest/best; pass an explicit path to override.`);
+  if (close.length > 1)
+    warnings.push(`${close.length} similar ${topPlat} artifacts found — picked the newest/best; pass an explicit path to override.`);
 
   // A lone .aab with no APK is a precise, common blocker.
   if (best && best.type === 'aab' && !ranked.some((c) => c.type === 'apk')) {

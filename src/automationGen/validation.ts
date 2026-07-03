@@ -36,8 +36,7 @@ export interface ValidateOptions {
 }
 
 // password = "literal" / token: 'literal' etc. — but NOT process.env / os.environ references.
-const SECRET_ASSIGN_RE =
-  /(password|passwd|secret|token|api[_-]?key|apikey|bearer|credential|pwd)\s*[:=]\s*(["'])(?!\s*\2)([^"']{3,})\2/i;
+const SECRET_ASSIGN_RE = /(password|passwd|secret|token|api[_-]?key|apikey|bearer|credential|pwd)\s*[:=]\s*(["'])(?!\s*\2)([^"']{3,})\2/i;
 const ENV_REF_RE = /(process\.env|os\.environ|getenv|\$\{?env)/i;
 
 function scanSecrets(files: GeneratedFile[], secrets: string[]): ValidationFinding[] {
@@ -51,13 +50,23 @@ function scanSecrets(files: GeneratedFile[], secrets: string[]): ValidationFindi
       if (ENV_REF_RE.test(line)) return;
       const m = SECRET_ASSIGN_RE.exec(line);
       if (m) {
-        findings.push({ code: 'INLINED_SECRET', severity: 'error', file: f.path, message: `possible inlined secret at line ${i + 1}: ${m[1]} assigned a literal — read from the environment instead` });
+        findings.push({
+          code: 'INLINED_SECRET',
+          severity: 'error',
+          file: f.path,
+          message: `possible inlined secret at line ${i + 1}: ${m[1]} assigned a literal — read from the environment instead`,
+        });
       }
       // Explicit: a known secret env-var name assigned a literal value.
       for (const s of secrets) {
         const re = new RegExp(`${s}\\s*[:=]\\s*["'][^"']+["']`);
         if (re.test(line) && !ENV_REF_RE.test(line)) {
-          findings.push({ code: 'INLINED_SECRET', severity: 'error', file: f.path, message: `secret var ${s} assigned a literal at line ${i + 1}` });
+          findings.push({
+            code: 'INLINED_SECRET',
+            severity: 'error',
+            file: f.path,
+            message: `secret var ${s} assigned a literal at line ${i + 1}`,
+          });
         }
       }
     });
@@ -69,13 +78,23 @@ function braceBalance(files: GeneratedFile[]): ValidationFinding[] {
   const findings: ValidationFinding[] = [];
   for (const f of files) {
     if (!/\.(ts|js)$/.test(f.path)) continue;
-    const pairs: Array<[string, string, string]> = [['{', '}', 'braces'], ['(', ')', 'parens'], ['[', ']', 'brackets']];
+    const pairs: Array<[string, string, string]> = [
+      ['{', '}', 'braces'],
+      ['(', ')', 'parens'],
+      ['[', ']', 'brackets'],
+    ];
     // Strip strings/comments crudely to avoid counting literals.
     const stripped = stripJs(f.content);
     for (const [open, close, name] of pairs) {
       const o = countChar(stripped, open);
       const c = countChar(stripped, close);
-      if (o !== c) findings.push({ code: 'UNBALANCED_SYNTAX', severity: 'error', file: f.path, message: `unbalanced ${name} (${o} ${open} vs ${c} ${close})` });
+      if (o !== c)
+        findings.push({
+          code: 'UNBALANCED_SYNTAX',
+          severity: 'error',
+          file: f.path,
+          message: `unbalanced ${name} (${o} ${open} vs ${c} ${close})`,
+        });
     }
   }
   return findings;
@@ -87,14 +106,28 @@ function stripJs(src: string): string {
   while (i < src.length) {
     const ch = src[i];
     const next = src[i + 1];
-    if (ch === '/' && next === '/') { while (i < src.length && src[i] !== '\n') i++; continue; }
-    if (ch === '/' && next === '*') { i += 2; while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i++; i += 2; continue; }
-    if (ch === '"' || ch === "'" || ch === '`') {
-      const quote = ch; i++;
-      while (i < src.length && src[i] !== quote) { if (src[i] === '\\') i++; i++; }
-      i++; continue;
+    if (ch === '/' && next === '/') {
+      while (i < src.length && src[i] !== '\n') i++;
+      continue;
     }
-    out += ch; i++;
+    if (ch === '/' && next === '*') {
+      i += 2;
+      while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i++;
+      i += 2;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      const quote = ch;
+      i++;
+      while (i < src.length && src[i] !== quote) {
+        if (src[i] === '\\') i++;
+        i++;
+      }
+      i++;
+      continue;
+    }
+    out += ch;
+    i++;
   }
   return out;
 }
@@ -111,14 +144,24 @@ function capabilityPresence(files: GeneratedFile[]): ValidationFinding[] {
     return [{ code: 'NO_CAPABILITIES', severity: 'warning', message: 'no capabilities/conftest file found in the generated suite' }];
   }
   const ok = /platformName/i.test(capFile.content) && /(UiAutomator2|XCUITest)/.test(capFile.content);
-  return ok ? [] : [{ code: 'INVALID_CAPABILITIES', severity: 'error', file: capFile.path, message: 'capability config missing platformName/automationName' }];
+  return ok
+    ? []
+    : [
+        {
+          code: 'INVALID_CAPABILITIES',
+          severity: 'error',
+          file: capFile.path,
+          message: 'capability config missing platformName/automationName',
+        },
+      ];
 }
 
 function emptyEssentials(files: GeneratedFile[]): ValidationFinding[] {
   const findings: ValidationFinding[] = [];
   for (const f of files) {
     if (/__init__\.py$/.test(f.path)) continue; // intentionally empty
-    if (f.content.trim() === '') findings.push({ code: 'EMPTY_FILE', severity: 'warning', file: f.path, message: 'generated file is empty' });
+    if (f.content.trim() === '')
+      findings.push({ code: 'EMPTY_FILE', severity: 'warning', file: f.path, message: 'generated file is empty' });
   }
   return findings;
 }

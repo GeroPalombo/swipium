@@ -66,7 +66,11 @@ export function buildObjective(scope: FeatureScope): FeatureObjective {
   const entry = scope.entryPoints[0];
   if (entry) {
     happyPath.push(`Open the ${entry.kind.replace('_', ' ')} "${entry.value}"`);
-    provenance.push({ source: entry.kind === 'route' || entry.kind === 'deep_link' ? 'route' : entry.kind === 'runtime_node' ? 'runtime' : 'screen', detail: `entry point ${entry.value}`, confidence: entry.confidence });
+    provenance.push({
+      source: entry.kind === 'route' || entry.kind === 'deep_link' ? 'route' : entry.kind === 'runtime_node' ? 'runtime' : 'screen',
+      detail: `entry point ${entry.value}`,
+      confidence: entry.confidence,
+    });
   } else if (scope.staticScreens[0]) {
     happyPath.push(`Navigate to ${scope.staticScreens[0].name}`);
     provenance.push({ source: 'screen', detail: scope.staticScreens[0].name, confidence: scope.staticScreens[0].confidence });
@@ -132,7 +136,8 @@ export function buildObjective(scope: FeatureScope): FeatureObjective {
   }
 
   // ---- defaults / dedupe ----
-  if (!happyPath.some((s) => /verif|confirm|outcome|result/i.test(s))) happyPath.push(`Verify the ${scope.title} outcome is shown without an error surface`);
+  if (!happyPath.some((s) => /verif|confirm|outcome|result/i.test(s)))
+    happyPath.push(`Verify the ${scope.title} outcome is shown without an error surface`);
   if (!expectedOutputs.length) expectedOutputs.push(`The ${scope.title} screen renders its primary content without an error surface`);
 
   // ---- oracle strategy ----

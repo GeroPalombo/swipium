@@ -6,7 +6,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { qaOk, qaError, qaStop } from '../lib/result.js';
-import { parseSnapshot, signature, renderElements } from '../snapshot/parse.js';
+import { parseSnapshot, signature } from '../snapshot/parse.js';
 import { presentElements } from '../snapshot/present.js';
 import { obstructionAt } from '../snapshot/overlays.js';
 import { settle } from '../snapshot/settle.js';
@@ -27,11 +27,22 @@ interface NativeSelector {
   value: string;
 }
 
-function nativeSelectorFor(selector?: string): NativeSelector | null {
-  const m = selector?.match(/^(accessibility id|name|predicate string|class chain)\s*=\s*(.+)$/i);
-  if (!m) return null;
-  return { using: m[1].toLowerCase() as NativeSelectorStrategy, value: m[2] };
+/** Drop the (already-handled) native selector before generic ref/text/id/coords resolution. */
+function stripSelector<T extends { selector?: NativeSelector }>(t?: T): Omit<T, 'selector'> | undefined {
+  if (!t) return undefined;
+  const { selector: _selector, ...rest } = t;
+  return rest;
 }
+
+/** Discriminated native-selector schema (1.5.0: replaces the free-form "strategy=value" string). */
+const nativeSelectorSchema = z.object({
+  using: z
+    .enum(['accessibility id', 'name', 'predicate string', 'class chain'])
+    .describe(
+      'Locator strategy: "accessibility id" (accessibilityIdentifier/testID), "name", "predicate string" (NSPredicate, e.g. label == "Continue"), or "class chain" (XCUITest class chain, e.g. **/XCUIElementTypeButton[`label == "Continue"`]).',
+    ),
+  value: z.string().describe('The locator value for the chosen strategy.'),
+});
 
 function screenTitleFromNodes(nodes: RawNode[]): string | undefined {
   if (!nodes.length) return undefined;
@@ -47,12 +58,22 @@ function screenTitleFromNodes(nodes: RawNode[]): string | undefined {
 function recordingScreenContext(session: Session): { screen?: string; screenSig?: string } {
   const nodes = session.lastSnapshot?.allNodes;
   if (!nodes?.length) return {};
-  const els = nodes.map((n) => ({ id: n.id, label: n.desc, text: n.text } as unknown as SnapshotElement));
+  const els = nodes.map((n) => ({ id: n.id, label: n.desc, text: n.text }) as unknown as SnapshotElement);
   return { screen: screenTitleFromNodes(nodes), screenSig: structuredSignature(els) };
 }
 
-function recordableNativeTarget(session: Parameters<typeof recordableNativeSelector>[0], native: NativeSelector): Omit<RecordedAction, 'at' | 'action'> {
-  const selectorKind = native.using === 'accessibility id' ? 'accessibility_id' : native.using === 'name' ? 'name' : native.using === 'predicate string' ? 'predicate' : 'class_chain';
+function recordableNativeTarget(
+  session: Parameters<typeof recordableNativeSelector>[0],
+  native: NativeSelector,
+): Omit<RecordedAction, 'at' | 'action'> {
+  const selectorKind =
+    native.using === 'accessibility id'
+      ? 'accessibility_id'
+      : native.using === 'name'
+        ? 'name'
+        : native.using === 'predicate string'
+          ? 'predicate'
+          : 'class_chain';
   return {
     selector: native.value,
     selectorKind,
@@ -68,14 +89,14 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
       title: 'Act on the screen',
       description:
         'Perform one synchronized UI action and observe the result. Actions & their fields:\n' +
-        '- tap: target {ref|text|id|selector|x,y}\n' +
+        '- tap: target {ref|text|id|selector:{using,value}|x,y}\n' +
         '- type: target (a field) + text + mode:"replace"|"append" (default replace); optional submit:true\n' +
         '- clear: target (a field), focuses it and clears existing text\n' +
         '- swipe: direction up|down|left|right (optional target as start point)\n' +
         '- scroll: direction + optional untilVisible {text|id} + maxScrolls (default 8)\n' +
         '- press: key back|home|enter\n' +
         '- open_url: url (deep link)\n' +
-        '- wait: for {settled:true | ref | text | id | selector} + timeoutMs\n' +
+        '- wait: for {settled:true | ref | text | id | selector:{using,value}} + timeoutMs\n' +
         'Every non-wait action auto-waits for the screen to settle, then returns the post snapshot (quality + @eN elements), whether the screen changed, and a health check.',
       inputSchema: {
         sessionId: z.string(),
@@ -85,7 +106,11 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
             ref: z.string().optional(),
             text: z.string().optional(),
             id: z.string().optional(),
-            selector: z.string().optional().describe('Backend-native selector, e.g. "accessibility id=email", "name=Continue", "predicate string=label == \\"Continue\\"", or "class chain=**/XCUIElementTypeButton[...]".'),
+            selector: nativeSelectorSchema
+              .optional()
+              .describe(
+                'Backend-native selector object, e.g. { using: "accessibility id", value: "email" }. Requires native selector support (WDA-backed iOS); on other backends target by ref/text/id/coordinates.',
+              ),
             index: z.number().optional(),
             x: z.number().optional(),
             y: z.number().optional(),
@@ -99,15 +124,27 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
         maxScrolls: z.number().optional(),
         key: z.enum(['back', 'home', 'enter']).optional(),
         url: z.string().optional(),
-        durationMs: z.number().optional().describe('tap press duration. Coordinate taps default to ~100ms (RN ignores instant taps); ref/selector taps are instant unless set.'),
-        ignoreOverlay: z.boolean().optional().describe('tap even if an overlay obstructs the target (default false → returns blockedByOverlay).'),
+        durationMs: z
+          .number()
+          .optional()
+          .describe(
+            'tap press duration. Coordinate taps default to ~100ms (RN ignores instant taps); ref/selector taps are instant unless set.',
+          ),
+        ignoreOverlay: z
+          .boolean()
+          .optional()
+          .describe('tap even if an overlay obstructs the target (default false → returns blockedByOverlay).'),
         for: z
           .object({
             settled: z.boolean().optional(),
             ref: z.string().optional(),
             text: z.string().optional(),
             id: z.string().optional(),
-            selector: z.string().optional().describe('Backend-native selector, e.g. "accessibility id=email" or "name=Continue". Requires WDA/native selector support.'),
+            selector: nativeSelectorSchema
+              .optional()
+              .describe(
+                'Backend-native selector object, e.g. { using: "accessibility id", value: "email" }. Requires WDA/native selector support.',
+              ),
           })
           .optional(),
         timeoutMs: z.number().optional(),
@@ -131,7 +168,9 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
           changedState: false,
           retrySafe: false,
           failureCode: 'BACKEND_UNSUPPORTED',
-          nextSteps: ['Attach WebDriverAgent with qa_wda for structured tap/type/snapshot. Without WDA, navigate via qa_ios deep links and verify with qa_assert_visual.'],
+          nextSteps: [
+            'Attach WebDriverAgent with qa_wda for structured tap/type/snapshot. Without WDA, navigate via qa_ios deep links and verify with qa_assert_visual.',
+          ],
         });
       }
       // Budget gate (review §4.1 / Rec 4): refuse new work once the session budget is spent.
@@ -152,43 +191,63 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
           const s = await settle(d, { timeoutMs });
           const post = parseSnapshot(s.xml);
           session.lastSnapshot = { fullByRef: post.fullByRef, signatures: new Set(post.elements.map(signature)), allNodes: post.allNodes };
-          const { elements: shown, rendered } = presentElements(post.elements, makeRedactor(session.secrets));
-          return qaOk({ action, settled: s.settled, quality: post.quality.verdict, elements: shown }, `wait(settled)=${s.settled}\n\n${rendered}`);
+          const { elements: shown, rendered, omitted } = presentElements(post.elements, makeRedactor(session.secrets));
+          return qaOk(
+            { action, settled: s.settled, quality: post.quality.verdict, elementsOmitted: omitted, elements: shown },
+            `wait(settled)=${s.settled}\n\n${rendered}`,
+          );
         }
         const deadline = Date.now() + timeoutMs;
         const want = args.for;
-        const native = nativeSelectorFor(want?.selector);
-        if (want?.selector && !native) {
-          return qaError({ what: `Unsupported wait selector ${JSON.stringify(want.selector)}`, changedState: false, retrySafe: true, nextSteps: ['Use accessibility id=..., name=..., predicate string=..., class chain=..., or wait by text/id/ref.'] });
-        }
+        const native: NativeSelector | null = want?.selector ?? null;
         if (native) {
-          if (!d.existsBySelector) return qaError({
-            what: `${native.using} waits require backend-native selector support`,
-            changedState: false,
-            retrySafe: false,
-            failureCode: 'BACKEND_UNSUPPORTED',
-            nextSteps: ['Use a WDA-backed iOS session, or wait by text/id/ref on this backend.'],
-          });
+          if (!d.existsBySelector)
+            return qaError({
+              what: `${native.using} waits require backend-native selector support`,
+              changedState: false,
+              retrySafe: false,
+              failureCode: 'BACKEND_UNSUPPORTED',
+              nextSteps: ['Use a WDA-backed iOS session, or wait by text/id/ref on this backend.'],
+            });
           while (Date.now() < deadline) {
             if (await d.existsBySelector(native.using, native.value)) {
-              return qaOk({ action, found: true, selector: want?.selector, via: 'native-selector' }, `wait: found ${want?.selector}`);
+              return qaOk(
+                { action, found: true, selector: want?.selector, via: 'native-selector' },
+                `wait: found ${native.using}=${native.value}`,
+              );
             }
             await new Promise((r) => setTimeout(r, 400));
           }
-          return qaError({ what: `wait timed out (${timeoutMs}ms) for ${JSON.stringify(want)}`, changedState: false, retrySafe: true, nextSteps: ['Re-check the native selector value, or run qa_snapshot to inspect the current screen.'] });
+          return qaError({
+            what: `wait timed out (${timeoutMs}ms) for ${JSON.stringify(want)}`,
+            changedState: false,
+            retrySafe: true,
+            nextSteps: ['Re-check the native selector value, or run qa_snapshot to inspect the current screen.'],
+          });
         }
         while (Date.now() < deadline) {
           const parsed = parseSnapshot(await d.dumpXml());
-          session.lastSnapshot = { fullByRef: parsed.fullByRef, signatures: new Set(parsed.elements.map(signature)), allNodes: parsed.allNodes };
-          const hit = parsed.elements.find((e) =>
-            (want.ref && e.ref === want.ref) ||
-            (want.id && e.id === want.id) ||
-            (want.text && (e.text?.toLowerCase().includes(want.text.toLowerCase()) || e.label?.toLowerCase().includes(want.text.toLowerCase()))),
+          session.lastSnapshot = {
+            fullByRef: parsed.fullByRef,
+            signatures: new Set(parsed.elements.map(signature)),
+            allNodes: parsed.allNodes,
+          };
+          const hit = parsed.elements.find(
+            (e) =>
+              (want.ref && e.ref === want.ref) ||
+              (want.id && e.id === want.id) ||
+              (want.text &&
+                (e.text?.toLowerCase().includes(want.text.toLowerCase()) || e.label?.toLowerCase().includes(want.text.toLowerCase()))),
           );
           if (hit) return qaOk({ action, found: true, ref: hit.ref }, `wait: found ${hit.ref}`);
           await new Promise((r) => setTimeout(r, 400));
         }
-        return qaError({ what: `wait timed out (${timeoutMs}ms) for ${JSON.stringify(want)}`, changedState: false, retrySafe: true, nextSteps: ['Re-snapshot; the element may use different text/id.'] });
+        return qaError({
+          what: `wait timed out (${timeoutMs}ms) for ${JSON.stringify(want)}`,
+          changedState: false,
+          retrySafe: true,
+          nextSteps: ['Re-snapshot; the element may use different text/id.'],
+        });
       }
 
       // Phase timing (P1.6): mark the first real action so the report can split setup vs active.
@@ -205,21 +264,22 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
       try {
         switch (action) {
           case 'tap': {
-            const native = nativeSelectorFor(args.target?.selector);
+            const native: NativeSelector | null = args.target?.selector ?? null;
             if (native) {
-              if (!d.tapBySelector) return qaError({
-                what: `${native.using} selectors require backend-native selector support`,
-                changedState: false,
-                retrySafe: false,
-                failureCode: 'BACKEND_UNSUPPORTED',
-                nextSteps: ['Use a WDA-backed iOS session, or target by ref/text/id/coordinates on this backend.'],
-              });
+              if (!d.tapBySelector)
+                return qaError({
+                  what: `${native.using} selectors require backend-native selector support`,
+                  changedState: false,
+                  retrySafe: false,
+                  failureCode: 'BACKEND_UNSUPPORTED',
+                  nextSteps: ['Use a WDA-backed iOS session, or target by ref/text/id/coordinates on this backend.'],
+                });
               await d.tapBySelector(native.using, native.value);
               meta = { selector: args.target?.selector, via: 'native-selector' };
               toRecord = { action: 'tap', ...recordableNativeTarget(session, native) };
               break;
             }
-            const t = await resolveTarget(session, args.target);
+            const t = await resolveTarget(session, stripSelector(args.target));
             if ('error' in t) return fail(t.error, false);
             // Overlay obstruction check (CR4): if another element is drawn over the target
             // point, return a structured blockedByOverlay instead of tapping blindly.
@@ -234,7 +294,9 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
                     changedState: false,
                     retrySafe: true,
                     failureCode: 'OVERLAY_OBSTRUCTION',
-                    nextSteps: ['Call qa_clear_overlay (auto, or hide_keyboard/minimize_logbox), then retry — or pass ignoreOverlay:true to tap anyway.'],
+                    nextSteps: [
+                      'Call qa_clear_overlay (auto, or hide_keyboard/minimize_logbox), then retry — or pass ignoreOverlay:true to tap anyway.',
+                    ],
                   },
                   { blockedByOverlay: true, obstructedBy: obs.by },
                 );
@@ -248,37 +310,46 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
             else await d.tapXY(t.x, t.y);
             tapRetry = { x: t.x, y: t.y, instant: !durationMs };
             meta = { tappedAt: [t.x, t.y], via: t.via, ...(durationMs ? { durationMs } : {}) };
-            toRecord = { action: 'tap', ...recordableTap(session, args.target, t) };
+            toRecord = { action: 'tap', ...recordableTap(session, stripSelector(args.target), t) };
             break;
           }
           case 'type': {
             if (args.text == null) return fail('type requires `text`.', false);
-            const native = nativeSelectorFor(args.target?.selector);
+            const native: NativeSelector | null = args.target?.selector ?? null;
             if (native) {
-              if (!d.typeBySelector) return qaError({
-                what: `${native.using} selectors require backend-native selector support`,
-                changedState: false,
-                retrySafe: false,
-                failureCode: 'BACKEND_UNSUPPORTED',
-                nextSteps: ['Use a WDA-backed iOS session, or target by ref/text/id/coordinates on this backend.'],
-              });
-              if ((args.mode ?? 'replace') === 'replace') {
-                if (!d.clearBySelector) return qaError({
-                  what: `replace-mode typing by ${native.using} requires backend-native clear support`,
+              if (!d.typeBySelector)
+                return qaError({
+                  what: `${native.using} selectors require backend-native selector support`,
                   changedState: false,
                   retrySafe: false,
                   failureCode: 'BACKEND_UNSUPPORTED',
-                  nextSteps: ['Use append mode, or attach a WDA backend that supports element clear.'],
+                  nextSteps: ['Use a WDA-backed iOS session, or target by ref/text/id/coordinates on this backend.'],
                 });
+              if ((args.mode ?? 'replace') === 'replace') {
+                if (!d.clearBySelector)
+                  return qaError({
+                    what: `replace-mode typing by ${native.using} requires backend-native clear support`,
+                    changedState: false,
+                    retrySafe: false,
+                    failureCode: 'BACKEND_UNSUPPORTED',
+                    nextSteps: ['Use append mode, or attach a WDA backend that supports element clear.'],
+                  });
                 await d.clearBySelector(native.using, native.value);
               }
               await d.typeBySelector(native.using, native.value, args.text);
-              meta = { typedChars: args.text.length, redacted: true, mode: args.mode ?? 'replace', via: 'native-selector', selector: args.target?.selector, submit: !!args.submit };
+              meta = {
+                typedChars: args.text.length,
+                redacted: true,
+                mode: args.mode ?? 'replace',
+                via: 'native-selector',
+                selector: args.target?.selector,
+                submit: !!args.submit,
+              };
               toRecord = { action: 'type', ...recordableNativeTarget(session, native), text: args.text };
               if (args.submit) await d.pressKey('enter');
               break;
             }
-            const t = await resolveTarget(session, args.target);
+            const t = await resolveTarget(session, stripSelector(args.target));
             if ('error' in t) return fail(t.error, false);
             // Typing into a secure field → remember the value so it's scrubbed everywhere, and
             // record that a login was performed (auth-state reporting, P1.5).
@@ -297,7 +368,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
             meta = { typedChars: args.text.length, redacted: true, mode: args.mode ?? 'replace', via: t.via, submit: !!args.submit };
             // Never store a secret's value in the IR — secrets become a ${VAR} at generate time.
             {
-              const targetRecord = recordableTap(session, args.target, t);
+              const targetRecord = recordableTap(session, stripSelector(args.target), t);
               toRecord = {
                 action: 'type',
                 selector: targetRecord.selector,
@@ -311,32 +382,33 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
             break;
           }
           case 'clear': {
-            const native = nativeSelectorFor(args.target?.selector);
+            const native: NativeSelector | null = args.target?.selector ?? null;
             if (native) {
-              if (!d.clearBySelector) return qaError({
-                what: `${native.using} selectors require backend-native clear support`,
-                changedState: false,
-                retrySafe: false,
-                failureCode: 'BACKEND_UNSUPPORTED',
-                nextSteps: ['Use a WDA-backed iOS session, or target by ref/text/id/coordinates on this backend.'],
-              });
+              if (!d.clearBySelector)
+                return qaError({
+                  what: `${native.using} selectors require backend-native clear support`,
+                  changedState: false,
+                  retrySafe: false,
+                  failureCode: 'BACKEND_UNSUPPORTED',
+                  nextSteps: ['Use a WDA-backed iOS session, or target by ref/text/id/coordinates on this backend.'],
+                });
               await d.clearBySelector(native.using, native.value);
               meta = { cleared: true, via: 'native-selector', selector: args.target?.selector };
               toRecord = { action: 'clear', ...recordableNativeTarget(session, native) };
               break;
             }
-            const t = await resolveTarget(session, args.target);
+            const t = await resolveTarget(session, stripSelector(args.target));
             if ('error' in t) return fail(t.error, false);
             await d.tapXY(t.x, t.y);
             await new Promise((r) => setTimeout(r, 400));
             await d.clearFocusedText(t.textLen);
             meta = { cleared: true, via: t.via };
-            toRecord = { action: 'clear', ...recordableTap(session, args.target, t) };
+            toRecord = { action: 'clear', ...recordableTap(session, stripSelector(args.target), t) };
             break;
           }
           case 'swipe': {
             if (!args.direction) return fail('swipe requires `direction`.', false);
-            const start = args.target ? await resolveTarget(session, args.target) : null;
+            const start = args.target ? await resolveTarget(session, stripSelector(args.target)) : null;
             const sx = start && !('error' in start) ? start.x : 0;
             const sy = start && !('error' in start) ? start.y : 0;
             const from = sx && sy ? { x: sx, y: sy } : { x: 540, y: 1200 };
@@ -374,13 +446,21 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
                 const parsed = parseSnapshot(await d.dumpXml());
                 const u = args.untilVisible;
                 found = parsed.elements.some(
-                  (e) => (u.id && e.id === u.id) || (u.text && (e.text?.toLowerCase().includes(u.text.toLowerCase()) || e.label?.toLowerCase().includes(u.text.toLowerCase()))),
+                  (e) =>
+                    (u.id && e.id === u.id) ||
+                    (u.text &&
+                      (e.text?.toLowerCase().includes(u.text.toLowerCase()) || e.label?.toLowerCase().includes(u.text.toLowerCase()))),
                 );
                 if (found) break;
               }
             }
             meta = { direction: dir, untilVisibleFound: args.untilVisible ? found : undefined };
-            toRecord = { action: 'scroll', direction: dir, selector: args.untilVisible?.text, exportability: args.untilVisible?.text ? 'semantic' : 'coordinate' };
+            toRecord = {
+              action: 'scroll',
+              direction: dir,
+              selector: args.untilVisible?.text,
+              exportability: args.untilVisible?.text ? 'semantic' : 'coordinate',
+            };
             break;
           }
           case 'press': {
@@ -405,13 +485,16 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
           changedState: true,
           retrySafe: !['WDA_SESSION_FAILED', 'UNKNOWN'].includes(failureCode),
           failureCode,
-          nextSteps: failureCode === 'UNKNOWN' ? ['Confirm the device is online and re-snapshot.'] : ['Use the failureCode to choose recovery, then re-snapshot before retrying.'],
+          nextSteps:
+            failureCode === 'UNKNOWN'
+              ? ['Confirm the device is online and re-snapshot.']
+              : ['Use the failureCode to choose recovery, then re-snapshot before retrying.'],
         });
       }
 
       // count this as an action (wait already returned earlier)
       sessions.bump(session, 'actions');
-      // Record the action into the IR for qa_flow_generate (the action definitely happened here;
+      // Record the action into the IR for qa_generate target:"flow" (the action definitely happened here;
       // recorded now so a later post-snapshot failure doesn't lose the step).
       if (toRecord) {
         const sc = recordingScreenContext(session);
@@ -421,63 +504,71 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
       // Post-action observation is wrapped so a settle/dump/parse failure (e.g. the
       // looping-animation case) returns a Swipium-shaped result, never a raw MCP error.
       try {
-      // settle → observe → health
-      let s = await settle(d, { timeoutMs: args.timeoutMs ?? 8000 });
-      let post = parseSnapshot(s.xml);
-      let postSigs = new Set(post.elements.map(signature));
-      let changed = !setsEqual(preSigs, postSigs);
+        // settle → observe → health
+        let s = await settle(d, { timeoutMs: args.timeoutMs ?? 8000 });
+        let post = parseSnapshot(s.xml);
+        let postSigs = new Set(post.elements.map(signature));
+        let changed = !setsEqual(preSigs, postSigs);
 
-      // No-change retry (review §4.5/§4.7): an instant tap that did nothing is often the RN
-      // tap quirk — retry ONCE as a longer press before believing it's blocked.
-      let retriedAsPress = false;
-      if (!changed && action === 'tap' && tapRetry?.instant) {
-        await d.pressXY(tapRetry.x, tapRetry.y, 120);
-        retriedAsPress = true;
-        s = await settle(d, { timeoutMs: args.timeoutMs ?? 8000 });
-        post = parseSnapshot(s.xml);
-        postSigs = new Set(post.elements.map(signature));
-        changed = !setsEqual(preSigs, postSigs);
-      }
+        // No-change retry (review §4.5/§4.7): an instant tap that did nothing is often the RN
+        // tap quirk — retry ONCE as a longer press before believing it's blocked.
+        let retriedAsPress = false;
+        if (!changed && action === 'tap' && tapRetry?.instant) {
+          await d.pressXY(tapRetry.x, tapRetry.y, 120);
+          retriedAsPress = true;
+          s = await settle(d, { timeoutMs: args.timeoutMs ?? 8000 });
+          post = parseSnapshot(s.xml);
+          postSigs = new Set(post.elements.map(signature));
+          changed = !setsEqual(preSigs, postSigs);
+        }
 
-      session.lastSnapshot = { fullByRef: post.fullByRef, signatures: postSigs, allNodes: post.allNodes };
-      const health = await checkHealth(d, session.appId, s.xml);
+        session.lastSnapshot = { fullByRef: post.fullByRef, signatures: postSigs, allNodes: post.allNodes };
+        const health = await checkHealth(d, session.appId, s.xml);
 
-      // Track no-change actions for the budget / no-op-loop detector.
-      if (!changed && (action === 'tap' || action === 'swipe' || action === 'scroll' || action === 'press')) {
-        sessions.bump(session, 'noChangeActions');
-      }
-      const budgetReached = sessions.budgetStop(session);
+        // Track no-change actions for the budget / no-op-loop detector.
+        if (!changed && (action === 'tap' || action === 'swipe' || action === 'scroll' || action === 'press')) {
+          sessions.bump(session, 'noChangeActions');
+        }
+        const budgetReached = sessions.budgetStop(session);
 
-      // Sensitive-mode present: mask secure fields + scrub known secrets AND the just-typed
-      // value (covers non-secure fields like email for this immediate response).
-      const redact = makeRedactor([...session.secrets, ...(action === 'type' && args.text ? [args.text] : [])]);
-      const { elements: outElements, rendered } = presentElements(post.elements, redact);
+        // Sensitive-mode present: mask secure fields + scrub known secrets AND the just-typed
+        // value (covers non-secure fields like email for this immediate response).
+        const redact = makeRedactor([...session.secrets, ...(action === 'type' && args.text ? [args.text] : [])]);
+        const { elements: outElements, rendered, omitted } = presentElements(post.elements, redact);
 
-      // Record non-info findings for qa_report (deterministic bug trail) + app-error screenshot.
-      await recordHealthFindings(sessions, session, health.findings, d, health.foreground);
+        // Record non-info findings for qa_report (deterministic bug trail) + app-error screenshot.
+        await recordHealthFindings(sessions, session, health.findings, d, health.foreground);
 
-      const banner =
-        `${action} ${JSON.stringify(meta)} → changed=${changed}${retriedAsPress ? ' (retried as press)' : ''} ` +
-        `settled=${s.settled} quality=${post.quality.verdict} native=${health.nativeHealthy ? 'ok' : health.nativeStatus} app=${health.appStatus}` +
-        (budgetReached ? `\n⏹ budget reached: ${budgetReached} — call qa_report.` : '') +
-        (!changed && retriedAsPress ? `\nNo change even after a press retry — likely wrong coords / disabled element / overlay / auth wall.` : '');
-      const findings = health.findings.length ? '\n' + health.findings.map((f) => `[${f.severity}] ${f.layer ?? '?'}/${f.kind}: ${f.detail}${f.evidence ? ` — "${f.evidence}"` : ''}`).join('\n') : '';
+        const banner =
+          `${action} ${JSON.stringify(meta)} → changed=${changed}${retriedAsPress ? ' (retried as press)' : ''} ` +
+          `settled=${s.settled} quality=${post.quality.verdict} native=${health.nativeHealthy ? 'ok' : health.nativeStatus} app=${health.appStatus}` +
+          (budgetReached ? `\n⏹ budget reached: ${budgetReached} — call qa_report.` : '') +
+          (!changed && retriedAsPress
+            ? `\nNo change even after a press retry — likely wrong coords / disabled element / overlay / auth wall.`
+            : '');
+        const findings = health.findings.length
+          ? '\n' +
+            health.findings
+              .map((f) => `[${f.severity}] ${f.layer ?? '?'}/${f.kind}: ${f.detail}${f.evidence ? ` — "${f.evidence}"` : ''}`)
+              .join('\n')
+          : '';
 
-      return qaOk(
-        {
-          action,
-          ...meta,
-          changed,
-          retriedAsPress,
-          settled: s.settled,
-          quality: post.quality.verdict,
-          health,
-          counters: session.counters,
-          ...(budgetReached ? { budgetReached } : {}),
-          elements: outElements,
-        },
-        `${banner}${findings}\n\n${rendered}`,
-      );
+        return qaOk(
+          {
+            action,
+            ...meta,
+            changed,
+            retriedAsPress,
+            settled: s.settled,
+            quality: post.quality.verdict,
+            health,
+            counters: session.counters,
+            ...(budgetReached ? { budgetReached } : {}),
+            elementsOmitted: omitted,
+            elements: outElements,
+          },
+          `${banner}${findings}\n\n${rendered}`,
+        );
       } catch (e) {
         // The action ran; observing the result failed (often a UI that never reaches idle).
         const idle = /idle|dump|hierarchy/i.test(String(e));
