@@ -7,6 +7,7 @@
 //   - no empty essential files.
 
 import type { GeneratedFile } from '../suite/pom.js';
+import { findSecretLeaks } from '../suite/secretGuard.js';
 
 export type Severity = 'error' | 'warning';
 
@@ -33,6 +34,10 @@ export interface ValidateOptions {
   candidateOnly?: boolean;
   /** Secret env-var names the suite uses — used to confirm they're never assigned a literal. */
   secrets?: string[];
+  /** Registered secret VALUES (session.secrets). Any occurrence in any generated file — comments
+   *  included — is a SECRET_IN_GENERATED_OUTPUT error: the heuristics above cannot see a password
+   *  typed into a field the UI did not flag as secure. */
+  secretValues?: Iterable<string>;
 }
 
 // password = "literal" / token: 'literal' etc. — but NOT process.env / os.environ references.
@@ -143,7 +148,11 @@ function capabilityPresence(files: GeneratedFile[]): ValidationFinding[] {
   if (!capFile) {
     return [{ code: 'NO_CAPABILITIES', severity: 'warning', message: 'no capabilities/conftest file found in the generated suite' }];
   }
-  const ok = /platformName/i.test(capFile.content) && /(UiAutomator2|XCUITest)/.test(capFile.content);
+  // JS/TS capabilities spell out `platformName`; Appium-Python-Client uses typed options objects
+  // (UiAutomator2Options / XCUITestOptions set platformName + automationName themselves).
+  const platformSet =
+    /platformName|platform_name/i.test(capFile.content) || /\b(UiAutomator2Options|XCUITestOptions)\s*\(/.test(capFile.content);
+  const ok = platformSet && /(UiAutomator2|XCUITest)/.test(capFile.content);
   return ok
     ? []
     : [
@@ -172,7 +181,15 @@ export function validateGeneratedSuite(files: GeneratedFile[], opts: ValidateOpt
   const candidateOnly = opts.candidateOnly ?? false;
 
   const findings: ValidationFinding[] = [];
-  const secretFindings = scanSecrets(files, opts.secrets ?? []);
+  const secretFindings = [
+    ...scanSecrets(files, opts.secrets ?? []),
+    ...findSecretLeaks(files, opts.secretValues).map((l): ValidationFinding => ({
+      code: 'SECRET_IN_GENERATED_OUTPUT',
+      severity: 'error',
+      file: l.path,
+      message: `registered secret value written in plaintext at line ${l.line} — must be an environment variable`,
+    })),
+  ];
   findings.push(...secretFindings);
   findings.push(...braceBalance(files));
   findings.push(...capabilityPresence(files));

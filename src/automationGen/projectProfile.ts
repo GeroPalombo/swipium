@@ -15,7 +15,7 @@ export type PrimaryLanguage = AutomationLanguage | 'swift' | 'kotlin' | 'dart' |
 export type TestFramework = 'webdriverio' | 'mocha' | 'jest' | 'pytest' | 'unittest';
 export type PackageManager = 'npm' | 'pnpm' | 'yarn' | 'pip' | 'poetry' | 'uv';
 export type AppiumBackend = 'appium-uiautomator2' | 'appium-xcuitest';
-export type SecondaryBackend = 'appium-xcuitest' | 'ios-wda' | 'android-direct';
+export type SecondaryBackend = 'appium-xcuitest' | 'appium-uiautomator2' | 'ios-wda' | 'android-direct';
 export type OutputMode = 'project_native' | 'swipium_scaffold';
 
 /** How well a platform is supported by THIS project — distinct from "we actually ran on it". */
@@ -47,6 +47,10 @@ export interface AutomationProjectProfile {
   outputMode: OutputMode;
   defaultBackend: AppiumBackend;
   secondaryBackend?: SecondaryBackend;
+  /** Platform the generated suite targets by default (SWIPIUM_PLATFORM default) and WHY:
+   *  explicit `platform` arg → the session's device platform → project profile → android. */
+  primaryPlatform?: 'android' | 'ios';
+  platformSource?: 'explicit' | 'session' | 'project' | 'default';
   reasons: string[];
 }
 
@@ -59,6 +63,9 @@ export interface ProfileInputs {
   integrateIntoProject?: boolean;
   /** appId from the session/scan, used only to enrich reasons. */
   appId?: string;
+  /** Platform of the device the session ran on (Android serial vs iOS UDID / driver kind). Used when
+   *  `platform` is auto — it outranks project detection. */
+  sessionPlatform?: 'android' | 'ios';
 }
 
 function readJson(p: string): Record<string, unknown> | null {
@@ -232,12 +239,20 @@ function applyPlatformOverride(
   if (!override || override === 'auto') return platforms;
   const android = { ...platforms.android };
   const ios = { ...platforms.ios };
+  const force = (p: PlatformSupport, why: string) => {
+    if (p.level === 'none') {
+      p.level = 'evidence_only';
+      p.reasons = [...p.reasons, why];
+    }
+  };
   if (override === 'android') {
+    force(android, 'forced: caller requested android generation');
     if (ios.level === 'supported') {
       ios.level = 'evidence_only';
       ios.reasons = [...ios.reasons, 'demoted: caller requested android-only generation'];
     }
   } else if (override === 'ios') {
+    force(ios, 'forced: caller requested ios generation');
     if (android.level === 'supported') {
       android.level = 'evidence_only';
       android.reasons = [...android.reasons, 'demoted: caller requested ios-only generation'];
@@ -266,6 +281,16 @@ export function buildProjectProfile(root: string, inputs: ProfileInputs = {}): A
 
   const platformsBase = platformSupport(root, fw, inputs.appId);
   const platforms = applyPlatformOverride(platformsBase, inputs.platform);
+  const explicitPlatform = inputs.platform && inputs.platform !== 'auto' ? inputs.platform : undefined;
+  // The session ran on a real device of this platform — generation must cover it even when the
+  // project root carries no platform evidence (e.g. a store app driven by package id only).
+  if (!explicitPlatform && inputs.sessionPlatform) {
+    const p = platforms[inputs.sessionPlatform];
+    if (p.level === 'none') {
+      p.level = 'evidence_only';
+      p.reasons = [...p.reasons, `session device is ${inputs.sessionPlatform}`];
+    }
+  }
 
   const primaryLanguage = primaryLanguageFor(root, fw, d, py);
   const hasJsProject = exists(root, 'package.json');
@@ -314,22 +339,47 @@ export function buildProjectProfile(root: string, inputs: ProfileInputs = {}): A
     reasons.push('existing Maestro/.swipium flows kept — Appium code generated as an ADDITIONAL layer, not a replacement');
   }
 
-  // ---- backend selection (Android-first for dual platform) ----
+  // ---- platform + backend selection ----
+  // Resolution order: explicit platform arg → session device platform → project profile → android.
   const androidOk = platforms.android.level !== 'none';
   const iosOk = platforms.ios.level !== 'none';
-  let defaultBackend: AppiumBackend;
-  let secondaryBackend: SecondaryBackend | undefined;
-  if (androidOk && iosOk) {
-    defaultBackend = 'appium-uiautomator2';
-    secondaryBackend = 'appium-xcuitest';
-    reasons.push('dual-platform: Android UiAutomator2 default (faster feedback), iOS XCUITest secondary');
-  } else if (iosOk && !androidOk) {
-    defaultBackend = 'appium-xcuitest';
-    reasons.push('iOS-only: Appium XCUITest');
+  let primaryPlatform: 'android' | 'ios';
+  let platformSource: 'explicit' | 'session' | 'project' | 'default';
+  if (explicitPlatform === 'android' || explicitPlatform === 'ios') {
+    primaryPlatform = explicitPlatform;
+    platformSource = 'explicit';
+  } else if (explicitPlatform === 'both') {
+    primaryPlatform = inputs.sessionPlatform ?? 'android';
+    platformSource = inputs.sessionPlatform ? 'session' : 'explicit';
+  } else if (inputs.sessionPlatform) {
+    primaryPlatform = inputs.sessionPlatform;
+    platformSource = 'session';
+  } else if (androidOk || iosOk) {
+    primaryPlatform = iosOk && !androidOk ? 'ios' : 'android';
+    platformSource = 'project';
   } else {
-    defaultBackend = 'appium-uiautomator2';
-    reasons.push('Android-only (or default): Appium UiAutomator2');
+    primaryPlatform = 'android';
+    platformSource = 'default';
   }
+  const defaultBackend: AppiumBackend = primaryPlatform === 'ios' ? 'appium-xcuitest' : 'appium-uiautomator2';
+  let secondaryBackend: SecondaryBackend | undefined;
+  if (primaryPlatform === 'ios' && androidOk) secondaryBackend = 'appium-uiautomator2';
+  else if (primaryPlatform === 'android' && iosOk) secondaryBackend = 'appium-xcuitest';
+  const backendName = primaryPlatform === 'ios' ? 'Appium XCUITest' : 'Appium UiAutomator2';
+  const sourceWhy =
+    platformSource === 'explicit'
+      ? `platform:"${explicitPlatform}" requested`
+      : platformSource === 'session'
+        ? `session device is ${primaryPlatform}`
+        : platformSource === 'project'
+          ? androidOk && iosOk
+            ? 'dual-platform project (Android default for faster feedback)'
+            : `${primaryPlatform}-only project`
+          : 'no platform evidence — default';
+  reasons.push(
+    `${primaryPlatform} primary (${sourceWhy}): ${backendName}` +
+      (secondaryBackend ? `; ${secondaryBackend === 'appium-xcuitest' ? 'iOS XCUITest' : 'Android UiAutomator2'} secondary` : ''),
+  );
 
   // ---- output mode ----
   const projectE2eDir = ['e2e', 'test/e2e', 'tests/e2e'].find((p) => exists(root, p));
@@ -355,6 +405,8 @@ export function buildProjectProfile(root: string, inputs: ProfileInputs = {}): A
     outputMode,
     defaultBackend,
     secondaryBackend,
+    primaryPlatform,
+    platformSource,
     reasons,
   };
 }

@@ -6,15 +6,21 @@
 // `.swipium/issues/artifacts/`  — large evidence files (may follow normal retention).
 //
 // The log is the source of truth: the index is always recomputable via rebuildRecords(). Writes are
-// append-only for events and atomic (temp + rename) for the index. Best-effort I/O — corrupt files
-// degrade to a rebuild, never throw on read.
+// append-only for events and atomic (unique temp + rename) for the index. Best-effort I/O — corrupt
+// files degrade to a rebuild, never throw on read.
+//
+// Concurrency: several MCP server instances (and the CI CLI) can share one project. Every
+// read-modify-write of the ledger runs under withLedgerLock(), and the cached index records the
+// log's size/mtime it was derived from — a cache whose stamp no longer matches the log (another
+// process appended) is rebuilt instead of trusted.
 
-import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ensureGitignored } from '../lib/gitignore.js';
+import { withFileLock } from '../lib/lockfile.js';
 import type { ClassifierPolicy } from './classify.js';
-import { rebuildRecords } from './recurrence.js';
+import { liftSuppression, rebuildRecords, suppressionExpired } from './recurrence.js';
 import type { IssueEvent, IssueIndex, IssueRecord } from './schema.js';
 import { ISSUE_SCHEMA_VERSION, emptyIndex, validateEvent } from './schema.js';
 
@@ -103,24 +109,52 @@ export function appendEvents(root: string, events: IssueEvent[]): { path: string
   return { path, count: events.length };
 }
 
-/** Atomically write the derived index (temp + rename). */
-export function saveIndex(root: string, index: IssueIndex): { path: string; resourceUri: string } {
+/**
+ * Run a ledger read-modify-write under the project's cross-process issue lock
+ * (`.swipium/issues/.lock`). NOT re-entrant: call it once at the outermost mutation.
+ */
+export function withLedgerLock<T>(root: string, fn: () => T): T {
+  mkdirSync(issuesDir(root), { recursive: true });
+  return withFileLock(join(issuesDir(root), '.lock'), fn);
+}
+
+/** Size + mtime of the canonical log, or null when absent. */
+function logStamp(root: string): { logSize: number; logMtimeMs: number } | null {
+  try {
+    const st = statSync(issuesLogPath(root));
+    return { logSize: st.size, logMtimeMs: st.mtimeMs };
+  } catch {
+    return null;
+  }
+}
+
+/** Atomically write the derived index (unique temp + rename), stamped with the log's size/mtime. */
+export function saveIndex(
+  root: string,
+  index: IssueIndex,
+  stamp: { logSize: number; logMtimeMs: number } | null = logStamp(root),
+): { path: string; resourceUri: string } {
   mkdirSync(issuesDir(root), { recursive: true });
   ensureGitignored(root);
   const path = issuesIndexPath(root);
-  const tmp = `${path}.tmp`;
+  if (stamp) Object.assign(index, stamp);
+  // Unique per writer: two processes sharing `index.json.tmp` could rename each other's half-file.
+  const tmp = `${path}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
   writeFileSync(tmp, JSON.stringify(index, null, 2));
   renameSync(tmp, path);
   return { path, resourceUri: issuesResourceUri(root) };
 }
 
-/** Load the index from disk; null when absent/corrupt (caller should rebuild). */
+/** Load the index from disk; null when absent/corrupt/stale versus the log (caller should rebuild). */
 export function loadIndex(root: string): IssueIndex | null {
   try {
     const path = issuesIndexPath(root);
     if (!existsSync(path)) return null;
     const raw = JSON.parse(readFileSync(path, 'utf8')) as IssueIndex;
     if (raw.schemaVersion !== ISSUE_SCHEMA_VERSION || !Array.isArray(raw.records)) return null;
+    // Stale check: another process appended since this cache was written (or it predates stamps).
+    const stamp = logStamp(root);
+    if (stamp && (raw.logSize !== stamp.logSize || raw.logMtimeMs !== stamp.logMtimeMs)) return null;
     return raw;
   } catch {
     return null;
@@ -129,20 +163,30 @@ export function loadIndex(root: string): IssueIndex | null {
 
 /** Rebuild the index from the canonical log and persist it. The log is always authoritative. */
 export function rebuildIndex(root: string, now: string, appId?: string): IssueIndex {
+  // Stamp BEFORE reading: this may run outside the ledger lock (read paths), and a stamp taken after
+  // a concurrent append would bless records that don't include it. An early stamp only ever makes
+  // the cache look stale (one extra rebuild), never fresher than it is.
+  const stamp = logStamp(root);
   const events = readEvents(root);
   const records = rebuildRecords(events);
   const index: IssueIndex = { schemaVersion: ISSUE_SCHEMA_VERSION, updatedAt: now, appId, records };
-  if (events.length > 0) saveIndex(root, index);
+  if (events.length > 0) {
+    try {
+      saveIndex(root, index, stamp);
+    } catch {
+      /* cache write is best-effort — the log stays authoritative */
+    }
+  }
   return index;
 }
 
 /** Get the current index, rebuilding from the log when the cache is missing/stale/corrupt. */
 export function getIndex(root: string, now: string, appId?: string): IssueIndex {
-  const cached = loadIndex(root);
-  if (cached) return cached;
-  const events = readEvents(root);
-  if (events.length === 0) return emptyIndex(now, appId);
-  return rebuildIndex(root, now, appId);
+  const index = loadIndex(root) ?? (readEvents(root).length === 0 ? emptyIndex(now, appId) : rebuildIndex(root, now, appId));
+  // Enforce `suppressedUntil`: an expired suppression is shown in its pre-suppression lane from
+  // `now` on (the next event on the issue makes that durable in the log — see foldEvent).
+  index.records = index.records.map((r) => (suppressionExpired(r, now) ? liftSuppression(r) : r));
+  return index;
 }
 
 /**

@@ -13,7 +13,7 @@ import { qaOk, qaError, qaStop, qaAnnotate } from '../lib/result.js';
 import { parseFlow, type Flow, type FlowStep } from '../flows/schema.js';
 import { lintFlowObjectWithOptions } from '../flows/lint.js';
 import { runFlow } from '../flows/run.js';
-import { getDriver } from '../session/attach.js';
+import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import { loadPolicy } from '../report/policy.js';
 import { classifyFlakeResults } from '../report/flake.js';
 import { validateCiMutationPolicy, validateCiVariables } from '../ci/preflight.js';
@@ -27,19 +27,22 @@ import { compileAutomationPlan } from '../automation/plan.js';
 import { buildReadiness } from '../automation/report.js';
 import type { AutomationBackend } from '../automation/types.js';
 import type { SessionStore } from '../session/store.js';
+import { resolveProjectRoot } from '../context/projectRoot.js';
 
 const ALL_BACKENDS: AutomationBackend[] = ['android-direct', 'ios-raw-simulator', 'ios-wda', 'appium-uiautomator2', 'appium-xcuitest'];
 
 const STATUS_ICON: Record<string, string> = { ready: '✅', candidate: '🟡', blocked: '⛔' };
 
+export type FlowSourceErrorCode = 'FLOW_NOT_FOUND' | 'INVALID_ARGUMENT' | 'INVALID_FLOW';
+
 /** Resolve a flow's YAML from explicit text, an absolute/relative path, or a name under .swipium/flows. */
-function loadFlowSource(
+export function loadFlowSource(
   root: string | undefined,
   flow?: string,
   flowYaml?: string,
-): { yamlText?: string; source?: string; error?: string } {
+): { yamlText?: string; source?: string; error?: string; errorCode?: FlowSourceErrorCode } {
   if (flowYaml && flowYaml.trim()) return { yamlText: flowYaml, source: 'inline' };
-  if (!flow) return { error: 'Provide a flow name, a path, or flowYaml.' };
+  if (!flow) return { error: 'Provide a flow name, a path, or flowYaml.', errorCode: 'INVALID_ARGUMENT' };
   const candidates: string[] = [];
   if (isAbsolute(flow)) candidates.push(flow);
   else if (root) {
@@ -55,11 +58,39 @@ function loadFlowSource(
       try {
         return { yamlText: readFileSync(p, 'utf8'), source: p };
       } catch (e) {
-        return { error: `Could not read ${p}: ${String(e)}` };
+        return { error: `Could not read ${p}: ${String(e)}`, errorCode: 'INVALID_FLOW' };
       }
     }
   }
-  return { error: `Flow not found. Looked for: ${candidates.join(', ') || '(no project root)'}` };
+  return {
+    error: `Flow not found. Looked for: ${candidates.join(', ') || '(no project root — pass projectRoot or set SWIPIUM_PROJECT_ROOT)'}`,
+    errorCode: 'FLOW_NOT_FOUND',
+  };
+}
+
+/**
+ * The project root a flow tool reads from: explicit projectRoot arg → the session's root →
+ * resolveProjectRoot (MCP roots → SWIPIUM_PROJECT_ROOT/CLAUDE_PROJECT_DIR → cwd marker), like
+ * every other root-aware tool. Undefined only when nothing resolves (inline flowYaml still works).
+ */
+async function flowRoot(server: McpServer, sessionRoot: string | undefined, projectRoot?: string): Promise<string | undefined> {
+  if (!projectRoot && sessionRoot) return sessionRoot;
+  const resolved = await resolveProjectRoot(server, projectRoot);
+  return resolved.root ?? sessionRoot;
+}
+
+function flowSourceError(src: { error?: string; errorCode?: FlowSourceErrorCode }) {
+  return qaError({
+    what: src.error ?? 'Flow could not be loaded',
+    changedState: false,
+    retrySafe: true,
+    failureCode: src.errorCode ?? 'FLOW_NOT_FOUND',
+    nextSteps: [
+      src.errorCode === 'INVALID_ARGUMENT'
+        ? 'Pass flow="<name>" (under .swipium/flows), a .yaml path, or inline flowYaml.'
+        : 'Pass an existing flow name/path or inline flowYaml; pass projectRoot (or set SWIPIUM_PROJECT_ROOT) if the flow lives in another project.',
+    ],
+  });
 }
 
 const MUTATING_FLOW_STEPS = new Set<FlowStep['kind']>(['networkOffline', 'networkOnline', 'seed', 'restartApp']);
@@ -142,31 +173,21 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
     {
       title: 'Check a flow',
       description:
-        'Parse and statically validate a Swipium flow (a .swipium/flows/*.yaml authored as name + steps) WITHOUT running it. Reports syntax/schema errors with the offending step, plus warnings (e.g. selector resolvability is only known at run time). Provide `flow` (a name under .swipium/flows, or a path) or `flowYaml` (inline). A sessionId lets it resolve names against that session\'s project root. Related: qa_flow_check is the STATIC LINT of the YAML; qa_flow_run mode:"plan" is the read-only EXECUTION PREVIEW (which backends can run it, step-by-step support); qa_flow_run mode:"run" executes.',
+        'Statically validate a flow (.swipium/flows/*.yaml: name + steps) without running it: syntax/schema errors with the offending ' +
+        'step, plus warnings. Pass flow (name or path) or flowYaml. For an execution preview per backend use qa_flow_run mode:"plan".',
       inputSchema: {
         sessionId: z.string().optional(),
+        projectRoot: z.string().optional().describe('Absolute app root (default: session root → MCP roots → SWIPIUM_PROJECT_ROOT → cwd).'),
         flow: z.string().optional().describe('Flow name under .swipium/flows, or a path to a .yaml file.'),
         flowYaml: z.string().optional().describe('Inline flow YAML (instead of a file).'),
-        platform: z
-          .enum(['android', 'ios', 'cross-platform'])
-          .optional()
-          .describe('Optional authoring target for platform-aware warnings.'),
-        ci: z
-          .boolean()
-          .optional()
-          .describe('When true, add CI preflight warnings such as missing variables and mutating steps not allowed by policy.'),
+        platform: z.enum(['android', 'ios', 'cross-platform']).optional().describe('Authoring target for platform-aware warnings.'),
+        ci: z.boolean().optional().describe('Add CI preflight warnings (missing variables, mutating steps policy forbids).'),
       },
     },
-    async ({ sessionId, flow, flowYaml, platform, ci }) => {
-      const root = sessionId ? sessions.get(sessionId)?.root : undefined;
+    async ({ sessionId, projectRoot, flow, flowYaml, platform, ci }) => {
+      const root = await flowRoot(server, sessionId ? sessions.get(sessionId)?.root : undefined, projectRoot);
       const src = loadFlowSource(root, flow, flowYaml);
-      if (src.error)
-        return qaError({
-          what: src.error,
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Pass an existing flow name/path or inline flowYaml.'],
-        });
+      if (src.error) return flowSourceError(src);
 
       const { flow: parsed, errors } = parseFlow(src.yamlText!);
       if (errors.length || !parsed) {
@@ -175,6 +196,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
             what: `Flow is invalid (${errors.length} error${errors.length === 1 ? '' : 's'})`,
             changedState: false,
             retrySafe: true,
+            failureCode: 'INVALID_FLOW',
             nextSteps: ['Fix the listed errors and re-check.'],
           },
           { source: src.source, errors },
@@ -287,55 +309,28 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
     {
       title: 'Run a flow (or preview its execution plan)',
       description:
-        'Run a Swipium flow against the prepared app and report the result — or, with mode:"plan", preview the execution WITHOUT touching a device. mode:"run" (default) drives steps server-side: tap/tapAt/tapImage, inputText (incl. { into, text } to focus a named field), assertVisible/assertNotVisible/assertImage/assertVisual/assertDiff, swipe (device-relative { direction, area, distance }), scrollTo, press, openUrl, wait/waitForIdle/waitForVisible, clearOverlay, networkOffline/Online, restartApp, seed, note, screenshot — with optional setup/teardown (teardown always runs) and flow mode structured|visual|auto. Fail-fast, NO auto-retry of mutating steps; on failure returns the exact failing step + screenshot + typed failureCode + health. mode:"plan" (read-only) compiles the flow into a deterministic backend-specific automation plan: per backend, can it run, each step classified native | supported_with_fallback | visual_only | unsupported with the missing capability, and an agent-repeatable ready | candidate | blocked message. Provide `flow` (name/path) or `flowYaml`, plus `variables` for any ${VAR}. Related: qa_flow_check is the STATIC LINT of the YAML; mode:"plan" here is the read-only execution preview.',
+        'Run a flow on the prepared app (mode:"run", default) or preview it without a device (mode:"plan"). run executes steps ' +
+        'server-side with setup/teardown, fail-fast, no auto-retry of mutating steps (consent-gated, like OCR steps); a failure ' +
+        'returns the step, screenshot, failureCode, and health. plan reports, per backend (Android, iOS simulator, iOS WDA, ' +
+        'Appium), whether each step is native / fallback / visual_only / unsupported. Pass flow (name/path) or flowYaml, plus ' +
+        'variables for ${VAR}. Steps: docs/tools.md#flow-steps.',
       inputSchema: {
-        mode: z
-          .enum(['plan', 'run'])
-          .optional()
-          .describe(
-            "run (default): execute the flow on the session's prepared device. plan: READ-ONLY execution preview — no device is touched; compiles the flow against backend capabilities (Android direct, iOS raw simulator, iOS WDA, Appium UiAutomator2/XCUITest) and reports what would run, what falls back, and what is blocked.",
-          ),
-        sessionId: z
+        mode: z.enum(['plan', 'run']).optional(),
+        sessionId: z.string().optional().describe('Required for run; plan: resolves names + marks the attached backend.'),
+        projectRoot: z
           .string()
           .optional()
-          .describe(
-            'REQUIRED for mode:"run" (needs a prepared device). Optional for mode:"plan" — it resolves flow names against the session\'s project root and marks the attached backend.',
-          ),
-        flow: z.string().optional().describe('Flow name under .swipium/flows, or a path to a .yaml file.'),
-        flowYaml: z.string().optional().describe('Inline flow YAML (instead of a file).'),
-        variables: z
-          .record(z.string())
-          .optional()
-          .describe(
-            '(mode:"run" only) Values for ${VAR} placeholders (merged over process.env). Credential-looking names are auto-redacted.',
-          ),
-        repeat: z
-          .number()
-          .int()
-          .min(1)
-          .max(10)
-          .optional()
-          .describe(
-            '(mode:"run" only) Run the flow N times for flake detection (default 1). Reports pass-rate + a deterministic-pass | deterministic-fail | flaky classification.',
-          ),
-        consentId: z
-          .string()
-          .optional()
-          .describe(
-            '(mode:"run" only) Consent token returned when the flow contains mutating steps or external visual-provider steps such as OCR.',
-          ),
-        approve: z
-          .boolean()
-          .optional()
-          .describe(
-            '(mode:"run" only) Set true with consentId to execute after reviewing the exact flow hash, mutation list, and external provider command if present.',
-          ),
+          .describe('plan: absolute app root for flow names (default: session root → MCP roots → env → cwd).'),
+        flow: z.string().optional().describe('Flow name under .swipium/flows, or a .yaml path.'),
+        flowYaml: z.string().optional().describe('Inline flow YAML.'),
+        variables: z.record(z.string()).optional().describe('run: ${VAR} values (over process.env); credential-like names redacted.'),
+        repeat: z.number().int().min(1).max(10).optional().describe('run: repeat N times for flake classification (default 1).'),
+        consentId: z.string().optional().describe('run: consent for mutating / OCR steps.'),
+        approve: z.boolean().optional(),
         backend: z
           .enum(['android-direct', 'ios-raw-simulator', 'ios-wda', 'appium-uiautomator2', 'appium-xcuitest'])
           .optional()
-          .describe(
-            '(mode:"plan" only) Plan only for this backend. Omit to plan across all five (the pre-run "can this run on Android and iOS?" answer).',
-          ),
+          .describe('plan: only this backend (default all five).'),
         appium: z
           .object({
             automationName: z.string().optional(),
@@ -343,12 +338,10 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
             webviewContextsAvailable: z.boolean().optional(),
           })
           .optional()
-          .describe(
-            '(mode:"plan" only) Appium session hints that refine the Appium backend capability picture (driver family, WebView contexts).',
-          ),
+          .describe('plan: Appium session hints.'),
       },
     },
-    async ({ mode, sessionId, flow, flowYaml, variables, repeat, consentId, approve, backend, appium }) => {
+    async ({ mode, sessionId, projectRoot, flow, flowYaml, variables, repeat, consentId, approve, backend, appium }) => {
       const effectiveMode = mode ?? 'run';
       const notes: string[] = [];
 
@@ -364,18 +357,9 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
           notes.push(`ignored parameter(s) not applicable to mode:"plan": ${ignored.join(', ')} — re-run with mode:"run" to execute`);
 
         const session = sessionId ? sessions.get(sessionId) : undefined;
-        const root = session?.root;
+        const root = await flowRoot(server, session?.root, projectRoot);
         const src = loadFlowSource(root, flow, flowYaml);
-        if (src.error)
-          return qaAnnotate(
-            qaError({
-              what: src.error,
-              changedState: false,
-              retrySafe: true,
-              nextSteps: ['Pass an existing flow name/path or inline flowYaml.'],
-            }),
-            notes,
-          );
+        if (src.error) return qaAnnotate(flowSourceError(src), notes);
 
         const { flow: parsed, errors } = parseFlow(src.yamlText!);
         if (errors.length || !parsed) {
@@ -385,6 +369,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
                 what: `Flow is invalid (${errors.length} error${errors.length === 1 ? '' : 's'}) — run qa_flow_check`,
                 changedState: false,
                 retrySafe: true,
+                failureCode: 'INVALID_FLOW',
                 nextSteps: ['Fix the listed errors and re-plan.'],
               },
               { source: src.source, errors },
@@ -442,13 +427,19 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
       }
 
       // ---- mode:"run" — execute on the prepared device. ----
-      const runIgnored = [backend !== undefined && 'backend', appium !== undefined && 'appium'].filter((x): x is string => !!x);
+      const runIgnored = [
+        backend !== undefined && 'backend',
+        appium !== undefined && 'appium',
+        projectRoot !== undefined && 'projectRoot',
+      ].filter((x): x is string => !!x);
       if (runIgnored.length)
         notes.push(`ignored parameter(s) not applicable to mode:"run": ${runIgnored.join(', ')} — they refine the mode:"plan" preview`);
 
       const session = sessionId ? sessions.get(sessionId) : undefined;
-      const { driver } = session ? await getDriver(session) : { driver: undefined };
+      const { driver, blocked } = session ? await getDriver(session) : { driver: undefined, blocked: undefined };
       if (!session || !driver) {
+        const refused = blockedDeviceResult(blocked);
+        if (refused) return qaAnnotate(refused, notes);
         return qaAnnotate(
           qaError({
             what: sessionId
@@ -463,16 +454,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
       }
 
       const src = loadFlowSource(session.root, flow, flowYaml);
-      if (src.error)
-        return qaAnnotate(
-          qaError({
-            what: src.error,
-            changedState: false,
-            retrySafe: true,
-            nextSteps: ['Pass an existing flow name/path or inline flowYaml.'],
-          }),
-          notes,
-        );
+      if (src.error) return qaAnnotate(flowSourceError(src), notes);
       const { flow: parsed, errors } = parseFlow(src.yamlText!);
       if (errors.length || !parsed) {
         return qaAnnotate(
@@ -481,6 +463,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
               what: `Flow is invalid — run qa_flow_check first`,
               changedState: false,
               retrySafe: true,
+              failureCode: 'INVALID_FLOW',
               nextSteps: ['Fix the flow and re-run.'],
             },
             { errors },

@@ -19,25 +19,16 @@ export function registerBundletool(server: McpServer, sessions: SessionStore): v
     {
       title: 'Convert .aab → installable .apk',
       description:
-        'Convert an Android App Bundle (.aab) into an installable APK set using bundletool, cached under .swipium/artifacts/. An .aab is NOT directly installable — this is the conversion step before qa_prepare_target. Default mode builds a UNIVERSAL .apk (works on any device). Pass connectedDevice:true to build a DEVICE-SPECIFIC APK set (--connected-device) and install:true to push it via bundletool install-apks. Uses the debug keystore by default (emulator/dev OK). Returns typed blockers (BUNDLETOOL_MISSING/AAB_NEEDS_BUNDLETOOL, AAB_BUILD_APKS_FAILED, AAB_DEVICE_SPEC_FAILED, AAB_INSTALL_FAILED, ANDROID_SIGNING_FAILED). Runs as a job; poll qa_job_status.',
+        'Convert an .aab (not directly installable) into an installable APK with bundletool, cached under .swipium/artifacts/, before ' +
+        'qa_prepare_target. Default: a universal .apk (debug keystore). connectedDevice:true builds a device-specific APK set; ' +
+        'install:true also installs it (consent-gated). Runs as a job; typed blockers (BUNDLETOOL_MISSING, AAB_BUILD_APKS_FAILED, …).',
       inputSchema: {
         sessionId: z.string(),
-        aab: z.string().optional().describe('Path to the .aab (default: the best .aab resolved under the project).'),
-        force: z.boolean().optional().describe('Rebuild even if a cached APK/APK set exists.'),
-        connectedDevice: z
-          .boolean()
-          .optional()
-          .describe('Build a device-specific APK set for a connected device (bundletool --connected-device) instead of a universal APK.'),
-        install: z
-          .boolean()
-          .optional()
-          .describe(
-            'With connectedDevice, also install the APK set on the device (bundletool install-apks). Requires an online adb device. Consent-gated (installs app code on a real device/emulator).',
-          ),
-        device: z
-          .string()
-          .optional()
-          .describe('adb serial to target for connectedDevice build/install (defaults to the only connected device).'),
+        aab: z.string().optional().describe('Default: the best .aab in the project.'),
+        force: z.boolean().optional().describe('Rebuild even if cached.'),
+        connectedDevice: z.boolean().optional().describe('Device-specific APK set (--connected-device).'),
+        install: z.boolean().optional().describe('With connectedDevice: install-apks on the device (consent-gated).'),
+        device: z.string().optional().describe('adb serial (default: the only connected device).'),
         consentId: z.string().optional(),
         approve: z.boolean().optional(),
       },

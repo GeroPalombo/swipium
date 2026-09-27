@@ -18,28 +18,20 @@ export function registerNote(server: McpServer, sessions: SessionStore): void {
     {
       title: 'Record a test outcome',
       description:
-        'Record a STRUCTURED test outcome for one workflow so the report is honest about what was and was not verified. Use outcome="blocked" with a missingPrecondition (e.g. "no saved flight exists") instead of reporting a false failure; "not_applicable" when the workflow does not apply; "skipped" when intentionally not run. Set category to classify (app_bug | mcp_limitation | missing_test_data | intentionally_skipped | destructive_refused | other). Attach artifactUris (screenshots/dumps) as evidence.',
+        'Record a structured outcome for one workflow so the report is honest about what was verified. Use outcome:"blocked" ' +
+        'with missingPrecondition instead of a false failure; category (why) is independent of outcome. Attach evidence in ' +
+        'artifactUris; for a screenshot-verified check use qa_visual mode:"assert".',
       inputSchema: {
         sessionId: z.string(),
-        workflow: z.string().describe('the workflow/test this outcome is about, e.g. "Delete saved flight"'),
-        outcome: z.enum(OUTCOMES).describe('WHAT happened (independent of category).'),
-        category: z
-          .enum(CATEGORIES)
-          .optional()
-          .describe(
-            'WHY / classification — an INDEPENDENT axis from outcome (e.g. a not_applicable outcome may be category=intentionally_skipped). The report cross-tabs the two; they are not folded together.',
-          ),
+        workflow: z.string().describe('e.g. "Delete saved flight"'),
+        outcome: z.enum(OUTCOMES),
+        category: z.enum(CATEGORIES).optional(),
         reason: z.string().optional(),
-        missingPrecondition: z.string().optional().describe('what state was required but absent, e.g. "no saved flight exists"'),
-        requiredState: z.string().optional().describe('the state the test needs, e.g. "at least one saved flight"'),
-        recommendedSetup: z.string().optional().describe('how to satisfy the precondition next time'),
+        missingPrecondition: z.string().optional().describe('e.g. "no saved flight exists"'),
+        requiredState: z.string().optional(),
+        recommendedSetup: z.string().optional(),
         artifactUris: z.array(z.string()).optional(),
-        verifiedVisually: z
-          .boolean()
-          .optional()
-          .describe(
-            'pass was confirmed from a screenshot (animated/map/canvas screen with no structured tree) — counts as a real pass, not a weak one. Attach the screenshot in artifactUris.',
-          ),
+        verifiedVisually: z.boolean().optional().describe('The pass was confirmed from an attached screenshot.'),
       },
     },
     async ({

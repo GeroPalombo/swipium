@@ -4,12 +4,26 @@
 // wrapper around generateSessionReport().
 
 import { existsSync, writeFileSync } from 'node:fs';
-import { makeRedactor } from '../lib/redact.js';
+import { makeRedactor, redactDeep } from '../lib/redact.js';
+import { dedupeFindings, repeatSuffix } from '../report/findingsDedupe.js';
+import { toolVerdictFor } from '../report/toolHealth.js';
 import { getDriver } from '../session/attach.js';
 import { restoreNetwork } from '../tools/network.js';
 import { releaseAssessment } from '../report/summary.js';
 import { FAILURES, failureForFindingKind, bucketForNoteCategory, ALL_BUCKETS, type FailureBucket } from '../oracle/failures.js';
-import { inlinePrSummary, toMarkdown, toJUnit, toPlaywrightJson, type ReportData } from '../report/export.js';
+import {
+  inlinePrSummary,
+  redactReportData,
+  reportPolicyVerdicts,
+  toGithubSummary,
+  toJUnit,
+  toMarkdown,
+  toPlaywrightJson,
+  toSarif,
+  type ReportData,
+} from '../report/export.js';
+import { applyPolicy, loadPolicy as loadReleasePolicy, type PolicyDecision } from '../report/policy.js';
+import { resolveSarifSources } from '../report/sarifSources.js';
 import { generateFlow } from '../flows/generate.js';
 import { loadProjectConfig } from '../cli/scan.js';
 import { activeRecording } from '../tools/screenRecord.js';
@@ -49,7 +63,7 @@ import { applyMerge, loadSuite, suiteDelta, runIdFromNow } from '../testSuite/st
 import type { ReplayStatus } from '../testSuite/schema.js';
 import type { Session, SessionStore } from '../session/store.js';
 
-export type ReportFormat = 'summary' | 'markdown' | 'json' | 'junit' | 'flow' | 'playwright';
+export type ReportFormat = 'summary' | 'markdown' | 'json' | 'junit' | 'sarif' | 'github-summary' | 'flow' | 'playwright';
 
 /** Render an *Ms structured value as human-readable seconds for text summaries. */
 function secText(ms: number | null | undefined): string {
@@ -113,6 +127,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
 
   const finalNetwork = driver ? ((await driver.airplaneOn().catch(() => false)) ? 'offline' : 'online') : 'unknown';
   const high = session.findings.filter((f) => f.severity === 'high');
+  const uniqueFindings = dedupeFindings(session.findings);
 
   const nativeFindings = session.findings.filter((f) => f.layer === 'native');
   const appFindings = session.findings.filter((f) => f.layer === 'app');
@@ -309,14 +324,9 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     }
     return { status: 'COVERED', summary: 'Structured smoke/workflow evidence was collected.' };
   })();
-  const toolVerdict = (() => {
-    if (toolLimitationNotes.length === 0) return { status: 'PASS', summary: 'No Swipium/MCP limitations recorded in this run.' };
-    const first = toolLimitationNotes[0];
-    return {
-      status: 'BLOCKED',
-      summary: `${toolLimitationNotes.length} workflow(s) limited by Swipium/MCP capabilities (for example ${first.workflow}${first.reason ? `: ${redact(first.reason) ?? first.reason}` : ''}). These are tool limitations, not app defects.`,
-    };
-  })();
+  // Tool status reflects recorded tool errors (WDA 404, UNKNOWN…) as well as mcp_limitation notes —
+  // never "PASS" after tool errors. Tool health only: it does not change the app verdict.
+  const toolVerdict = toolVerdictFor(toolLimitationNotes, session.toolErrors, redact);
 
   // Single product-facing QA level (Deliverable 6 / §3.11). Derived from the same evidence the
   // report already trusts: readiness labels and health. Honest by construction.
@@ -353,7 +363,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
       method: n.method,
       verifiedVisually: n.verifiedVisually,
     })),
-    findings: session.findings.map((f) => ({ kind: f.kind, severity: f.severity, detail: redact(f.detail) ?? f.detail })),
+    findings: uniqueFindings.map((f) => ({ kind: f.kind, severity: f.severity, detail: redact(f.detail) ?? f.detail })),
     exploration: session.exploration
       ? {
           screensVisited: session.exploration.summary.screensVisited,
@@ -392,7 +402,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
       });
       const applied = applyMerge(
         session.root,
-        incoming,
+        redactDeep(incoming, redact), // defense in depth: no registered secret reaches test-suite.json / TC-*.yaml
         { source: 'report', mode: 'update', now, runId: runIdFromNow(now) },
         appId ?? undefined,
       );
@@ -423,6 +433,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   }
 
   const screenshots = session.artifacts.filter((art) => art.kind === 'screenshot');
+  const toolErrors = session.toolErrors ?? [];
   const report = {
     sessionId: session.id,
     executiveSummary,
@@ -448,6 +459,8 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     })),
     workaroundsAttempted: session.workarounds,
     inputsProvided: session.inputs.map((i) => ({ varName: i.varName, secret: i.secret, source: i.source })),
+    // SWIP-13: disclose degraded redaction after a server restart (secrets are never persisted).
+    redactionDegraded: session.redactionDegraded === true,
     generatedValues: session.generatedValues.map((g) => ({
       ...g,
       value: g.secret ? '<redacted>' : redact(g.value),
@@ -460,7 +473,8 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     finalNetwork,
     networkRestore: networkRestore ?? (session.network ? 'no change pending' : 'unchanged'),
     activeRecording: activeRecording(session.id) ?? null,
-    findings: session.findings.map((f) => {
+    // Identical findings (same code/kind + screen + message) collapse into one entry with a count.
+    findings: dedupeFindings(session.findings).map((f) => {
       const code = (f.failureCode as keyof typeof FAILURES) ?? failureForFindingKind(f.kind);
       const info = FAILURES[code] ?? FAILURES.UNKNOWN;
       return {
@@ -473,6 +487,8 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
         evidence: f.evidence ? redact(f.evidence) : undefined,
       };
     }),
+    findingOccurrences: session.findings.length,
+    toolErrors: toolErrors.slice(-50).map((t) => ({ ...t, message: redact(t.message) ?? t.message })),
     highSeverityCount: high.length,
     nativeHealth,
     appHealth,
@@ -632,6 +648,14 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     /* best-effort — issue ledger is additive, never blocks the report */
   }
 
+  // B9: deep-redact the WHOLE report (steps, nextStep, missingPrecondition, workflow names, issue
+  // markdown, …) with the session redactor before it is persisted or rendered into any export —
+  // escaping in JUnit/SARIF/Markdown would otherwise turn a secret into text redaction can't match.
+  // Replace the fields rather than merge: a top-level key that itself redacts to a different
+  // spelling must not survive in its raw form next to the redacted copy.
+  const redactedReport = redactReportData(report as Record<string, unknown>, redact);
+  for (const k of Object.keys(report)) delete (report as Record<string, unknown>)[k];
+  Object.assign(report, redactedReport);
   const prSummary = { text: inlinePrSummary(report as unknown as ReportData) };
   (report as Record<string, unknown>).prSummary = prSummary;
   const reportUri = sessions.saveArtifact(
@@ -683,6 +707,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
         const gen = generateFlow(session.recordedActions, {
           name: `${(appId ?? 'app').split('.').pop()}-recorded`,
           appId: appId ?? undefined,
+          secrets: session.secrets,
         });
         exportUri = sessions.saveArtifact(
           session,
@@ -695,9 +720,41 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
       }
     } else {
       const data = report as unknown as ReportData;
-      const body = format === 'markdown' ? toMarkdown(data) : format === 'playwright' ? toPlaywrightJson(data) : toJUnit(data);
-      const ext = format === 'markdown' ? 'md' : format === 'playwright' ? 'playwright.json' : 'xml';
-      const mime = format === 'markdown' ? 'text/markdown' : format === 'playwright' ? 'application/json' : 'application/xml';
+      // CI formats (junit/sarif/github-summary) carry a release-gate verdict: map the report's
+      // failures onto policy FlowVerdicts, then let .swipium/policy.json (blockOn/warnOn/
+      // ignoreKnown) decide pass/fail. With no policy file, ANY failure blocks (applyPolicy).
+      const ciFormat = format === 'junit' || format === 'sarif' || format === 'github-summary';
+      const policy: PolicyDecision | undefined = ciFormat
+        ? applyPolicy(reportPolicyVerdicts(data), loadReleasePolicy(session.root))
+        : undefined;
+      const body =
+        format === 'markdown'
+          ? toMarkdown(data)
+          : format === 'playwright'
+            ? toPlaywrightJson(data)
+            : format === 'sarif'
+              ? toSarif(data, policy, { sources: resolveSarifSources(session.root, data) })
+              : format === 'github-summary'
+                ? toGithubSummary(data, policy)
+                : toJUnit(data, policy);
+      const ext =
+        format === 'markdown'
+          ? 'md'
+          : format === 'playwright'
+            ? 'playwright.json'
+            : format === 'sarif'
+              ? 'sarif.json'
+              : format === 'github-summary'
+                ? 'summary.md'
+                : 'xml';
+      const mime =
+        format === 'markdown' || format === 'github-summary'
+          ? 'text/markdown'
+          : format === 'playwright'
+            ? 'application/json'
+            : format === 'sarif'
+              ? 'application/sarif+json'
+              : 'application/xml';
       exportUri = sessions.saveArtifact(session, 'report', `report-${Date.now()}.${ext}`, body, mime);
     }
   }
@@ -753,6 +810,9 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     session.inputs.length
       ? `inputs provided (redacted): ${session.inputs.map((i) => `${i.varName}${i.secret ? '🔒' : ''}`).join(', ')}`
       : '',
+    session.redactionDegraded
+      ? '⚠ redaction degraded: this session was restored after a server restart — secrets registered before the restart are no longer in the redaction set, so artifacts written since may contain those values unredacted'
+      : '',
     session.generatedValues.length
       ? `generated test data: ${session.generatedValues.map((g) => `${g.fixture}.${g.field}=${g.secret ? '<redacted>' : redact(g.value)} (${g.generator})`).join(', ')}`
       : '',
@@ -769,7 +829,12 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     wdaReport
       ? `wda: ${wdaReport.status.reachable ? 'reachable' : 'unreachable'} ${wdaReport.webDriverAgentUrl} device=${wdaReport.device ?? 'unknown'}`
       : '',
-    `findings: ${session.findings.length} (high: ${high.length})`,
+    `findings: ${uniqueFindings.length} unique (${session.findings.length} occurrence(s), high: ${high.length})`,
+    toolErrors.length
+      ? `tool errors: ${toolVerdict.toolErrorCount} — ${Object.entries(toolVerdict.toolErrorsByCode)
+          .map(([c, n]) => `${c}×${n}`)
+          .join(', ')}`
+      : '',
     totalFailures
       ? `failures by bucket: ${ALL_BUCKETS.filter((b) => bucketCounts[b])
           .map((b) => `${b}=${bucketCounts[b]}`)
@@ -778,9 +843,9 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     notes.length
       ? `evidence taxonomy: structured=${evidenceTaxonomy.counts.structured_locator} ocr=${evidenceTaxonomy.counts.ocr_locator} visual=${evidenceTaxonomy.counts.visual_match} ai_visual=${evidenceTaxonomy.counts.ai_visual_evidence} manual=${evidenceTaxonomy.counts.manual_review} calibration=${evidenceTaxonomy.calibration.status}`
       : '',
-    ...session.findings.map(
+    ...uniqueFindings.map(
       (f) =>
-        `  [${f.severity}] ${f.layer ?? '?'}/${f.kind}: ${redact(f.detail)}${f.evidence ? ` — "${redact(f.evidence)}"` : ''}${f.screenshotUri ? ` (${f.screenshotUri})` : ''}`,
+        `  [${f.severity}] ${f.layer ?? '?'}/${f.kind}: ${redact(f.detail)}${f.evidence ? ` — "${redact(f.evidence)}"` : ''}${f.screenshotUri ? ` (${f.screenshotUri})` : ''}${repeatSuffix(f)}`,
     ),
     notes.length
       ? `test outcomes: ${Object.entries(outcomeTally)
@@ -814,7 +879,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     reportLinks,
     exportUri,
     exportFormat: exportUri ? format : undefined,
-    summaryText: lines.join('\n'),
+    summaryText: redact(lines.join('\n')) ?? '',
     flowExportSkipped,
   };
 }

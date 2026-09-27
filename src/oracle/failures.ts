@@ -63,8 +63,12 @@ export type FailureCode =
   | 'ARTIFACT_PATH_UNWRITABLE'
   | 'REPORT_UPLOAD_SKIPPED'
   | 'SECRET_ARTIFACT_IN_EVIDENCE'
+  | 'SECRET_IN_GENERATED_OUTPUT'
   | 'VISUAL_MASKING_STATUS_MISSING'
   | 'EVIDENCE_RETENTION_UNDECLARED'
+  | 'OCR_NOT_CONFIGURED'
+  | 'OCR_PROVIDER_FAILED'
+  | 'FLOW_NOT_FOUND'
   // missing_data
   | 'AUTH_GATE'
   | 'MISSING_FIXTURE'
@@ -81,6 +85,7 @@ export type FailureCode =
   | 'ELEMENT_NOT_FOUND'
   | 'ELEMENT_NOT_HITTABLE'
   | 'KEYBOARD_OBSTRUCTION'
+  | 'KEYBOARD_NOT_DISMISSIBLE'
   | 'TEXT_INPUT_UNSUPPORTED'
   | 'WEBVIEW_UNAVAILABLE'
   | 'ANIMATION_IDLE_BLOCKED'
@@ -93,10 +98,18 @@ export type FailureCode =
   | 'DESTRUCTIVE_REFUSED'
   | 'GIT_SCOPE_FORBIDDEN'
   | 'UNSAFE_ACTION_REFUSED'
+  | 'CONSENT_DECLINED'
+  | 'CONSENT_CANCELLED'
+  | 'CONSENT_REFUSED'
+  | 'PHYSICAL_DEVICE_UNSUPPORTED'
+  | 'VISUAL_PATH_REFUSED'
+  | 'CAPTURE_WITHHELD_SECURE'
+  | 'SENSITIVE_MODE_REFUSED'
   // --- roadmap §10: project detection ---
   | 'NOT_MOBILE_PROJECT'
   | 'MONOREPO_TARGET_AMBIGUOUS'
   | 'PROJECT_ROOT_EMPTY'
+  | 'PROJECT_ROOT_UNRESOLVED'
   | 'UNSUPPORTED_FRAMEWORK'
   // --- roadmap §10: artifact resolution / install ---
   | 'NO_BUILD_ARTIFACT'
@@ -142,6 +155,15 @@ export type FailureCode =
   | 'VISUAL_ONLY_ASSERTION'
   | 'AUTH_REQUIRED'
   | 'MISSING_TEST_DATA'
+  // --- tool-local codes (issue ledger, app map, generators, argument validation) ---
+  | 'ISSUE_LOG_TOO_VAGUE'
+  | 'ISSUE_NOT_FOUND'
+  | 'ISSUE_STATE_INVALID'
+  | 'ISSUE_EVIDENCE_REQUIRED'
+  | 'NO_APP_MAP'
+  | 'NO_RECORDED_ACTIONS'
+  | 'UNEMITTABLE_STEP'
+  | 'INVALID_ARGUMENT'
   // fallback
   | 'UNKNOWN';
 
@@ -457,6 +479,15 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     summary: 'CI report upload or publication was skipped',
     recovery: 'Use if: always()/equivalent artifact upload steps and upload the full Swipium run directory even when tests fail.',
   },
+  SECRET_IN_GENERATED_OUTPUT: {
+    bucket: 'unsafe_refused',
+    severity: 'high',
+    retrySafe: false,
+    owner: 'swipium',
+    summary: 'Generated test asset would contain a registered secret value in plaintext — nothing was written',
+    recovery:
+      'Report this as a Swipium bug (the recorded step should have become a ${VAR}); meanwhile re-record the credential step through a secure field or provide it via qa_continue_from_blocker so it is recorded as a variable.',
+  },
   SECRET_ARTIFACT_IN_EVIDENCE: {
     bucket: 'unsafe_refused',
     severity: 'high',
@@ -504,15 +535,42 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     retrySafe: false,
     summary: 'Required secret or flow variable is missing',
     recovery:
-      'Provide the variable through the CI environment, --secret-file, SWIPIUM_SECRET_FILE, or .swipium/secrets.json; never inline secrets in flows.',
+      'Provide the variable as an environment variable of the Swipium server/CI job (e.g. SWIPIUM_TEST_PASSWORD), or answer the needs_input question via qa_continue_from_blocker; never inline secrets in flows.',
   },
 
+  OCR_NOT_CONFIGURED: {
+    bucket: 'environment',
+    severity: 'low',
+    retrySafe: false,
+    owner: 'user',
+    summary: 'No local OCR provider is configured (none is bundled)',
+    recovery:
+      'Set ocrCommand in .swipium/config.json (argv array with an {image} placeholder) or SWIPIUM_OCR_CMD; the command must print JSON regions [{text, confidence 0..1, bbox:{x,y,width,height} in screenshot px}]. Or use qa_visual mode:"find_image".',
+  },
+  OCR_PROVIDER_FAILED: {
+    bucket: 'environment',
+    severity: 'medium',
+    retrySafe: false,
+    owner: 'user',
+    summary: 'The configured OCR/visual-mask provider exited non-zero or timed out (its result was not trusted as "text not found")',
+    recovery:
+      'Read the returned exitCode + stderr, run the provider standalone from the project root on a PNG, and fix it (missing tesseract, bad script path, Python error). Relative argv paths resolve against the project root.',
+  },
+  FLOW_NOT_FOUND: {
+    bucket: 'environment',
+    severity: 'low',
+    retrySafe: true,
+    owner: 'user',
+    summary: 'The named flow file does not exist under the resolved project root',
+    recovery:
+      'Pass an existing flow name (.swipium/flows/<name>.yaml) or path, inline flowYaml, or projectRoot / sessionId so the flow can be resolved (SWIPIUM_PROJECT_ROOT also works).',
+  },
   VISUAL_ONLY_SCREEN: {
     bucket: 'mcp_limitation',
     severity: 'low',
     retrySafe: false,
     summary: 'Screen has no usable UI tree (canvas/map/webview)',
-    recovery: 'Use qa_screenshot, coordinate taps, and qa_assert_visual.',
+    recovery: 'Use qa_screenshot, coordinate taps, and qa_visual mode:"assert".',
   },
   VISUAL_LOCATOR_DRIFT: {
     bucket: 'mcp_limitation',
@@ -583,7 +641,16 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     severity: 'low',
     retrySafe: true,
     summary: 'Keyboard is covering the target',
-    recovery: 'Dismiss the keyboard or press enter/back before interacting with the covered element.',
+    recovery:
+      'qa_act already tried hiding the keyboard, so it could not be hidden or the target is still covered — submit (press enter), scroll the target above the keyboard, or qa_clear_overlay hide_keyboard, then retry.',
+  },
+  KEYBOARD_NOT_DISMISSIBLE: {
+    bucket: 'mcp_limitation',
+    severity: 'low',
+    retrySafe: false,
+    summary: 'The soft keyboard is up and the backend could not dismiss it',
+    recovery:
+      'The app offers no generic dismiss (e.g. WDA "Did not know how to dismiss the keyboard"): submit with qa_act press key:"enter", tap outside the field (qa_clear_overlay strategy:"tap_outside") or the app\'s own Done button, then retry.',
   },
   TEXT_INPUT_UNSUPPORTED: {
     bucket: 'mcp_limitation',
@@ -633,7 +700,7 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     retrySafe: false,
     summary: 'Operation not supported by the current backend',
     recovery:
-      'For structured iOS tap/type/snapshot, attach WebDriverAgent with qa_wda. Without WDA, use qa_assert_visual and qa_ios lifecycle/deep links.',
+      'For structured iOS tap/type/snapshot, attach WebDriverAgent with qa_wda. Without WDA, use qa_visual mode:"assert" and qa_ios lifecycle/deep links.',
   },
 
   BUNDLE_LOSS_REFUSED: {
@@ -666,6 +733,64 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     summary: 'Refused an unsafe action (purchase/delete/send) during exploration',
     recovery: 'Expected guardrail — explicitly allow this action class (e.g. allowDestructive) only if you intend its side effect.',
   },
+  CONSENT_DECLINED: {
+    bucket: 'unsafe_refused',
+    severity: 'low',
+    retrySafe: false,
+    owner: 'user',
+    summary: 'The user declined a consent prompt (MCP elicitation) — nothing ran',
+    recovery: 'Expected guardrail — do not retry; ask the user before attempting the action again.',
+  },
+  CONSENT_CANCELLED: {
+    bucket: 'unsafe_refused',
+    severity: 'low',
+    retrySafe: true,
+    owner: 'user',
+    summary: 'A consent prompt was dismissed, timed out, or failed — treated as a refusal; nothing ran',
+    recovery: 'Re-call the tool (without consentId) to show the user a fresh consent prompt.',
+  },
+  CONSENT_REFUSED: {
+    bucket: 'unsafe_refused',
+    severity: 'low',
+    retrySafe: false,
+    owner: 'user',
+    summary: 'SWIPIUM_REQUIRE_ELICITATION=1 refused a consent-gated action because the client cannot elicit',
+    recovery: 'Connect with an MCP client that supports elicitation, or unset SWIPIUM_REQUIRE_ELICITATION.',
+  },
+  VISUAL_PATH_REFUSED: {
+    bucket: 'unsafe_refused',
+    severity: 'medium',
+    retrySafe: false,
+    summary: 'Visual baseline name or template path escapes the allowed directory',
+    recovery:
+      'Use a plain baseline name matching [A-Za-z0-9._-]{1,64} (no leading dot) and a find_image template inside the project root or a swipium:// artifact URI from this session.',
+  },
+  SENSITIVE_MODE_REFUSED: {
+    bucket: 'unsafe_refused',
+    severity: 'low',
+    retrySafe: false,
+    owner: 'user',
+    summary: 'Pixel/video/log capture refused because the session was started in sensitive mode',
+    recovery:
+      'Expected guardrail: rely on structured snapshot + health (no screen contents), or start a non-sensitive session (omit sensitive:true) to capture pixels/logs.',
+  },
+  CAPTURE_WITHHELD_SECURE: {
+    bucket: 'unsafe_refused',
+    severity: 'low',
+    retrySafe: false,
+    summary: 'Screen capture withheld because a secure field (password/OTP) is on screen',
+    recovery:
+      'Expected guardrail (pixels cannot be redacted): capture a non-sensitive screen, or pass force:true only if the artifact may contain the secret.',
+  },
+  PHYSICAL_DEVICE_UNSUPPORTED: {
+    bucket: 'unsafe_refused',
+    severity: 'low',
+    retrySafe: false,
+    owner: 'user',
+    summary: 'A physical device is visible but Swipium is simulator/emulator-only by policy',
+    recovery:
+      'Expected scope guardrail (THREAT_MODEL.md non-goals, docs/physical-devices.md) — real devices carry real user data. Test on an emulator/simulator, or unplug the device if it was selected by accident.',
+  },
 
   // --- roadmap §10: project detection ---
   NOT_MOBILE_PROJECT: {
@@ -691,6 +816,14 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     owner: 'user',
     summary: 'Project root is empty',
     recovery: 'Run inside a project directory or pass projectRoot to a real app.',
+  },
+  PROJECT_ROOT_UNRESOLVED: {
+    bucket: 'environment',
+    severity: 'high',
+    retrySafe: true,
+    owner: 'user',
+    summary: 'Could not resolve a project root (no projectRoot arg, MCP roots, SWIPIUM_PROJECT_ROOT, or usable cwd)',
+    recovery: 'Pass projectRoot="/absolute/path/to/app", or set SWIPIUM_PROJECT_ROOT in the MCP server env.',
   },
   UNSUPPORTED_FRAMEWORK: {
     bucket: 'environment',
@@ -1026,7 +1159,8 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     retrySafe: false,
     owner: 'user',
     summary: 'Login required to reach this workflow',
-    recovery: 'Provide test credentials (TEST_EMAIL/TEST_PASSWORD via a secret file), or accept pre-login-only coverage.',
+    recovery:
+      'Provide test credentials (SWIPIUM_TEST_EMAIL/SWIPIUM_TEST_PASSWORD in the server env, or via qa_continue_from_blocker), or accept pre-login-only coverage.',
   },
   MISSING_TEST_DATA: {
     bucket: 'missing_data',
@@ -1035,6 +1169,73 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     owner: 'user',
     summary: 'Required test data/fixture is missing',
     recovery: 'Seed or provide the required state (account, record, entitlement), then re-run; do not fake coverage.',
+  },
+
+  // --- tool-local codes ---
+  ISSUE_LOG_TOO_VAGUE: {
+    bucket: 'missing_data',
+    severity: 'low',
+    retrySafe: true,
+    owner: 'user',
+    summary: 'The issue title has no identifying words once ids/numbers are scrubbed, so it would merge with unrelated issues',
+    recovery: 'Log it with a descriptive title (what broke, where), or pass a failureCode.',
+  },
+  ISSUE_NOT_FOUND: {
+    bucket: 'missing_data',
+    severity: 'low',
+    retrySafe: true,
+    owner: 'user',
+    summary: 'No issue in the project ledger matches the given issueId/fingerprint',
+    recovery: 'List issues with qa_issue_log mode:"history" and pass an existing issueId.',
+  },
+  ISSUE_STATE_INVALID: {
+    bucket: 'unsafe_refused',
+    severity: 'low',
+    retrySafe: false,
+    owner: 'user',
+    summary: "The requested lifecycle transition is not allowed from the issue's current state",
+    recovery:
+      'mark_fixed only applies to an active issue, verify_fixed only to a fixed one, unsuppress only to a suppressed one — check the state with mode:"history".',
+  },
+  ISSUE_EVIDENCE_REQUIRED: {
+    bucket: 'missing_data',
+    severity: 'low',
+    retrySafe: true,
+    owner: 'user',
+    summary: 'verify_fixed needs evidence from the current run',
+    recovery: 'Pass a reportUri, testCaseId, auditCheckId, or evidenceUris from the run that proves the fix.',
+  },
+  NO_APP_MAP: {
+    bucket: 'missing_data',
+    severity: 'low',
+    retrySafe: true,
+    owner: 'swipium',
+    selfFixable: true,
+    summary: 'No app knowledge map exists for this project yet',
+    recovery: 'Build it with qa_app_map_build (qa_test_this and qa_explore also update it).',
+  },
+  NO_RECORDED_ACTIONS: {
+    bucket: 'missing_data',
+    severity: 'low',
+    retrySafe: true,
+    owner: 'swipium',
+    summary: 'The session has no recorded actions to generate assets from',
+    recovery: 'Drive the app first (qa_smoke / qa_explore / qa_act), or let qa_generate target:"appium" bootstrap from projectRoot.',
+  },
+  UNEMITTABLE_STEP: {
+    bucket: 'mcp_limitation',
+    severity: 'medium',
+    retrySafe: false,
+    summary: 'A recorded step cannot be emitted as Appium code (no selector or gesture the target language can express)',
+    recovery: 'Re-record the step with a durable selector (testID / accessibilityIdentifier), or remove it before generating.',
+  },
+  INVALID_ARGUMENT: {
+    bucket: 'unsafe_refused',
+    severity: 'low',
+    retrySafe: true,
+    owner: 'user',
+    summary: 'A tool argument is malformed (e.g. a timestamp that does not parse)',
+    recovery: 'Fix the argument as described in the error and re-call the tool.',
   },
 
   UNKNOWN: {

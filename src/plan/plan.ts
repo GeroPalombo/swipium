@@ -1,8 +1,8 @@
-// qa_plan core (PHASE3-PLAN §3.2) — PURE synthesis. Given what we detected about the
+// Workflow-plan core (qa_resolve_target include:["plan"]) — PURE synthesis. Given what we detected about the
 // project + what the session declared (fixtures, observed auth, prepared appId), produce a
 // safe test plan: which workflows are READY, which are BLOCKED (and why + how to unblock),
 // and which are UNSAFE (and why). No device I/O lives here, so it is fully unit-testable;
-// the tool wrapper (src/tools/plan.ts) gathers the inputs and calls buildPlan().
+// the tool wrapper (src/tools/resolveTarget.ts workflowPlan) gathers the inputs and calls buildPlan().
 
 import type { Framework } from '../context/detect.js';
 import type { AuthState, Fixture } from '../session/store.js';

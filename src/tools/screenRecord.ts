@@ -16,7 +16,7 @@ import { qaOk, qaError } from '../lib/result.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { sensitiveRefusal } from '../lib/sensitive.js';
 import { run } from '../lib/spawn.js';
-import { getDriver } from '../session/attach.js';
+import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import { registerManagedProcess, unregisterManagedProcess } from '../session/processRegistry.js';
 import type { SessionStore } from '../session/store.js';
 
@@ -65,32 +65,32 @@ export function registerScreenRecord(server: McpServer, sessions: SessionStore):
     {
       title: 'Record the screen',
       description:
-        'Record a screen video (Android emulator/device, iOS Simulator, or WDA-backed iOS Simulator). action:"start" begins recording (consent-gated — it captures whatever is on screen, including anything sensitive; avoid password/OTP screens); action:"status" reports whether one is active; action:"stop" finalizes it and saves an mp4 artifact. Use save:"on_failure" on start plus failed:false on stop to discard passing-run videos in CI. Android recordings auto-stop after ~3 minutes. One recording per session at a time.',
+        'Record the screen to an mp4 artifact (Android, iOS Simulator). start (consent-gated — captures whatever is on screen; ' +
+        'avoid password/OTP screens), status, stop. save:"on_failure" + stop failed:false discards passing-run videos. Android ' +
+        'auto-stops after ~3 min; one recording per session.',
       inputSchema: {
         sessionId: z.string(),
         action: z.enum(['start', 'status', 'stop']),
-        save: z
-          .enum(['always', 'on_failure'])
-          .optional()
-          .describe(
-            'Recording retention mode for action:"start". Defaults to always. Use on_failure in CI to discard videos when stop is called with failed:false.',
-          ),
-        failed: z.boolean().optional().describe('For action:"stop" with save:"on_failure": true saves the video, false discards it.'),
+        save: z.enum(['always', 'on_failure']).optional().describe('start: always (default) | on_failure.'),
+        failed: z.boolean().optional().describe('stop with on_failure: true keeps the video.'),
         consentId: z.string().optional(),
         approve: z.boolean().optional(),
       },
     },
     async ({ sessionId, action, save, failed, consentId, approve }) => {
       const session = sessions.get(sessionId);
-      const { driver } = session ? await getDriver(session) : { driver: undefined };
+      const { driver, blocked } = session ? await getDriver(session) : { driver: undefined, blocked: undefined };
       const serial = driver?.currentDevice();
       if (!session || !driver || !serial) {
-        return qaError({
-          what: 'No device attached to this session',
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_prepare_target / qa_ios boot first.'],
-        });
+        return (
+          blockedDeviceResult(blocked) ??
+          qaError({
+            what: 'No device attached to this session',
+            changedState: false,
+            retrySafe: true,
+            nextSteps: ['Call qa_prepare_target / qa_ios boot first.'],
+          })
+        );
       }
       const backend: Backend | null =
         driver.kind === 'direct' ? 'direct' : driver.kind === 'simulator' ? 'simulator' : driver.kind === 'wda' ? 'wda_simulator' : null;

@@ -13,6 +13,7 @@ import { parseFlow } from '../flows/schema.js';
 import { loadProjectConfig } from '../cli/scan.js';
 import { readinessForSession, type ReadinessLabel } from '../report/readiness.js';
 import type { RecordedAction, Session, SessionStore } from '../session/store.js';
+import { assertNoSecretLeaks, findSecretLeaks, secretSafeNotes } from '../suite/secretGuard.js';
 
 export interface CompiledFlowInfo {
   name: string;
@@ -37,6 +38,8 @@ export interface SuiteGenerationResult {
   audit?: PomResult['audit'];
   variables?: string[];
   testCases?: ReturnType<typeof generateTestCases>['cases'];
+  /** Set when generation was refused (e.g. SECRET_IN_GENERATED_OUTPUT) — nothing was written. */
+  failureCode?: string;
 }
 
 export function appIdOf(session: Session): string | undefined {
@@ -45,6 +48,8 @@ export function appIdOf(session: Session): string | undefined {
 
 /** Write generated files under .swipium/, returning absolute paths written. */
 export function writeSuiteFiles(session: Session, files: GeneratedFile[]): string[] {
+  // Backstop: refuse to write ANY file that still carries a registered secret value.
+  assertNoSecretLeaks(files, session.secrets, 'suite generation');
   const base = join(session.root, '.swipium');
   const written: string[] = [];
   for (const f of files) {
@@ -64,7 +69,7 @@ export function pomForSession(
 ): { pom: PomResult; flowName: string } {
   const appId = appIdOf(session);
   const flowName = (name ?? `${(appId ?? 'app').split('.').pop()}-smoke`).replace(/[^\w.-]+/g, '-');
-  const pom = generatePom(actions, { name: flowName, appId, budgetProfile: session.budgetProfile });
+  const pom = generatePom(actions, { name: flowName, appId, budgetProfile: session.budgetProfile, secrets: session.secrets });
   return { pom, flowName };
 }
 
@@ -99,7 +104,7 @@ export function generateAndCompileSuite(sessions: SessionStore, session: Session
   const tc = generateTestCases(pom, {
     appId: appIdOf(session),
     fixtures: session.fixtures,
-    notes: session.notes,
+    notes: secretSafeNotes(session.notes, session.secrets),
     budgetProfile: session.budgetProfile,
   });
 
@@ -108,6 +113,22 @@ export function generateAndCompileSuite(sessions: SessionStore, session: Session
     { path: `testcases/${flowName}.cases.yaml`, content: tc.yaml },
     { path: `testcases/${flowName}.cases.md`, content: tc.markdown },
   ];
+  const leaks = findSecretLeaks(files, session.secrets);
+  if (leaks.length) {
+    return {
+      skipped: true,
+      failureCode: 'SECRET_IN_GENERATED_OUTPUT',
+      skippedReason: `SECRET_IN_GENERATED_OUTPUT: a registered secret value would be written in plaintext (${leaks
+        .slice(0, 5)
+        .map((l) => `${l.path}:${l.line}`)
+        .join(', ')}) — nothing was written`,
+      recommendation: 'Re-record the credential step so it is captured as a ${VAR}, then regenerate.',
+      written: [],
+      compiledFlows: [],
+      suiteRunnable: false,
+      readinessLabels: [],
+    };
+  }
   const written = save ? writeSuiteFiles(session, files) : [];
 
   // Compile to runnable Flow V2 (needs the page objects on disk).

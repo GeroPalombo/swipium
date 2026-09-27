@@ -50,6 +50,15 @@ export interface ParsedSnapshot {
 const BOUNDS_RE = /\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]/;
 const WEBVIEW_RE = /WebView|SurfaceView|GLSurfaceView|TextureView/i;
 const COMPOSE_RE = /compose/i;
+/** Editable text inputs on both platforms: Android EditText (+ AutoCompleteTextView subclasses)
+ * and iOS XCUIElementType TextField / SecureTextField / SearchField / TextView (WDA source). */
+export const TEXT_FIELD_CLASS_RE =
+  /EditText|AutoCompleteTextView|XCUIElementType(?:Secure)?TextField\b|XCUIElementTypeSearchField\b|XCUIElementTypeTextView\b/;
+
+/** Is this node an editable text field (either platform)? */
+export function isTextFieldClass(cls: string): boolean {
+  return TEXT_FIELD_CLASS_RE.test(cls);
+}
 
 function bool(v: unknown): boolean {
   return v === 'true' || v === true;
@@ -94,7 +103,7 @@ export function boundsContain(b: [number, number, number, number], x: number, y:
 }
 
 function role(n: RawNode): string {
-  if (/EditText/.test(n.cls)) return 'text-field';
+  if (isTextFieldClass(n.cls)) return 'text-field';
   if (n.scrollable) return 'scrollable';
   if (n.clickable || n.longClickable) return 'button';
   if (/ImageView/.test(n.cls)) return 'image';
@@ -103,8 +112,21 @@ function role(n: RawNode): string {
 }
 
 function isSurfaced(n: RawNode): boolean {
-  if (n.clickable || n.longClickable || n.scrollable || /EditText/.test(n.cls)) return true;
+  // A text field is always surfaced — an iOS SearchField has child nodes (magnifier, clear
+  // button) and must not be dropped for not being a leaf.
+  if (n.clickable || n.longClickable || n.scrollable || isTextFieldClass(n.cls)) return true;
   return n.isLeaf && (n.text.length > 0 || n.desc.length > 0);
+}
+
+/** False for nodes the user cannot see: uiautomator reports rows clipped off a scrolled list with
+ * empty or inverted bounds (e.g. `[210,315][646,247]`), and some nodes lie wholly off-screen.
+ * Surfacing them lets untilVisible "find" off-screen rows and taps land on the list edge. */
+function isOnScreen(b: [number, number, number, number], screen: [number, number]): boolean {
+  const [x1, y1, x2, y2] = b;
+  if (x1 === 0 && y1 === 0 && x2 === 0 && y2 === 0) return true; // no bounds attribute — unknown, keep
+  if (x2 <= x1 || y2 <= y1) return false;
+  if (screen[0] <= 0 || screen[1] <= 0) return true; // screen size unknown — keep the node
+  return x2 > 0 && y2 > 0 && x1 < screen[0] && y1 < screen[1];
 }
 
 function shortId(id: string): string {
@@ -210,6 +232,7 @@ export function parseSnapshot(xml: string, opts: { interactiveOnly?: boolean } =
   for (const n of all) {
     if (interactiveOnly && !isSurfaced(n)) continue;
     if (!interactiveOnly && !isSurfaced(n)) continue;
+    if (!isOnScreen(n.bounds, screen)) continue;
     const ref = `@e${++i}`;
     fullByRef.set(ref, n);
     elements.push({

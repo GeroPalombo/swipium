@@ -30,6 +30,8 @@ npm test
 npm run audit:prod
 ```
 
+To try the CLI from source, run `npm run build`, then `node dist/index.js --help`. Never test `swipium init --apply` against your real client configs. Use `--cwd` with a scratch directory and a throwaway `HOME`.
+
 Before a release-oriented change, run:
 
 ```bash

@@ -6,7 +6,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { qaOk, qaError } from '../lib/result.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
-import { getDriver } from '../session/attach.js';
+import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import type { Session, SessionStore } from '../session/store.js';
 import type { Driver } from '../drivers/Driver.js';
 
@@ -62,7 +62,8 @@ export function registerNetwork(server: McpServer, sessions: SessionStore): void
     {
       title: 'Network state control',
       description:
-        'Offline/online testing via airplane mode (no raw adb; needs Android 11+ `cmd connectivity`). Actions: status, offline, online, restore. Swipium records the original airplane state on the first change and restores it on qa_report, on explicit `restore`, and best-effort on server shutdown (SIGINT/SIGTERM/transport close). offline/online require consent.',
+        'Offline/online testing via airplane mode (Android 11+). action: status, offline, online (consent-gated), restore. The ' +
+        'original state is restored on qa_report, on restore, and on server shutdown.',
       inputSchema: {
         sessionId: z.string(),
         action: z.enum(['status', 'offline', 'online', 'restore']),
@@ -72,9 +73,12 @@ export function registerNetwork(server: McpServer, sessions: SessionStore): void
     },
     async ({ sessionId, action, consentId, approve }) => {
       const session = sessions.get(sessionId);
-      const { driver: d } = session ? await getDriver(session) : { driver: undefined };
+      const { driver: d, blocked } = session ? await getDriver(session) : { driver: undefined, blocked: undefined };
       if (!session || !d) {
-        return qaError({ what: 'No device attached', changedState: false, retrySafe: true, nextSteps: ['Call qa_prepare_target first.'] });
+        return (
+          blockedDeviceResult(blocked) ??
+          qaError({ what: 'No device attached', changedState: false, retrySafe: true, nextSteps: ['Call qa_prepare_target first.'] })
+        );
       }
 
       const airplane = await d.airplaneOn();

@@ -105,7 +105,12 @@ export function caseFromPom(input: GenerateInput): CanonicalTestCase | null {
     action: s.action,
     target: s.element ?? (s.coords ? `(${s.coords[0]},${s.coords[1]})` : undefined),
     data: s.secret ? '••• (secret)' : (s.text ?? s.url ?? s.key ?? s.direction),
-    expected: s.action === 'assertVisible' && s.text ? `${s.text} is visible` : undefined,
+    expected:
+      s.action === 'assertVisible' && s.text
+        ? `${s.text} is visible`
+        : s.action === 'visualCheck' && s.text
+          ? `MANUAL visual check: ${s.text}`
+          : undefined,
     mapScreenId: s.page,
     automationSelector: s.element,
   }));

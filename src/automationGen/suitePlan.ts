@@ -20,6 +20,9 @@ export interface AutomationSuitePlan {
   language: AutomationLanguage;
   outputDir: string;
   platforms: { android: boolean; ios: boolean };
+  /** Default platform of the generated suite + why (explicit → session device → project → android). */
+  primaryPlatform: 'android' | 'ios';
+  platformSource: NonNullable<AutomationProjectProfile['platformSource']>;
   backends: { default: string; secondary?: string };
   mapCoverage: {
     hasActions: boolean;
@@ -137,6 +140,8 @@ export function buildSuitePlan(profile: AutomationProjectProfile, opts: BuildPla
     language,
     outputDir,
     platforms,
+    primaryPlatform: profile.primaryPlatform ?? (profile.defaultBackend === 'appium-xcuitest' ? 'ios' : 'android'),
+    platformSource: profile.platformSource ?? 'project',
     backends: { default: profile.defaultBackend, secondary: profile.secondaryBackend },
     mapCoverage,
     prerequisites,

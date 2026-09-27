@@ -5,6 +5,32 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { which, firstLine, adbDevices, listAvds, findAapt2 } from '../lib/android.js';
 import { resolveArtifact } from '../artifacts/resolve.js';
+import { simctlAvailable, listSimulators } from '../lib/simctl.js';
+
+/** Booted + available (shut down) iOS simulators. Tolerates absence: non-macOS hosts, no Xcode
+ *  command-line tools, or a failing simctl all yield empty lists — never an error. */
+export async function detectIosSimulators(): Promise<{
+  iosBooted: DetectedContext['devices']['iosBooted'];
+  iosAvailable: DetectedContext['devices']['iosAvailable'];
+}> {
+  if (process.platform !== 'darwin') return { iosBooted: [], iosAvailable: [] };
+  try {
+    if (!(await simctlAvailable())) return { iosBooted: [], iosAvailable: [] };
+    const sims = await listSimulators();
+    const brief = (s: { udid: string; name: string; runtime: string }) => ({ udid: s.udid, name: s.name, runtime: s.runtime });
+    return {
+      iosBooted: sims.filter((s) => s.state === 'Booted').map(brief),
+      iosAvailable: sims.filter((s) => s.state !== 'Booted').map(brief),
+    };
+  } catch {
+    return { iosBooted: [], iosAvailable: [] };
+  }
+}
+
+/** Any usable device at all (online/bootable Android emulator, or a booted/bootable iOS simulator). */
+export function hasAnyDevice(d: DetectedContext['devices']): boolean {
+  return d.androidOnline.length > 0 || d.avds.length > 0 || d.iosBooted.length > 0 || d.iosAvailable.length > 0;
+}
 
 export type Framework = 'expo' | 'bare-react-native' | 'native-android' | 'native-ios' | 'flutter' | 'unknown';
 
@@ -14,7 +40,13 @@ export interface DetectedContext {
   framework: Framework;
   monorepo: boolean;
   artifacts: { apks: string[]; ipas: string[]; appBundles: string[] };
-  devices: { androidOnline: string[]; avds: string[] };
+  /** Android serials/AVDs plus iOS simulators (H9: macOS only; empty elsewhere or without Xcode). */
+  devices: {
+    androidOnline: string[];
+    avds: string[];
+    iosBooted: Array<{ udid: string; name: string; runtime: string }>;
+    iosAvailable: Array<{ udid: string; name: string; runtime: string }>;
+  };
   toolchain: { node: string; adb: boolean; emulator: boolean; java: boolean; aapt2: boolean; xcodebuild: boolean };
   buildable: boolean;
   blockers: string[];
@@ -133,16 +165,21 @@ export async function detectContext(projectRoot: string): Promise<DetectedContex
     xcodebuild,
   };
 
-  const devices = {
-    androidOnline: adb ? await adbDevices() : [],
-    avds: emulator ? await listAvds() : [],
-  };
+  const [androidOnline, avds, ios] = await Promise.all([
+    adb ? adbDevices() : Promise.resolve([] as string[]),
+    emulator ? listAvds() : Promise.resolve([] as string[]),
+    detectIosSimulators(),
+  ]);
+  const devices: DetectedContext['devices'] = { androidOnline, avds, ...ios };
+  const iosUsable = ios.iosBooted.length > 0 || ios.iosAvailable.length > 0;
 
   const blockers: string[] = [];
   if (framework === 'unknown')
     blockers.push('Could not identify a mobile project here — pass an explicit projectRoot, or this is not a supported framework.');
   if (monorepo) blockers.push('Monorepo detected — specify which app target to use (avoids guessing).');
-  if (!toolchain.adb) blockers.push('adb not found — install Android platform-tools.');
+  // adb is only a blocker when Android is the only way forward (an iOS project, or any project
+  // with a usable iOS simulator, can still be tested without it).
+  if (!toolchain.adb && framework !== 'native-ios' && !iosUsable) blockers.push('adb not found — install Android platform-tools.');
   if (framework === 'native-android' && artifacts.apks.length === 0) {
     blockers.push('No prebuilt Android APK found — drop an APK under apps/android, build Gradle output, or pass apk=.');
   } else if (framework === 'native-ios' && artifacts.ipas.length === 0 && artifacts.appBundles.length === 0) {
@@ -156,8 +193,12 @@ export async function detectContext(projectRoot: string): Promise<DetectedContex
   ) {
     blockers.push('No prebuilt app artifact found — build an APK for Android or a simulator .app for iOS, then run swipium scan again.');
   }
-  if (toolchain.adb && devices.androidOnline.length === 0 && devices.avds.length === 0)
-    blockers.push('No online device and no AVD — create an AVD (see qa_doctor).');
+  if (!hasAnyDevice(devices))
+    blockers.push(
+      framework === 'native-ios'
+        ? 'No iOS simulator booted or available — create one in Xcode (Settings → Platforms).'
+        : 'No online device, no AVD, and no iOS simulator — create an AVD (see qa_doctor) or an iOS simulator.',
+    );
 
   return {
     projectRoot,

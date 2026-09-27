@@ -19,12 +19,13 @@ import { simctlAvailable, listSimulators } from '../../lib/simctl.js';
 import { checkWda } from '../../lib/wda.js';
 import { loadWdaConfig } from '../../lib/wdaConfig.js';
 import { planTarget, type TargetInputs } from '../../core/targetPlan.js';
+import { verifiedEmulatorSerials } from '../../session/attach.js';
 import { universalApkCachePath } from '../../artifacts/bundletool.js';
 import { ensurePrelaunchAppMap } from '../../appMap/prelaunch.js';
 import type { AppKnowledgeMap } from '../../appMap/schema.js';
 import { log } from '../../lib/logger.js';
 import type { Session, SessionStore } from '../../session/store.js';
-import { type State, type PlanStep, type TestThisInput, selToPlatform, isAndroidEmulatorSerial } from './types.js';
+import { type State, type PlanStep, type TestThisInput, selToPlatform } from './types.js';
 import { runExecuteMode } from './execute.js';
 
 export async function handleTestThis(server: McpServer, sessions: SessionStore, input: TestThisInput): Promise<CallToolResult> {
@@ -62,17 +63,12 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
     });
   }
   if (!session) {
-    const { resolveProjectRoot } = await import('../../context/projectRoot.js');
+    const { resolveProjectRoot, unresolvedProjectRootError } = await import('../../context/projectRoot.js');
     const resolved = await resolveProjectRoot(server, projectRoot);
-    if (!resolved.root)
-      return qaError({
-        what: 'Could not resolve a project root',
-        changedState: false,
-        retrySafe: true,
-        nextSteps: ['Pass projectRoot="/abs/path".'],
-        clientHint: resolved.hint,
-      });
+    if (!resolved.root) return unresolvedProjectRootError(resolved);
     session = sessions.create(resolved.root, undefined, {});
+    // An explicit projectRoot IS the user's target choice — never re-ask the monorepo question for it.
+    if (projectRoot) session.chosenTarget = resolved.root;
   }
   let root = session.root;
   const wa = (note: string) => sessions.addWorkaround(session!, note);
@@ -118,6 +114,10 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
         extra: { sessionId: session.id, scan, searchedLocations: disc.searchedLocations, state: 'blocked' as State },
       });
     }
+  } else if (scan.monorepo && session.chosenTarget === root) {
+    // The user already chose this root (monorepo_target resume / explicit projectRoot): asking again
+    // would loop forever when the chosen app IS the monorepo root.
+    preAttempted.push('monorepo detected — using the explicitly chosen target');
   } else if (scan.monorepo) {
     // The root is itself an app but also a monorepo: surface other sibling apps for disambiguation
     // only when there are genuinely multiple recognized targets to choose between.
@@ -256,11 +256,11 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
     art.best.installableOn.length > 0 &&
     art.best.installableOn.every((t) => t === 'ios-real');
   if (preferRealDevice || iosArtifactRealOnly) {
-    return qaFail('BACKEND_UNSUPPORTED', {
-      what: 'Swipium 1.0.0 supports Android Emulator and iOS Simulator targets only.',
+    return qaFail('PHYSICAL_DEVICE_UNSUPPORTED', {
+      what: 'Swipium supports Android Emulator and iOS Simulator targets only (see docs/physical-devices.md).',
       nextSteps: [
-        'Use an Android emulator build or an iOS Simulator .app for v1.',
-        'Real-device workflows are outside the public v1 scope.',
+        'Use an Android emulator build or an iOS Simulator .app.',
+        'Real-device workflows are out of scope until their threat model lands.',
       ],
       extra: { sessionId: session.id, appMapUri, state: 'blocked' as State },
     });
@@ -271,10 +271,12 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
     adbPresent ? listAvds() : Promise.resolve<string[]>([]),
     simPresent ? listSimulators() : Promise.resolve([]),
   ]);
-  const online = onlineAll.filter(isAndroidEmulatorSerial);
-  if (device && onlineAll.includes(device) && !isAndroidEmulatorSerial(device)) {
-    return qaFail('BACKEND_UNSUPPORTED', {
-      what: `Android target "${device}" appears to be a real device. Swipium 1.0.0 supports Android Emulator only.`,
+  // H6: pattern OR property-verified emulators (localhost:5555, Genymotion) — same as getDriver.
+  const emulators = await verifiedEmulatorSerials(onlineAll);
+  const online = onlineAll.filter((s) => emulators.includes(s));
+  if (device && onlineAll.includes(device) && !emulators.includes(device)) {
+    return qaFail('PHYSICAL_DEVICE_UNSUPPORTED', {
+      what: `Android target "${device}" appears to be a physical device. Swipium supports the Android Emulator only.`,
       nextSteps: ['Start or create an Android Emulator, then retry without a real-device serial.'],
       extra: { sessionId: session.id, appMapUri, state: 'blocked' as State },
     });
@@ -285,7 +287,7 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
     preferRealDevice: false,
     artifactPlatform,
     artifactInstallTargets: art.best?.installableOn,
-    android: { online, avds },
+    android: { online, avds, emulators },
     ios: {
       bootedSimulators: sims.filter((s) => s.state === 'Booted').map((s) => ({ udid: s.udid, name: s.name })),
       availableSimulators: sims.filter((s) => s.state !== 'Booted').map((s) => ({ udid: s.udid, name: s.name })),

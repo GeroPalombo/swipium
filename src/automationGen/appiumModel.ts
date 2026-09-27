@@ -8,6 +8,7 @@
 //   XPath is NEVER emitted; coordinate is the explicit non-release-grade fallback.
 
 import type { Durability, PomResult, PomTestStep } from '../suite/pom.js';
+import { asciiFold } from './identifiers.js';
 
 export type AppiumStrategy = 'accessibilityId' | 'id' | 'name' | 'iosPredicate' | 'iosClassChain' | 'androidUiautomator' | 'coordinate';
 
@@ -34,7 +35,9 @@ export interface CrossPlatformElement {
   sourceFile?: string;
 }
 
-export type AppiumActionKind = 'tap' | 'tapAt' | 'inputText' | 'press' | 'swipe' | 'scrollTo' | 'openUrl' | 'assertVisible';
+/** `visualCheck` is a manual visual checkpoint (qa_visual assert prose) — emitted as a clearly-marked
+ *  TODO comment, never as a text assertion. */
+export type AppiumActionKind = 'tap' | 'tapAt' | 'inputText' | 'press' | 'swipe' | 'scrollTo' | 'openUrl' | 'assertVisible' | 'visualCheck';
 
 export interface AppiumStep {
   /** Screen CLASS name (e.g. LoginScreen) the step targets. */
@@ -194,13 +197,16 @@ function toStep(s: PomTestStep, secrets: Set<string>, variables: Set<string>): A
   if (s.action === 'tap' && !s.element && s.coords) return { ...base, action: 'tapAt', coords: s.coords };
   if (s.action === 'press') return { ...base, action: 'press', key: s.key };
   if (s.action === 'swipe') return { ...base, action: 'swipe', direction: s.direction };
+  // scrollTo carries the CONTENT direction the recording scrolled in ('down' reveals content below).
+  if (s.action === 'scrollTo') return { ...base, action: 'scrollTo', direction: s.direction, text: s.element ? undefined : s.text };
   if (s.action === 'openUrl') return { ...base, action: 'openUrl', url: s.url };
   if (s.action === 'assertVisible') return { ...base, action: 'assertVisible', text: s.text };
+  if (s.action === 'visualCheck') return { ...base, element: undefined, action: 'visualCheck', text: s.text };
   return base;
 }
 
 function kebab(s: string): string {
-  return s
+  return asciiFold(s)
     .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
     .replace(/[^A-Za-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')

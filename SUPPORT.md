@@ -21,11 +21,13 @@ Do not use public issues for vulnerabilities or private project data.
 
 Please include:
 
-- Swipium version.
+- Swipium version (`swipium --version`).
 - Node.js version.
+- MCP client and version (Claude Code, Codex, Cursor, …).
 - macOS/Linux/Windows version.
 - Android Emulator or iOS Simulator details.
-- The command or MCP tool call that failed.
+- The command or MCP tool call that failed, and its `failureCode` if present.
+- `qa_doctor` output (or `swipium verify` output).
 - Minimal reproduction steps.
 - Redacted logs or screenshots when useful.
 
@@ -35,4 +37,4 @@ Do not include real credentials, production tokens, private app binaries, custom
 
 The v1 support scope is simulator-based mobile QA with the public Swipium tool surface.
 
-Real devices, Jira integration, private app debugging, and experimental internal tools may be discussed, but they are not guaranteed support targets for v1.
+Real devices, private app debugging, and experimental internal tools may be discussed, but they are not guaranteed support targets. Supported hosts: macOS (Android + iOS), Linux (Android); Windows is experimental.

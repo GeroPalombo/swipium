@@ -6,7 +6,7 @@
 // failure is returned as a WARNING (best-effort) rather than failing an otherwise-valid QA run.
 
 import { applyMerge, suiteDelta, suiteResourceUri, suiteJsonPath, loadSuite, type SuiteDelta } from '../testSuite/store.js';
-import { loadAppMap, saveAppMap } from '../appMap/store.js';
+import { loadAppMap, saveAppMap, withAppMapLock } from '../appMap/store.js';
 import { detectFramework } from '../context/detect.js';
 import type { ProjectIdentity, TestCaseRef } from '../appMap/schema.js';
 import type { CanonicalTestCase, ProvenanceSource } from '../testSuite/schema.js';
@@ -18,6 +18,7 @@ import type { Session, ExplorationRecord } from '../session/store.js';
 import type { AutomationFramework, LocatorReadiness, AutomationStatus } from '../testSuite/schema.js';
 import { join } from 'node:path';
 import { log } from '../lib/logger.js';
+import { redactDeep } from '../lib/redact.js';
 
 export interface SuiteMergeResult {
   ok: boolean;
@@ -54,22 +55,25 @@ function fallbackProject(root: string): ProjectIdentity {
  */
 function mirrorSuiteIndexToMap(root: string, now: string): void {
   try {
-    const loaded = loadAppMap(root, fallbackProject(root), now);
-    if (!loaded.map) return; // no durable map yet — feature scope still reads the suite directly
-    const suite = loadSuite(root);
-    const refs: TestCaseRef[] = suite.cases.map((c) => ({
-      id: c.id,
-      title: c.title,
-      featureId: c.featureId,
-      status: c.actualResult.status,
-      source: 'test-suite',
-      lastRun: c.actualResult.lastRunAt,
-      stale: c.status === 'deprecated',
-    }));
-    loaded.map.testSuite = { cases: refs };
-    loaded.map.coverage.staleTests = refs.filter((r) => r.stale).length;
-    loaded.map.updatedAt = now;
-    saveAppMap(root, loaded.map);
+    // Synchronous load→mutate→save cycle, held under the cross-process app-map lock (see store.ts).
+    withAppMapLock(root, () => {
+      const loaded = loadAppMap(root, fallbackProject(root), now);
+      if (!loaded.map) return; // no durable map yet — feature scope still reads the suite directly
+      const suite = loadSuite(root);
+      const refs: TestCaseRef[] = suite.cases.map((c) => ({
+        id: c.id,
+        title: c.title,
+        featureId: c.featureId,
+        status: c.actualResult.status,
+        source: 'test-suite',
+        lastRun: c.actualResult.lastRunAt,
+        stale: c.status === 'deprecated',
+      }));
+      loaded.map.testSuite = { cases: refs };
+      loaded.map.coverage.staleTests = refs.filter((r) => r.stale).length;
+      loaded.map.updatedAt = now;
+      saveAppMap(root, loaded.map);
+    });
   } catch {
     /* best-effort: a mirror failure never fails the suite merge */
   }
@@ -86,11 +90,15 @@ export interface MergeContext {
   sessionId?: string;
   /** Feature ids still live in the current app map; lets the merge auto-deprecate vanished features. */
   liveFeatureIds?: string[];
+  /** Registered session secrets — scrubbed from every case before test-suite.json / TC-*.yaml are written. */
+  secrets?: Iterable<string>;
 }
 
 /** Core: merge already-canonical cases into the suite. Best-effort — never throws. */
 export function mergeCanonical(root: string, cases: CanonicalTestCase[], ctx: MergeContext): SuiteMergeResult {
   if (!cases.length) return EMPTY;
+  // Defense in depth: no registered secret value may reach the persistent suite files.
+  if (ctx.secrets) cases = redactDeep(cases, ctx.secrets);
   try {
     const applied = applyMerge(
       root,
@@ -225,5 +233,5 @@ export function mergeFromAutomation(root: string, session: Session, input: Autom
   } catch (e) {
     return { ...EMPTY, ok: false, warning: `automation→canonical conversion failed: ${String(e)}` };
   }
-  return mergeCanonical(root, cases, { ...ctx, source: 'generate' });
+  return mergeCanonical(root, cases, { ...ctx, source: 'generate', secrets: ctx.secrets ?? session.secrets });
 }

@@ -119,6 +119,27 @@ export function fingerprintTokens(input: FingerprintInput): string[] {
   return tokens;
 }
 
+/** Tokens that only scope an issue (category/platform/app) — they never tell two defects apart. */
+const SCOPE_TOKEN = /^(cat|plat|app):/;
+
+/**
+ * True when the token list carries at least one signal that identifies WHAT went wrong (failure
+ * code, screen/route/flow, exception, HTTP route, package, subsystem, or visible text with at least
+ * one real word after volatile-id scrubbing). A scope-only fingerprint would merge every defect
+ * logged on the same platform into one issue, so callers should refuse it.
+ */
+export function hasIdentitySignal(tokens: string[]): boolean {
+  return tokens.some((t) => {
+    if (SCOPE_TOKEN.test(t)) return false;
+    if (t.startsWith('text:'))
+      return t
+        .slice(5)
+        .split(' ')
+        .some((w) => /[a-z]/i.test(w) && !w.startsWith(':'));
+    return true;
+  });
+}
+
 /** A short hex digest of the tokens, prefixed `sha256:` (matches the spec's example shape). */
 export function fingerprint(input: FingerprintInput): string {
   const tokens = fingerprintTokens(input);

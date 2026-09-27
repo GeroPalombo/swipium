@@ -5,7 +5,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { qaOk, qaError } from '../lib/result.js';
 import { checkHealth } from '../oracle/health.js';
 import { recordHealthFindings } from '../oracle/record.js';
-import { getDriver } from '../session/attach.js';
+import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import type { SessionStore } from '../session/store.js';
 
 export function registerCheckHealth(server: McpServer, sessions: SessionStore): void {
@@ -19,14 +19,17 @@ export function registerCheckHealth(server: McpServer, sessions: SessionStore): 
     },
     async ({ sessionId }) => {
       const session = sessions.get(sessionId);
-      const { driver } = session ? await getDriver(session) : { driver: undefined };
+      const { driver, blocked } = session ? await getDriver(session) : { driver: undefined, blocked: undefined };
       if (!session || !driver) {
-        return qaError({
-          what: 'No device attached to this session',
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_prepare_target first.'],
-        });
+        return (
+          blockedDeviceResult(blocked) ??
+          qaError({
+            what: 'No device attached to this session',
+            changedState: false,
+            retrySafe: true,
+            nextSteps: ['Call qa_prepare_target first.'],
+          })
+        );
       }
       const health = await checkHealth(driver, session.appId);
       await recordHealthFindings(sessions, session, health.findings, driver, health.foreground); // feeds qa_report

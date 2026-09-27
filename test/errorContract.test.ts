@@ -42,8 +42,6 @@ const MISSING_URI = 'swipium://session/none/report/missing.json';
  * session or device). Asserted exactly — any other tool returning ok:true is a missed
  * failure path and fails the suite. */
 const EXPECTED_OK = new Set<string>([
-  'qa_agent_brief', // static orientation brief — no session, device, or fs involved
-  'qa_capabilities', // static grouped listing of the tool surface
   'qa_doctor', // diagnostic envelope succeeds even when readiness checks fail
 ]);
 
@@ -51,6 +49,8 @@ const EXPECTED_OK = new Set<string>([
  * minimal ones. */
 const ARG_OVERRIDES: Record<string, Record<string, unknown>> = {
   qa_start_session: { projectRoot: MISSING_ROOT },
+  // An unknown sessionId would fall back to the server cwd — force the project-root failure path.
+  qa_flow_compile: { projectRoot: MISSING_ROOT },
   qa_get_artifact: { uri: MISSING_URI },
 };
 

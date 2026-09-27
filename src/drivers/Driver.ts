@@ -13,6 +13,9 @@ export interface SnapshotElement {
   secure?: boolean; // password / secure-text field — value must be masked
 }
 
+/** Result of Driver.canDeliverText — `reason` is safe to show (it never echoes the value). */
+export type TextDeliverability = { ok: true } | { ok: false; reason: string };
+
 export type NativeSelectorStrategy = 'accessibility id' | 'name' | 'predicate string' | 'class chain';
 
 export interface Driver {
@@ -31,6 +34,11 @@ export interface Driver {
   clearData(pkg: string): Promise<void>;
   /** Soft keyboard currently shown? (dumpsys input_method mInputShown). */
   imeShown(): Promise<boolean>;
+  /** On-screen soft-keyboard rect [x1,y1,x2,y2] in tap coordinates, or null when unknown.
+   * Optional: callers fall back to a bottom-of-screen heuristic. */
+  imeFrame?(): Promise<[number, number, number, number] | null>;
+  /** Hide the soft keyboard if shown (never a blind BACK). Resolves true when it acted. */
+  hideKeyboard?(): Promise<boolean>;
   /** Dump the last `lines` of logcat (optionally only lines matching `grep`). Evidence, not inference. */
   logcat(lines: number, grep?: string): Promise<string>;
   /** Read airplane-mode flag (global setting). */
@@ -52,10 +60,17 @@ export interface Driver {
   typeBySelector?(using: NativeSelectorStrategy, value: string, text: string): Promise<void>;
   clearBySelector?(using: NativeSelectorStrategy, value: string): Promise<void>;
   existsBySelector?(using: NativeSelectorStrategy, value: string): Promise<boolean>;
+  /** True when the natively-selected element is a secure text field (password/OTP) — e.g.
+   * XCUIElementTypeSecureTextField on iOS. Keeps values typed by selector out of records. */
+  isSecureBySelector?(using: NativeSelectorStrategy, value: string): Promise<boolean>;
   /** Native platform alert handling when the backend supports it, e.g. WDA on iOS. */
   acceptAlert?(): Promise<void>;
   dismissAlert?(): Promise<void>;
   inputText(text: string): Promise<void>;
+  /** PURE pre-flight: can inputText() deliver this value verbatim? Callers check it BEFORE any
+   * focus tap / clear so a refused value leaves the device untouched. Optional: absent means the
+   * backend has no known character restriction. */
+  canDeliverText?(text: string): TextDeliverability;
   /** Clear the focused field (move to end, delete ~n chars in one keyevent batch). */
   clearFocusedText(approxLen?: number): Promise<void>;
   pressKey(key: 'back' | 'home' | 'enter'): Promise<void>;
@@ -69,4 +84,7 @@ export interface Driver {
   openUrl(url: string): Promise<void>;
   /** Disable window/transition/animator scales to remove a class of flakiness. */
   disableAnimations(): Promise<void>;
+  /** Returns (and clears) whether the backend transparently re-created its automation session
+   * (e.g. WDA after "invalid session id") since the last call. Optional: most backends never do. */
+  consumeSessionRecovered?(): boolean;
 }

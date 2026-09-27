@@ -1,6 +1,9 @@
 // Release-gate policy (NEXT-PLAN: Reporting V3 / P1 release gate). A project can declare
 // .swipium/policy.json to decide what blocks a release, what only warns, and which known issues
-// to suppress. `swipium test` consults it to compute the final pass/fail.
+// to suppress. Consumed by the CI mutation gate: `qa_flow` with `ci:true` (src/tools/flow.ts),
+// the CI preflight (src/ci/preflight.ts), and flow lint (src/flows/lint.ts) all consult
+// `ciAllowMutations` via loadPolicy/ciMutationAllowed. `applyPolicy` is the release-gate
+// helper (blockOn/warnOn/ignoreKnown → pass/fail) for reports/CI.
 //
 //   {
 //     "blockOn":   ["native_crash", "app_error_boundary", "failed_required_flow"],

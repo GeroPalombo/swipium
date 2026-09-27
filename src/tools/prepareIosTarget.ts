@@ -38,15 +38,14 @@ export function registerPrepareIosTarget(server: McpServer, sessions: SessionSto
     {
       title: 'Prepare an iOS simulator target',
       description:
-        'High-level iOS simulator prepare: pick + boot a simulator, install a simulator .app (consent-gated), launch its bundle id, verify foreground, and report whether structured automation (WDA) is available or it is honestly visual-only. Refuses a .ipa on the simulator (real-device only). attachWda: auto (use WDA if reachable, else visual) | required (fail if no WDA) | skip (visual-only). Returns typed blockers (IPA_NEEDS_REAL_DEVICE, IOS_SIMULATOR_APP_MISSING, SIMULATOR_BOOT_FAILED, WDA_UNREACHABLE).',
+        'Prepare an iOS Simulator: pick + boot, install a simulator .app (consent-gated), launch the bundle id, verify ' +
+        'foreground, and report whether WDA structured automation is available or it is visual-only. A .ipa is refused ' +
+        '(IPA_NEEDS_REAL_DEVICE). attachWda: auto | required | skip.',
       inputSchema: {
         sessionId: z.string(),
         app: z.string().optional().describe('Simulator .app path (absolute or project-relative).'),
         bundleId: z.string().optional(),
-        device: z
-          .string()
-          .optional()
-          .describe('Simulator UDID or name substring to prepare (same selector param name as the other tools).'),
+        device: z.string().optional().describe('Simulator UDID or name substring.'),
         launch: z.boolean().optional(),
         attachWda: z.enum(['auto', 'required', 'skip']).optional(),
         consentId: z.string().optional(),

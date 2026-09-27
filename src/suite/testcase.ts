@@ -51,6 +51,8 @@ function humanStep(s: PomTestStep): string {
       return `Open ${s.url}`;
     case 'assertVisible':
       return `Verify "${s.text}" is visible on ${s.page}`;
+    case 'visualCheck':
+      return `MANUAL visual check on ${s.page}: ${s.text}`;
   }
 }
 

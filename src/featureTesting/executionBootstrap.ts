@@ -22,7 +22,7 @@ import { buildTestThisPreflight } from '../services/preflight.js';
 import { prepareAndroid } from '../services/prepareAndroid.js';
 import { prepareIos } from '../services/prepareIos.js';
 import { DirectDriver } from '../drivers/DirectDriver.js';
-import { getDriver } from '../session/attach.js';
+import { blockedDeviceResult, getDriver, verifiedEmulatorSerials } from '../session/attach.js';
 import type { Session, SessionStore } from '../session/store.js';
 import type { Driver } from '../drivers/Driver.js';
 
@@ -49,18 +49,12 @@ export type BootstrapResult = { ok: true; session: Session; driver: Driver } | {
 
 /** Resolve project → create session → resolve artifact/target → (consent) prepare the device. */
 export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<BootstrapResult> {
-  const { resolveProjectRoot } = await import('../context/projectRoot.js');
+  const { resolveProjectRoot, unresolvedProjectRootError } = await import('../context/projectRoot.js');
   const resolved = await resolveProjectRoot(a.server, a.projectRoot);
   if (!resolved.root) {
     return {
       ok: false,
-      result: qaError({
-        what: 'Could not resolve a project root for feature execution',
-        changedState: false,
-        retrySafe: true,
-        nextSteps: ['Pass projectRoot="/abs/path" or a sessionId from qa_test_this.'],
-        clientHint: resolved.hint,
-      }),
+      result: unresolvedProjectRootError(resolved, { what: 'Could not resolve a project root for feature execution' }),
     };
   }
   const session = a.sessions.create(resolved.root, undefined, {});
@@ -105,12 +99,14 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
     adbPresent ? listAvds() : Promise.resolve<string[]>([]),
     simPresent ? listSimulators() : Promise.resolve([]),
   ]);
+  // H6: property-verified emulators (localhost:5555, Genymotion) — same policy as getDriver.
+  const emulators = await verifiedEmulatorSerials(online);
   const tInputs: TargetInputs = {
     requestedPlatform: a.platform,
     requestedDevice: a.device,
     artifactPlatform: art.best.platform,
     artifactInstallTargets: art.best.installableOn,
-    android: { online, avds },
+    android: { online, avds, emulators },
     ios: {
       bootedSimulators: sims.filter((s) => s.state === 'Booted').map((s) => ({ udid: s.udid, name: s.name })),
       availableSimulators: sims.filter((s) => s.state !== 'Booted').map((s) => ({ udid: s.udid, name: s.name })),
@@ -220,8 +216,9 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
             { sessionId: session.id },
           ),
         };
-      const driver = (session.driver as DirectDriver | undefined) ?? new DirectDriver();
-      driver.setSignal?.(a.signal);
+      // No unchecked cast: a session left on an iOS (WDA/simctl) driver gets a fresh adb driver.
+      const driver = session.driver instanceof DirectDriver ? session.driver : new DirectDriver();
+      driver.setSignal(a.signal);
       const res = await prepareAndroid(
         a.sessions,
         session,
@@ -289,20 +286,22 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
     };
   }
 
-  const { driver } = await getDriver(session);
+  const { driver, blocked } = await getDriver(session);
   if (!driver)
     return {
       ok: false,
-      result: qaError(
-        {
-          what: 'No driver bound after device preparation.',
-          changedState: true,
-          retrySafe: true,
-          failureCode: 'NO_DEVICE',
-          nextSteps: ['Run qa_test_this { mode:"execute" } to prepare a device, then qa_test_feature with that sessionId.'],
-        },
-        { sessionId: session.id },
-      ),
+      result:
+        blockedDeviceResult(blocked) ??
+        qaError(
+          {
+            what: 'No driver bound after device preparation.',
+            changedState: true,
+            retrySafe: true,
+            failureCode: 'NO_DEVICE',
+            nextSteps: ['Run qa_test_this { mode:"execute" } to prepare a device, then qa_test_feature with that sessionId.'],
+          },
+          { sessionId: session.id },
+        ),
     };
   return { ok: true, session, driver };
 }

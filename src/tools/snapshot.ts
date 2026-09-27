@@ -9,7 +9,7 @@ import { presentElements } from '../snapshot/present.js';
 import { makeRedactor, isSecureNode } from '../lib/redact.js';
 import { detectTreeOverlays, classifyForeground } from '../snapshot/overlays.js';
 import { detectAuthScreen } from '../oracle/auth.js';
-import { getDriver, REHYDRATE_NOTE } from '../session/attach.js';
+import { blockedDeviceResult, getDriver, REHYDRATE_NOTE } from '../session/attach.js';
 import type { SessionStore } from '../session/store.js';
 
 export function registerSnapshot(server: McpServer, sessions: SessionStore): void {
@@ -18,31 +18,30 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
     {
       title: 'Snapshot the screen',
       description:
-        'Capture the current screen as compact, addressable elements (@e1, @e2 …) with a snapshotQuality verdict (good/partial/poor — whether the app is automation-friendly). Defaults to interactive-only and NO screenshot to stay cheap. Very busy screens are capped to the most interaction-relevant elements — pass `filter` to see the rest. Use the @eN refs as targets for qa_act. Re-snapshot after navigation because refs invalidate.',
+        'Capture the screen as compact addressable elements (@e1, @e2 …) with a snapshotQuality verdict. Interactive-only and ' +
+        'no screenshot by default; busy screens are capped (use filter for the rest). Use @eN refs with qa_act; re-snapshot ' +
+        'after navigation.',
       inputSchema: {
         sessionId: z.string(),
-        diff: z
-          .boolean()
-          .optional()
-          .describe('Return only what changed vs the previous snapshot (needs a prior snapshot in this session).'),
-        filter: z
-          .string()
-          .optional()
-          .describe(
-            "Case-insensitive substring matched against each element's text/label/id/role; only matching elements are returned. Use when elements were omitted by the presented-element cap.",
-          ),
+        diff: z.boolean().optional().describe('Only what changed since the previous snapshot.'),
+        filter: z.string().optional().describe('Substring match on text/label/id/role (finds capped elements).'),
       },
     },
     async ({ sessionId, diff, filter }) => {
       const session = sessions.get(sessionId);
-      const { driver, rehydrated } = session ? await getDriver(session) : { driver: undefined, rehydrated: false };
+      const { driver, rehydrated, blocked } = session
+        ? await getDriver(session)
+        : { driver: undefined, blocked: undefined, rehydrated: false };
       if (!session || !driver) {
-        return qaError({
-          what: 'No device attached to this session',
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_prepare_target first.'],
-        });
+        return (
+          blockedDeviceResult(blocked) ??
+          qaError({
+            what: 'No device attached to this session',
+            changedState: false,
+            retrySafe: true,
+            nextSteps: ['Call qa_prepare_target first.'],
+          })
+        );
       }
       if (driver.kind === 'simulator') {
         return qaError({
@@ -50,7 +49,9 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
           changedState: false,
           retrySafe: false,
           failureCode: 'BACKEND_UNSUPPORTED',
-          nextSteps: ['Attach WebDriverAgent with qa_wda for a structured UI tree. Without WDA, use qa_screenshot + qa_assert_visual.'],
+          nextSteps: [
+            'Attach WebDriverAgent with qa_wda for a structured UI tree. Without WDA, use qa_screenshot + qa_visual mode:"assert".',
+          ],
         });
       }
 

@@ -8,7 +8,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { qaOk, qaError } from '../lib/result.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
-import { getDriver } from '../session/attach.js';
+import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import { runExplore } from '../explore/runner.js';
 import { appendExploreMemory } from '../explore/memory.js';
 import { buildAppMap } from '../appMap/build.js';
@@ -69,25 +69,26 @@ export function registerExplore(server: McpServer, sessions: SessionStore): void
     {
       title: 'Guided exploration',
       description:
-        'Explore a launched app like a practical QA engineer: bounded, safe-by-default crawl that observes screens, ranks safe actions, taps them, checks health after each, and builds a SCREEN GRAPH (JSON + Markdown artifacts). Skips destructive actions (delete/pay/send/logout) in strict mode; verifies map/canvas screens visually with qa_assert_visual; stops with NeedsInput on an auth wall when credentials are missing. Records durable taps so qa_generate target:"suite" can promote paths. Runs as a JOB — the terminal state (completed/blocked) + graphUri are in the job result (poll qa_job_status). Requires a prepared device (qa_test_this / qa_prepare_target first).',
+        'Bounded, safe-by-default exploration of the launched app: observes screens, taps ranked safe actions, checks health after ' +
+        'each, and builds a screen graph (JSON + Markdown). Destructive actions (delete/pay/send/logout) are skipped unless a ' +
+        'candidate is explicitly approved; an auth wall without credentials returns needs_input. Taps are recorded for qa_generate. ' +
+        'Runs as a job (graphUri + terminal state in the qa_job_status result); updates the app map. Needs a prepared device.',
       inputSchema: {
         sessionId: z.string(),
-        goal: z.string().optional().describe('Optional natural-language focus (e.g. "exercise the main tabs").'),
+        goal: z.string().optional().describe('Natural-language focus, e.g. "exercise the main tabs".'),
         depth: z.number().optional().describe('Max navigation depth (default 3).'),
-        maxActions: z.number().optional().describe('Max actions to try (default 20).'),
-        maxScreens: z.number().optional().describe('Max distinct screens to visit (default 12).'),
-        maxDurationMs: z.number().optional(),
+        maxActions: z.number().optional().describe('Default 20.'),
+        maxScreens: z.number().optional().describe('Default 12.'),
+        maxDurationMs: z.number().optional().describe('Wall-clock cap in ms (default 360000).'),
         strategy: z
           .enum(['crawl', 'task_planner', 'hybrid'])
           .optional()
-          .describe(
-            'crawl (default): deterministic screen crawl; task_planner: infer semantic QA tasks before acting; hybrid: task planning plus crawl.',
-          ),
+          .describe('crawl (default, deterministic) | task_planner (infer QA tasks first) | hybrid.'),
         safeMode: z
           .enum(['strict', 'balanced', 'dry_run_destructive', 'approved_destructive_candidate', 'approved_destructive'])
           .optional()
           .describe(
-            'strict (default): safe actions only; balanced: unknown-risk allowed; dry_run_destructive: discover/list destructive candidates without tapping; approved_destructive_candidate: allow exactly one candidate-bound destructive action. approved_destructive is deprecated and refused.',
+            'strict (default) | balanced (unknown-risk ok) | dry_run_destructive (list candidates, no taps) | approved_destructive_candidate (one exact candidate; consent-gated). approved_destructive is refused.',
           ),
         destructiveCandidate: z
           .object({
@@ -98,31 +99,19 @@ export function registerExplore(server: McpServer, sessions: SessionStore): void
             riskClass: z.string().optional(),
           })
           .optional()
-          .describe(
-            'Exact candidate returned by a dry_run_destructive exploration. Required with safeMode approved_destructive_candidate.',
-          ),
-        confirmHighImpact: z
+          .describe('The exact candidate from a dry_run_destructive run (for approved_destructive_candidate).'),
+        confirmHighImpact: z.boolean().optional().describe('Required for payment/send/permission/account-delete/bulk-delete candidates.'),
+        generateSuite: z
           .boolean()
           .optional()
-          .describe(
-            'Required true for high-impact destructive candidates such as payment, send/share, permission change, account delete, or bulk delete.',
-          ),
-        generateSuite: z.boolean().optional().describe('After exploration, score promotable paths and include suite-promotion guidance.'),
-        includeTextEntry: z.boolean().optional().describe('Allow typing into fields (only with a value source — default false).'),
-        stopOnAuth: z
-          .boolean()
-          .optional()
-          .describe('Return NeedsInput when an auth wall blocks exploration and credentials are missing (default true).'),
+          .describe('Also write + compile a POM suite from the promoted paths (suitePromotion scoring is always returned).'),
+        includeTextEntry: z.boolean().optional().describe('Allow typing into fields that have a value source (default false).'),
+        stopOnAuth: z.boolean().optional().describe('needs_input on an auth wall without credentials (default true).'),
         accountCycle: z
           .boolean()
           .optional()
-          .describe(
-            'SWIPIUM-REQ-07 controlled account-cycle workflow: on a DISPOSABLE generated account, permit LOGOUT (and only logout) as an expected step; delete/pay/send stay refused. Requires allowGeneratedData. Off by default.',
-          ),
-        allowGeneratedData: z
-          .boolean()
-          .optional()
-          .describe('Allow safe generated disposable-account data (test/staging) — required to use accountCycle.'),
+          .describe('On a DISPOSABLE generated account, permit logout (only) as a step; needs allowGeneratedData.'),
+        allowGeneratedData: z.boolean().optional().describe('Allow generated disposable test data (test/staging).'),
         consentId: z.string().optional(),
         approve: z.boolean().optional(),
       },
@@ -154,14 +143,17 @@ export function registerExplore(server: McpServer, sessions: SessionStore): void
           retrySafe: true,
           nextSteps: ['Call qa_start_session first.'],
         });
-      const { driver } = await getDriver(session);
+      const { driver, blocked } = await getDriver(session);
       if (!driver) {
-        return qaError({
-          what: 'No device attached to this session',
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Prepare a device first: qa_test_this { mode:"execute" } or qa_prepare_target, then qa_explore.'],
-        });
+        return (
+          blockedDeviceResult(blocked) ??
+          qaError({
+            what: 'No device attached to this session',
+            changedState: false,
+            retrySafe: true,
+            nextSteps: ['Prepare a device first: qa_test_this { mode:"execute" } or qa_prepare_target, then qa_explore.'],
+          })
+        );
       }
 
       if (safeMode === 'approved_destructive') {
@@ -300,9 +292,9 @@ async function runExploreJob(
     nextExpected: 'Build a screen graph.',
   });
   try {
-    const { driver } = await getDriver(session);
+    const { driver, blocked } = await getDriver(session);
     if (!driver) {
-      upd({ status: 'failed', error: 'no driver', endedAt: Date.now() });
+      upd({ status: 'failed', error: blocked ? `${blocked.failureCode}: ${blocked.detail}` : 'no driver', endedAt: Date.now() });
       return;
     }
     const res = await runExplore(sessions, session, driver, opts, { signal, onProgress: (p) => prog.event(p) });

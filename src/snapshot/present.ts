@@ -23,9 +23,16 @@ export function presentElements(
   redact: Redactor,
   opts: { max?: number } = {},
 ): { elements: SnapshotElement[]; rendered: string; omitted: number } {
+  // A secure node's VALUE is always masked. Its label (content-desc / accessibility label) is only
+  // masked on input fields: on a "Show password" toggle or a "Password" caption the label is UI
+  // copy, not the secret, and hiding it leaves the agent unable to find the control.
   const masked = elements.map((e) =>
     e.secure
-      ? { ...e, label: e.label ? '«secure»' : undefined, text: e.text ? '«secure»' : undefined }
+      ? {
+          ...e,
+          label: e.role === 'text-field' ? (e.label ? '«secure»' : undefined) : redact(e.label),
+          text: e.text ? '«secure»' : undefined,
+        }
       : { ...e, label: redact(e.label), text: redact(e.text) },
   );
   const max = opts.max ?? MAX_PRESENTED_ELEMENTS;

@@ -1,4 +1,5 @@
 import { XMLParser } from 'fast-xml-parser';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { run } from './spawn.js';
@@ -24,6 +25,11 @@ export interface WdaSessionOptions {
   udid?: string;
   capabilities?: Record<string, unknown>;
   settings?: Record<string, unknown>;
+  /** Re-create a session over an app that is ALREADY running (restart rebind / invalid-session
+   * recovery): sends `forceAppLaunch:false` (don't relaunch it) + `shouldTerminateApp:false`
+   * (don't terminate it when this session is later replaced/deleted). Overrides config caps.
+   * Only meaningful with `bundleId`. See createWdaSession. */
+  reuseRunningApp?: boolean;
 }
 
 export interface WdaElementRef {
@@ -86,12 +92,97 @@ function isMissingWdaRoute(e: unknown): boolean {
   return /unknown command|unknown route|unhandled endpoint|not found|unsupported/i.test(e.message);
 }
 
+/** Per-call options for WDA HTTP requests. Threaded implicitly (AsyncLocalStorage) so every
+ * helper below inherits the caller's cancellation signal without a parameter on each one. */
+export interface WdaCallOptions {
+  /** Job/tool cancellation — aborts the in-flight HTTP request. */
+  signal?: AbortSignal;
+  /** Overrides the per-endpoint default timeout (wdaRequestTimeoutMs). */
+  timeoutMs?: number;
+}
+
+const wdaCallContext = new AsyncLocalStorage<WdaCallOptions>();
+
+/** Run `fn` with WDA call options (signal/timeout) applied to every wdaFetch inside it. */
+export function withWdaCall<T>(call: WdaCallOptions, fn: () => Promise<T>): Promise<T> {
+  // Nested calls inherit the outer options; only the fields given here override them.
+  const outer = wdaCallContext.getStore() ?? {};
+  return wdaCallContext.run({ signal: call.signal ?? outer.signal, timeoutMs: call.timeoutMs ?? outer.timeoutMs }, fn);
+}
+
+/** Typing endpoints get this much extra time per character (WDA types key by key, and slow
+ * simulators manage ~10–30 chars/s), capped at TYPING_TIMEOUT_CAP_MS. */
+export const TYPING_TIMEOUT_PER_CHAR_MS = 50;
+export const TYPING_TIMEOUT_CAP_MS = 5 * 60_000;
+const BASE_TIMEOUT_MS = 15_000;
+
+/** Number of characters a typing request (element/value, /wda/keys) will send. */
+function typedLength(body: unknown): number {
+  if (typeof body !== 'string' || !body) return 0;
+  try {
+    const j = JSON.parse(body) as { text?: unknown; value?: unknown };
+    if (Array.isArray(j.value)) return j.value.reduce<number>((n, v) => n + [...String(v)].length, 0);
+    if (typeof j.text === 'string') return [...j.text].length;
+  } catch {
+    // not JSON — no scaling
+  }
+  return 0;
+}
+
+/** Default HTTP timeout per endpoint: page source is WDA's slowest call; session creation may
+ * launch the app; typing scales with the text length (15 s + 50 ms/char, ≤ 5 min); everything
+ * else (taps, finds) must answer within seconds. */
+export function wdaRequestTimeoutMs(method: string, path: string, body?: unknown): number {
+  if (/\/source(\?|$)/.test(path)) return 30_000;
+  if (method === 'POST' && /^\/session\/?$/.test(path)) return 60_000;
+  if (/\/screenshot$/.test(path)) return 20_000;
+  if (method === 'POST' && /\/element\/[^/]+\/value$|\/wda\/keys$/.test(path)) {
+    return Math.min(TYPING_TIMEOUT_CAP_MS, BASE_TIMEOUT_MS + TYPING_TIMEOUT_PER_CHAR_MS * typedLength(body));
+  }
+  return BASE_TIMEOUT_MS;
+}
+
+function anySignal(signals: AbortSignal[]): AbortSignal {
+  const any = (AbortSignal as unknown as { any?: (s: AbortSignal[]) => AbortSignal }).any;
+  if (any) return any(signals);
+  // Node 20.0-20.2 lack AbortSignal.any — forward the first abort manually.
+  const ctl = new AbortController();
+  for (const s of signals) {
+    if (s.aborted) {
+      ctl.abort(s.reason);
+      break;
+    }
+    s.addEventListener('abort', () => ctl.abort(s.reason), { once: true });
+  }
+  return ctl.signal;
+}
+
+/** True when WDA says the session id is gone (WDA restarted / session reaped). */
+export function isInvalidWdaSession(e: unknown): boolean {
+  const msg = e instanceof WdaHttpError ? `${e.message} ${e.body}` : String((e as Error)?.message ?? e);
+  return /invalid session id|session (?:id )?(?:\S+ )?(?:does not exist|not found)|no such session/i.test(msg);
+}
+
 async function wdaFetch<T>(baseUrl: string, path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${normalizeUrl(baseUrl)}${path}`, {
-    ...init,
-    headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
-  });
-  const body = (await res.text()) || '{}';
+  const method = (init?.method ?? 'GET').toUpperCase();
+  const call = wdaCallContext.getStore() ?? {};
+  const timeoutMs = call.timeoutMs ?? wdaRequestTimeoutMs(method, path, init?.body);
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const signal = anySignal([timeout, ...(call.signal ? [call.signal] : []), ...(init?.signal ? [init.signal] : [])]);
+  let res: Response;
+  let body: string;
+  try {
+    res = await fetch(`${normalizeUrl(baseUrl)}${path}`, {
+      ...init,
+      signal,
+      headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
+    });
+    body = (await res.text()) || '{}';
+  } catch (e) {
+    if (timeout.aborted) throw new Error(`WDA ${method} ${path} timed out after ${timeoutMs}ms`, { cause: e });
+    if (signal.aborted) throw new Error(`WDA ${method} ${path} aborted (cancelled)`, { cause: e });
+    throw e;
+  }
   let json: unknown;
   try {
     json = JSON.parse(body);
@@ -279,12 +370,33 @@ export function classifyWdaConnectionFailure(message: string): FailureCode {
   return 'WDA_SESSION_FAILED';
 }
 
+/** Capabilities that make WDA attach to a running app without relaunching it, and leave it
+ * running when the session is torn down. Names verified against appium/WebDriverAgent
+ * (FBCapabilities.m: FB_CAP_FORCE_APP_LAUNCH / FB_CAP_SHOULD_TERMINATE_APP; both read from the
+ * W3C `capabilities.alwaysMatch`/`firstMatch` via FBParseCapabilities — `desiredCapabilities` is
+ * ignored). */
+export const WDA_REUSE_RUNNING_APP_CAPABILITIES = Object.freeze({ forceAppLaunch: false, shouldTerminateApp: false });
+
+/**
+ * POST /session. App-lifecycle rules (WebDriverAgent FBSessionCommands.handleCreateSession):
+ *  - A new session FIRST kills the active one; that teardown terminates the old session's app when
+ *    the OLD session's `shouldTerminateApp` (default YES, reset per session) is set — the NEW
+ *    request's caps are applied only afterwards. So every bundle-bound session defaults to
+ *    `shouldTerminateApp:false` (a caller/config value wins), otherwise a later rebind/recovery
+ *    would kill the app no matter what that later request sends. Launch behaviour is unchanged.
+ *  - `forceAppLaunch` defaults to YES (a running app is relaunched). `reuseRunningApp` forces
+ *    `forceAppLaunch:false` + `shouldTerminateApp:false` for rebind/recovery.
+ */
 export async function createWdaSession(baseUrl: string, opts: WdaSessionOptions = {}): Promise<WdaSession> {
   const alwaysMatch: Record<string, unknown> = {
     ...(opts.capabilities ?? {}),
     ...settingsCapabilities(opts.settings),
   };
-  if (opts.bundleId) alwaysMatch.bundleId = opts.bundleId;
+  if (opts.bundleId) {
+    alwaysMatch.bundleId = opts.bundleId;
+    if (opts.reuseRunningApp) Object.assign(alwaysMatch, WDA_REUSE_RUNNING_APP_CAPABILITIES);
+    else if (alwaysMatch.shouldTerminateApp === undefined) alwaysMatch.shouldTerminateApp = false;
+  }
   if (opts.udid) alwaysMatch.udid = opts.udid;
   const json = await wdaFetch<unknown>(baseUrl, '/session', {
     method: 'POST',
@@ -326,6 +438,19 @@ export async function wdaScreenshot(baseUrl: string, sessionId: string): Promise
   return Buffer.from(String(valueOf<string>(json)), 'base64');
 }
 
+/** Screen size in points via GET /session/:id/window/size — far cheaper than dumping the
+ * full page source (one of WDA's slowest endpoints). Older WDA builds may not serve it. */
+export async function wdaWindowSize(baseUrl: string, sessionId: string): Promise<{ width: number; height: number }> {
+  const json = await wdaFetch<unknown>(baseUrl, `/session/${sessionId}/window/size`);
+  const v = valueOf<{ width?: unknown; height?: unknown }>(json);
+  const width = Number(v?.width);
+  const height = Number(v?.height);
+  if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) {
+    throw new Error(`WDA /window/size returned no usable size: ${JSON.stringify(v).slice(0, 200)}`);
+  }
+  return { width, height };
+}
+
 export async function wdaSource(baseUrl: string, sessionId: string): Promise<string> {
   const json = await wdaFetch<unknown>(baseUrl, `/session/${sessionId}/source`);
   return String(valueOf<string>(json));
@@ -355,6 +480,13 @@ export async function findWdaElement(baseUrl: string, sessionId: string, using: 
   const elementId = String(v[ELEMENT_KEY] ?? v.ELEMENT ?? v.elementId ?? '');
   if (!elementId) throw new Error(`WDA could not resolve element using ${using}=${value}.`);
   return { elementId };
+}
+
+/** Read one element attribute (e.g. `type` → XCUIElementTypeSecureTextField). Empty string when unset. */
+export async function wdaElementAttribute(baseUrl: string, sessionId: string, elementId: string, name: string): Promise<string> {
+  const json = await wdaFetch<unknown>(baseUrl, `/session/${sessionId}/element/${elementId}/attribute/${name}`);
+  const v = valueOf<unknown>(json);
+  return v == null ? '' : String(v);
 }
 
 export async function tapWdaElement(baseUrl: string, sessionId: string, elementId: string): Promise<void> {
@@ -439,12 +571,50 @@ export async function pressWdaHome(baseUrl: string, sessionId: string): Promise<
   await wdaFetch(baseUrl, `/session/${sessionId}/wda/homescreen`, { method: 'POST', body: '{}' });
 }
 
-export async function pressWdaBack(baseUrl: string, sessionId: string): Promise<void> {
-  await wdaFetch(baseUrl, `/session/${sessionId}/back`, { method: 'POST', body: '{}' });
-}
+// iOS "back" lives in WdaDriver.pressKey('back') (nav-bar back button, else a left-edge swipe).
+// There is deliberately no pressWdaBack helper: WDA has no /session/:id/back route (it 404s).
 
 export async function acceptWdaAlert(baseUrl: string, sessionId: string): Promise<void> {
   await wdaFetch(baseUrl, `/session/${sessionId}/alert/accept`, { method: 'POST', body: '{}' });
+}
+
+/** Soft keyboard shown? One cheap lookup by class name (no page-source dump). */
+export async function wdaKeyboardShown(baseUrl: string, sessionId: string): Promise<boolean> {
+  return (await wdaKeyboardElementId(baseUrl, sessionId)) !== undefined;
+}
+
+async function wdaKeyboardElementId(baseUrl: string, sessionId: string): Promise<string | undefined> {
+  const json = await wdaFetch<unknown>(baseUrl, `/session/${sessionId}/elements`, {
+    method: 'POST',
+    body: JSON.stringify({ using: 'class name', value: 'XCUIElementTypeKeyboard' }),
+  });
+  const list = valueOf<unknown>(json);
+  if (!Array.isArray(list) || !list.length) return undefined;
+  const first = list[0] as Record<string, unknown>;
+  const id = String(first[ELEMENT_KEY] ?? first.ELEMENT ?? first.elementId ?? '');
+  return id || undefined;
+}
+
+/** On-screen keyboard rect in points [x1,y1,x2,y2], or null when no keyboard is shown. */
+export async function wdaKeyboardFrame(baseUrl: string, sessionId: string): Promise<[number, number, number, number] | null> {
+  const id = await wdaKeyboardElementId(baseUrl, sessionId);
+  if (!id) return null;
+  const json = await wdaFetch<unknown>(baseUrl, `/session/${sessionId}/element/${id}/rect`);
+  const r = valueOf<{ x?: unknown; y?: unknown; width?: unknown; height?: unknown }>(json);
+  const [x, y, w, h] = [r?.x, r?.y, r?.width, r?.height].map(Number);
+  if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) return null;
+  return [x, y, x + w, y + h];
+}
+
+/** WDA's keyboard dismissal (POST /wda/keyboard/dismiss). */
+export async function dismissWdaKeyboard(baseUrl: string, sessionId: string): Promise<void> {
+  await wdaFetch(baseUrl, `/session/${sessionId}/wda/keyboard/dismiss`, { method: 'POST', body: '{}' });
+}
+
+/** Current interface orientation string (e.g. PORTRAIT / LANDSCAPE). */
+export async function wdaOrientation(baseUrl: string, sessionId: string): Promise<string> {
+  const json = await wdaFetch<unknown>(baseUrl, `/session/${sessionId}/orientation`);
+  return String(valueOf<unknown>(json) ?? '');
 }
 
 export async function dismissWdaAlert(baseUrl: string, sessionId: string): Promise<void> {
@@ -463,14 +633,30 @@ function iosBounds(attrs: Record<string, unknown>): string {
   return `[${Math.round(x)},${Math.round(y)}][${Math.round(x + w)},${Math.round(y + h)}]`;
 }
 
+const IOS_TEXT_INPUT_RE = /XCUIElementType(?:Secure)?TextField\b|XCUIElementTypeSearchField\b|XCUIElementTypeTextView\b/;
+
+/**
+ * The accessibility identifier of a WDA source node. WDA's XML has no `identifier` attribute —
+ * XCUITest reports `name` = accessibilityIdentifier when one is set, else the label. So `name`
+ * counts as an id when it differs from the label (e.g. name="com.apple.settings.general",
+ * label="General"); name === label (or no label) is just the label echoed back.
+ */
+export function wdaNodeIdentifier(node: Record<string, unknown>): string {
+  if (node.identifier != null && String(node.identifier)) return String(node.identifier);
+  const name = node.name == null ? '' : String(node.name);
+  const label = node.label == null ? '' : String(node.label);
+  return name && label && name !== label ? name : '';
+}
+
 function normalizeNode(node: Record<string, unknown>): Record<string, unknown> {
   const type = String(node.type ?? node.name ?? 'XCUIElementTypeOther');
-  const id = String(node.identifier ?? '');
+  const id = wdaNodeIdentifier(node);
   const label = String(node.label ?? node.name ?? '');
   const value = String(node.value ?? '');
   const enabled = node.enabled == null ? true : bool(node.enabled);
   const visible = node.visible == null ? true : bool(node.visible);
-  const typeLooksInteractive = /Button|Cell|Link|Switch|Tab|Image|TextField|SecureTextField/i.test(type);
+  const textInput = IOS_TEXT_INPUT_RE.test(type);
+  const typeLooksInteractive = textInput || /Button|Cell|Link|Switch|Tab|Image/i.test(type);
   const clickable = node.hittable == null ? enabled && visible && typeLooksInteractive : bool(node.hittable);
   const childValues = Object.entries(node)
     .filter(([k]) => k === 'children' || k.startsWith('XCUIElementType'))
@@ -484,10 +670,11 @@ function normalizeNode(node: Record<string, unknown>): Record<string, unknown> {
     clickable,
     'long-clickable': false,
     scrollable: /ScrollView|Table|CollectionView|Picker|WebView/i.test(type),
-    focusable: /TextField|SecureTextField|TextView/i.test(type),
+    focusable: textInput,
     focused: bool(node.focused),
     enabled,
     password: /SecureTextField/i.test(type),
+    ...(textInput && node.placeholderValue != null ? { hint: String(node.placeholderValue) } : {}),
   };
   if (childValues.length) out.node = childValues.map((c) => normalizeNode(c as Record<string, unknown>));
   return out;

@@ -16,9 +16,14 @@ import { boundsBucket, resolveTarget, resourceIdMatches, type Target } from '../
 import { imageDiff, findTemplate } from '../lib/image.js';
 import { captureCoordinateSpace, toDevicePoint } from '../lib/coordSpace.js';
 import { executeSeed } from './seedExec.js';
-import { resolveVars, type Flow, type FlowProvenanceEntry, type FlowStep, type SwipeArea } from './schema.js';
+import { resolveVars, type Flow, type FlowProvenanceEntry, type FlowStep } from './schema.js';
+// Shared with qa_act (SWIP-02): flow replay keeps the default inset 0 so recorded flows
+// reproduce their historical vectors byte-for-byte.
+import { swipeVector } from '../lib/gestures.js';
 import { configuredOcrCommand, findOcrRegion, runOcr } from '../visual/ocr.js';
 import { makeRedactor } from '../lib/redact.js';
+import { classifyForeground, detectTreeOverlays } from '../snapshot/overlays.js';
+import type { RawNode } from '../snapshot/parse.js';
 import type { FailureCode } from '../oracle/failures.js';
 import type { Driver, NativeSelectorStrategy } from '../drivers/Driver.js';
 import type { MutationRecord, Session, SessionStore } from '../session/store.js';
@@ -33,6 +38,8 @@ export interface FlowStepResult {
   detail?: string;
   failureCode?: FailureCode;
   screenshotUri?: string;
+  /** clearOverlay only: nothing dismissible was detected, so nothing was done (not a failure). */
+  nothingCleared?: boolean;
 }
 
 export interface FlowRunResult {
@@ -49,44 +56,7 @@ export interface FlowRunResult {
   counters: Session['counters'];
 }
 
-const FALLBACK_SWIPE: Record<string, [number, number, number, number]> = {
-  up: [540, 1500, 540, 600],
-  down: [540, 600, 540, 1500],
-  left: [800, 1100, 200, 1100],
-  right: [200, 1100, 800, 1100],
-};
-const AREA_ANCHOR: Record<SwipeArea, [number, number]> = {
-  center: [0.5, 0.5],
-  top: [0.5, 0.3],
-  bottom: [0.5, 0.7],
-  left: [0.3, 0.5],
-  right: [0.7, 0.5],
-};
 const SECRET_VAR_NAME = /pass|secret|token|otp|pin|cvv|key/i;
-
-/** Device-relative swipe vector (fractions of the screen), falling back to fixed coords if no size. */
-function swipeVector(
-  size: { width: number; height: number } | null,
-  dir: 'up' | 'down' | 'left' | 'right',
-  area: SwipeArea = 'center',
-  distance = 0.6,
-): [number, number, number, number] {
-  if (!size) return FALLBACK_SWIPE[dir];
-  const [ax, ay] = AREA_ANCHOR[area];
-  const cx = size.width * ax;
-  const cy = size.height * ay;
-  const vd = (size.height * distance) / 2;
-  const hd = (size.width * distance) / 2;
-  const clampX = (x: number) => Math.max(1, Math.min(size.width - 1, Math.round(x)));
-  const clampY = (y: number) => Math.max(1, Math.min(size.height - 1, Math.round(y)));
-  const v = {
-    up: [cx, cy + vd, cx, cy - vd],
-    down: [cx, cy - vd, cx, cy + vd],
-    left: [cx + hd, cy, cx - hd, cy],
-    right: [cx - hd, cy, cx + hd, cy],
-  }[dir];
-  return [clampX(v[0]), clampY(v[1]), clampX(v[2]), clampY(v[3])];
-}
 
 function describe(step: FlowStep): string {
   switch (step.kind) {
@@ -289,10 +259,42 @@ interface StepOutcome {
   ok: boolean;
   detail?: string;
   failureCode?: FailureCode;
+  nothingCleared?: boolean;
+}
+
+/** In-tree modal surfaces that BACK dismisses (Android dialogs / bottom sheets / popups, iOS
+ * alerts and action sheets, system permission dialogs rendered in-tree). */
+const MODAL_CLASS_RE = /BottomSheet|AlertDialog|DialogTitle|PopupWindow|XCUIElementTypeAlert|XCUIElementTypeSheet/;
+const MODAL_ID_RE =
+  /design_bottom_sheet|bottom_sheet|touch_outside|android:id\/(?:alertTitle|button1|button2|parentPanel|select_dialog_listview)|permissioncontroller:id\/|packageinstaller:id\/permission|:id\/(?:modal|dialog)[_a-z]*/i;
+
+/** Classify what (if anything) the clearOverlay flow step may safely dismiss with BACK.
+ * Snackbars / banners are NOT BACK-dismissible (BACK would navigate the app instead). */
+export function detectBackDismissibleOverlay(
+  nodes: RawNode[],
+  screen: [number, number] | undefined,
+  appId: string | undefined,
+  foregroundOwner: string,
+): string | undefined {
+  const fg = classifyForeground(appId, foregroundOwner);
+  if (fg && (fg.type === 'permission_dialog' || fg.type === 'account_picker')) return fg.type;
+  const tree = detectTreeOverlays(nodes, screen).find(
+    (o) => o.type === 'native_dialog' || o.type === 'rn_logbox' || o.type === 'rn_redbox',
+  );
+  if (tree) return tree.type;
+  const modal = nodes.find((n) => MODAL_CLASS_RE.test(n.cls) || MODAL_ID_RE.test(n.id));
+  if (modal)
+    return /permission/i.test(modal.id) ? 'permission_dialog' : /sheet/i.test(`${modal.cls} ${modal.id}`) ? 'bottom_sheet' : 'modal';
+  return undefined;
 }
 
 export function classifyFlowDriverError(error: unknown, fallback: FailureCode = 'UNKNOWN'): FailureCode {
   const msg = String((error as Error)?.message ?? error);
+  // A crashing OCR/mask provider (tapOcrText/assertOcrText) is typed, not UNKNOWN.
+  if ((error as { code?: unknown } | null)?.code === 'OCR_PROVIDER_FAILED') return 'OCR_PROVIDER_FAILED';
+  // Drivers self-classify undeliverable text (DirectDriver/WdaDriver prefix the code) — match
+  // first so the free-form detail after the prefix can't hit a broader pattern below.
+  if (/TEXT_INPUT_UNSUPPORTED/.test(msg)) return 'TEXT_INPUT_UNSUPPORTED';
   if (/not hittable|not hit.?point|not visible.*hittable|is not enabled|element.*obscured|other element.*would receive/i.test(msg))
     return 'ELEMENT_NOT_HITTABLE';
   if (/stale element|stale.*reference|element.*no longer|invalid element/i.test(msg)) return 'STALE_REF';
@@ -335,7 +337,10 @@ export async function runFlow(
   const timeoutMs = 8000;
   // Ensure session.driver is the driver we're running with — core helpers (resolveTarget) read it.
   session.driver = d;
-  const screenSize = await d.screenSize().catch(() => null);
+  // Re-read per gesture: a rotation mid-flow swaps the axes (the WDA driver caches per
+  // orientation, so this is cheap there). Keeps the first read as the fallback.
+  const initialScreenSize = await d.screenSize().catch(() => null);
+  const currentScreenSize = async () => (await d.screenSize().catch(() => null)) ?? initialScreenSize;
   const mutationConsent = opts.mutationConsent ?? { required: false, approved: true };
 
   const resolveFlowText = (value: string): { out: string; missing: string[] } => {
@@ -472,6 +477,8 @@ export async function runFlow(
       case 'inputText': {
         const { out, missing } = resolveFlowText(step.value);
         if (missing.length) return { ok: false, detail: `unresolved variable(s): ${missing.join(', ')}`, failureCode: 'MISSING_FIXTURE' };
+        // Register a secret BEFORE typing so a failing driver call's error is scrubbed too (H2).
+        if (step.secret && out) session.secrets.add(out);
         // eslint-disable-next-line no-control-regex -- intentional: detect non-ASCII (outside \x00-\x7F) before adb text input
         if (d.kind === 'direct' && /[^\x00-\x7F]/.test(out)) {
           return {
@@ -628,7 +635,7 @@ export async function runFlow(
             };
       }
       case 'swipe': {
-        const v = swipeVector(screenSize, step.direction, step.area, step.distance);
+        const v = swipeVector(await currentScreenSize(), step.direction, step.area, step.distance);
         await d.swipe(v[0], v[1], v[2], v[3], 300);
         sessions.bump(session, 'actions');
         await settle(d, { timeoutMs });
@@ -638,6 +645,7 @@ export async function runFlow(
         const resolved = resolveFlowText(step.query);
         if (resolved.missing.length) return unresolved(resolved.missing);
         const query = resolved.out;
+        const screenSize = await currentScreenSize();
         for (let n = 0; n < 8; n++) {
           try {
             const native = await nativeVisible(d, query);
@@ -737,11 +745,27 @@ export async function runFlow(
         return { ok: true };
       }
       case 'clearOverlay': {
-        // best-effort: hide the keyboard / dismiss a dialog with BACK (a flow cleanup, always ok)
-        if (await d.imeShown().catch(() => false)) await d.pressKey('back');
-        else await d.pressKey('back');
+        // Best-effort cleanup (always ok) — but BACK only when something is there to dismiss:
+        // with nothing open, BACK navigates away / exits the app (H7).
+        if (await d.imeShown().catch(() => false)) {
+          if (d.hideKeyboard) await d.hideKeyboard().catch(() => false);
+          else await d.pressKey('back');
+          await settle(d, { timeoutMs });
+          return { ok: true, detail: 'keyboard hidden' };
+        }
+        const parsed = await snapshot(session, d).catch(() => null);
+        const fg = await d.foregroundOwner().catch(() => 'unknown');
+        const dismissible = detectBackDismissibleOverlay(parsed?.allNodes ?? [], parsed?.screen, session.appId, fg);
+        if (!dismissible) {
+          return {
+            ok: true,
+            nothingCleared: true,
+            detail: 'nothing to clear (no keyboard, dialog, sheet or permission prompt detected) — BACK not pressed',
+          };
+        }
+        await d.pressKey('back');
         await settle(d, { timeoutMs });
-        return { ok: true };
+        return { ok: true, detail: `dismissed ${dismissible} with BACK` };
       }
       case 'networkOffline':
       case 'networkOnline': {
@@ -846,15 +870,19 @@ export async function runFlow(
       } catch (e) {
         outcome = { ok: false, detail: String(e), failureCode: classifyFlowDriverError(e) };
       }
+      // H2: step detail can carry driver errors (argv/stderr) — scrub session secrets, which
+      // include every value typed into a secret step/variable before it ran.
+      if (outcome.detail) outcome = { ...outcome, detail: shown(outcome.detail) };
       const rec: FlowStepResult = {
         index,
         phase,
         kind: step.kind,
-        summary,
+        summary: shown(summary),
         ok: outcome.ok,
         durationMs: Math.round(Date.now() - stepStarted),
         detail: outcome.detail,
         failureCode: outcome.failureCode,
+        ...(outcome.nothingCleared ? { nothingCleared: true } : {}),
       };
       steps.push(rec);
       if (!outcome.ok && failFast) {

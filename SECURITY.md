@@ -32,6 +32,10 @@ Security reports are in scope when they involve Swipium code, published packages
 
 Reports about third-party tools, mobile apps under test, simulators, Appium, Xcode, Android Studio, or operating system behavior should be reported to the relevant upstream project unless Swipium introduces the vulnerability.
 
+## Consent Hardening
+
+Privileged actions (building from source, starting Metro, installing apps, wiping app data, running seeds, and similar) always need consent. If your MCP client supports elicitation, Swipium asks you directly. Only an explicit approval counts: dismissing the prompt, leaving it unanswered for 10 minutes, or a connection error is treated as a refusal. To forbid the model-relayed approval fallback on clients without elicitation, set `SWIPIUM_REQUIRE_ELICITATION=1`. Every consent-gated action is then refused unless the client can show you the prompt. See `THREAT_MODEL.md`.
+
 ## Handling Sensitive Data
 
 Do not send real credentials, production tokens, private app binaries, customer data, or confidential screenshots in a report. Use minimal reproductions and redacted evidence.

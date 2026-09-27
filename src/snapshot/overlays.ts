@@ -2,7 +2,7 @@
 // uiautomator dump (allNodes, DFS-ordered). Toasts are NOT in the dump (separate windows);
 // keyboard + foreground-owner are detected by the caller via the driver and merged in.
 
-import { boundsContain, type RawNode } from './parse.js';
+import { boundsContain, isTextFieldClass, type RawNode } from './parse.js';
 
 export type OverlayType =
   | 'rn_logbox'
@@ -28,12 +28,34 @@ const LOGBOX_RE = /open debugger|view warnings|LogBox|\b\d+ (warning|error)s?\b/
 const REDBOX_RE = /unhandled (js|javascript) exception|render error|reload\b.*\bdismiss/i;
 
 /** Overlays visible in the current window's UI tree (not toasts/IME/foreign — see callers). */
-const DISMISS_RE = /close|dismiss|got it|ok\b|minimize|×|✕|✖/i;
+const DISMISS_RE = /close|dismiss|got it|\bok\b|minimize|×|✕|✖/i;
+
+/** Class/id of an overlay-like container (the signal the geometric heuristic requires). */
+const OVERLAY_SIGNAL_RE =
+  /banner|snack|toast|notice|notification|alert|popup|pop_up|overlay|tooltip|callout|debug|flash|infobar|message_bar/i;
+/** Wording typical of banners/snackbars (debug/sandbox notices, errors, connectivity, undo). */
+const OVERLAY_TEXT_RE =
+  /\b(debug|sandbox|test (store|mode)|preview build|offline|no (internet|connection)|connection lost|reconnect|something went wrong|error|failed|try again|retry|undo|saved|copied|deleted|update available|new version)\b/i;
+/** Navigation chrome: titles/search in these are NOT overlays. */
+const NAV_CHROME_RE =
+  /NavigationBar|Toolbar|ActionBar|AppBar|TabBar|StatusBar|SearchBar|SearchView|CollapsingToolbar|action_bar|toolbar|app_bar|appbar|search_bar|open_search_view|collapsing|large_title|nav_bar|navigation_bar|tab_bar/i;
+/** Scrolling list containers: an edge-touching row inside one is content, not a pinned overlay. */
+const LIST_CONTAINER_RE = /RecyclerView|ListView|ScrollView|GridView|ViewPager|XCUIElementType(?:Table|CollectionView|ScrollView)\b/;
+
+function ancestorsOf(allNodes: RawNode[], n: RawNode): RawNode[] {
+  return allNodes.filter((m) => m.dfs < n.dfs && m.subtreeEnd >= n.dfs);
+}
 
 /**
  * Heuristic detector for persistent in-app debug banners / snackbars / toast-like RN views
  * (RevenueCat debug banner, custom error toasts, etc.) that the id/class detectors miss.
- * A banner is a wide, short, edge-pinned content block that is NOT the full screen.
+ * A banner is a wide, short, edge-pinned content block that is NOT the full screen — AND
+ * (real-device smoke 2.0.0 false positives: iOS Settings nav title as "banner", its last list
+ * row as "snackbar", the Android search field as "top banner"):
+ *  - not an editable text field, not inside navigation chrome (nav/tool/app/tab/search bar),
+ *  - not inside a scrolling list container (edge-touching list rows are content),
+ *  - carries an overlay signal: an overlay-like class/id on it or an ancestor, a dismiss
+ *    affordance, or banner/snackbar wording (debug/sandbox/offline/error/undo…).
  */
 function detectBanners(allNodes: RawNode[], screen?: [number, number]): Overlay[] {
   if (!screen) return [];
@@ -51,8 +73,16 @@ function detectBanners(allNodes: RawNode[], screen?: [number, number]): Overlay[
     const atBottom = y2 >= sh * 0.82;
     const fullScreen = h >= sh * 0.85;
     if (!wideEnough || !shortEnough || fullScreen || (!atTop && !atBottom)) continue;
+    if (isTextFieldClass(n.cls)) continue;
+    const ancestors = ancestorsOf(allNodes, n);
+    const lineage = [...ancestors, n];
+    if (lineage.some((m) => NAV_CHROME_RE.test(`${m.cls} ${m.id}`))) continue;
+    if (ancestors.some((m) => m.scrollable || LIST_CONTAINER_RE.test(m.cls))) continue;
     const sub = allNodes.filter((m) => m.dfs >= n.dfs && m.dfs <= n.subtreeEnd);
     const dismissible = sub.some((m) => (m.clickable || m.cls.includes('Button')) && DISMISS_RE.test(`${m.text} ${m.desc}`));
+    const overlaySignal =
+      lineage.some((m) => OVERLAY_SIGNAL_RE.test(`${m.cls} ${m.id}`)) || dismissible || OVERLAY_TEXT_RE.test(`${n.text} ${n.desc}`);
+    if (!overlaySignal) continue;
     const label = (n.text || n.desc).trim().slice(0, 60);
     out.push({
       type: atBottom ? 'snackbar' : 'banner',

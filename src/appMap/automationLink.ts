@@ -4,7 +4,7 @@
 // ish: loads + saves `.swipium/app-map.json`, upserting an AutomationSuiteRef (by path) with the
 // screen/feature ids the suite covers. Best-effort: returns ok:false rather than throwing on no map.
 
-import { loadAppMap, saveAppMap } from './store.js';
+import { loadAppMap, saveAppMap, withAppMapLock } from './store.js';
 import { addProvenance, makeProvenance, recomputeConfidence } from './provenance.js';
 import { detectFramework } from './../context/detect.js';
 import type { AppKnowledgeMap, AutomationSuiteRef, ProjectIdentity } from './schema.js';
@@ -66,25 +66,28 @@ export interface LinkAutomationResult {
 
 /** Upsert (by path) an automation suite record into the durable app map. */
 export function linkAutomationSuite(root: string, suite: AutomationSuiteRef, now: string): LinkAutomationResult {
-  const loaded = loadAppMap(root, fallbackProject(root), now);
-  if (!loaded.map) return { ok: false };
-  const map = loaded.map;
-  // Enrich screen/feature links from the map when the caller didn't already resolve them.
-  if ((!suite.linkedScreenIds || !suite.linkedScreenIds.length) && suite.linkedFeatureIds === undefined) {
-    // nothing to enrich
-  }
-  const existing = map.automation.suites.find((s) => s.path === suite.path);
-  if (existing) Object.assign(existing, suite);
-  else map.automation.suites.push(suite);
-  addProvenance(
-    map,
-    makeProvenance('test_case', now, `Automation suite ${suite.name} linked (${suite.framework ?? 'appium'})`, {
-      targetType: 'test',
-      refs: [suite.path],
-    }),
-  );
-  map.updatedAt = now;
-  recomputeConfidence(map);
-  const save = saveAppMap(root, map);
-  return { ok: true, appMapUri: save.resourceUri, suite };
+  // Synchronous load→upsert→save cycle, held under the cross-process app-map lock (see store.ts).
+  return withAppMapLock(root, () => {
+    const loaded = loadAppMap(root, fallbackProject(root), now);
+    if (!loaded.map) return { ok: false };
+    const map = loaded.map;
+    // Enrich screen/feature links from the map when the caller didn't already resolve them.
+    if ((!suite.linkedScreenIds || !suite.linkedScreenIds.length) && suite.linkedFeatureIds === undefined) {
+      // nothing to enrich
+    }
+    const existing = map.automation.suites.find((s) => s.path === suite.path);
+    if (existing) Object.assign(existing, suite);
+    else map.automation.suites.push(suite);
+    addProvenance(
+      map,
+      makeProvenance('test_case', now, `Automation suite ${suite.name} linked (${suite.framework ?? 'appium'})`, {
+        targetType: 'test',
+        refs: [suite.path],
+      }),
+    );
+    map.updatedAt = now;
+    recomputeConfidence(map);
+    const save = saveAppMap(root, map);
+    return { ok: true, appMapUri: save.resourceUri, suite };
+  });
 }

@@ -6,7 +6,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { qaOk, qaError } from '../lib/result.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
-import { getDriver } from '../session/attach.js';
+import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import { detectFramework } from '../context/detect.js';
 import { metroReadiness } from '../lib/metroState.js';
 import type { SessionStore } from '../session/store.js';
@@ -27,25 +27,28 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
     {
       title: 'App lifecycle control',
       description:
-        'Control the app under test without raw adb. Actions: launch, foreground (relaunch), background (Home), force_stop (kill + verify), restart (force_stop+launch), clear_data (wipe data/cache/permissions — DESTRUCTIVE, consent), fresh_start (clear_data then launch — DESTRUCTIVE, consent). Use restart for "save → kill → relaunch → verify persistence". Returns package, foreground, and whether the process was killed.',
+        'Control the app under test: launch, foreground, background, force_stop, restart (force_stop + launch — for persistence ' +
+        'checks), clear_data and fresh_start (wipe data; destructive, consent-gated; RN/Expo builds also need ' +
+        'acknowledgeBundleRisk).',
       inputSchema: {
         sessionId: z.string(),
         action: z.enum(ACTIONS),
         acknowledgeBundleRisk: z
           .boolean()
           .optional()
-          .describe(
-            'Proceed with clear_data/fresh_start on an RN/Expo build even though wiping may make a bundle-less debug build unloadable.',
-          ),
+          .describe('Accept that wiping an RN/Expo debug build may leave it unable to load its bundle.'),
         consentId: z.string().optional(),
         approve: z.boolean().optional(),
       },
     },
     async ({ sessionId, action, acknowledgeBundleRisk, consentId, approve }) => {
       const session = sessions.get(sessionId);
-      const { driver: d } = session ? await getDriver(session) : { driver: undefined };
+      const { driver: d, blocked } = session ? await getDriver(session) : { driver: undefined, blocked: undefined };
       if (!session || !d) {
-        return qaError({ what: 'No device attached', changedState: false, retrySafe: true, nextSteps: ['Call qa_prepare_target first.'] });
+        return (
+          blockedDeviceResult(blocked) ??
+          qaError({ what: 'No device attached', changedState: false, retrySafe: true, nextSteps: ['Call qa_prepare_target first.'] })
+        );
       }
       const pkg = session.appId;
       if (!pkg) {

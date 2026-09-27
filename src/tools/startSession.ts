@@ -1,15 +1,96 @@
-// qa_start_session — resolve projectRoot (roots → arg → ask) and open a session.
+// qa_start_session — resolve projectRoot (src/context/projectRoot.ts) and open a session.
 
 import { z } from 'zod';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { qaOk, qaError } from '../lib/result.js';
-import { resolveProjectRoot } from '../context/projectRoot.js';
+import { resolveProjectRoot, unresolvedProjectRootError } from '../context/projectRoot.js';
 import { loadProjectConfig } from '../cli/scan.js';
 import { SWIPIUM_VERSION, TOOL_COUNT } from '../version.js';
 import { getSchemaHash } from '../lib/schemaHash.js';
 import { BUDGET_PROFILES, type Fixture, type SessionStore } from '../session/store.js';
+
+/** Full fixture shape. The tool's inputSchema advertises only `{ name, …passthrough }` (the nested
+ *  seed/cleanup/fields schema tripled the tool's size in tools/list); fixtures are validated
+ *  against this schema in the handler and rejected with INVALID_ARGUMENT, so nothing is lost. */
+export const FIXTURE_SCHEMA = z.object({
+  name: z.string(),
+  description: z.string().optional(),
+  requiredState: z.string().optional(),
+  recommendedSetup: z.string().optional(),
+  testAccount: z.string().optional(),
+  apkPath: z.string().optional(),
+  value: z.string().optional().describe('Non-secret safe test input (e.g. flight number/search term) for exploration text entry.'),
+  disposable: z.boolean().optional().describe('True only for disposable accounts/data that destructive QA may mutate or delete.'),
+  environment: z.string().optional().describe('Environment label. Use "test" for non-production disposable test state.'),
+  fields: z
+    .record(
+      z.object({
+        value: z.string().optional(),
+        var: z.string().optional().describe('Environment/secure-input variable name to read at runtime.'),
+        secret: z.boolean().optional(),
+        generator: z
+          .enum([
+            'email',
+            'email_address',
+            'person',
+            'person_name',
+            'full_name',
+            'display_name',
+            'number',
+            'numeric',
+            'text',
+            'city',
+            'city_name',
+            'country',
+            'country_name',
+            'color',
+            'phone',
+            'phone_number',
+            'mobile',
+            'date',
+            'date_iso',
+          ])
+          .optional(),
+        role: z.string().optional(),
+        inputType: z.string().optional(),
+      }),
+    )
+    .optional()
+    .describe(
+      'Typed fixture catalog for form entry. Fields match by label/id/role and may use a fixed value, variable, or safe generator.',
+    ),
+  seed: z
+    .object({
+      type: z.enum(['deeplink', 'script', 'api']),
+      url: z.string().optional(),
+      command: z
+        .union([z.string(), z.array(z.string())])
+        .optional()
+        .describe('script: argv array preferred (string is deprecated).'),
+      method: z.string().optional(),
+      body: z.string().optional(),
+      headers: z.record(z.string()).optional(),
+      idempotent: z.boolean().optional().describe('True when re-running this seed safely converges to the same state.'),
+      cleanup: z
+        .object({
+          type: z.enum(['deeplink', 'script', 'api']),
+          url: z.string().optional(),
+          command: z
+            .union([z.string(), z.array(z.string())])
+            .optional()
+            .describe('script: argv array preferred (string is deprecated).'),
+          method: z.string().optional(),
+          body: z.string().optional(),
+          headers: z.record(z.string()).optional(),
+        })
+        .optional()
+        .describe('Optional teardown/rollback action used for state-profile transactions.'),
+    })
+    .optional()
+    .describe('Opt-in, consent-gated way to create this precondition during flows.'),
+});
 
 /** Load declared fixtures from <root>/.swipium/fixtures.json (best-effort, array or {fixtures:[]}). */
 export function loadProjectFixtures(root: string): Fixture[] {
@@ -30,25 +111,21 @@ export function registerStartSession(server: McpServer, sessions: SessionStore):
     {
       title: 'Start a QA session',
       description:
-        'Resolve the project root and open a QA session. Resolution order: MCP workspace roots → explicit `projectRoot` arg → ask. NEVER uses the server cwd. A session enforces a BUDGET (default: 8 min / 20 actions / 8 screenshots / 3 snapshot-failures / 3 no-change-actions). Pass `profile` to size the time budget to the workflow (guardrail 8m / login_smoke 10m / full_smoke 15m / install_smoke 20m) — Swipium WARNS if your explicit budget is likely too low. Pass `fixtures` (or add .swipium/fixtures.json) to declare preconditions so unmet ones report as blocked-with-setup, not failures. Pass `responseMode` (compact|normal|verbose) to control transcript size: compact drops the duplicated JSON from the text channel (structured data is unchanged) — recommended for long smoke runs. Call this before snapshot/act tools.',
+        'Open a QA session (only needed for low-level tools; qa_test_this creates one). projectRoot: arg, else MCP roots, else ' +
+        'SWIPIUM_PROJECT_ROOT / CLAUDE_PROJECT_DIR, else the server cwd (never / or $HOME). Budget defaults to 8 min / 20 ' +
+        'actions / 8 screenshots; profile resizes it. fixtures (or .swipium/fixtures.json) declare preconditions so unmet ones ' +
+        'report as blocked, not failed. responseMode compact keeps transcripts small.',
       inputSchema: {
-        projectRoot: z.string().optional().describe('Absolute path to the app project. Optional if the client exposes a workspace root.'),
+        projectRoot: z.string().optional().describe('Absolute app path (optional with MCP roots).'),
         responseMode: z
           .enum(['compact', 'normal', 'verbose'])
           .optional()
-          .describe(
-            'Text-channel verbosity for every tool in this session. compact = summary + artifact URIs only (structuredContent stays full); normal (default) = summary + JSON; verbose = everything.',
-          ),
-        sensitive: z
-          .boolean()
-          .optional()
-          .describe(
-            'Sensitive mode: refuse all screenshots, screen recordings, and on-screen-error evidence capture for this session (no pixels leave the device). For privacy-sensitive apps.',
-          ),
+          .describe('Text channel for every tool in this session: compact = summary + URIs; normal (default) = + JSON; verbose.'),
+        sensitive: z.boolean().optional().describe('Refuse all screenshots, recordings, and on-screen evidence capture for this session.'),
         profile: z
           .enum(['guardrail', 'login_smoke', 'full_smoke', 'install_smoke'])
           .optional()
-          .describe('Budget class — sizes the time budget to the intended workflow.'),
+          .describe('Budget class sizing the time budget.'),
         budget: z
           .object({
             maxMinutes: z.number().optional(),
@@ -60,105 +137,26 @@ export function registerStartSession(server: McpServer, sessions: SessionStore):
           .optional()
           .describe('Override default budget caps.'),
         fixtures: z
-          .array(
-            z.object({
-              name: z.string(),
-              description: z.string().optional(),
-              requiredState: z.string().optional(),
-              recommendedSetup: z.string().optional(),
-              testAccount: z.string().optional(),
-              apkPath: z.string().optional(),
-              value: z
-                .string()
-                .optional()
-                .describe('Non-secret safe test input (e.g. flight number/search term) for exploration text entry.'),
-              disposable: z
-                .boolean()
-                .optional()
-                .describe('True only for disposable accounts/data that destructive QA may mutate or delete.'),
-              environment: z.string().optional().describe('Environment label. Use "test" for non-production disposable test state.'),
-              fields: z
-                .record(
-                  z.object({
-                    value: z.string().optional(),
-                    var: z.string().optional().describe('Environment/secure-input variable name to read at runtime.'),
-                    secret: z.boolean().optional(),
-                    generator: z
-                      .enum([
-                        'email',
-                        'email_address',
-                        'person',
-                        'person_name',
-                        'full_name',
-                        'display_name',
-                        'number',
-                        'numeric',
-                        'text',
-                        'city',
-                        'city_name',
-                        'country',
-                        'country_name',
-                        'color',
-                        'phone',
-                        'phone_number',
-                        'mobile',
-                        'date',
-                        'date_iso',
-                      ])
-                      .optional(),
-                    role: z.string().optional(),
-                    inputType: z.string().optional(),
-                  }),
-                )
-                .optional()
-                .describe(
-                  'Typed fixture catalog for form entry. Fields match by label/id/role and may use a fixed value, variable, or safe generator.',
-                ),
-              seed: z
-                .object({
-                  type: z.enum(['deeplink', 'script', 'api']),
-                  url: z.string().optional(),
-                  command: z
-                    .union([z.string(), z.array(z.string())])
-                    .optional()
-                    .describe('script: argv array preferred (string is deprecated).'),
-                  method: z.string().optional(),
-                  body: z.string().optional(),
-                  headers: z.record(z.string()).optional(),
-                  idempotent: z.boolean().optional().describe('True when re-running this seed safely converges to the same state.'),
-                  cleanup: z
-                    .object({
-                      type: z.enum(['deeplink', 'script', 'api']),
-                      url: z.string().optional(),
-                      command: z
-                        .union([z.string(), z.array(z.string())])
-                        .optional()
-                        .describe('script: argv array preferred (string is deprecated).'),
-                      method: z.string().optional(),
-                      body: z.string().optional(),
-                      headers: z.record(z.string()).optional(),
-                    })
-                    .optional()
-                    .describe('Optional teardown/rollback action used for state-profile transactions.'),
-                })
-                .optional()
-                .describe('Opt-in, consent-gated way to create this precondition during flows.'),
-            }),
-          )
+          .array(z.object({ name: z.string() }).passthrough())
           .optional()
-          .describe('Declared preconditions/fixtures this run needs (merged with .swipium/fixtures.json).'),
+          .describe(
+            'Declared preconditions (merged with .swipium/fixtures.json): {name, requiredState?, recommendedSetup?, value?, disposable?, fields?, seed?, …} — full shape in docs/tools.md#qa_start_session.',
+          ),
       },
     },
     async ({ projectRoot, profile, budget, fixtures, responseMode, sensitive }) => {
-      const resolved = await resolveProjectRoot(server, projectRoot);
-      if (!resolved.root) {
+      const parsedFixtures = z.array(FIXTURE_SCHEMA).optional().safeParse(fixtures);
+      if (!parsedFixtures.success)
         return qaError({
-          what: 'Could not resolve a project root',
+          what: `Invalid fixtures: ${parsedFixtures.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`,
           changedState: false,
           retrySafe: true,
-          nextSteps: ['Re-call qa_start_session with projectRoot="/absolute/path/to/app"'],
-          clientHint: resolved.hint,
+          failureCode: 'INVALID_ARGUMENT',
+          nextSteps: ['Fix the fixture shape (see docs/tools.md#qa_start_session) and re-call qa_start_session.'],
         });
+      const resolved = await resolveProjectRoot(server, projectRoot);
+      if (!resolved.root) {
+        return unresolvedProjectRootError(resolved);
       }
 
       // Budget profile → recommended minutes; explicit profile sets the budget unless the
@@ -185,7 +183,7 @@ export function registerStartSession(server: McpServer, sessions: SessionStore):
       const fileFixtures = loadProjectFixtures(resolved.root);
       const byName = new Map<string, Fixture>();
       for (const f of fileFixtures) byName.set(f.name, f);
-      for (const f of fixtures ?? []) byName.set(f.name, f as Fixture);
+      for (const f of parsedFixtures.data ?? []) byName.set(f.name, f as Fixture);
       const mergedFixtures = [...byName.values()];
 
       const session = sessions.create(resolved.root, effBudget, {

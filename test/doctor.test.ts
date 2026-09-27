@@ -128,7 +128,7 @@ describe('qa_doctor against mocked binaries', () => {
     expect(p.platformReady.android).toBe(false);
     const adb = check(p, 'adb');
     expect(adb.ok).toBe(false);
-    expect(adb.detail).toBe('not on PATH');
+    expect(adb.detail).toContain('not on PATH');
     expect(adb.fix).toContain('platform-tools');
     const target = check(p, 'android-target');
     expect(target.ok).toBe(false);
@@ -178,5 +178,17 @@ describe('qa_doctor against mocked binaries', () => {
     // Both platform groups are present in the structured payload for platform:"both".
     expect(p.checksByPlatform.android.length).toBeGreaterThan(0);
     expect(p.checksByPlatform.ios.length).toBeGreaterThan(0);
+  });
+
+  it('with no platform, checks the host default (macOS → both) and passes the node check', async () => {
+    env.binariesPresent = true;
+    const res = (await client.callTool({ name: 'qa_doctor', arguments: {} })) as CallToolResult;
+    const p = res.structuredContent as unknown as DoctorPayload & { platform: string };
+    expect(p.platform).toBe(isDarwin ? 'both' : 'android');
+    expect(check(p, 'node').ok).toBe(true);
+    if (isDarwin) {
+      expect(p.checksByPlatform.ios.length).toBeGreaterThan(0);
+      expect(p.ready).toBe(true);
+    }
   });
 });

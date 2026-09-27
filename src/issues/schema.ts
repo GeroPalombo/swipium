@@ -185,6 +185,8 @@ export interface IssueRecord {
   suppressedUntil?: string;
   suppressionReason?: string;
   suppressionScope?: SuppressionScope;
+  /** Lane the issue was in when it was suppressed — restored on unsuppress / suppression expiry. */
+  stateBeforeSuppression?: IssueState;
   appMapRefs?: AppMapRef[];
   testRefs?: TestRef[];
   reportRefs?: ReportRef[];
@@ -200,6 +202,10 @@ export interface IssueIndex {
   updatedAt: string;
   appId?: string;
   records: IssueRecord[];
+  /** Size + mtime of `issues-log.jsonl` when this index was derived. A mismatch means another
+   *  process appended to the log since, so the cached index is stale and must be rebuilt. */
+  logSize?: number;
+  logMtimeMs?: number;
 }
 
 export function emptyIndex(now: string, appId?: string): IssueIndex {

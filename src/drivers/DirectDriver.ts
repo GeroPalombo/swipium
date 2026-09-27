@@ -7,13 +7,113 @@
 
 import { run, runBinary } from '../lib/spawn.js';
 import { adbDevices } from '../lib/android.js';
-import type { Driver } from './Driver.js';
+import type { Driver, TextDeliverability } from './Driver.js';
+
+/** Characters the device-side /system/bin/sh (mksh) treats specially — each gets a backslash.
+ * Includes brace/glob expansion (`{a,b}` → `a b`, `[s]dcard` → `sdcard`). Backslash itself is
+ * escaped first (see escapeAdbInputText) so later escapes aren't doubled. */
+const DEVICE_SHELL_META = /([&|;()<>"'$`*?!#~^{}[\]])/g;
+
+/** PURE: can adb `input text` deliver `text` verbatim? It cannot deliver characters outside
+ * printable ASCII (Unicode, newline, tab) — the device-side shell/IME drops or mangles them.
+ * qa_act checks this BEFORE focusing/clearing a field so a refusal changes nothing on device. */
+export function adbTextDeliverability(text: string): TextDeliverability {
+  const unsupported = [...new Set(text.match(/[^\x20-\x7E]/g) ?? [])];
+  if (!unsupported.length) return { ok: true };
+  return {
+    ok: false,
+    reason: `TEXT_INPUT_UNSUPPORTED: adb \`input text\` cannot deliver non-ASCII/control characters ${unsupported
+      .map((c) => JSON.stringify(c))
+      .join(', ')}; nothing was typed. Use ASCII-safe text for this field.`,
+  };
+}
+
+/** PURE: escape one `input text` chunk for the device shell. Spaces become `%s` because
+ * `input text` takes ONE arg and maps `%s` back to a space (InputShellCommand.sendText). */
+export function escapeAdbInputText(text: string): string {
+  return text.replace(/\\/g, '\\\\').replace(DEVICE_SHELL_META, '\\$1').replace(/ /g, '%s');
+}
+
+/** PURE: split raw text so no single `input text` call contains the literal two-char sequence
+ * `%s`. AOSP InputShellCommand.sendText rewrites EVERY `%s` to a space with no escape for it,
+ * so "ab%scd" must go out as "ab%" then "scd" (the rewrite never spans two calls). */
+export function adbInputTextChunks(text: string): string[] {
+  const chunks: string[] = [];
+  let start = 0;
+  for (let i = 0; i < text.length - 1; i++) {
+    if (text[i] === '%' && text[i + 1] === 's') {
+      chunks.push(text.slice(start, i + 1));
+      start = i + 1;
+    }
+  }
+  chunks.push(text.slice(start));
+  return chunks.filter((c) => c.length > 0);
+}
+
+/** PURE: POSIX single-quote a value for the device shell (`'` → `'\''`), so deep links and
+ * launch extras with `&`, `;`, spaces or quotes reach `am` as ONE literal argument. */
+export function deviceShellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/** PURE: display rotation (0-3) from `dumpsys input` — `SurfaceOrientation: N` (per touch
+ * device) or the viewport `orientation=N` line on newer builds. null when absent. */
+export function parseInputRotation(dumpsysInput: string): number | null {
+  const m =
+    dumpsysInput.match(/SurfaceOrientation:\s*(\d)/) ??
+    dumpsysInput.match(/Viewport (?:INTERNAL|DISPLAY)[^\n]*?orientation=(\d)/) ??
+    dumpsysInput.match(/mCurrentRotation=ROTATION_(\d+)/);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return n >= 90 ? (n / 90) % 4 : n % 4;
+}
+
+/** PURE: the soft keyboard's on-screen rect from `dumpsys window InputMethod`, or null.
+ * Prefers the touchable region; else the window frame shrunk by its given visible/content
+ * insets (older builds size the IME window near full-screen and inset the keyboard). The caller
+ * (qa_act keyboardArea) additionally treats a frame taller than ~55% of the screen as unknown. */
+export function parseImeFrame(dumpsysWindow: string): [number, number, number, number] | null {
+  const touch = dumpsysWindow.match(/touchable region=SkRegion\(\((\d+),(\d+),(\d+),(\d+)\)\)/);
+  if (touch) {
+    const r = touch.slice(1, 5).map(Number) as [number, number, number, number];
+    if (r[3] > r[1] && r[2] > r[0]) return r;
+  }
+  const frame = dumpsysWindow.match(/(?:\bframe|mFrame)=\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]/);
+  if (!frame) return null;
+  const [x1, y1, x2, y2] = frame.slice(1, 5).map(Number);
+  const insets =
+    dumpsysWindow.match(/mGivenVisibleInsets=\[(\d+),(\d+)\]\[(\d+),(\d+)\]/) ??
+    dumpsysWindow.match(/mGivenContentInsets=\[(\d+),(\d+)\]\[(\d+),(\d+)\]/);
+  const top = y1 + (insets ? Number(insets[2]) : 0);
+  if (y2 <= top || x2 <= x1) return null;
+  return [x1, top, x2, y2];
+}
 
 const KEYCODE: Record<'back' | 'home' | 'enter', string> = {
   back: '4',
   home: '3',
   enter: '66',
 };
+
+/** How long a DirectDriver reuses its last screen size + rotation (review round 2: swipes used
+ * to run `wm size` + a full `dumpsys input` — a few hundred ms — on EVERY gesture). Short enough
+ * that a device-side rotation (auto-rotate, app-forced orientation) is picked up within a beat. */
+export const SCREEN_SIZE_TTL_MS = 2_000;
+
+/** Serials whose cached screen size must be dropped (Swipium changed the orientation). Global so
+ * the orientation tool can invalidate every DirectDriver bound to that device. */
+const screenSizeEpoch = new Map<string, number>();
+
+/** Invalidate cached screen sizes (call after Swipium changes the orientation of `serial`, or
+ * of every device when omitted). */
+export function invalidateScreenSizeCache(serial?: string): void {
+  if (serial) screenSizeEpoch.set(serial, (screenSizeEpoch.get(serial) ?? 0) + 1);
+  else screenSizeEpoch.set('*', (screenSizeEpoch.get('*') ?? 0) + 1);
+}
+
+function epochOf(serial: string | undefined): number {
+  return (screenSizeEpoch.get(serial ?? '') ?? 0) + (screenSizeEpoch.get('*') ?? 0);
+}
 
 export class DirectDriver implements Driver {
   readonly kind = 'direct' as const;
@@ -33,11 +133,13 @@ export class DirectDriver implements Driver {
     return this.serial ? ['-s', this.serial] : [];
   }
 
-  private async adb(args: string[], opts: { timeoutMs?: number; signal?: AbortSignal } = {}) {
-    return run('adb', [...this.base(), ...args], {
+  private async adb(args: string[], opts: { timeoutMs?: number; signal?: AbortSignal; sensitiveLastArg?: boolean } = {}) {
+    const full = [...this.base(), ...args];
+    return run('adb', full, {
       timeoutMs: opts.timeoutMs ?? 20000,
       signal: opts.signal ?? this.signal,
       rejectOnNonZero: true,
+      ...(opts.sensitiveLastArg ? { redactArgs: [full.length - 1] } : {}),
     });
   }
 
@@ -47,6 +149,7 @@ export class DirectDriver implements Driver {
 
   useDevice(serial: string): void {
     this.serial = serial;
+    this.sizeCache = undefined;
   }
 
   currentDevice(): string | undefined {
@@ -132,12 +235,14 @@ export class DirectDriver implements Driver {
     if (!component || !component.includes('/')) throw new Error(`Could not resolve launch activity for ${pkg}`);
     const extras: string[] = [];
     for (const [key, value] of Object.entries(args)) {
-      if (typeof value === 'boolean') extras.push('--ez', key, String(value));
-      else if (Number.isInteger(value)) extras.push('--ei', key, String(value));
-      else if (typeof value === 'number') extras.push('--ef', key, String(value));
-      else extras.push('--es', key, String(value));
+      // `adb shell` space-joins argv into ONE string the device sh re-parses: every
+      // user-supplied token is single-quoted so `&`, `;`, spaces and quotes survive intact.
+      if (typeof value === 'boolean') extras.push('--ez', deviceShellQuote(key), String(value));
+      else if (Number.isInteger(value)) extras.push('--ei', deviceShellQuote(key), String(value));
+      else if (typeof value === 'number') extras.push('--ef', deviceShellQuote(key), String(value));
+      else extras.push('--es', deviceShellQuote(key), deviceShellQuote(String(value)));
     }
-    await this.adb(['shell', 'am', 'start', '-W', '-S', '-n', component, ...extras], { timeoutMs: 30000 });
+    await this.adb(['shell', 'am', 'start', '-W', '-S', '-n', deviceShellQuote(component), ...extras], { timeoutMs: 30000 });
   }
 
   async terminateApp(pkg: string): Promise<void> {
@@ -195,10 +300,32 @@ export class DirectDriver implements Driver {
     await this.adb(['shell', 'input', 'swipe', sx, sy, sx, sy, String(Math.round(ms))]);
   }
 
+  canDeliverText(text: string): TextDeliverability {
+    return adbTextDeliverability(text);
+  }
+
   async inputText(text: string): Promise<void> {
-    // `input text` uses %s for space; avoid characters the shell would interpret.
-    const escaped = text.replace(/ /g, '%s');
-    await this.adb(['shell', 'input', 'text', escaped]);
+    // `input text` cannot deliver characters outside printable ASCII (Unicode, newline, tab):
+    // the device-side shell/IME drops or mangles them, so refuse loudly instead of mistyping.
+    const verdict = adbTextDeliverability(text);
+    if (!verdict.ok) throw new Error(verdict.reason);
+    // Empty text: nothing to type — `input text` with no argument is a usage error.
+    if (!text) return;
+    // `adb shell` space-joins its args into one string the DEVICE-side sh re-parses, so every
+    // shell-significant character needs a backslash escape (escapeAdbInputText). A literal
+    // "%s" can't be escaped for `input text`, so it is split across calls (adbInputTextChunks).
+    for (const chunk of adbInputTextChunks(text)) {
+      const escaped = escapeAdbInputText(chunk);
+      try {
+        // H2: the argv IS the (possibly secret) text — never let it into the error message.
+        await this.adb(['shell', 'input', 'text', escaped], { sensitiveLastArg: true });
+      } catch (e) {
+        let msg = String((e as Error)?.message ?? e);
+        for (const v of [escaped, chunk, text]) if (v.length >= 3 && msg.includes(v)) msg = msg.split(v).join('«redacted»');
+        // cause: the spawn error is already argv-redacted (redactArgs) — safe to chain.
+        throw new Error(`adb input text failed (${text.length} chars, value withheld): ${msg}`, { cause: e });
+      }
+    }
   }
 
   async clearFocusedText(approxLen = 40): Promise<void> {
@@ -224,15 +351,59 @@ export class DirectDriver implements Driver {
     ]);
   }
 
+  private sizeCache?: { at: number; epoch: number; serial?: string; size: { width: number; height: number } };
+
+  /** Current-axes screen size, cached for SCREEN_SIZE_TTL_MS (and until invalidateScreenSizeCache
+   * for this device, e.g. after a Swipium orientation change). Failures are never cached. */
   async screenSize(): Promise<{ width: number; height: number } | null> {
+    const c = this.sizeCache;
+    if (c && c.serial === this.serial && c.epoch === epochOf(this.serial) && Date.now() - c.at < SCREEN_SIZE_TTL_MS) return { ...c.size };
+    const epoch = epochOf(this.serial);
+    const size = await this.readScreenSize();
+    this.sizeCache = size ? { at: Date.now(), epoch, serial: this.serial, size } : undefined;
+    return size ? { ...size } : null;
+  }
+
+  private async readScreenSize(): Promise<{ width: number; height: number } | null> {
     try {
       const r = await this.adb(['shell', 'wm', 'size']);
       // prefer "Override size:" if present, else "Physical size:"
       const m = r.stdout.match(/Override size:\s*(\d+)x(\d+)/) ?? r.stdout.match(/Physical size:\s*(\d+)x(\d+)/);
-      return m ? { width: Number(m[1]), height: Number(m[2]) } : null;
+      if (!m) return null;
+      const size = { width: Number(m[1]), height: Number(m[2]) };
+      // `wm size` reports the NATURAL orientation; swap for a 90°/270° rotation so gestures
+      // and keyboard/obstruction geometry use the current screen axes.
+      return (await this.rotation()) % 2 === 1 ? { width: size.height, height: size.width } : size;
     } catch {
       return null;
     }
+  }
+
+  /** Current display rotation 0-3 (0 when unknown). */
+  async rotation(): Promise<number> {
+    try {
+      const r = await this.adb(['shell', 'dumpsys', 'input'], { timeoutMs: 8000 });
+      return parseInputRotation(r.stdout) ?? 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /** On-screen soft-keyboard rect (dumpsys window InputMethod), or null when unknown/hidden. */
+  async imeFrame(): Promise<[number, number, number, number] | null> {
+    try {
+      const r = await this.adb(['shell', 'dumpsys', 'window', 'InputMethod'], { timeoutMs: 8000 });
+      return parseImeFrame(r.stdout);
+    } catch {
+      return null;
+    }
+  }
+
+  /** Hide the soft keyboard: BACK only while the IME is actually shown (BACK otherwise navigates). */
+  async hideKeyboard(): Promise<boolean> {
+    if (!(await this.imeShown())) return false;
+    await this.pressKey('back');
+    return true;
   }
 
   async screenDensity(): Promise<number | null> {
@@ -250,7 +421,8 @@ export class DirectDriver implements Driver {
   }
 
   async openUrl(url: string): Promise<void> {
-    await this.adb(['shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', url]);
+    // Single-quoted for the device shell: `a=1&b=2` or spaces would otherwise split/background.
+    await this.adb(['shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', deviceShellQuote(url)]);
   }
 
   async disableAnimations(): Promise<void> {

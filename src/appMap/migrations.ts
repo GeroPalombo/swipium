@@ -10,6 +10,7 @@ export interface MigrationResult {
   map: AppKnowledgeMap;
   migratedFrom: number | 'unknown';
   applied: string[]; // names of migrations applied
+  recoveredFrom?: string; // history snapshot filename the map was restored from (corrupt canonical file)
 }
 
 /** Per-version upgrade steps. Add an entry when bumping APP_MAP_SCHEMA_VERSION. */

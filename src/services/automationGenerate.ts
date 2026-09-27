@@ -16,6 +16,7 @@ import { emitCiExample } from '../automationGen/ciEmitter.js';
 import { buildSuitePlan, outputDirFor, type AutomationSuitePlan } from '../automationGen/suitePlan.js';
 import { computeDependencyPatch, type DependencyPatch } from '../automationGen/packagePatch.js';
 import type { Session } from '../session/store.js';
+import { sessionDevicePlatform } from '../automationGen/platformResolve.js';
 
 export interface AssembledSuite {
   profile: AutomationProjectProfile;
@@ -33,7 +34,12 @@ export function mapPresent(root: string): boolean {
 }
 
 export function buildAutomationProfile(session: Session, inputs: ProfileInputs = {}): AutomationProjectProfile {
-  return buildProjectProfile(session.root, { ...inputs, appId: inputs.appId ?? appIdOf(session) });
+  // Platform resolution: explicit arg → the session's device platform → project profile → android.
+  return buildProjectProfile(session.root, {
+    ...inputs,
+    appId: inputs.appId ?? appIdOf(session),
+    sessionPlatform: inputs.sessionPlatform ?? sessionDevicePlatform(session),
+  });
 }
 
 /**

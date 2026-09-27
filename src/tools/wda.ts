@@ -23,7 +23,7 @@ import { loadWdaConfig, wdaSigningStatus, wdaUrlAllowedByConfig } from '../lib/w
 import { recordWdaTiming, wdaRecommendations, wdaTimingSummary } from '../lib/wdaTune.js';
 import { WdaDriver } from '../drivers/WdaDriver.js';
 import * as sim from '../lib/simctl.js';
-import { registerManagedProcess, unregisterManagedProcess } from '../session/processRegistry.js';
+import { reclaimPid, registerManagedProcess, registeredWdaForSession, unregisterManagedProcess } from '../session/processRegistry.js';
 import type { ArtifactRecord, Session, SessionStore } from '../session/store.js';
 
 const managedProcesses = new Map<string, { pid: number; logUri: string }>();
@@ -111,27 +111,18 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
     {
       title: 'WebDriverAgent diagnostics and attach',
       description:
-        'Diagnose, attach, or manage an iOS WebDriverAgent backend. External WDA: pass webDriverAgentUrl, then action:"attach". Managed WDA: pass wdaProjectPath + udid for build/start; output is captured as artifacts.',
+        'Diagnose, attach, or manage an iOS WebDriverAgent backend for structured iOS tap/type/snapshot. External WDA: ' +
+        'action:"attach" with webDriverAgentUrl (default http://127.0.0.1:8100). Managed WDA: wdaProjectPath (+ device) for ' +
+        'build/start (consent-gated); output is captured as artifacts. status/doctor/diagnose/logs/tune inspect an existing setup.',
       inputSchema: {
         sessionId: z.string(),
         action: z.enum(['status', 'doctor', 'build', 'start', 'stop', 'attach', 'diagnose', 'logs', 'tune']),
-        webDriverAgentUrl: z
-          .string()
-          .optional()
-          .describe('External WDA base URL. Defaults to http://127.0.0.1:8100. Non-loopback URLs are refused by default.'),
-        udid: z
-          .string()
-          .optional()
-          .describe('iOS simulator UDID expected behind this WDA endpoint (this tool is iOS-only; other tools use `device`).'),
-        bundleId: z.string().optional().describe('App bundle id for session creation. Defaults to the session appId.'),
-        wdaProjectPath: z
-          .string()
-          .optional()
-          .describe('Path to WebDriverAgent.xcodeproj for managed build/start. Relative paths resolve from project root.'),
-        derivedDataPath: z
-          .string()
-          .optional()
-          .describe('Optional xcodebuild -derivedDataPath for WDA caching/reuse. Relative paths resolve from project root.'),
+        webDriverAgentUrl: z.string().optional().describe('Default http://127.0.0.1:8100; non-loopback needs allowNonLoopback + consent.'),
+        device: z.string().optional().describe('Simulator UDID behind this WDA (default: the session device).'),
+        udid: z.string().optional().describe('Deprecated alias of device.'),
+        bundleId: z.string().optional().describe('Default: the session appId.'),
+        wdaProjectPath: z.string().optional().describe('WebDriverAgent.xcodeproj for managed build/start.'),
+        derivedDataPath: z.string().optional().describe('xcodebuild -derivedDataPath for reuse.'),
         scheme: z.string().optional().describe('WDA xcodebuild scheme. Defaults to WebDriverAgentRunner.'),
         allowNonLoopback: z.boolean().optional().describe('Required to use a non-loopback external WDA URL.'),
         consentId: z.string().optional(),
@@ -142,7 +133,8 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
       sessionId,
       action,
       webDriverAgentUrl,
-      udid,
+      device,
+      udid: udidAlias,
       bundleId,
       wdaProjectPath,
       derivedDataPath,
@@ -159,6 +151,16 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
           retrySafe: true,
           nextSteps: ['Call qa_start_session first.'],
         });
+      // `device` is canonical (as on every other tool); `udid` is the deprecated alias.
+      if (device && udidAlias && device !== udidAlias)
+        return qaError({
+          what: `Conflicting device "${device}" and udid "${udidAlias}" — udid is a deprecated alias of device`,
+          changedState: false,
+          retrySafe: true,
+          failureCode: 'INVALID_ARGUMENT',
+          nextSteps: ['Pass only device.'],
+        });
+      const udid = device ?? udidAlias;
 
       const configured = loadWdaConfig(session.root);
       const url = webDriverAgentUrl ?? configured.url;
@@ -191,6 +193,9 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
       const resolvePath = (p: string | undefined) => (p ? (isAbsolute(p) ? p : join(session.root, p)) : undefined);
       const projectPath = resolvePath(wdaProjectPath);
       const ddPath = resolvePath(derivedDataPath) ?? configured.derivedDataPath;
+      // What this call actually uses (args over config) — echoed as `wdaConfig` so a passed
+      // derivedDataPath / webDriverAgentUrl is not misreported as the configured default.
+      const effectiveConfig = { ...configured, url, derivedDataPath: ddPath };
       const targetUdid = udid ?? session.device;
       if (udid && session.device && udid !== session.device) {
         return qaError({
@@ -222,7 +227,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
         const recommendations = wdaRecommendations(configured, session);
         const timings = wdaTimingSummary(session);
         return qaOk(
-          { webDriverAgentUrl: url, wdaConfig: configured, timings, recommendations },
+          { webDriverAgentUrl: url, wdaConfig: effectiveConfig, timings, recommendations },
           recommendations.length
             ? `WDA tuning recommendations:\n${recommendations.map((r) => `  - ${r.setting}=${JSON.stringify(r.value)}: ${r.reason}`).join('\n')}`
             : 'WDA tuning: no recommendations from current session evidence.',
@@ -231,7 +236,29 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
 
       if (action === 'stop') {
         const proc = managedProcesses.get(session.id);
-        if (!proc) return qaOk({ stopped: false }, 'no managed WDA process recorded for this session');
+        if (!proc) {
+          // A WDA started by a previous server run and adopted at startup (processRegistry).
+          const adopted = registeredWdaForSession(session.id);
+          if (!adopted) return qaOk({ stopped: false }, 'no managed WDA process recorded for this session');
+          const outcome = reclaimPid(adopted.pid, 'wda'); // ps-checked: never signals a recycled pid
+          unregisterManagedProcess(adopted.pid);
+          sessions.addEnvChange(session, `wda stop pid ${adopted.pid} (adopted)`);
+          sessions.recordMutation(session, {
+            tool: 'qa_wda',
+            action: 'wda_stop',
+            risk: 'low',
+            target: { pid: adopted.pid, adopted: true, webDriverAgentUrl: adopted.endpoint ?? null },
+            consent: { required: false, approved: true },
+            status: 'restored',
+            detail: `adopted WDA ${outcome}`,
+          });
+          return qaOk(
+            { stopped: outcome === 'killed', pid: adopted.pid, adopted: true, outcome },
+            outcome === 'killed'
+              ? `stopped adopted managed WDA pid ${adopted.pid}`
+              : `adopted WDA pid ${adopted.pid} was already ${outcome}`,
+          );
+        }
         try {
           process.kill(proc.pid, 'SIGTERM');
         } catch {
@@ -258,7 +285,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
             changedState: false,
             retrySafe: true,
             failureCode: 'NO_DEVICE',
-            nextSteps: ['Boot/select a simulator with qa_ios boot, or pass udid explicitly.'],
+            nextSteps: ['Boot/select a simulator with qa_ios boot, or pass device explicitly.'],
           });
         }
         if (action === 'start' && configured.reuse) {
@@ -275,7 +302,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
                 webDriverAgentUrl: url,
                 udid: targetUdid,
                 wda: existing,
-                wdaConfig: configured,
+                wdaConfig: effectiveConfig,
                 reuseCheckMs,
               },
               `reused existing WDA at ${url}; /status is ready\nNext: qa_wda attach.`,
@@ -405,7 +432,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
             ledgerUri: logUri,
           });
           return qaOk(
-            { built: true, logUri, xcode, command: ['xcodebuild', ...args], wdaConfig: configured },
+            { built: true, logUri, xcode, command: ['xcodebuild', ...args], wdaConfig: effectiveConfig },
             `WDA build completed → ${logUri}`,
           );
         }
@@ -417,7 +444,8 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
         sessions.milestone(session, 'wda_start_end');
         child.unref();
         managedProcesses.set(session.id, { pid: child.pid ?? -1, logUri });
-        registerManagedProcess(child.pid, 'wda', session.id); // reapable if this server crashes
+        // Reapable if this server crashes; `endpoint` lets the next server adopt it when healthy.
+        registerManagedProcess(child.pid, 'wda', session.id, { endpoint: url });
         sessions.addEnvChange(session, `wda start pid ${child.pid ?? 'unknown'} ${projectPath} ${targetUdid}`);
         sessions.recordMutation(session, {
           tool: 'qa_wda',
@@ -474,7 +502,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
               logUri,
               webDriverAgentUrl: url,
               command: ['xcodebuild', ...args],
-              wdaConfig: configured,
+              wdaConfig: effectiveConfig,
               wda: waited.status,
               startupWaitMs: waited.durationMs,
             },
@@ -488,7 +516,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
             logUri,
             webDriverAgentUrl: url,
             command: ['xcodebuild', ...args],
-            wdaConfig: configured,
+            wdaConfig: effectiveConfig,
             wda: waited.status,
             startupWaitMs: waited.durationMs,
           },
@@ -517,7 +545,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
         bundleId: appId,
         webDriverAgentUrl: url,
         wda: status,
-        wdaConfig: configured,
+        wdaConfig: effectiveConfig,
         wdaProjectDiscovery,
         signing: wdaSigningStatus(configured),
         wdaBuildProduct,
@@ -572,7 +600,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
             issue(
               'NO_BOOTED_SIMULATOR',
               'no booted iOS simulator was detected',
-              'Boot/select a simulator with qa_ios boot, or pass udid for an already-running WDA target.',
+              'Boot/select a simulator with qa_ios boot, or pass device for an already-running WDA target.',
             ),
           );
         }
@@ -581,7 +609,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
             issue(
               'NO_UDID',
               'no simulator/device UDID is bound to this session',
-              'Boot/select a simulator with qa_ios boot, or pass udid explicitly.',
+              'Boot/select a simulator with qa_ios boot, or pass device explicitly.',
             ),
           );
         if (wantsManaged && (!projectPath || !existsSync(projectPath))) {
@@ -698,7 +726,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
             retrySafe: true,
             failureCode: 'MULTIPLE_DEVICES',
             nextSteps: [
-              'Pass udid explicitly, or bind the session to a device first. This prevents attaching to a stale WDA for the wrong device.',
+              'Pass device explicitly, or bind the session to a device first. This prevents attaching to a stale WDA for the wrong device.',
             ],
           },
           base,

@@ -6,9 +6,11 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { qaOk, qaError } from '../lib/result.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
-import { getDriver } from '../session/attach.js';
+import { blockedDeviceResult, getDriver } from '../session/attach.js';
+import { listSimulators, type Simulator } from '../lib/simctl.js';
 import { getDeviceProps, getOrientation, setOrientation, listPackages, setGeo } from '../lib/device.js';
 import type { SessionStore } from '../session/store.js';
+import { invalidateScreenSizeCache } from '../drivers/DirectDriver.js';
 
 function rotationLabel(rotation: number, auto: boolean): string {
   return auto ? 'auto' : rotation === 1 || rotation === 3 ? 'landscape' : 'portrait';
@@ -29,14 +31,47 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
     },
     async ({ sessionId, listPackages: withPkgs, packageFilter }) => {
       const session = sessions.get(sessionId);
-      const { driver } = session ? await getDriver(session) : { driver: undefined };
+      const { driver, blocked } = session ? await getDriver(session) : { driver: undefined, blocked: undefined };
       const serial = driver?.currentDevice();
       if (!session || !driver || !serial) {
+        return (
+          blockedDeviceResult(blocked) ??
+          qaError({
+            what: 'No device attached to this session',
+            changedState: false,
+            retrySafe: true,
+            nextSteps: ['Call qa_prepare_target first.'],
+          })
+        );
+      }
+      if (driver.kind === 'simulator' || driver.kind === 'wda') {
+        // H9: the getprop/settings helpers below are adb-only — on an iOS simulator they would
+        // return ok:true with every field null. Report what simctl actually knows instead.
+        const sims = await listSimulators().catch(() => [] as Simulator[]);
+        const sim = sims.find((x) => x.udid === serial);
+        const screen = await driver.screenSize().catch(() => null);
+        const payload = {
+          device: serial,
+          platform: 'ios',
+          backend: driver.kind,
+          props: { name: sim?.name ?? null, runtime: sim?.runtime ?? null, state: sim?.state ?? null },
+          screen,
+          orientation: 'unknown',
+          unsupported: ['orientation', 'installedThirdPartyCount', 'packages', 'abis', 'locale', 'timezone'],
+        };
+        return qaOk(
+          payload,
+          `iOS simulator ${sim?.name ?? serial} · ${sim?.runtime ?? 'runtime ?'} · ${sim?.state ?? '?'}
+` + `screen ${screen ? `${screen.width}x${screen.height}pt` : '?'} · orientation/packages/locale are not available via simctl`,
+        );
+      }
+      if (driver.kind !== 'direct') {
         return qaError({
-          what: 'No device attached to this session',
+          what: `Device info is not supported on the "${driver.kind}" backend`,
           changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_prepare_target first.'],
+          retrySafe: false,
+          failureCode: 'BACKEND_UNSUPPORTED',
+          nextSteps: ['Use an Android emulator (adb) or an iOS simulator session.'],
         });
       }
       const [props, screen, density, orientation, pkgs] = await Promise.all([
@@ -78,19 +113,33 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
     },
     async ({ sessionId, orientation }) => {
       const session = sessions.get(sessionId);
-      const { driver } = session ? await getDriver(session) : { driver: undefined };
+      const { driver, blocked } = session ? await getDriver(session) : { driver: undefined, blocked: undefined };
       const serial = driver?.currentDevice();
       if (!session || !driver || !serial) {
+        return (
+          blockedDeviceResult(blocked) ??
+          qaError({
+            what: 'No device attached to this session',
+            changedState: false,
+            retrySafe: true,
+            nextSteps: ['Call qa_prepare_target first.'],
+          })
+        );
+      }
+      if (driver.kind !== 'direct') {
+        // H9: setOrientation drives adb `settings put` — on iOS it would fail or no-op.
         return qaError({
-          what: 'No device attached to this session',
+          what: 'Setting orientation is only supported on the Android emulator backend',
           changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_prepare_target first.'],
+          retrySafe: false,
+          failureCode: 'BACKEND_UNSUPPORTED',
+          nextSteps: ['On an iOS simulator, rotate from the Simulator menu (Device → Rotate Left/Right) or via your WDA client.'],
         });
       }
       try {
         await setOrientation(serial, orientation);
       } catch (e) {
+        invalidateScreenSizeCache(serial); // a partial failure may still have rotated the device
         return qaError({
           what: `Could not set orientation: ${String(e)}`,
           changedState: false,
@@ -98,6 +147,9 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
           nextSteps: ['Confirm the device is online.'],
         });
       }
+      // DirectDriver caches screen size + rotation for a short TTL — drop it so the very next
+      // swipe/keyboard check uses the new axes instead of the pre-rotation ones.
+      invalidateScreenSizeCache(serial);
       sessions.addEnvChange(session, `orientation → ${orientation}`);
       const now = await getOrientation(serial);
       sessions.recordMutation(session, {
@@ -131,15 +183,18 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
     },
     async ({ sessionId, lat, lng, consentId, approve }) => {
       const session = sessions.get(sessionId);
-      const { driver } = session ? await getDriver(session) : { driver: undefined };
+      const { driver, blocked } = session ? await getDriver(session) : { driver: undefined, blocked: undefined };
       const serial = driver?.currentDevice();
       if (!session || !driver || !serial) {
-        return qaError({
-          what: 'No device attached to this session',
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_prepare_target first.'],
-        });
+        return (
+          blockedDeviceResult(blocked) ??
+          qaError({
+            what: 'No device attached to this session',
+            changedState: false,
+            retrySafe: true,
+            nextSteps: ['Call qa_prepare_target first.'],
+          })
+        );
       }
       if (driver.kind !== 'direct') {
         return qaError({

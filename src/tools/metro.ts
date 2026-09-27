@@ -77,7 +77,9 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
     {
       title: 'Metro dev server (debug RN/Expo)',
       description:
-        'For debug React Native / Expo builds that need a Metro bundler on :8081. action="status" reports Metro/reverse/serving state; action="diagnose" adds RedBox detection + logcat evidence + a recovery roadmap (incl. whether reinstall/rebuild is required); action="start" (consent-gated) runs `adb reverse tcp:8081 tcp:8081` + launches Metro, logging to a session artifact + tracking its PID; action="stop" kills it + removes the reverse. After start, wait a few seconds then relaunch with qa_prepare_target.',
+        'Metro bundler for debug React Native / Expo builds (:8081). status: Metro/reverse/serving state; diagnose: + RedBox ' +
+        'detection, logcat evidence, and recovery steps; start (consent-gated): adb reverse + launch Metro with a log artifact; ' +
+        'stop: kill it + remove the reverse. After start, relaunch with qa_prepare_target.',
       inputSchema: {
         sessionId: z.string(),
         action: z.enum(['status', 'diagnose', 'start', 'stop']),
@@ -255,14 +257,14 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
         sessions.recordMutation(session, {
           tool: 'qa_metro',
           action: 'start_metro',
-          risk: 'low',
+          risk: 'medium',
           target: { device: serial, port: METRO_PORT, framework: fw },
           consent: { required: true, approved: false },
           status: 'requested',
         });
         return requireConsent({
           action: 'start_metro',
-          risk: 'low',
+          risk: 'medium',
           exactCommand: cmdStr,
           affects: { port: METRO_PORT, framework: fw },
           explain: `This looks like a debug ${fw} build needing Metro on :${METRO_PORT}. Set adb reverse and start Metro?`,
@@ -271,7 +273,7 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
       sessions.recordMutation(session, {
         tool: 'qa_metro',
         action: 'start_metro',
-        risk: 'low',
+        risk: 'medium',
         target: { device: serial, port: METRO_PORT, framework: fw },
         consent: { required: true, consentId, approved: true },
         status: 'approved',
@@ -284,7 +286,7 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
         sessions.recordMutation(session, {
           tool: 'qa_metro',
           action: 'start_metro',
-          risk: 'low',
+          risk: 'medium',
           target: { device: serial, port: METRO_PORT, framework: fw },
           consent: { required: true, consentId, approved: true },
           status: 'blocked',
@@ -313,7 +315,7 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
       sessions.recordMutation(session, {
         tool: 'qa_metro',
         action: 'start_metro',
-        risk: 'low',
+        risk: 'medium',
         target: { device: serial, port: METRO_PORT, framework: fw, pid: child.pid ?? null },
         consent: { required: true, consentId, approved: true },
         status: 'executed',

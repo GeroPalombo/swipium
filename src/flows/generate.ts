@@ -10,6 +10,7 @@ import { stringify } from 'yaml';
 import type { Point, Target } from '../core/target.js';
 import type { Exportability, RecordedAction, SelectorProvenance, Session } from '../session/store.js';
 import { waitForVisibleGuard } from './waitGuards.js';
+import { secretSafeActions } from '../suite/secretGuard.js';
 
 export interface RecordableTarget {
   selector?: string;
@@ -177,7 +178,17 @@ function pushSelectorAction(
   addProvenance(provenanceEntries, a, actionIndex, actionStepIndex, generatedKind, selector);
 }
 
-export function generateFlow(actions: RecordedAction[], opts: { name: string; appId?: string; budgetProfile?: string }): GenerateResult {
+export function generateFlow(
+  actions: RecordedAction[],
+  opts: {
+    name: string;
+    appId?: string;
+    budgetProfile?: string;
+    /** Registered session secrets (see suite/secretGuard.ts). */ secrets?: Iterable<string>;
+  },
+): GenerateResult {
+  // Defense in depth: a registered secret recorded as a literal (non-secure field) becomes ${SECRET_N}.
+  actions = secretSafeActions(actions, opts.secrets).actions;
   const steps: Array<string | Record<string, unknown>> = ['prepareTarget'];
   const brittleSteps: Array<{ index: number; reason: string }> = [];
   const variables: string[] = [];

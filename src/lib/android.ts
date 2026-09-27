@@ -3,15 +3,99 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { run } from './spawn.js';
 import { registerManagedProcess } from '../session/processRegistry.js';
 import type { FailureCode } from '../oracle/failures.js';
 
 const MIN_APK_BYTES = 1024 * 1024;
 
+/** Android Studio's default SDK location for a host OS (used when no env var points at an SDK). */
+export function defaultAndroidSdkDir(
+  platform: NodeJS.Platform = process.platform,
+  home: string = homedir(),
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  if (platform === 'darwin') return join(home, 'Library', 'Android', 'sdk');
+  if (platform === 'win32') return join(env.LOCALAPPDATA || join(home, 'AppData', 'Local'), 'Android', 'Sdk');
+  return join(home, 'Android', 'Sdk'); // Linux and other unixes
+}
+
+/** Candidate SDK roots in priority order: $ANDROID_HOME, $ANDROID_SDK_ROOT, then the OS default. */
+export function androidSdkCandidates(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  home: string = homedir(),
+): string[] {
+  const out: string[] = [];
+  for (const p of [env.ANDROID_HOME, env.ANDROID_SDK_ROOT, defaultAndroidSdkDir(platform, home, env)]) {
+    if (p && p.trim() && !out.includes(p.trim())) out.push(p.trim());
+  }
+  return out;
+}
+
 export function androidHome(): string {
-  return process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT || join(homedir(), 'Library/Android/sdk');
+  const candidates = androidSdkCandidates();
+  return candidates.find((d) => existsSync(d)) ?? candidates[0];
+}
+
+/**
+ * Resolve an Android SDK tool (`adb` → platform-tools/adb, `emulator` → emulator/emulator)
+ * from the SDK candidates BEFORE falling back to PATH. GUI MCP clients (Claude Desktop,
+ * Cursor launched from the Dock) don't inherit the shell PATH, so a bare `adb` often fails
+ * there even though Android Studio installed it. Returns the absolute path, or the bare name
+ * (PATH lookup) when no SDK copy exists.
+ */
+export function resolveAndroidTool(
+  tool: 'adb' | 'emulator',
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  home: string = homedir(),
+  exists: (p: string) => boolean = existsSync,
+): string {
+  const sub = tool === 'adb' ? 'platform-tools' : 'emulator';
+  const file = platform === 'win32' ? `${tool}.exe` : tool;
+  for (const sdk of androidSdkCandidates(env, platform, home)) {
+    const p = join(sdk, sub, file);
+    if (exists(p)) return p;
+  }
+  return tool;
+}
+
+/** Whether an executable named `file` exists in one of the PATH `dirs`. */
+function onPath(file: string, dirs: string[], exists: (p: string) => boolean): boolean {
+  return dirs.some((d) => exists(join(d, file)));
+}
+
+/**
+ * APPEND existing SDK tool dirs (platform-tools, emulator) to this process's PATH — only for a
+ * tool that is NOT already resolvable on PATH — so every `run('adb', …)` /
+ * `spawn('emulator', …)` call site, and `which`, can find the SDK copy in GUI clients whose
+ * PATH lacks it, without ever shadowing the user's own adb/emulator (a different adb version
+ * than the one the user's adb server runs would kill that server). Idempotent. Returns the dirs
+ * added. Called once at CLI/server startup (src/index.ts, src/server.ts).
+ */
+export function ensureAndroidToolsOnPath(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  home: string = homedir(),
+  exists: (p: string) => boolean = existsSync,
+): string[] {
+  const sep = platform === 'win32' ? ';' : platform === process.platform ? delimiter : ':';
+  // Windows env keys are case-insensitive but Node exposes the original casing (often "Path").
+  const key = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH';
+  const current = (env[key] ?? '').split(sep).filter(Boolean);
+  const add: string[] = [];
+  for (const tool of ['adb', 'emulator'] as const) {
+    const file = platform === 'win32' ? `${tool}.exe` : tool;
+    if (onPath(file, current, exists)) continue; // the user's own copy wins
+    const resolved = resolveAndroidTool(tool, env, platform, home, exists);
+    if (resolved === tool) continue;
+    const dir = join(resolved, '..');
+    if (!current.includes(dir) && !add.includes(dir)) add.push(dir);
+  }
+  if (add.length) env[key] = [...current, ...add].join(sep);
+  return add;
 }
 
 export function findAapt2(): string | null {
@@ -73,7 +157,7 @@ export function resolveApk(projectRoot: string, explicit?: string): ApkResolutio
 export function bootEmulator(avd: string, headless = true): ChildProcess {
   const args = ['-avd', avd, '-no-audio', '-no-snapshot', '-no-boot-anim', '-gpu', 'swiftshader_indirect'];
   if (headless) args.push('-no-window'); // omit for a visible window (local supervised QA)
-  const child = spawn('emulator', args, { detached: true, stdio: 'ignore' });
+  const child = spawn(resolveAndroidTool('emulator'), args, { detached: true, stdio: 'ignore' });
   child.unref();
   // Tracked for crash visibility only: the orphan reaper ADOPTS emulators (never kills them),
   // since an orphaned emulator stays booted and remains usable via adb for the next run.

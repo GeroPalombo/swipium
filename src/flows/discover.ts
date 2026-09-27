@@ -1,4 +1,4 @@
-// Shared flow discovery: list .swipium/flows/*.yaml|*.yml. Used by qa_plan (names → candidate
+// Shared flow discovery: list .swipium/flows/*.yaml|*.yml. Used by the workflow plan (qa_resolve_target include:["plan"]) (names → candidate
 // workflows) and qa_smoke (paths → run the pack). One source so the two never disagree.
 
 import { existsSync, readdirSync } from 'node:fs';

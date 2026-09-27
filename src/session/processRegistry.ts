@@ -9,13 +9,21 @@
 //    by the OS to an unrelated process is never killed.
 //  - Emulators are ADOPTED, not killed — an orphaned emulator stays booted and remains
 //    usable via adb for the next run.
+//  - Managed WDA (xcodebuild test-without-building) is deliberately NOT stopped on a graceful
+//    shutdown either (only Metro and screen recorders are — see startServer), so the next server
+//    can resume the iOS session on the same WDA. At startup an orphaned WDA entry is ADOPTED when
+//    it is younger than WDA_ADOPT_MAX_AGE_MS (12 h) AND its recorded endpoint answers GET /status
+//    ready; adoption keeps the entry and re-owns it (serverPid = this server), so `qa_wda stop`
+//    can still stop it and a later crash/restart applies the same rule. An older, unhealthy, or
+//    endpoint-less WDA entry is reaped like any other orphan.
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { withFileLock } from '../lib/lockfile.js';
+import { withFileLock, writeFileAtomicSync } from '../lib/lockfile.js';
 import { log } from '../lib/logger.js';
+import { checkWda } from '../lib/wda.js';
 
 export type ManagedProcessKind = 'metro' | 'wda' | 'recording' | 'emulator';
 
@@ -25,7 +33,13 @@ export interface ManagedProcessEntry {
   serverPid: number;
   sessionId?: string;
   startedAt: number;
+  /** kind 'wda': the WDA base URL, probed (GET /status) before an orphan is adopted. */
+  endpoint?: string;
 }
+
+/** An orphaned managed WDA older than this is reaped even when healthy (bounded lifetime). */
+export const WDA_ADOPT_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+const WDA_ADOPT_PROBE_TIMEOUT_MS = 1500;
 
 const REGISTRY_DIR = join(homedir(), '.swipium');
 const PROCESSES_FILE = join(REGISTRY_DIR, 'processes.json');
@@ -73,9 +87,7 @@ function readEntries(): ManagedProcessEntry[] {
 }
 
 function writeEntries(entries: ManagedProcessEntry[]): void {
-  const tmp = `${PROCESSES_FILE}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(entries.slice(-MAX_ENTRIES), null, 2));
-  renameSync(tmp, PROCESSES_FILE); // atomic on the same filesystem
+  writeFileAtomicSync(PROCESSES_FILE, JSON.stringify(entries.slice(-MAX_ENTRIES), null, 2)); // tmp + rename (Windows-retried)
 }
 
 function mutateEntries(fn: (entries: ManagedProcessEntry[]) => ManagedProcessEntry[]): void {
@@ -91,18 +103,38 @@ function mutateEntries(fn: (entries: ManagedProcessEntry[]) => ManagedProcessEnt
 }
 
 /** Record a long-lived child we spawned so a future server instance can reap it if we crash. */
-export function registerManagedProcess(pid: number | undefined, kind: ManagedProcessKind, sessionId?: string): void {
+export function registerManagedProcess(
+  pid: number | undefined,
+  kind: ManagedProcessKind,
+  sessionId?: string,
+  extra: { endpoint?: string } = {},
+): void {
   if (!pid || pid <= 0) return;
   mutateEntries((entries) => [
     ...entries.filter((e) => e.pid !== pid),
-    { pid, kind, serverPid: process.pid, sessionId, startedAt: Date.now() },
+    { pid, kind, serverPid: process.pid, sessionId, startedAt: Date.now(), ...(extra.endpoint ? { endpoint: extra.endpoint } : {}) },
   ]);
+}
+
+/** A managed WDA this server adopted at startup (or started itself) for `sessionId`, per the
+ *  registry — lets `qa_wda stop` stop a WDA started by a previous server run. */
+export function registeredWdaForSession(sessionId: string): ManagedProcessEntry | undefined {
+  return readEntries()
+    .filter((e) => e.kind === 'wda' && e.sessionId === sessionId && e.serverPid === process.pid)
+    .pop();
 }
 
 /** Remove a child we stopped (or that finished) from the registry. */
 export function unregisterManagedProcess(pid: number | undefined): void {
   if (!pid || pid <= 0) return;
   mutateEntries((entries) => entries.filter((e) => e.pid !== pid));
+}
+
+/** OS primitives, injectable for tests (fake pids / `ps` / signals / WDA /status). */
+export interface ProcessOps {
+  pidAlive(pid: number): boolean;
+  psCommand(pid: number): string | null;
+  killTree(pid: number): boolean;
 }
 
 /** SIGTERM the child's process group (detached children lead their own group), else the pid. */
@@ -121,12 +153,14 @@ function killTree(pid: number): boolean {
   }
 }
 
+const REAL_OPS: ProcessOps = { pidAlive, psCommand, killTree };
+
 /** True when `serverPid` is a live process that plausibly IS a Swipium/node server. The `ps`
  *  check guards against an OS-recycled server pid making us "adopt" a real orphan forever. */
-function serverStillAlive(serverPid: number): boolean {
+function serverStillAlive(serverPid: number, ops: ProcessOps = REAL_OPS): boolean {
   if (serverPid === process.pid) return false; // our pid at startup = a recycled dead server's
-  if (!pidAlive(serverPid)) return false;
-  const cmd = psCommand(serverPid);
+  if (!ops.pidAlive(serverPid)) return false;
+  const cmd = ops.psCommand(serverPid);
   return cmd != null && /node|swipium/i.test(cmd);
 }
 
@@ -140,24 +174,68 @@ export type ReclaimOutcome = 'killed' | 'adopted' | 'gone' | 'recycled';
 
 /** Verify (via `ps`) that `pid` still runs a command matching `kind`, then kill or adopt it.
  *  Never signals a pid whose command no longer matches — that pid was recycled by the OS. */
-export function reclaimPid(pid: number, kind: ManagedProcessKind): ReclaimOutcome {
-  if (!pidAlive(pid)) return 'gone';
-  const cmd = psCommand(pid);
+export function reclaimPid(pid: number, kind: ManagedProcessKind, ops: ProcessOps = REAL_OPS): ReclaimOutcome {
+  if (!ops.pidAlive(pid)) return 'gone';
+  const cmd = ops.psCommand(pid);
   if (!cmd || !KIND_COMMAND_RE[kind].test(cmd)) return 'recycled';
   if (kind === 'emulator') return 'adopted'; // still a real emulator — leave it booted (usable via adb)
-  return killTree(pid) ? 'killed' : 'gone';
+  return ops.killTree(pid) ? 'killed' : 'gone';
 }
 
-/** Startup sweep (called once from startServer): reap children whose owning server died. */
-export function reapOrphanedProcesses(): void {
+export interface ReapOptions {
+  ops?: ProcessOps;
+  now?: number;
+  /** Is the WDA at this base URL healthy (GET /status ready)? */
+  wdaHealthy?: (endpoint: string) => Promise<boolean>;
+}
+
+async function defaultWdaHealthy(endpoint: string): Promise<boolean> {
+  return (await checkWda(endpoint, WDA_ADOPT_PROBE_TIMEOUT_MS)).ready;
+}
+
+/** Orphaned WDA entries eligible for adoption: owner dead, < 12 h old, endpoint recorded, pid
+ *  still a live xcodebuild (ps-checked), and /status healthy. Probed concurrently, before the lock. */
+async function adoptableWdaPids(entries: ManagedProcessEntry[], opts: Required<ReapOptions>): Promise<Set<number>> {
+  const candidates = entries.filter(
+    (e) =>
+      e.kind === 'wda' &&
+      typeof e.endpoint === 'string' &&
+      opts.now - e.startedAt < WDA_ADOPT_MAX_AGE_MS &&
+      !serverStillAlive(e.serverPid, opts.ops) &&
+      opts.ops.pidAlive(e.pid) &&
+      KIND_COMMAND_RE.wda.test(opts.ops.psCommand(e.pid) ?? ''),
+  );
+  const healthy = await Promise.all(candidates.map((e) => opts.wdaHealthy(e.endpoint!).catch(() => false)));
+  return new Set(candidates.filter((_, i) => healthy[i]).map((e) => e.pid));
+}
+
+/** Startup sweep (called once from startServer): reap children whose owning server died —
+ *  except a young, healthy managed WDA, which is adopted (see the header comment). */
+export async function reapOrphanedProcesses(options: ReapOptions = {}): Promise<void> {
+  const opts: Required<ReapOptions> = {
+    ops: options.ops ?? REAL_OPS,
+    now: options.now ?? Date.now(),
+    wdaHealthy: options.wdaHealthy ?? defaultWdaHealthy,
+  };
+  const adoptable = await adoptableWdaPids(readEntries(), opts);
   mutateEntries((entries) => {
     const keep: ManagedProcessEntry[] = [];
     for (const e of entries) {
-      if (serverStillAlive(e.serverPid)) {
+      if (serverStillAlive(e.serverPid, opts.ops)) {
         keep.push(e); // a live concurrent server owns it — not ours to touch
         continue;
       }
-      const outcome = reclaimPid(e.pid, e.kind);
+      if (e.kind === 'wda' && adoptable.has(e.pid)) {
+        // Re-own it (startedAt kept, so the 12 h cap counts from the WDA's real start).
+        keep.push({ ...e, serverPid: process.pid });
+        log('info', 'adopted managed WDA from a previous server run (healthy, < 12 h old)', {
+          pid: e.pid,
+          endpoint: e.endpoint,
+          sessionId: e.sessionId,
+        });
+        continue;
+      }
+      const outcome = reclaimPid(e.pid, e.kind, opts.ops);
       if (outcome === 'killed') {
         log('warn', 'reaped orphaned child process from a previous server run', { pid: e.pid, kind: e.kind, sessionId: e.sessionId });
       } else if (outcome === 'adopted') {
@@ -165,7 +243,7 @@ export function reapOrphanedProcesses(): void {
       } else if (outcome === 'recycled') {
         log('info', 'dropped orphan entry: PID was recycled by an unrelated process — not signalled', { pid: e.pid, kind: e.kind });
       }
-      // In every non-live-owner case the entry is dropped: it has been handled.
+      // In every other non-live-owner case the entry is dropped: it has been handled.
     }
     return keep;
   });

@@ -4,6 +4,7 @@
 
 import type { AppiumSuiteModel } from './appiumModel.js';
 import type { AutomationProjectProfile } from './projectProfile.js';
+import { defaultPlatformOf } from './platformResolve.js';
 
 export interface ReadmeInput {
   model: AppiumSuiteModel;
@@ -13,10 +14,10 @@ export interface ReadmeInput {
   outputDir: string; // relative path where the suite was written, e.g. .swipium/automation/js
 }
 
-function envTable(model: AppiumSuiteModel, isPython: boolean): string[] {
+function envTable(model: AppiumSuiteModel, isPython: boolean, primary: 'android' | 'ios'): string[] {
   const common = [
     '| `APPIUM_HOST` / `APPIUM_PORT`' + (isPython ? ' / `APPIUM_URL`' : '') + ' | Appium server location (default 127.0.0.1:4723) |',
-    '| `SWIPIUM_PLATFORM` | `android` (default) or `ios` |',
+    `| \`SWIPIUM_PLATFORM\` | ${primary === 'ios' ? '`ios` (default) or `android`' : '`android` (default) or `ios`'} |`,
     '| `ANDROID_DEVICE_NAME`, `ANDROID_APP_PACKAGE`, `ANDROID_APP_ACTIVITY`, `ANDROID_APP_PATH`, `ANDROID_UDID` | Android target/app |',
     '| `IOS_DEVICE_NAME`, `IOS_BUNDLE_ID`, `IOS_APP_PATH`, `IOS_UDID` | iOS target/app (when SWIPIUM_PLATFORM=ios) |',
   ];
@@ -64,7 +65,7 @@ export function emitReadme(input: ReadmeInput): string {
   lines.push('');
   lines.push('## Environment variables');
   lines.push('');
-  lines.push(...envTable(model, isPython));
+  lines.push(...envTable(model, isPython, defaultPlatformOf(profile, model)));
   lines.push('');
   lines.push('## Locator readiness');
   lines.push('');

@@ -1,6 +1,6 @@
 // qa_generate (P0 §1 tool-surface consolidation) — the single entry point for "generate test
 // assets from this session's recorded actions". Dispatches by `target` to the existing core
-// handlers (flowGenerate.ts, suite.ts, automationGenerate.ts) so behavior, consent gates, and
+// handlers (services/flowGenerate.ts, suite.ts, automationGen/run.ts) so behavior, consent gates, and
 // error envelopes are unchanged; only the tool surface is unified.
 //
 // Not to be confused with qa_suite_generate, which grows the DURABLE repo-level test suite
@@ -10,9 +10,9 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { qaError, qaAnnotate as annotate } from '../lib/result.js';
-import { runFlowGenerate } from './flowGenerate.js';
+import { runFlowGenerate } from '../services/flowGenerate.js';
 import { runPomGenerate, runSuiteGenerate, runTestcaseGenerate } from './suite.js';
-import { runAutomationPlan, runAutomationGenerate } from './automationGenerate.js';
+import { runAutomationPlan, runAutomationGenerate } from '../automationGen/run.js';
 import type { SessionStore } from '../session/store.js';
 
 type Target = 'flow' | 'pom' | 'suite' | 'testcases' | 'appium';
@@ -43,6 +43,17 @@ const TARGET_PARAMS: Record<Target, readonly string[]> = {
   ],
 };
 
+/** Leave a durable trace on the session when generation really succeeded, so
+ *  qa_status (nextBestAction) can recommend wrapping up (qa_report) instead of
+ *  regenerating the same assets. Mirrors the qa_test_this pipeline's "generated a POM suite"
+ *  workaround entry; nextBestAction (src/tools/agent.ts) keys its terminal state on it. */
+function noteGenerated(sessions: SessionStore, sessionId: string | undefined, target: Target, res: CallToolResult): void {
+  if (res.isError) return;
+  const s = sessionId ? sessions.get(sessionId) : undefined;
+  if (!s) return;
+  sessions.addWorkaround(s, `generated ${target} test asset(s) from recorded actions (qa_generate)`);
+}
+
 /** Label a mode:"plan" result of a generate-capable target as a read-only preview. */
 function labelPreview(result: CallToolResult): CallToolResult {
   const label = 'PREVIEW (mode:"plan" — read-only, nothing was written). Re-run with mode:"generate" to write files.';
@@ -59,113 +70,41 @@ export function registerGenerate(server: McpServer, sessions: SessionStore): voi
     {
       title: 'Generate test assets from recorded actions',
       description:
-        'One entry point for "turn this run into reusable test assets": generate a flow, page objects, a per-run POM suite, test-case docs, or Appium automation code from the actions recorded in this session (qa_act/qa_smoke/qa_explore record every action). Pick what to emit with target; mode:"plan" gives a read-only preview (for target:"appium", the full automation plan with blockers). Prefer qa_generate for per-run generated assets from recorded actions / not for the durable repo-level test suite that grows across runs — use qa_suite_generate for that.',
+        'Turn the actions recorded in this session (qa_act / qa_smoke / qa_explore) into reusable assets. target: flow (Flow V2 YAML ' +
+        'for qa_flow_run), pom (page objects + locator audit), suite (full per-run POM suite under .swipium/, compiled to runnable ' +
+        'flows unless compile:false, with a replay gate), testcases (TC-xxx catalog as YAML/Markdown), appium (runnable WebdriverIO ' +
+        'TS/JS or Python suite; can bootstrap from projectRoot; UNEMITTABLE_STEP if a step cannot be expressed). mode:"plan" is a ' +
+        'read-only preview. Parameters for other targets are ignored with a note. For the durable repo-level suite use qa_suite_generate.',
       inputSchema: {
-        target: z
-          .union([
-            z
-              .literal('flow')
-              .describe(
-                'Emit a repeatable Flow V2 YAML (durability grade + brittle steps, credentials as ${VARS}); save writes .swipium/flows/<name>.yaml for qa_flow_run. Prefer when one replayable flow is wanted.',
-              ),
-            z
-              .literal('pom')
-              .describe(
-                'Emit Screen/Page Object Model files (one page object per screen, selectors hoisted) + a locator audit; save writes .swipium/pages + .swipium/locators. Prefer when only page objects / a locator audit are wanted.',
-              ),
-            z
-              .literal('suite')
-              .describe(
-                'Emit the full per-run suite under .swipium/ (pages + tests + suites + testcases + locator audit) AND — unless compile:false — runnable Flow V2, with replay/CI-readiness gates. Prefer when this run should become a committed, runnable POM suite.',
-              ),
-            z
-              .literal('testcases')
-              .describe(
-                'Emit an industry-style test case catalog (TC-xxx: purpose, priority, steps, expected, automation status, evidence) as YAML + Markdown; save writes .swipium/testcases. Prefer for human-readable test documentation.',
-              ),
-            z
-              .literal('appium')
-              .describe(
-                'Emit a runnable Appium POM suite (WebdriverIO TS/JS or Python) adapted to the project language; can bootstrap a device/session/actions from projectRoot when no sessionId is given. Prefer when the user asks for Appium/exportable automation code.',
-              ),
-          ])
-          .describe('What to generate from the recorded actions.'),
-        mode: z
-          .enum(['plan', 'generate'])
-          .optional()
-          .describe(
-            'generate (default) writes/returns the asset. plan is read-only: for target:"appium" it returns the project profile + generation plan + blockers; for other targets it returns a preview with save forced off.',
-          ),
-        sessionId: z
-          .string()
-          .optional()
-          .describe(
-            'Session with recorded actions. Required for target flow/pom/suite/testcases; optional for target:"appium" (which can bootstrap from projectRoot).',
-          ),
-        name: z.string().optional().describe('Asset name (default derived from the app id).'),
-        save: z
-          .boolean()
-          .optional()
-          .describe(
-            'Write files to disk. Defaults: flow/pom/testcases false (returned + artifact only), suite/appium true. Forced off by mode:"plan".',
-          ),
-        // target:"flow"
-        budgetProfile: z
-          .enum(['guardrail', 'login_smoke', 'full_smoke', 'install_smoke'])
-          .optional()
-          .describe('target:"flow" only — budget profile recorded in the generated flow.'),
-        // target:"suite"
-        compile: z.boolean().optional().describe('target:"suite" only — also compile to runnable Flow V2 (default true).'),
+        target: z.enum(['flow', 'pom', 'suite', 'testcases', 'appium']),
+        mode: z.enum(['plan', 'generate']).optional().describe('generate (default) or plan (read-only preview; appium: plan + blockers).'),
+        sessionId: z.string().optional().describe('Session with recorded actions (required except for target:"appium").'),
+        name: z.string().optional().describe('Asset name (default from the app id).'),
+        save: z.boolean().optional().describe('Write files (default: suite/appium true, others false).'),
+        budgetProfile: z.enum(['guardrail', 'login_smoke', 'full_smoke', 'install_smoke']).optional().describe('flow'),
+        compile: z.boolean().optional().describe('suite: compile to runnable Flow V2 (default true).'),
         replay: z
           .enum(['none', 'dry_run', 'same_session', 'fresh_state'])
           .optional()
-          .describe(
-            'target:"suite" only — replay gate: dry_run (default) validates compiled flows; same_session executes them now; fresh_state requires stateProfile and proves CI readiness.',
-          ),
-        stateProfile: z.string().optional().describe('target:"suite" only — required for replay:"fresh_state".'),
-        // target:"testcases"
-        format: z.enum(['yaml', 'markdown', 'both']).optional().describe('target:"testcases" only — output format (default both).'),
-        // target:"appium"
-        projectRoot: z
-          .string()
-          .optional()
-          .describe('target:"appium" only — project root, used to plan or bootstrap when no sessionId is given.'),
+          .describe('suite: replay gate (default dry_run; fresh_state needs stateProfile, proves CI readiness).'),
+        stateProfile: z.string().optional().describe('suite: for replay:"fresh_state".'),
+        format: z.enum(['yaml', 'markdown', 'both']).optional().describe('testcases (default both)'),
+        projectRoot: z.string().optional().describe('appium: plan/bootstrap without a session.'),
         bootstrap: z
           .union([z.boolean(), z.literal('auto')])
           .optional()
-          .describe(
-            'target:"appium" only — bootstrap the missing map/session/actions safely (smoke+explore) when none exist. Default "auto" when no sessionId is provided.',
-          ),
-        feature: z.string().optional().describe('target:"appium" only — optional focus for the plan / bootstrap exploration.'),
-        device: z.string().optional().describe('target:"appium" only — specific device/simulator to prepare when bootstrapping.'),
-        language: z
-          .enum(['auto', 'javascript', 'typescript', 'python'])
-          .optional()
-          .describe('target:"appium" only — automation language (default auto-detected).'),
-        platform: z.enum(['auto', 'android', 'ios', 'both']).optional().describe('target:"appium" only — platform(s) to generate for.'),
-        backend: z
-          .enum(['auto', 'appium', 'swipium_flow'])
-          .optional()
-          .describe('target:"appium" mode:"plan" only — preferred execution backend recorded in the plan.'),
-        integrateIntoProject: z
-          .boolean()
-          .optional()
-          .describe('target:"appium" only — write into the project test dir instead of .swipium (consent-gated, never overwrites).'),
-        includeCi: z.boolean().optional().describe('target:"appium" only — also emit ci.example.yml.'),
-        candidateOnly: z
-          .boolean()
-          .optional()
-          .describe('target:"appium" only — label the suite candidate-only so brittle locators do not fail validation.'),
-        brittleThreshold: z
-          .number()
-          .optional()
-          .describe('target:"appium" only — max brittle-locator percent before validation fails (default 40).'),
-        // consent (target:"suite" fresh_state replay; target:"appium" integrateIntoProject)
-        consentId: z
-          .string()
-          .optional()
-          .describe('targets "suite"/"appium" — consent id for the gated step (fresh-state replay / project write).'),
-        approve: z.boolean().optional().describe('targets "suite"/"appium" — approve the exact consent request.'),
+          .describe('appium: smoke+explore to record actions when none exist.'),
+        feature: z.string().optional().describe('appium: focus for plan/bootstrap.'),
+        device: z.string().optional().describe('appium: device to bootstrap on.'),
+        language: z.enum(['auto', 'javascript', 'typescript', 'python']).optional().describe('appium (default auto-detected)'),
+        platform: z.enum(['auto', 'android', 'ios', 'both']).optional().describe('appium'),
+        backend: z.enum(['auto', 'appium', 'swipium_flow']).optional().describe('appium plan: preferred backend.'),
+        integrateIntoProject: z.boolean().optional().describe('appium: write into the project test dir (consent-gated, never overwrites).'),
+        includeCi: z.boolean().optional().describe('appium: also emit ci.example.yml.'),
+        candidateOnly: z.boolean().optional().describe('appium: brittle locators do not fail validation.'),
+        brittleThreshold: z.number().optional().describe('appium: max brittle-locator % (default 40).'),
+        consentId: z.string().optional().describe('suite fresh_state replay / appium project write.'),
+        approve: z.boolean().optional(),
       },
     },
     async (args) => {
@@ -218,6 +157,7 @@ export function registerGenerate(server: McpServer, sessions: SessionStore): voi
           consentId: args.consentId,
           approve: args.approve,
         });
+        noteGenerated(sessions, args.sessionId, target, res);
         return annotate(res, notes);
       }
 
@@ -266,6 +206,7 @@ export function registerGenerate(server: McpServer, sessions: SessionStore): voi
           break;
       }
       if (planMode) res = labelPreview(res);
+      else noteGenerated(sessions, sessionId, target, res);
       return annotate(res, notes);
     },
   );

@@ -14,25 +14,15 @@ export function registerReport(server: McpServer, sessions: SessionStore): void 
     {
       title: 'Build a session report',
       description:
-        'Assemble a report for the session: an executive summary (release risk ship/caution/block + the single next action), native/app health, structured outcomes by workflow, findings, artifact links, env mutations + restoration, workarounds + provided inputs. Returns a summary + resource URIs (not the whole bundle); saves the full report as an artifact. Pass `format` to also export: markdown (issue-ready), json, junit (CI), playwright (dashboard JSON), or flow — returns the export artifact URI. qa_test_this execute generates this report automatically at the end of a run.',
+        'Assemble the session report: executive summary (release risk ship/caution/block + next action), health, outcomes by ' +
+        'workflow, findings, evidence links, env changes + restoration, workarounds. Saves the full report as an artifact and returns ' +
+        'a summary + URIs. format adds an export artifact: markdown, json, junit, sarif (SARIF 2.1.0), github-summary, playwright, or ' +
+        'flow. qa_test_this execute calls this automatically. CI usage: docs/ci-reports.md.',
       inputSchema: {
         sessionId: z.string(),
-        format: z
-          .enum(['summary', 'markdown', 'json', 'junit', 'flow', 'playwright'])
-          .optional()
-          .describe(
-            'Also emit this export as an artifact (default summary only). markdown = issue-ready; junit = CI; playwright = Playwright-style dashboard JSON; flow = a replayable flow drafted from the actions recorded this run.',
-          ),
-        baseline: z
-          .string()
-          .optional()
-          .describe('Optional baseline report.json path. When provided, qa_report adds comparison and PR-summary links.'),
-        trendRoot: z
-          .string()
-          .optional()
-          .describe(
-            'Optional project root containing .swipium/runs or legacy .swipium/ci history. When provided, qa_report adds trend/flake context.',
-          ),
+        format: z.enum(['summary', 'markdown', 'json', 'junit', 'sarif', 'github-summary', 'flow', 'playwright']).optional(),
+        baseline: z.string().optional().describe('Baseline report.json path → adds comparison links.'),
+        trendRoot: z.string().optional().describe('Project root with .swipium/runs history → adds trend/flake context.'),
       },
     },
     async ({ sessionId, format, baseline, trendRoot }) => {

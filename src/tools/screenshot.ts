@@ -8,7 +8,7 @@ import { qaOk, qaError, qaStop } from '../lib/result.js';
 import { isSecureNode } from '../lib/redact.js';
 import { sensitiveRefusal } from '../lib/sensitive.js';
 import { captureCoordinateSpace } from '../lib/coordSpace.js';
-import { getDriver } from '../session/attach.js';
+import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import type { SessionStore } from '../session/store.js';
 
 export function registerScreenshot(server: McpServer, sessions: SessionStore): void {
@@ -17,23 +17,28 @@ export function registerScreenshot(server: McpServer, sessions: SessionStore): v
     {
       title: 'Capture a screenshot',
       description:
-        "Capture the current screen, save it as a session artifact, and return a resource URI (swipium://…) — not inline image bytes. If a secure field (password/OTP) is on screen the capture is withheld unless force:true, since screenshot pixels can't be redacted. Requires qa_prepare_target.",
+        'Capture the screen as a session artifact and return its swipium:// URI (not inline bytes). Withheld when a ' +
+        'password/OTP field is on screen unless force:true (pixels cannot be redacted). Counts against the screenshot budget.',
       inputSchema: {
         sessionId: z.string(),
         force: z.boolean().optional(),
-        reason: z.string().optional().describe('Short label of what this screenshot documents (shown in qa_report).'),
+        reason: z.string().optional().describe('What it documents (shown in qa_report).'),
       },
     },
     async ({ sessionId, force, reason }) => {
       const session = sessions.get(sessionId);
-      const { driver } = session ? await getDriver(session) : { driver: undefined };
+      const { driver, blocked } = session ? await getDriver(session) : { driver: undefined, blocked: undefined };
       if (!session || !driver) {
-        return qaError({
-          what: 'No device attached to this session',
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_prepare_target first.'],
-        });
+        return (
+          blockedDeviceResult(blocked) ??
+          qaError({
+            what: 'No device attached to this session',
+            changedState: false,
+            retrySafe: true,
+            failureCode: 'NO_DEVICE',
+            nextSteps: ['Call qa_prepare_target first.'],
+          })
+        );
       }
 
       if (session.sensitive) return sensitiveRefusal('Screenshot');
@@ -48,6 +53,7 @@ export function registerScreenshot(server: McpServer, sessions: SessionStore): v
           what: 'Screenshot withheld — a secure field (password/OTP) is on screen',
           changedState: false,
           retrySafe: true,
+          failureCode: 'CAPTURE_WITHHELD_SECURE',
           nextSteps: ['Pass force:true to capture anyway (pixels are NOT redactable), or screenshot a non-sensitive screen.'],
         });
       }
@@ -73,6 +79,7 @@ export function registerScreenshot(server: McpServer, sessions: SessionStore): v
             bytes: png.length,
             coordinateSpace,
             redaction: rec.redaction,
+            ...(rec.redaction === 'partial' && rec.redactionNote ? { redactionNote: rec.redactionNote } : {}),
             sensitiveForced: hasSecure ? true : undefined,
             counters: session.counters,
             ...(budgetReached ? { budgetReached } : {}),

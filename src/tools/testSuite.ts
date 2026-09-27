@@ -11,6 +11,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { qaOk, qaError } from '../lib/result.js';
+import { unresolvedProjectRootError } from '../context/projectRoot.js';
 import { loadProjectConfig } from '../cli/scan.js';
 import { pomForSession } from '../services/suiteGenerate.js';
 import { generateCanonicalCases, normalizeCase } from '../testSuite/generator.js';
@@ -19,6 +20,7 @@ import { exportSuite, type ExportFormat } from '../testSuite/exporter.js';
 import { lintSuite } from '../testSuite/lint.js';
 import { lintSuitePages } from '../suite/lint.js';
 import type { CanonicalTestCase, CreativityLevel, ProvenanceSource } from '../testSuite/schema.js';
+import { secretSafeNotes } from '../suite/secretGuard.js';
 import type { Session, SessionStore } from '../session/store.js';
 
 interface Resolved {
@@ -35,8 +37,9 @@ function resolveRoot(sessions: SessionStore, sessionId?: string, projectRoot?: s
   return { root, appId, session };
 }
 
-const noRoot = () =>
-  qaError({ what: 'No project root', changedState: false, retrySafe: true, nextSteps: ['Pass sessionId or projectRoot.'] });
+const CREATIVITY_ENUM = ['conservative', 'standard', 'creative', 'adversarial'] as const;
+
+const noRoot = () => unresolvedProjectRootError({ source: 'none' }, { nextSteps: ['Pass sessionId or an absolute projectRoot.'] });
 
 /** Register the suite JSON as a session artifact so its resource URI resolves; returns the URI. */
 function publishSuiteArtifact(sessions: SessionStore, session: Session | undefined, json: string): string | undefined {
@@ -51,7 +54,8 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
     {
       title: 'Read the persistent QA test suite',
       description:
-        'Read the canonical, project-level QA test-case suite (.swipium/test-suite.json) — the long-lived suite divided by functionality that grows across runs (distinct from a per-run catalog). Filter by functionality and/or status. format: summary (counts + ids), json (full cases), or markdown (review-ready). Returns a resource URI for the full suite.',
+        'Read the canonical repo-level suite (.swipium/test-suite.json), filterable by functionality/status. format: summary ' +
+        '(counts + ids), json, or markdown. Returns a resource URI for the full suite.',
       inputSchema: {
         sessionId: z.string().optional(),
         projectRoot: z.string().optional(),
@@ -102,16 +106,15 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
     {
       title: 'Update the persistent QA test suite',
       description:
-        'Merge cases into the persistent QA suite and persist them. Cases matching an existing case by feature + objective + normalized steps are UPDATED (not duplicated); new coverage creates new stable ids (TC-<FEATURE>-NNN). source records provenance; mergeMode controls whether generated fields overwrite curated ones. Returns created/updated/deprecated ids + conflicts. Every run that observes QA knowledge should call this.',
+        'Merge cases into the canonical suite. A case matching feature + objective + normalized steps is updated, not ' +
+        'duplicated; new ones get stable ids (TC-<FEATURE>-NNN). mergeMode controls whether generated fields overwrite curated ' +
+        'ones. Returns created/updated/deprecated ids + conflicts.',
       inputSchema: {
         sessionId: z.string().optional(),
         projectRoot: z.string().optional(),
         source: z.enum(['report', 'exploration', 'feature', 'ticket', 'manual', 'generate', 'suite']),
         sourceUri: z.string().optional(),
-        cases: z
-          .array(z.record(z.any()))
-          .optional()
-          .describe('Canonical (or partial) test cases to merge. Partial cases are normalized with sane defaults.'),
+        cases: z.array(z.record(z.any())).optional().describe('Canonical or partial cases (normalized).'),
         mergeMode: z.enum(['append', 'update', 'replace_generated']).optional(),
       },
     },
@@ -166,16 +169,24 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
     {
       title: 'Generate persistent suite cases from the app',
       description:
-        "Generate or refresh canonical test cases from this session's recorded actions (POM flow) + observed outcomes + guided-exploration coverage, then merge them into the persistent, DURABLE repo-level suite (.swipium/test-suite.json) that grows across runs. Cases are grouped by functionality, carry a creativityLevel, expected vs. actual results, automation readiness, and traceability. Re-running updates existing cases instead of duplicating them. Returns generated cases + skipped/blocked features + map-coverage gaps. Prefer qa_suite_generate for the durable repo-level suite / not for per-run generated assets (flow YAML, page objects, per-run POM suite, Appium code) — use qa_generate for those.",
+        "Generate or refresh canonical cases from this session's recorded actions, outcomes, and exploration coverage, and merge them " +
+        'into the durable repo-level suite (.swipium/test-suite.json) that grows across runs (re-running updates cases, no duplicates). ' +
+        'Returns generated cases, skipped/blocked features, and map-coverage gaps. For per-run assets (flow YAML, page objects, POM ' +
+        'suite, Appium code) use qa_generate.',
       inputSchema: {
         sessionId: z.string().optional(),
         projectRoot: z.string().optional(),
         feature: z.string().optional().describe('Functionality label for the generated flow case (defaults from the recorded flow name).'),
-        creativityLevel: z.enum(['conservative', 'standard', 'creative', 'adversarial']).optional(),
+        creativity: z
+          .enum(CREATIVITY_ENUM)
+          .optional()
+          .describe('How far cases go beyond the happy path (default standard; adversarial = negative/abuse cases).'),
+        creativityLevel: z.enum(CREATIVITY_ENUM).optional().describe('Deprecated alias of creativity.'),
         includeManualOnly: z.boolean().optional(),
       },
     },
-    async ({ sessionId, projectRoot, feature, creativityLevel, includeManualOnly }) => {
+    async ({ sessionId, projectRoot, feature, creativity, creativityLevel: creativityAlias, includeManualOnly }) => {
+      const creativityLevel = creativity ?? creativityAlias;
       const r = resolveRoot(sessions, sessionId, projectRoot);
       if (!r) return noRoot();
       if (!r.session) {
@@ -210,7 +221,7 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
         functionality: feature,
         creativityLevel: (creativityLevel as CreativityLevel) ?? 'standard',
         fixtures: session.fixtures,
-        notes: session.notes,
+        notes: secretSafeNotes(session.notes, session.secrets), // never a registered secret in test-suite.json
         exploration: session.exploration,
         source: 'generate',
         now,
@@ -301,15 +312,14 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
     {
       title: 'Lint the persistent QA test suite',
       description:
-        'Validate the persistent suite: missing expected results, missing actual results after a run, unlinked feature/screen, stale map links, duplicate ids, brittle automation above threshold, and adversarial cases lacking disposable-state/consent safety metadata. Returns errors (block) and warnings. When generated page objects exist under .swipium/pages (from qa_generate), also lints them for durability problems (coordinate-only, copy/locale-fragile, dynamic-looking locators) and reports both sets of findings in one result.',
+        'Lint the canonical suite (missing expected/actual results, unlinked or stale feature/screen links, duplicate ids, ' +
+        'brittle automation, adversarial cases without safety metadata) and, when present, generated page objects under ' +
+        '.swipium/pages (coordinate-only, locale-fragile, dynamic locators). Returns errors and warnings.',
       inputSchema: {
         sessionId: z.string().optional(),
         projectRoot: z.string().optional(),
         brittleThreshold: z.enum(['C', 'D']).optional(),
-        liveFeatureIds: z
-          .array(z.string())
-          .optional()
-          .describe('Feature ids still present in the app map (enables the stale-map-link rule).'),
+        liveFeatureIds: z.array(z.string()).optional().describe('Live map feature ids (enables the stale-link rule).'),
       },
     },
     async ({ sessionId, projectRoot, brittleThreshold, liveFeatureIds }) => {

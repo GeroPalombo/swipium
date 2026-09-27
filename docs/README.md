@@ -4,16 +4,20 @@ This directory contains public documentation for the Swipium MCP server.
 
 ## Index
 
-- [MCP Server](mcp-server.md): server setup, client configuration, and agent integration.
-- [Tool Reference](tools.md): public MCP tools grouped by workflow.
+- [MCP Server](mcp-server.md): server command, project-root resolution, client setup (Claude Code, Codex, Gemini CLI, Cursor, VS Code, Claude Desktop, Windsurf), and verification.
+- [Tool Reference](tools.md): public MCP tools grouped by workflow (the authoritative tool list).
+- [CI Reports](ci-reports.md): exporting run reports as JUnit, SARIF, or a GitHub job summary.
+- [Physical Devices](physical-devices.md): roadmap and scoping for real-device support (currently refused with `PHYSICAL_DEVICE_UNSUPPORTED`).
+
+Environment variables and host-OS support are covered in the top-level [README](../README.md#configuration--environment-variables).
 
 ## Scope
 
 Swipium is simulator-only:
 
-- Android Emulator.
-- iOS Simulator.
+- Android Emulator (macOS, Linux; Windows experimental).
+- iOS Simulator (macOS).
 - Local MCP stdio server.
 - Local artifacts and app-map memory.
 
-Real devices, Jira integration, external ticket workflows, cloud execution, and certification are outside the current public scope.
+Real devices, cloud execution, and certification are outside the current public scope.

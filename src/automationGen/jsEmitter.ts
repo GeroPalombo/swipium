@@ -6,6 +6,19 @@
 import type { GeneratedFile } from '../suite/pom.js';
 import type { AppiumLocator, AppiumScreen, AppiumStep, AppiumSuiteModel, CrossPlatformElement } from './appiumModel.js';
 import type { AutomationProjectProfile } from './projectProfile.js';
+import { defaultPlatformOf } from './platformResolve.js';
+import {
+  NameAllocator,
+  UnemittableStepError,
+  checkDirection,
+  checkKey,
+  className,
+  commentSafe,
+  isJsIdentifier,
+  jsMemberName,
+  pascalWords,
+  screensOf,
+} from './identifiers.js';
 
 export interface JsEmitInput {
   model: AppiumSuiteModel;
@@ -15,14 +28,73 @@ export interface JsEmitInput {
 }
 
 const DEFAULT_TIMEOUT = 15000;
+const MAX_SCROLLS = 8;
 
-function pascal(s: string): string {
-  const parts = s
-    .replace(/[^A-Za-z0-9]+/g, ' ')
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-  return parts.map((p) => p[0].toUpperCase() + p.slice(1)).join('') || 'X';
+/** Every member BaseScreen declares — a generated field/method must never shadow one (a field named
+ *  `tap` would replace the tap() helper, and in TS it is a type error). */
+const JS_BASE_MEMBERS = [
+  'constructor',
+  'element',
+  'tap',
+  'type',
+  'typeFocused',
+  'scrollTo',
+  'scrollToText',
+  'scrollOnce',
+  'isVisible',
+  'assertVisible',
+  'assertTextVisible',
+  'textSelector',
+  'tapAt',
+  'pressKey',
+  'swipe',
+  'openUrl',
+];
+
+/** Sanitized, collision-free names for one screen class (H4). */
+interface JsScreenNames {
+  cls: string;
+  instance: string;
+  /** original element name → field name */
+  fields: Map<string, string>;
+  /** `${action}|${element}` → method name */
+  methods: Map<string, string>;
+}
+
+function methodKey(action: AppiumStep['action'], element: string): string {
+  return `${action}|${element}`;
+}
+
+function planJsNames(model: AppiumSuiteModel): Map<string, JsScreenNames> {
+  const classes = new NameAllocator(['BaseScreen', 'TestData', 'PlatformLocator'], (s) => s.toLowerCase());
+  const instances = new NameAllocator(['testData', 'driver', 'browser', 'describe', 'it', 'expect', '$', '$$']);
+  const plan = new Map<string, JsScreenNames>();
+  for (const screen of screensOf(model)) {
+    const cls = classes.alloc(className(screen.className));
+    const instance = instances.alloc(cls[0].toLowerCase() + cls.slice(1));
+    const members = new NameAllocator(JS_BASE_MEMBERS);
+    const fields = new Map<string, string>();
+    for (const el of screen.elements) if (!fields.has(el.name)) fields.set(el.name, members.alloc(jsMemberName(el.name)));
+    const methods = new Map<string, string>();
+    for (const s of model.steps) {
+      if (s.screen !== screen.className || !s.element) continue;
+      const field = fields.get(s.element);
+      if (!field) {
+        throw new UnemittableStepError(
+          `cannot emit ${s.action} step on ${screen.className}: element ${JSON.stringify(s.element)} is not declared on that screen`,
+        );
+      }
+      const key = methodKey(s.action, s.element);
+      if (methods.has(key)) continue;
+      methods.set(key, members.alloc(methodBase(s.action, pascalWords(field) || 'Element')));
+    }
+    plan.set(screen.className, { cls, instance, fields, methods });
+  }
+  return plan;
+}
+
+function jsProp(obj: string, key: string): string {
+  return isJsIdentifier(key) ? `${obj}.${key}` : `${obj}[${JSON.stringify(key)}]`;
 }
 
 /** Env var (SWIPIUM_TEST_PASSWORD) → a stable testData key (password). */
@@ -72,8 +144,11 @@ function platformLocatorLiteral(el: CrossPlatformElement): string {
 export function emitJsSuite(input: JsEmitInput): GeneratedFile[] {
   const ts = input.language === 'typescript';
   const ext = ts ? 'ts' : 'js';
-  const t = (annotation: string) => (ts ? annotation : '');
   const files: GeneratedFile[] = [];
+  // Plan every class/field/method name up front (H4) and validate every step is emittable (§4) —
+  // generation fails loudly here rather than writing a suite with silent no-op steps.
+  const names = planJsNames(input.model);
+  const smoke = smokeTest(input.model, names);
 
   files.push({ path: 'package.json', content: packageJson(input) });
   if (ts) files.push({ path: 'tsconfig.json', content: tsconfigJson() });
@@ -82,11 +157,12 @@ export function emitJsSuite(input: JsEmitInput): GeneratedFile[] {
   files.push({ path: `src/utils/locators.${ext}`, content: locatorsUtil(ts) });
   files.push({ path: `src/utils/waits.${ext}`, content: waitsUtil(ts) });
   files.push({ path: `src/screens/BaseScreen.${ext}`, content: baseScreen(ts) });
-  for (const screen of input.model.screens) {
-    files.push({ path: `src/screens/${screen.className}.${ext}`, content: screenClass(screen, input.model.steps, ts, t) });
+  for (const screen of screensOf(input.model)) {
+    const n = names.get(screen.className)!;
+    files.push({ path: `src/screens/${n.cls}.${ext}`, content: screenClass(screen, n, input.model.steps, ts) });
   }
   files.push({ path: `src/data/testData.${ext}`, content: testData(input.model, ts) });
-  files.push({ path: `test/smoke.e2e.${ext}`, content: smokeTest(input.model, ts) });
+  files.push({ path: `test/smoke.e2e.${ext}`, content: smoke });
   return files;
 }
 
@@ -161,15 +237,19 @@ export const config${cfgType} = {
 }
 
 function capabilities(input: JsEmitInput, ts: boolean): string {
-  const android = input.model.platforms.android;
+  const primary = defaultPlatformOf(input.profile, input.model);
   const ret = ts ? ': WebdriverIO.Capabilities' : '';
   const appId = input.appId ?? '';
   const lines: string[] = [];
   lines.push('// Generated by Swipium. ALL device/app config is environment-driven — no secrets, no hardcoded paths.');
-  lines.push('// Android is the default fast-feedback backend; set SWIPIUM_PLATFORM=ios to target iOS (XCUITest).');
+  lines.push(
+    primary === 'ios'
+      ? '// iOS (XCUITest) is the default for this suite; set SWIPIUM_PLATFORM=android to target Android (UiAutomator2).'
+      : '// Android (UiAutomator2) is the default for this suite; set SWIPIUM_PLATFORM=ios to target iOS (XCUITest).',
+  );
   lines.push('');
   lines.push(`export function buildCapabilities()${ret} {`);
-  lines.push(`  const platform = (process.env.SWIPIUM_PLATFORM || ${JSON.stringify(android ? 'android' : 'ios')}).toLowerCase();`);
+  lines.push(`  const platform = (process.env.SWIPIUM_PLATFORM || ${JSON.stringify(primary)}).toLowerCase();`);
   lines.push("  if (platform === 'ios') {");
   lines.push('    return {');
   lines.push("      platformName: 'iOS',");
@@ -182,7 +262,7 @@ function capabilities(input: JsEmitInput, ts: boolean): string {
   lines.push("      'appium:noReset': process.env.SWIPIUM_NO_RESET === 'true',");
   lines.push('    };');
   lines.push('  }');
-  lines.push('  // Android UiAutomator2 (default).');
+  lines.push('  // Android UiAutomator2.');
   lines.push('  return {');
   lines.push("    platformName: 'Android',");
   lines.push("    'appium:automationName': 'UiAutomator2',");
@@ -245,36 +325,92 @@ export async function waitEnabled(el${elAnno}, timeout${numAnno} = DEFAULT_TIMEO
 function baseScreen(ts: boolean): string {
   const locImport = ts ? `import type { PlatformLocator } from '../utils/locators.js';\n` : '';
   const p = (name: string, type: string) => (ts ? `${name}: ${type}` : name);
+  // H3: TS-only modifiers/annotations are gated on the TypeScript flag so the .js output parses.
+  const prot = ts ? 'protected ' : '';
+  const dirType = ts ? `: 'up' | 'down' | 'left' | 'right'` : '';
   return `// Generated by Swipium. BaseScreen centralizes all element interaction so selectors are
 // resolved per-platform in ONE place and tests never touch raw selectors.
-${locImport}import { resolveSelector, coordinateOf } from '../utils/locators.js';
-import { waitVisible, waitEnabled, DEFAULT_TIMEOUT } from '../utils/waits.js';
+${locImport}import { resolveSelector } from '../utils/locators.js';
+import { waitVisible, waitEnabled } from '../utils/waits.js';
+
+/** Upper bound on scroll gestures while looking for an element — never an endless loop. */
+export const MAX_SCROLLS = ${MAX_SCROLLS};
 
 export class BaseScreen {
-  protected async element(${p('loc', 'PlatformLocator')}) {
+  ${prot}async element(${p('loc', 'PlatformLocator')}) {
     // @ts-ignore wdio global
     return $(resolveSelector(loc));
   }
 
-  protected async tap(${p('loc', 'PlatformLocator')}) {
+  ${prot}async tap(${p('loc', 'PlatformLocator')}) {
     const el = await this.element(loc);
     await waitEnabled(await waitVisible(el));
     await el.click();
   }
 
-  protected async type(${p('loc', 'PlatformLocator')}, ${p('value', 'string')}) {
+  ${prot}async type(${p('loc', 'PlatformLocator')}, ${p('value', 'string')}) {
     const el = await this.element(loc);
     await waitVisible(el);
     await el.setValue(value);
   }
 
-  protected async scrollTo(${p('loc', 'PlatformLocator')}) {
-    const el = await this.element(loc);
-    await el.scrollIntoView();
-    await waitVisible(el);
+  /** Type into whichever field currently has focus (the recording had no locator for it). */
+  async typeFocused(${p('value', 'string')}) {
+    // @ts-ignore wdio global
+    const active = await $(await driver.getActiveElement());
+    await active.addValue(value);
   }
 
-  protected async isVisible(${p('loc', 'PlatformLocator')})${ts ? ': Promise<boolean>' : ''} {
+  /**
+   * One real content-scroll gesture. direction is the CONTENT direction: 'down' reveals what is below.
+   * Android: UiAutomator2 \`mobile: scrollGesture\` (returns false once the end is reached).
+   * iOS: XCUITest \`mobile: scroll\`.
+   */
+  async scrollOnce(${p('direction', 'string')} = 'down')${ts ? ': Promise<boolean>' : ''} {
+    // @ts-ignore wdio global
+    if (driver.isAndroid) {
+      // @ts-ignore wdio global
+      const { width, height } = await driver.getWindowSize();
+      // @ts-ignore wdio global
+      const canScrollMore = await driver.execute('mobile: scrollGesture', {
+        left: Math.round(width * 0.1),
+        top: Math.round(height * 0.2),
+        width: Math.round(width * 0.8),
+        height: Math.round(height * 0.6),
+        direction,
+        percent: 0.75,
+      });
+      return canScrollMore !== false;
+    }
+    // @ts-ignore wdio global
+    await driver.execute('mobile: scroll', { direction });
+    return true;
+  }
+
+  /** Scroll (bounded by maxScrolls) until the element is displayed; throws if it never appears. */
+  ${prot}async scrollTo(${p('loc', 'PlatformLocator')}, ${p('direction', 'string')} = 'down', ${p('maxScrolls', 'number')} = MAX_SCROLLS) {
+    let atEnd = false;
+    for (let i = 0; i <= maxScrolls; i++) {
+      if (await this.isVisible(loc)) return;
+      if (i === maxScrolls || atEnd) break;
+      atEnd = !(await this.scrollOnce(direction));
+    }
+    throw new Error('Element not visible after scrolling ' + direction + ' (max ' + maxScrolls + ' scrolls)');
+  }
+
+  /** Scroll (bounded) until an element whose text/label contains \`text\` is displayed. */
+  async scrollToText(${p('text', 'string')}, ${p('direction', 'string')} = 'down', ${p('maxScrolls', 'number')} = MAX_SCROLLS) {
+    let atEnd = false;
+    for (let i = 0; i <= maxScrolls; i++) {
+      // @ts-ignore wdio global
+      if (await $(this.textSelector(text)).isDisplayed()) return;
+      if (i === maxScrolls || atEnd) break;
+      atEnd = !(await this.scrollOnce(direction));
+    }
+    throw new Error('Text ' + JSON.stringify(text) + ' not visible after scrolling ' + direction + ' (max ' + maxScrolls + ' scrolls)');
+  }
+
+  ${prot}async isVisible(${p('loc', 'PlatformLocator')})${ts ? ': Promise<boolean>' : ''} {
     const el = await this.element(loc);
     return el.isDisplayed();
   }
@@ -284,28 +420,60 @@ export class BaseScreen {
     await waitVisible(el);
   }
 
+  /** Platform-appropriate "text contains" selector. JSON.stringify escapes backslashes and quotes. */
+  textSelector(${p('text', 'string')})${ts ? ': string' : ''} {
+    // @ts-ignore wdio global
+    if (driver.isAndroid) return 'android=new UiSelector().textContains(' + JSON.stringify(text) + ')';
+    return '-ios predicate string:label CONTAINS ' + JSON.stringify(text) + ' OR name CONTAINS ' + JSON.stringify(text);
+  }
+
   async assertTextVisible(${p('text', 'string')}) {
     // Non-release-grade text/OCR assertion — prefer a structured locator.
     // @ts-ignore wdio global
-    const el = await $('android=new UiSelector().textContains(' + JSON.stringify(text) + ')');
+    const el = await $(this.textSelector(text));
     await waitVisible(el);
   }
 
   // Coordinate tap — brittle, non-release-grade fallback. Only used when no durable locator exists.
   async tapAt(${p('x', 'number')}, ${p('y', 'number')}) {
     // @ts-ignore wdio global
-    await driver.action('pointer')
+    await driver.action('pointer', { parameters: { pointerType: 'touch' } })
       .move({ x, y }).down().pause(50).up().perform();
   }
 
-  async pressKey(${p('key', 'string')}) {
+  async pressKey(${p('key', `'back' | 'home' | 'enter'`)}) {
     // @ts-ignore wdio global
-    if (driver.isAndroid && key === 'back') { await driver.back(); return; }
-    // @ts-ignore wdio global
-    await driver.keys([key]);
+    const android = driver.isAndroid;
+    if (key === 'back') {
+      // @ts-ignore wdio global
+      if (android) { await driver.back(); return; }
+      // iOS has no system back key: swipe in from the left edge (UINavigationController back gesture).
+      // @ts-ignore wdio global
+      const { width, height } = await driver.getWindowSize();
+      // @ts-ignore wdio global
+      await driver.action('pointer', { parameters: { pointerType: 'touch' } })
+        .move({ x: 2, y: Math.round(height / 2) }).down().pause(50)
+        .move({ duration: 400, x: Math.round(width * 0.7), y: Math.round(height / 2) }).up().perform();
+      return;
+    }
+    if (key === 'home') {
+      // @ts-ignore wdio global
+      if (android) await driver.execute('mobile: pressKey', { keycode: 3 });
+      // @ts-ignore wdio global
+      else await driver.execute('mobile: pressButton', { name: 'home' });
+      return;
+    }
+    if (key === 'enter') {
+      // @ts-ignore wdio global
+      if (android) { await driver.execute('mobile: pressKey', { keycode: 66 }); return; }
+      await this.typeFocused('\\n');
+      return;
+    }
+    throw new Error('Unsupported key: ' + key);
   }
 
-  async swipe(${p('direction', 'string')}) {
+  /** Real window-size-relative swipe. direction is the FINGER direction ('up' drags from bottom to top). */
+  async swipe(${p('direction', dirType.slice(2) || 'string')}) {
     // @ts-ignore wdio global
     const { width, height } = await driver.getWindowSize();
     const cx = Math.round(width / 2), cy = Math.round(height / 2);
@@ -315,9 +483,11 @@ export class BaseScreen {
       left: [Math.round(width * 0.8), cy, Math.round(width * 0.2), cy],
       right: [Math.round(width * 0.2), cy, Math.round(width * 0.8), cy],
     };
-    const [x1, y1, x2, y2] = map[${ts ? 'direction as keyof typeof map' : 'direction'}] || map.up;
+    const vec = map[direction];
+    if (!vec) throw new Error('Unsupported swipe direction: ' + direction);
+    const [x1, y1, x2, y2] = vec;
     // @ts-ignore wdio global
-    await driver.action('pointer')
+    await driver.action('pointer', { parameters: { pointerType: 'touch' } })
       .move({ x: x1, y: y1 }).down().pause(100).move({ duration: 600, x: x2, y: y2 }).up().perform();
   }
 
@@ -329,9 +499,8 @@ export class BaseScreen {
 `;
 }
 
-/** Per-screen action method name for an (element, action) pair. */
-function methodName(action: AppiumStep['action'], element: string): string {
-  const E = pascal(element);
+/** Base (pre-dedupe) action-method name for an (action, element) pair. */
+function methodBase(action: AppiumStep['action'], E: string): string {
   switch (action) {
     case 'tap':
       return `tap${E}`;
@@ -342,26 +511,27 @@ function methodName(action: AppiumStep['action'], element: string): string {
     case 'assertVisible':
       return `assert${E}Visible`;
     default:
-      return `act${E}`;
+      throw new UnemittableStepError(`cannot emit a ${action} step bound to an element — no generated action exists for it`);
   }
 }
 
-function screenClass(screen: AppiumScreen, steps: AppiumStep[], ts: boolean, t: (a: string) => string): string {
-  const locImport = ts ? `import type { PlatformLocator } from '../utils/locators.js';\n` : '';
+function screenClass(screen: AppiumScreen, names: JsScreenNames, steps: AppiumStep[], ts: boolean): string {
   const lines: string[] = [];
   lines.push(
-    `// Generated by Swipium. Screen object for ${screen.pageName}${screen.screenSignature ? ` (${screen.screenSignature})` : ''}.`,
+    `// Generated by Swipium. Screen object for ${commentSafe(screen.pageName)}${screen.screenSignature ? ` (${commentSafe(screen.screenSignature)})` : ''}.`,
   );
   lines.push('// Selectors are centralized here; tests call the action methods below.');
-  lines.push(locImport.trimEnd());
+  if (ts) lines.push(`import type { PlatformLocator } from '../utils/locators.js';`);
   lines.push(`import { BaseScreen } from './BaseScreen.js';`);
   lines.push('');
-  lines.push(`export class ${screen.className} extends BaseScreen {`);
+  lines.push(`export class ${names.cls} extends BaseScreen {`);
 
-  // Locators (centralized).
+  // Locators (centralized). H3: `readonly` + the type annotation are TypeScript-only.
   for (const el of screen.elements) {
-    const durabilityNote = el.durability === 'durable' ? '' : ` // ${el.durability} locator${el.remediation ? ` — ${el.remediation}` : ''}`;
-    lines.push(`  readonly ${el.name}${t(': PlatformLocator')} = ${platformLocatorLiteral(el)};${durabilityNote}`);
+    const field = names.fields.get(el.name)!;
+    const durabilityNote =
+      el.durability === 'durable' ? '' : ` // ${el.durability} locator${el.remediation ? ` — ${commentSafe(el.remediation)}` : ''}`;
+    lines.push(`  ${ts ? 'readonly ' : ''}${field}${ts ? ': PlatformLocator' : ''} = ${platformLocatorLiteral(el)};${durabilityNote}`);
   }
   lines.push('');
 
@@ -369,43 +539,45 @@ function screenClass(screen: AppiumScreen, steps: AppiumStep[], ts: boolean, t: 
   const seen = new Set<string>();
   for (const s of steps) {
     if (s.screen !== screen.className || !s.element) continue;
-    const el = screen.elements.find((e) => e.name === s.element);
-    if (!el) continue;
-    const name = methodName(s.action, s.element);
-    if (seen.has(name)) continue;
-    seen.add(name);
+    const key = methodKey(s.action, s.element);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const name = names.methods.get(key)!;
+    const field = `this.${names.fields.get(s.element)!}`;
     if (s.action === 'inputText') {
       lines.push(`  async ${name}(${ts ? 'value: string' : 'value'}) {`);
-      lines.push(`    await this.type(this.${s.element}, value);`);
-      lines.push('  }');
+      lines.push(`    await this.type(${field}, value);`);
     } else if (s.action === 'tap') {
       lines.push(`  async ${name}() {`);
-      lines.push(`    await this.tap(this.${s.element});`);
-      lines.push('  }');
+      lines.push(`    await this.tap(${field});`);
     } else if (s.action === 'scrollTo') {
+      lines.push(`  async ${name}(${ts ? "direction: string = 'down'" : "direction = 'down'"}) {`);
+      lines.push(`    await this.scrollTo(${field}, direction);`);
+    } else {
       lines.push(`  async ${name}() {`);
-      lines.push(`    await this.scrollTo(this.${s.element});`);
-      lines.push('  }');
-    } else if (s.action === 'assertVisible') {
-      lines.push(`  async ${name}() {`);
-      lines.push(`    await this.assertVisible(this.${s.element});`);
-      lines.push('  }');
+      lines.push(`    await this.assertVisible(${field});`);
     }
+    lines.push('  }');
   }
   lines.push('}');
   lines.push('');
   return lines.join('\n');
 }
 
+function envRef(v: string): string {
+  return jsProp('process.env', v);
+}
+
 function testData(model: AppiumSuiteModel, ts: boolean): string {
   const lines: string[] = [];
+  const key = (v: string) => (isJsIdentifier(varToKey(v)) ? varToKey(v) : JSON.stringify(varToKey(v)));
   lines.push('// Generated by Swipium. Test data comes from the ENVIRONMENT — secrets are never inlined.');
   lines.push('export const testData = {');
   for (const v of model.variables) {
-    lines.push(`  ${varToKey(v)}: process.env.${v} || '',`);
+    lines.push(`  ${key(v)}: ${envRef(v)} || '',`);
   }
   for (const v of model.secrets) {
-    lines.push(`  ${varToKey(v)}: process.env.${v} || '', // secret — provide via environment only`);
+    lines.push(`  ${key(v)}: ${envRef(v)} || '', // secret — provide via environment only`);
   }
   lines.push('};');
   lines.push('');
@@ -414,27 +586,22 @@ function testData(model: AppiumSuiteModel, ts: boolean): string {
   return lines.join('\n');
 }
 
-function smokeTest(model: AppiumSuiteModel, _ts: boolean): string {
+function smokeTest(model: AppiumSuiteModel, names: Map<string, JsScreenNames>): string {
   const classes = [...new Set(model.steps.map((s) => s.screen))];
   const lines: string[] = [];
   lines.push('// Generated by Swipium. Smoke test driving the recorded flow through the screen objects.');
   for (const c of classes) {
-    lines.push(`import { ${c} } from '../src/screens/${c}.js';`);
+    const cls = names.get(c)!.cls;
+    lines.push(`import { ${cls} } from '../src/screens/${cls}.js';`);
   }
   lines.push(`import { testData } from '../src/data/testData.js';`);
   lines.push('');
-  lines.push(`describe('${model.testName} smoke', () => {`);
-  // instantiate one screen object per class.
-  const inst = new Map<string, string>();
-  for (const c of classes) {
-    const v = c[0].toLowerCase() + c.slice(1);
-    inst.set(c, v);
-  }
-  lines.push(`  it('completes the recorded flow', async () => {`);
-  for (const [c, v] of inst) lines.push(`    const ${v} = new ${c}();`);
+  // H3: titles come from recorded data — always a JSON-escaped literal, never raw interpolation.
+  lines.push(`describe(${JSON.stringify(`${model.testName} smoke`)}, () => {`);
+  lines.push(`  it(${JSON.stringify('completes the recorded flow')}, async () => {`);
+  for (const c of classes) lines.push(`    const ${names.get(c)!.instance} = new ${names.get(c)!.cls}();`);
   for (const s of model.steps) {
-    const v = inst.get(s.screen)!;
-    lines.push('    ' + stepCall(v, s));
+    lines.push('    ' + stepCall(names.get(s.screen)!, s));
   }
   lines.push('  });');
   lines.push('});');
@@ -442,32 +609,46 @@ function smokeTest(model: AppiumSuiteModel, _ts: boolean): string {
   return lines.join('\n');
 }
 
-function stepCall(screenVar: string, s: AppiumStep): string {
+function dataArg(s: AppiumStep): string {
+  return s.varName ? jsProp('testData', varToKey(s.varName)) : JSON.stringify(s.text ?? '');
+}
+
+function num(n: number | undefined): number {
+  return Number.isFinite(n) ? Math.round(n as number) : 0;
+}
+
+function stepCall(n: JsScreenNames, s: AppiumStep): string {
+  const v = n.instance;
   if (s.element) {
-    const name = methodName(s.action, s.element);
-    if (s.action === 'inputText') {
-      const arg = s.varName ? `testData.${varToKey(s.varName)}` : JSON.stringify(s.text ?? '');
-      return `await ${screenVar}.${name}(${arg});`;
-    }
-    return `await ${screenVar}.${name}();`;
+    const name = n.methods.get(methodKey(s.action, s.element))!;
+    if (s.action === 'inputText') return `await ${v}.${name}(${dataArg(s)});`;
+    if (s.action === 'scrollTo') return `await ${v}.${name}(${JSON.stringify(checkDirection(s.direction ?? 'down', 'scrollTo step'))});`;
+    return `await ${v}.${name}();`;
   }
   // No element: generic BaseScreen helpers.
   switch (s.action) {
     case 'tapAt':
-      return `await ${screenVar}.tapAt(${s.coords?.[0] ?? 0}, ${s.coords?.[1] ?? 0}); // coordinate fallback — non-release-grade`;
-    case 'inputText': {
-      const arg = s.varName ? `testData.${varToKey(s.varName)}` : JSON.stringify(s.text ?? '');
-      return `await ${screenVar}.type({ android: '' }, ${arg}); // focused-field input`;
-    }
+      if (!s.coords) throw new UnemittableStepError('cannot emit a coordinate tap without coordinates');
+      return `await ${v}.tapAt(${num(s.coords[0])}, ${num(s.coords[1])}); // coordinate fallback — non-release-grade`;
+    case 'inputText':
+      return `await ${v}.typeFocused(${dataArg(s)}); // focused-field input`;
     case 'press':
-      return `await ${screenVar}.pressKey(${JSON.stringify(s.key ?? 'back')});`;
+      return `await ${v}.pressKey(${JSON.stringify(checkKey(s.key))});`;
     case 'swipe':
-      return `await ${screenVar}.swipe(${JSON.stringify(s.direction ?? 'up')});`;
+      return `await ${v}.swipe(${JSON.stringify(checkDirection(s.direction ?? 'up', 'swipe step'))});`;
+    case 'scrollTo':
+      if (!s.text) throw new UnemittableStepError('cannot emit a scrollTo step with neither an element nor a target text');
+      return `await ${v}.scrollToText(${JSON.stringify(s.text)}, ${JSON.stringify(checkDirection(s.direction ?? 'down', 'scrollTo step'))});`;
     case 'openUrl':
-      return `await ${screenVar}.openUrl(${JSON.stringify(s.url ?? '')});`;
+      if (!s.url) throw new UnemittableStepError('cannot emit an openUrl step without a URL');
+      return `await ${v}.openUrl(${JSON.stringify(s.url)});`;
     case 'assertVisible':
-      return `await ${screenVar}.assertTextVisible(${JSON.stringify(s.text ?? '')});`;
+      if (!s.text) throw new UnemittableStepError('cannot emit a text assertion without text');
+      return `await ${v}.assertTextVisible(${JSON.stringify(s.text)});`;
+    case 'visualCheck':
+      // Visual judgement prose is not on-screen text — a manual checkpoint, never a failing text check.
+      return `// TODO(manual visual check — not automated): ${commentSafe(s.text ?? 'visual checkpoint')}`;
     default:
-      return `// unsupported step: ${s.action}`;
+      throw new UnemittableStepError(`cannot emit step action ${JSON.stringify(s.action)} — no WebdriverIO equivalent is generated for it`);
   }
 }

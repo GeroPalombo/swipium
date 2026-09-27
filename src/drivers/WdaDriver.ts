@@ -1,5 +1,6 @@
 import type { Driver, NativeSelectorStrategy } from './Driver.js';
 import * as sim from '../lib/simctl.js';
+import { parseSnapshot } from '../snapshot/parse.js';
 import {
   acceptWdaAlert,
   clearWdaElement,
@@ -7,20 +8,27 @@ import {
   createWdaSession,
   deleteWdaSession,
   dismissWdaAlert,
+  dismissWdaKeyboard,
+  isInvalidWdaSession,
+  wdaKeyboardFrame,
+  wdaKeyboardShown,
+  wdaOrientation,
+  withWdaCall,
   dragWdaPoint,
   findFocusedWdaElement,
   findWdaElement,
   normalizeWdaSource,
-  pressWdaBack,
   pressWdaHome,
   tapWdaElement,
   tapWdaPoint,
   typeWdaElement,
   typeWdaKeys,
   wdaActiveAppInfo,
+  wdaElementAttribute,
   wdaScreenshot,
   wdaSessionUdidMismatch,
   wdaSource,
+  wdaWindowSize,
   type WdaSessionOptions,
 } from '../lib/wda.js';
 
@@ -45,6 +53,34 @@ function errorSummary(e: unknown): string {
     .slice(0, 300);
 }
 
+/** PURE: where iOS "back" is on this screen — the center of the navigation bar's back button in a
+ * (normalized) WDA source, or null. The back button is the FIRST XCUIElementTypeButton inside the
+ * first XCUIElementTypeNavigationBar, and only when it sits in the bar's LEFT half — a root screen's
+ * bar can hold only trailing buttons ("Edit", "+"), which are not back. */
+export function iosBackButtonPoint(normalizedXml: string): { x: number; y: number } | null {
+  const nodes = parseSnapshot(normalizedXml).allNodes;
+  const bar = nodes.find((n) => /XCUIElementTypeNavigationBar$/.test(n.cls));
+  if (!bar) return null;
+  const btn = nodes.find(
+    (n) =>
+      n.dfs > bar.dfs &&
+      n.dfs <= bar.subtreeEnd &&
+      /XCUIElementTypeButton$/.test(n.cls) &&
+      n.enabled &&
+      n.bounds[2] > n.bounds[0] &&
+      n.bounds[3] > n.bounds[1],
+  );
+  if (!btn) return null;
+  const x = Math.round((btn.bounds[0] + btn.bounds[2]) / 2);
+  const y = Math.round((btn.bounds[1] + btn.bounds[3]) / 2);
+  const barMid = (bar.bounds[0] + bar.bounds[2]) / 2;
+  return x < barMid ? { x, y } : null;
+}
+
+/** Thrown (message prefix) when iOS has no way to go "back" on the current screen. */
+export const IOS_BACK_UNSUPPORTED =
+  'BACKEND_UNSUPPORTED: iOS has no system back key — no navigation-bar back button was found and the screen size needed for an edge-swipe back gesture is unknown.';
+
 export class WdaDriver implements Driver {
   readonly kind = 'wda' as const;
   readonly baseUrl: string;
@@ -53,8 +89,11 @@ export class WdaDriver implements Driver {
   private sessionId?: string;
   private bundleId?: string;
   private readonly capabilities?: Record<string, unknown>;
+  /** Every session this driver creates re-uses the running app (restart rebind). */
+  private readonly reuseRunningApp: boolean;
   private readonly settings?: Record<string, unknown>;
   private readonly onTiming?: (kind: WdaTimingKind, durationMs: number) => void;
+  private signal?: AbortSignal;
 
   constructor(
     baseUrl: string,
@@ -70,6 +109,7 @@ export class WdaDriver implements Driver {
     this.sessionId = opts.sessionId;
     this.bundleId = opts.bundleId;
     this.capabilities = opts.capabilities;
+    this.reuseRunningApp = opts.reuseRunningApp === true;
     this.settings = opts.settings;
     this.onTiming = opts.onTiming;
   }
@@ -83,7 +123,46 @@ export class WdaDriver implements Driver {
     }
   }
 
-  private async ensureSession(): Promise<string> {
+  /** Bind an AbortSignal so a cancelled job aborts in-flight WDA HTTP requests. */
+  setSignal(signal?: AbortSignal): void {
+    this.signal = signal;
+  }
+
+  /** Set when a session was transparently re-created after "invalid session id" (WDA restart /
+   * session reaped). Callers may surface it as a warning via consumeSessionRecovered(). */
+  private sessionRecovered = false;
+
+  /** Returns (and clears) whether the last operations ran on a re-created WDA session. */
+  consumeSessionRecovered(): boolean {
+    const v = this.sessionRecovered;
+    this.sessionRecovered = false;
+    return v;
+  }
+
+  /** Run a session-scoped WDA operation with the bound signal + per-endpoint timeouts. On
+   * "invalid session id" (WDA restarted / session reaped) the cached session is dropped and
+   * the operation retried ONCE on a fresh session — the failed request never acted. The fresh
+   * session is created with forceAppLaunch:false + shouldTerminateApp:false (reuseRunningApp) so
+   * WDA does NOT terminate + relaunch the app under test (WebDriverAgent FBSessionCommands: when
+   * `bundleId` is passed, `forceAppLaunch` defaults to YES and a running app is relaunched; with
+   * NO a running app is left as-is and a backgrounded one is only activated). */
+  private async withSession<T>(fn: (sid: string) => Promise<T>): Promise<T> {
+    return withWdaCall({ signal: this.signal }, async () => {
+      const sid = await this.ensureSession();
+      try {
+        return await fn(sid);
+      } catch (e) {
+        if (!isInvalidWdaSession(e)) throw e;
+        this.sessionId = undefined;
+        this.cachedScreenSize = undefined;
+        const fresh = await this.ensureSession({ recover: true });
+        this.sessionRecovered = true;
+        return fn(fresh);
+      }
+    });
+  }
+
+  private async ensureSession(opts: { recover?: boolean } = {}): Promise<string> {
     if (this.sessionId) return this.sessionId;
     const s = await this.timed('session_create', () =>
       createWdaSession(this.baseUrl, {
@@ -91,6 +170,7 @@ export class WdaDriver implements Driver {
         udid: this.udid,
         capabilities: this.capabilities,
         settings: this.settings,
+        reuseRunningApp: this.reuseRunningApp || opts.recover === true,
       }),
     );
     const mismatchedUdid = wdaSessionUdidMismatch(s.capabilities, this.udid);
@@ -180,8 +260,26 @@ export class WdaDriver implements Driver {
   clearData(): Promise<void> {
     return this.no('clear app data');
   }
-  imeShown(): Promise<boolean> {
-    return Promise.resolve(false);
+  /** Keyboard shown? A single find-by-class-name call (XCUIElementTypeKeyboard). */
+  async imeShown(): Promise<boolean> {
+    return this.withSession((sid) => wdaKeyboardShown(this.baseUrl, sid));
+  }
+  async imeFrame(): Promise<[number, number, number, number] | null> {
+    return this.withSession((sid) => wdaKeyboardFrame(this.baseUrl, sid));
+  }
+  async hideKeyboard(): Promise<boolean> {
+    return this.withSession(async (sid) => {
+      if (!(await wdaKeyboardShown(this.baseUrl, sid))) return false;
+      try {
+        await dismissWdaKeyboard(this.baseUrl, sid);
+      } catch (e) {
+        if (isInvalidWdaSession(e)) throw e; // let withSession recover the session
+        // WDA 400 "Did not know how to dismiss the keyboard" — the app offers no generic way
+        // (no Done/Return-dismiss). Report "could not hide" instead of an untyped error.
+        return false;
+      }
+      return true;
+    });
   }
   async logcat(lines = 200, grep?: string): Promise<string> {
     if (!this.udid) return this.no('iOS simulator log capture without a simulator UDID');
@@ -202,29 +300,28 @@ export class WdaDriver implements Driver {
   }
   async foregroundOwner(): Promise<string> {
     try {
-      const info = await wdaActiveAppInfo(this.baseUrl, await this.ensureSession());
+      const info = await this.withSession((sid) => wdaActiveAppInfo(this.baseUrl, sid));
       return info.bundleId ?? info.name ?? this.bundleId ?? 'unknown';
     } catch {
       return this.bundleId ?? 'unknown';
     }
   }
   async screenshot(): Promise<Buffer> {
-    const sid = await this.ensureSession();
-    return this.timed('screenshot', () => wdaScreenshot(this.baseUrl, sid));
+    return this.withSession((sid) => this.timed('screenshot', () => wdaScreenshot(this.baseUrl, sid)));
   }
   async dumpXml(): Promise<string> {
-    const sid = await this.ensureSession();
-    return normalizeWdaSource(await this.timed('source', () => wdaSource(this.baseUrl, sid)));
+    return normalizeWdaSource(await this.withSession((sid) => this.timed('source', () => wdaSource(this.baseUrl, sid))));
   }
   async tapXY(x: number, y: number): Promise<void> {
-    const sid = await this.ensureSession();
-    await this.timed('tap', () => tapWdaPoint(this.baseUrl, sid, x, y));
+    await this.withSession((sid) => this.timed('tap', () => tapWdaPoint(this.baseUrl, sid, x, y)));
   }
   async pressXY(x: number, y: number): Promise<void> {
     await this.tapXY(x, y);
   }
   async inputText(text: string): Promise<void> {
-    const sid = await this.ensureSession();
+    return this.withSession((sid) => this.inputTextIn(sid, text));
+  }
+  private async inputTextIn(sid: string, text: string): Promise<void> {
     let focusedError: unknown;
     try {
       const el = await this.timed('find_element', () => findFocusedWdaElement(this.baseUrl, sid));
@@ -244,7 +341,9 @@ export class WdaDriver implements Driver {
     }
   }
   async clearFocusedText(approxLen = 40): Promise<void> {
-    const sid = await this.ensureSession();
+    return this.withSession((sid) => this.clearFocusedTextIn(sid, approxLen));
+  }
+  private async clearFocusedTextIn(sid: string, approxLen: number): Promise<void> {
     let clearError: unknown;
     try {
       const el = await this.timed('find_element', () => findFocusedWdaElement(this.baseUrl, sid));
@@ -264,33 +363,78 @@ export class WdaDriver implements Driver {
   }
   async pressKey(key: 'back' | 'home' | 'enter'): Promise<void> {
     if (key === 'home') {
-      await pressWdaHome(this.baseUrl, await this.ensureSession());
+      await this.withSession((sid) => pressWdaHome(this.baseUrl, sid));
       return;
     }
     if (key === 'back') {
-      await pressWdaBack(this.baseUrl, await this.ensureSession());
+      // iOS has no system back key (WDA has no /back endpoint): tap the navigation bar's back
+      // button when the screen has one, else perform the interactive-pop edge swipe.
+      await this.withSession((sid) => this.backIn(sid));
       return;
     }
     await this.inputText('\n');
   }
 
+  /** Last `back` strategy used ('nav_button' | 'edge_swipe') — surfaced by qa_act. */
+  lastBackVia?: 'nav_button' | 'edge_swipe';
+  private async backIn(sid: string): Promise<void> {
+    const xml = normalizeWdaSource(await this.timed('source', () => wdaSource(this.baseUrl, sid)));
+    const btn = iosBackButtonPoint(xml);
+    if (btn) {
+      await this.timed('tap', () => tapWdaPoint(this.baseUrl, sid, btn.x, btn.y));
+      this.lastBackVia = 'nav_button';
+      return;
+    }
+    let size: { width: number; height: number } | null = null;
+    try {
+      size = await wdaWindowSize(this.baseUrl, sid);
+    } catch (e) {
+      if (isInvalidWdaSession(e)) throw e;
+      const screen = parseSnapshot(xml).screen;
+      size = screen[0] > 0 && screen[1] > 0 ? { width: screen[0], height: screen[1] } : null;
+    }
+    if (!size) throw new Error(IOS_BACK_UNSUPPORTED);
+    const y = Math.round(size.height / 2);
+    await dragWdaPoint(this.baseUrl, sid, 2, y, Math.round(size.width * 0.6), y, 0.1);
+    this.lastBackVia = 'edge_swipe';
+  }
+
   async acceptAlert(): Promise<void> {
-    await acceptWdaAlert(this.baseUrl, await this.ensureSession());
+    await this.withSession((sid) => acceptWdaAlert(this.baseUrl, sid));
   }
 
   async dismissAlert(): Promise<void> {
-    await dismissWdaAlert(this.baseUrl, await this.ensureSession());
+    await this.withSession((sid) => dismissWdaAlert(this.baseUrl, sid));
   }
   async swipe(x1: number, y1: number, x2: number, y2: number, ms = 300): Promise<void> {
-    await dragWdaPoint(this.baseUrl, await this.ensureSession(), x1, y1, x2, y2, ms / 1000);
+    await this.withSession((sid) => dragWdaPoint(this.baseUrl, sid, x1, y1, x2, y2, ms / 1000));
   }
   adbReverseMetro(): Promise<void> {
     return this.no('dev-server port reverse');
   }
+  // SWIP-17: size in points via GET /window/size instead of dumping the entire page source.
+  // Cached per (WDA session id, interface orientation): a rotation swaps the axes, so the
+  // cheap GET /orientation keys the cache; a new session naturally misses it. Builds without
+  // /orientation key on "unknown" (the pre-rotation behaviour).
+  private cachedScreenSize?: { sessionId: string; orientation: string; size: { width: number; height: number } };
   async screenSize(): Promise<{ width: number; height: number } | null> {
-    const xml = await this.dumpXml();
-    const m = xml.match(/bounds="\[0,0\]\[(\d+),(\d+)\]"/);
-    return m ? { width: Number(m[1]), height: Number(m[2]) } : null;
+    return this.withSession(async (sid) => {
+      const orientation = await wdaOrientation(this.baseUrl, sid).catch(() => 'unknown');
+      const cached = this.cachedScreenSize;
+      if (cached?.sessionId === sid && cached.orientation === orientation) return cached.size;
+      let size: { width: number; height: number } | null;
+      try {
+        size = await wdaWindowSize(this.baseUrl, sid);
+      } catch (e) {
+        if (isInvalidWdaSession(e)) throw e;
+        // older WDA builds lack /window/size — fall back to the page-source root bounds
+        const xml = normalizeWdaSource(await this.timed('source', () => wdaSource(this.baseUrl, sid)));
+        const m = xml.match(/bounds="\[0,0\]\[(\d+),(\d+)\]"/);
+        size = m ? { width: Number(m[1]), height: Number(m[2]) } : null;
+      }
+      if (size) this.cachedScreenSize = { sessionId: sid, orientation, size };
+      return size;
+    });
   }
   screenDensity(): Promise<number | null> {
     return Promise.resolve(null);
@@ -312,30 +456,51 @@ export class WdaDriver implements Driver {
   }
 
   async tapBySelector(using: NativeSelectorStrategy, value: string): Promise<void> {
-    const sid = await this.ensureSession();
-    const el = await this.timed('find_element', () => findWdaElement(this.baseUrl, sid, using, value));
-    await this.timed('tap', () => tapWdaElement(this.baseUrl, sid, el.elementId));
+    await this.withSession(async (sid) => {
+      const el = await this.timed('find_element', () => findWdaElement(this.baseUrl, sid, using, value));
+      await this.timed('tap', () => tapWdaElement(this.baseUrl, sid, el.elementId));
+    });
   }
 
   async typeBySelector(using: NativeSelectorStrategy, value: string, text: string): Promise<void> {
-    const sid = await this.ensureSession();
-    const el = await this.timed('find_element', () => findWdaElement(this.baseUrl, sid, using, value));
-    await this.timed('type', () => typeWdaElement(this.baseUrl, sid, el.elementId, text));
+    await this.withSession(async (sid) => {
+      const el = await this.timed('find_element', () => findWdaElement(this.baseUrl, sid, using, value));
+      await this.timed('type', () => typeWdaElement(this.baseUrl, sid, el.elementId, text));
+    });
   }
 
   async clearBySelector(using: NativeSelectorStrategy, value: string): Promise<void> {
-    const sid = await this.ensureSession();
+    await this.withSession(async (sid) => {
+      const el = await this.timed('find_element', () => findWdaElement(this.baseUrl, sid, using, value));
+      await this.timed('clear', () => clearWdaElement(this.baseUrl, sid, el.elementId));
+    });
+  }
+
+  // SWIP-03: real secure-field signal for native-selector typing — resolve the element and
+  // read its `type` attribute (XCUIElementTypeSecureTextField), accepting a boolean `secure`
+  // attribute where a WDA build exposes one instead.
+  async isSecureBySelector(using: NativeSelectorStrategy, value: string): Promise<boolean> {
+    return this.withSession((sid) => this.isSecureIn(sid, using, value));
+  }
+  private async isSecureIn(sid: string, using: NativeSelectorStrategy, value: string): Promise<boolean> {
     const el = await this.timed('find_element', () => findWdaElement(this.baseUrl, sid, using, value));
-    await this.timed('clear', () => clearWdaElement(this.baseUrl, sid, el.elementId));
+    try {
+      if (/SecureTextField/i.test(await wdaElementAttribute(this.baseUrl, sid, el.elementId, 'type'))) return true;
+    } catch {
+      // some builds don't serve /attribute/type — fall through to the `secure` attribute
+    }
+    return /^(true|1)$/i.test(await wdaElementAttribute(this.baseUrl, sid, el.elementId, 'secure').catch(() => ''));
   }
 
   async existsBySelector(using: NativeSelectorStrategy, value: string): Promise<boolean> {
-    const sid = await this.ensureSession();
-    try {
-      await this.timed('find_element', () => findWdaElement(this.baseUrl, sid, using, value));
-      return true;
-    } catch {
-      return false;
-    }
+    return this.withSession(async (sid) => {
+      try {
+        await this.timed('find_element', () => findWdaElement(this.baseUrl, sid, using, value));
+        return true;
+      } catch (e) {
+        if (isInvalidWdaSession(e)) throw e; // let withSession recover the session
+        return false;
+      }
+    });
   }
 }

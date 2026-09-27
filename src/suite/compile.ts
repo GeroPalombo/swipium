@@ -1,6 +1,6 @@
 // POM → Flow V2 compiler (hardening P0.4). Generated POM suites reference page-object elements by
 // name; this resolves those refs against the page objects and emits Flow V2 YAML that parseFlow()
-// accepts and qa_flow_run / `swipium ci` can execute. Without this, a generated suite is only
+// accepts and qa_flow_run can execute. Without this, a generated suite is only
 // documentation — with it, a recorded run becomes a runnable, CI-usable flow.
 //
 // PURE: reads YAML files, no device. The compiler output is validated by the caller via parseFlow().
@@ -135,6 +135,10 @@ export function compileTest(
       case 'assertVisible':
         if (s.text) steps.push(waitForVisibleGuard(s.text), { assertVisible: s.text });
         break;
+      case 'visualCheck':
+        // Visual judgement → evidence-capturing checkpoint (flow assertVisual), never a text assertion.
+        steps.push({ assertVisual: s.text ?? 'visual checkpoint' });
+        break;
       default:
         errors.push(`step ${i}: unknown action "${s.action}"`);
     }
@@ -159,7 +163,7 @@ export function compileTestFile(root: string, testRel: string, pages?: Map<strin
   }
   const compiled = compileTest(doc, pages ?? loadPages(root));
   const header = [
-    '# Compiled by Swipium qa_flow_compile from a POM test — runnable via qa_flow_run / `swipium ci`.',
+    '# Compiled by Swipium qa_flow_compile from a POM test — runnable via qa_flow_run.',
     ...(compiled.variables.length ? [`# variables: ${compiled.variables.join(', ')}`] : []),
   ].join('\n');
   return {

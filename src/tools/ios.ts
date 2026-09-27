@@ -1,8 +1,8 @@
 // qa_ios (PHASE3-PLAN Phase 11) — iOS Simulator control via simctl. Boots/selects a simulator,
-// installs a .app, launches/terminates, opens deep links, resets privacy, erases, and captures
-// screenshots. Booting/launching binds a SimctlDriver into the session so the shared visual tools
-// (qa_screenshot, qa_assert_visual, qa_report) work on iOS unchanged. Structured
-// interaction (tap/type/snapshot) is intentionally unsupported here and reported as such.
+// installs a .app, launches/terminates, opens deep links, resets privacy, and erases. Booting/
+// launching binds a SimctlDriver into the session so the shared visual tools (qa_screenshot,
+// qa_visual, qa_report) work on iOS unchanged. Screenshots go through qa_screenshot (secure-field
+// guard + budget) and WebDriverAgent through qa_wda — qa_ios no longer duplicates either.
 
 import { z } from 'zod';
 import { existsSync } from 'node:fs';
@@ -11,12 +11,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { qaOk, qaError } from '../lib/result.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { sensitiveRefusal } from '../lib/sensitive.js';
-import { captureCoordinateSpace } from '../lib/coordSpace.js';
 import { SimctlDriver } from '../drivers/SimctlDriver.js';
-import { WdaDriver } from '../drivers/WdaDriver.js';
-import { checkWda, classifyWdaConnectionFailure, createWdaSession, wdaSessionUdidMismatch } from '../lib/wda.js';
-import { loadWdaConfig, wdaUrlAllowedByConfig } from '../lib/wdaConfig.js';
-import { recordWdaTiming } from '../lib/wdaTune.js';
 import * as sim from '../lib/simctl.js';
 import type { Session, SessionStore } from '../session/store.js';
 
@@ -30,50 +25,22 @@ function bind(sessions: SessionStore, session: Session, udid: string): SimctlDri
   return driver;
 }
 
-function isLoopback(raw: string): boolean {
-  try {
-    const u = new URL(raw);
-    return u.protocol === 'http:' && ['127.0.0.1', 'localhost', '::1'].includes(u.hostname);
-  } catch {
-    return false;
-  }
-}
-
 export function registerIos(server: McpServer, sessions: SessionStore): void {
   server.registerTool(
     'qa_ios',
     {
       title: 'iOS simulator control',
       description:
-        'Control an iOS Simulator (macOS only) and attach an external WDA backend. actions: list (available simulators), boot (boot/select one — binds it to the session), install (a .app, consent-gated), launch (a bundle id), terminate, openurl (deep link), screenshot, logs, privacy_reset (consent-gated), erase (consent-gated, wipes the device), wda_status, wda_attach. After boot/launch, qa_screenshot / qa_assert_visual / qa_report work on the simulator. For structured iOS tap/type/snapshot, attach WDA with action:"wda_attach".',
+        'Control an iOS Simulator (macOS only). actions: list, boot (binds it to the session), install (.app, consent-gated), launch, ' +
+        'terminate, openurl (deep link), logs, privacy_reset (consent-gated), erase (consent-gated, wipes the simulator). Screenshots: ' +
+        'qa_screenshot; WebDriverAgent (structured tap/type/snapshot): qa_wda.',
       inputSchema: {
         sessionId: z.string(),
-        action: z.enum([
-          'list',
-          'boot',
-          'install',
-          'launch',
-          'terminate',
-          'openurl',
-          'screenshot',
-          'logs',
-          'privacy_reset',
-          'erase',
-          'wda_status',
-          'wda_attach',
-        ]),
-        device: z
-          .string()
-          .optional()
-          .describe('Simulator udid or name substring (for boot/erase), or expected WDA device UDID for wda_attach.'),
+        action: z.enum(['list', 'boot', 'install', 'launch', 'terminate', 'openurl', 'logs', 'privacy_reset', 'erase']),
+        device: z.string().optional().describe('Simulator udid or name substring (for boot/erase).'),
         app: z.string().optional().describe('Path to a .app bundle (for install); absolute or relative to the project root.'),
-        bundleId: z.string().optional().describe('App bundle id (for launch/terminate/privacy_reset/wda_attach).'),
+        bundleId: z.string().optional().describe('App bundle id (for launch/terminate/privacy_reset).'),
         url: z.string().optional().describe('Deep link (for openurl).'),
-        webDriverAgentUrl: z
-          .string()
-          .optional()
-          .describe('External WebDriverAgent base URL for wda_status/wda_attach. Defaults to http://127.0.0.1:8100.'),
-        allowNonLoopback: z.boolean().optional().describe('Required to use a non-loopback WDA URL.'),
         last: z.string().optional().describe('Time range for logs, e.g. 5m, 30m, 1h. Defaults to 5m.'),
         service: z.string().optional().describe('Privacy service for privacy_reset (e.g. location, photos, camera, all).'),
         consentId: z.string().optional(),
@@ -90,171 +57,6 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
           retrySafe: true,
           nextSteps: ['Call qa_start_session first.'],
         });
-      }
-
-      if (action === 'wda_status' || action === 'wda_attach') {
-        const wdaConfig = loadWdaConfig(session.root);
-        const url = (args.webDriverAgentUrl ?? wdaConfig.url).replace(/\/+$/, '');
-        const loopback = isLoopback(url);
-        const configAllowed = !loopback && wdaUrlAllowedByConfig(wdaConfig, url);
-        if (!loopback && !args.allowNonLoopback && !configAllowed) {
-          return qaError({
-            what: 'Refused non-loopback WDA URL',
-            changedState: false,
-            retrySafe: false,
-            failureCode: 'DESTRUCTIVE_REFUSED',
-            nextSteps: [
-              'Use a localhost WDA URL, pass allowNonLoopback with explicit consent, or add this exact URL to ios.wda.allowNonLoopbackUrls for a trusted isolated automation network.',
-            ],
-          });
-        }
-        if (!loopback && !configAllowed) {
-          const gate = consumeConsent(args.consentId, args.approve, { action: 'wda_non_loopback', affects: { url } });
-          if (!gate.approved) {
-            return requireConsent({
-              action: 'wda_non_loopback',
-              risk: 'medium',
-              affects: { url },
-              explain: `Use non-loopback WebDriverAgent URL ${url}? WDA is an automation server; only approve this on a trusted, isolated network.`,
-            });
-          }
-        }
-        const status = await checkWda(url);
-        const targetUdid = args.device ?? session.device;
-        const base = {
-          webDriverAgentUrl: url,
-          wda: status,
-          device: targetUdid ?? null,
-          sessionActive: session.driver instanceof WdaDriver,
-          driverKind: session.driver?.kind ?? null,
-        };
-        if (action === 'wda_status') {
-          return qaOk(
-            base,
-            `iOS WDA status: ${status.reachable ? 'reachable' : 'unreachable'} at ${url}${targetUdid ? ` device=${targetUdid}` : ''}`,
-          );
-        }
-        if (!targetUdid) {
-          return qaError(
-            {
-              what: 'Refused ambiguous WDA attach without a device UDID',
-              changedState: false,
-              retrySafe: true,
-              failureCode: 'MULTIPLE_DEVICES',
-              nextSteps: ['Pass device with the simulator/device UDID, or bind the session to a simulator first.'],
-            },
-            base,
-          );
-        }
-        if (session.device && session.device !== targetUdid) {
-          return qaError(
-            {
-              what: `Refused ambiguous WDA/device mapping: session is bound to ${session.device}, but qa_ios wda_attach was asked to use ${targetUdid}`,
-              changedState: false,
-              retrySafe: false,
-              failureCode: 'STALE_WDA_DEVICE',
-              nextSteps: ['Use the session-bound device, or start a new session for the other WDA/device pair.'],
-            },
-            base,
-          );
-        }
-        if (!status.reachable) {
-          return qaError(
-            {
-              what: `WDA server unavailable at ${url}`,
-              changedState: false,
-              retrySafe: true,
-              failureCode: classifyWdaConnectionFailure(status.error ?? 'unreachable'),
-              nextSteps: ['Start WebDriverAgent externally, confirm /status responds, then retry qa_ios wda_attach.'],
-            },
-            base,
-          );
-        }
-        try {
-          const bundleId = args.bundleId ?? session.appId ?? undefined;
-          const sessionOptions = { bundleId, udid: targetUdid, capabilities: wdaConfig.capabilities, settings: wdaConfig.settings };
-          const createStarted = Date.now();
-          let created: Awaited<ReturnType<typeof createWdaSession>>;
-          try {
-            created = await createWdaSession(url, sessionOptions);
-          } finally {
-            recordWdaTiming(session, 'session_create', Date.now() - createStarted, sessions);
-          }
-          const mismatchedUdid = wdaSessionUdidMismatch(created.capabilities, targetUdid);
-          if (mismatchedUdid) {
-            sessions.recordMutation(session, {
-              tool: 'qa_ios',
-              action: 'wda_attach',
-              risk: 'medium',
-              target: { webDriverAgentUrl: url, device: targetUdid, bundleId: bundleId ?? null, reportedDevice: mismatchedUdid },
-              consent: { required: !loopback && !configAllowed, approved: !!configAllowed || loopback || !!args.approve },
-              status: 'blocked',
-              detail: 'WDA reported a different device',
-            });
-            return qaError(
-              {
-                what: `Refused stale WDA session: WDA reported device ${mismatchedUdid}, but qa_ios wda_attach requested ${targetUdid}`,
-                changedState: false,
-                retrySafe: false,
-                failureCode: 'STALE_WDA_DEVICE',
-                nextSteps: ['Stop the stale WDA process or start a new WDA session for the intended UDID.'],
-              },
-              { ...base, capabilities: created.capabilities ?? null, wdaSessionId: created.sessionId },
-            );
-          }
-          session.driver = new WdaDriver(url, {
-            ...sessionOptions,
-            sessionId: created.sessionId,
-            onTiming: (kind, ms) => recordWdaTiming(session, kind, ms, sessions),
-          });
-          session.device = targetUdid;
-          if (bundleId) session.appId = bundleId;
-          sessions.persist(session);
-          sessions.addEnvChange(session, `ios wda attach ${url} ${targetUdid}`);
-          sessions.recordMutation(session, {
-            tool: 'qa_ios',
-            action: 'wda_attach',
-            risk: 'medium',
-            target: {
-              webDriverAgentUrl: url,
-              device: targetUdid,
-              bundleId: bundleId ?? null,
-              wdaSessionId: created.sessionId,
-              capabilities: created.capabilities ?? null,
-            },
-            consent: { required: !loopback && !configAllowed, consentId: args.consentId, approved: true },
-            status: 'executed',
-          });
-          return qaOk(
-            { ...base, sessionActive: true, wdaSessionId: created.sessionId, capabilities: created.capabilities ?? null },
-            `attached WDA structured iOS backend at ${url}\nNext: qa_snapshot / qa_act / qa_flow_run can use WDA-backed structured operations.`,
-          );
-        } catch (e) {
-          const failureCode = classifyWdaConnectionFailure(String((e as Error).message ?? e));
-          sessions.recordMutation(session, {
-            tool: 'qa_ios',
-            action: 'wda_attach',
-            risk: 'medium',
-            target: { webDriverAgentUrl: url, device: targetUdid, bundleId: args.bundleId ?? session.appId ?? null },
-            consent: {
-              required: !loopback && !configAllowed,
-              consentId: args.consentId,
-              approved: !!configAllowed || loopback || !!args.approve,
-            },
-            status: 'blocked',
-            detail: String((e as Error).message ?? e),
-          });
-          return qaError(
-            {
-              what: `WDA session creation failed: ${String((e as Error).message ?? e)}`,
-              changedState: false,
-              retrySafe: true,
-              failureCode,
-              nextSteps: ['Confirm WDA is paired with the intended simulator/device and that the app bundle id is installed.'],
-            },
-            base,
-          );
-        }
       }
 
       if (!(await sim.simctlAvailable())) {
@@ -329,7 +131,7 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
         });
         return qaOk(
           { udid: pick.udid, name: pick.name, runtime: pick.runtime, bound: true },
-          `booted + bound ${pick.name} [${pick.runtime}]\nNext: qa_ios install/launch, then qa_screenshot / qa_assert_visual.`,
+          `booted + bound ${pick.name} [${pick.runtime}]\nNext: qa_ios install/launch, then qa_screenshot / qa_visual.`,
         );
       }
 
@@ -452,7 +254,7 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
           consent: { required: false, approved: true },
           status: 'executed',
         });
-        return qaOk({ launched: true, bundleId }, `launched ${bundleId}. Use qa_screenshot / qa_assert_visual to verify.`);
+        return qaOk({ launched: true, bundleId }, `launched ${bundleId}. Use qa_screenshot / qa_visual to verify.`);
       }
 
       if (action === 'terminate') {
@@ -494,28 +296,6 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
           status: 'executed',
         });
         return qaOk({ opened: args.url }, `opened deep link ${args.url}`);
-      }
-
-      if (action === 'screenshot') {
-        if (session.sensitive) return sensitiveRefusal('Screenshot');
-        try {
-          const png = await sim.screenshot(udid);
-          const n = ++session.screenshotCount;
-          const uri = sessions.saveArtifact(session, 'screenshot', `ios-${n}.png`, png, 'image/png', 'iOS simulator screenshot');
-          sessions.bump(session, 'screenshots');
-          const coordinateSpace = await captureCoordinateSpace(session.driver, png);
-          return qaOk(
-            { uri, bytes: png.length, coordinateSpace },
-            `screenshot → ${uri} (${coordinateSpace.screenshot?.width}x${coordinateSpace.screenshot?.height})`,
-          );
-        } catch (err) {
-          return qaError({
-            what: `Screenshot failed: ${String(err)}`,
-            changedState: false,
-            retrySafe: true,
-            nextSteps: ['Confirm the simulator is booted (qa_ios list).'],
-          });
-        }
       }
 
       if (action === 'logs') {

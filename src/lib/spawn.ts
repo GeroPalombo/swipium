@@ -34,6 +34,45 @@ export interface RunOptions {
   input?: string;
   /** Treat a non-zero exit as a thrown error instead of a resolved RunResult. */
   rejectOnNonZero?: boolean;
+  /** Sensitive argv (H2): keep these args out of thrown error messages. `true` redacts every
+   * arg; a number[] redacts those arg indexes. Redacted values are also scrubbed from the
+   * stderr echoed into the message (a failing tool may print its own argv back). */
+  redactArgs?: boolean | number[];
+}
+
+const REDACTED_ARG = '«redacted»';
+
+/** Indexes of `args` that must never appear in an error message. */
+function sensitiveIndexes(args: string[], redact: RunOptions['redactArgs']): Set<number> {
+  if (!redact) return new Set();
+  if (redact === true) return new Set(args.map((_, i) => i));
+  return new Set(redact.filter((i) => i >= 0 && i < args.length));
+}
+
+/** Render `cmd args…` for an error message with sensitive args replaced. */
+export function describeCommand(cmd: string, args: string[], redact?: RunOptions['redactArgs']): string {
+  const hidden = sensitiveIndexes(args, redact);
+  return [cmd, ...args.map((a, i) => (hidden.has(i) ? REDACTED_ARG : a))].join(' ');
+}
+
+/** Scrub sensitive arg values out of free text (stderr, spawn error messages). */
+export function scrubSensitiveArgs(text: string, args: string[], redact?: RunOptions['redactArgs']): string {
+  let out = text;
+  for (const i of sensitiveIndexes(args, redact)) {
+    const v = args[i];
+    if (v && v.length >= 2 && out.includes(v)) out = out.split(v).join(REDACTED_ARG);
+  }
+  return out;
+}
+
+/** A spawn 'error' (ENOENT, abort…) carries `spawnargs`; with redactArgs, rethrow a clean copy. */
+function sanitizedSpawnError(err: Error, args: string[], redact?: RunOptions['redactArgs']): Error {
+  if (!redact) return err;
+  const clean = new Error(scrubSensitiveArgs(err.message, args, redact));
+  clean.name = err.name;
+  const code = (err as NodeJS.ErrnoException).code;
+  if (code) (clean as NodeJS.ErrnoException).code = code;
+  return clean;
 }
 
 export class GitScopeForbiddenError extends Error {
@@ -129,20 +168,27 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
 
     child.on('error', (err) => {
       if (timer) clearTimeout(timer);
-      reject(err);
+      reject(sanitizedSpawnError(err, args, opts.redactArgs));
     });
 
     child.on('close', (code) => {
       if (timer) clearTimeout(timer);
       const result: RunResult = { code, stdout, stderr, timedOut };
       if (opts.rejectOnNonZero && code !== 0) {
-        reject(new Error(`\`${cmd} ${args.join(' ')}\` exited ${code}${timedOut ? ' (timed out)' : ''}: ${stderr.trim()}`));
+        const errText = scrubSensitiveArgs(stderr.trim(), args, opts.redactArgs);
+        reject(new Error(`\`${describeCommand(cmd, args, opts.redactArgs)}\` exited ${code}${timedOut ? ' (timed out)' : ''}: ${errText}`));
         return;
       }
       resolve(result);
     });
 
-    if (opts.input !== undefined) {
+    if (opts.input !== undefined && child.stdin) {
+      // A child that exits before draining stdin (crash, `head`, non-zero exit) emits
+      // EPIPE/ECONNRESET on the stdin Writable. Without a listener that is an unhandled
+      // stream 'error' → uncaught exception → the whole stdio MCP server process dies.
+      // Swallow it silently (attached BEFORE writing): the 'close' handler above already
+      // settles the promise with the child's exit code, so rejecting here would double-settle.
+      child.stdin.on('error', () => {});
       child.stdin.write(opts.input);
       child.stdin.end();
     }
@@ -180,12 +226,12 @@ export function runBinary(cmd: string, args: string[], opts: RunOptions = {}): P
     child.stderr.on('data', (d) => (stderr += d.toString()));
     child.on('error', (err) => {
       if (timer) clearTimeout(timer);
-      reject(err);
+      reject(sanitizedSpawnError(err, args, opts.redactArgs));
     });
     child.on('close', (code) => {
       if (timer) clearTimeout(timer);
       if (opts.rejectOnNonZero && code !== 0) {
-        reject(new Error(`\`${cmd}\` exited ${code}: ${stderr.trim()}`));
+        reject(new Error(`\`${cmd}\` exited ${code}: ${scrubSensitiveArgs(stderr.trim(), args, opts.redactArgs)}`));
         return;
       }
       resolve({ code, stdout: Buffer.concat(chunks), stderr, timedOut });

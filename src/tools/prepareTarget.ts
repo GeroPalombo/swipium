@@ -19,6 +19,7 @@ import { detectFramework } from '../context/detect.js';
 import { metroReadiness, reverseSet } from '../lib/metroState.js';
 import { resolveDevice, bindDevice } from '../session/attach.js';
 import { prepareAndroid } from '../services/prepareAndroid.js';
+import { planTarget } from '../core/targetPlan.js';
 import type { Session, SessionStore, JobRecord } from '../session/store.js';
 
 /** RN/Expo debug builds load JS from Metro; launching before Metro is SERVING → RedBox. */
@@ -27,17 +28,16 @@ function needsMetro(root: string): boolean {
   return fw === 'expo' || fw === 'bare-react-native';
 }
 
-function isAndroidEmulatorSerial(serial: string): boolean {
-  return /^emulator-\d+/.test(serial);
-}
-
 export function registerPrepareTarget(server: McpServer, sessions: SessionStore): void {
   server.registerTool(
     'qa_prepare_target',
     {
       title: 'Prepare a target device + app',
       description:
-        'Orchestrate device→Metro→install→launch in the correct order, with a SINGLE combined consent for any privileged steps (boot, external-APK). Resolves/boots a device (binds the single online one automatically; asks if >1), sets adb reverse for RN/Expo, gates launch on Metro SERVING, installs the APK if needed, launches, verifies. Long ops return a jobId. Flags: bindOnly (bind/boot + reverse, no install/launch — use to break a setup deadlock); allowLaunchWithoutMetro (risky override); headless.',
+        'Prepare an Android Emulator target in order: device → Metro → install → launch, with one combined consent for ' +
+        'privileged steps (boot, external APK). Binds the single online device (asks if several), sets adb reverse for RN/Expo, ' +
+        'waits for Metro to serve, installs if needed, launches, verifies. Long operations return a jobId. bindOnly binds/boots ' +
+        'without install/launch.',
       inputSchema: {
         sessionId: z.string(),
         apk: z.string().optional(),
@@ -45,17 +45,9 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
         avd: z.string().optional(),
         device: z.string().optional().describe('Target serial; required when >1 device is online.'),
         force: z.boolean().optional(),
-        headless: z.boolean().optional().describe('If Swipium boots an AVD: headless (default true) or visible window (false).'),
-        bindOnly: z
-          .boolean()
-          .optional()
-          .describe(
-            'Bind/boot the device + set adb reverse, but do NOT install or launch. Safe way to break a device/Metro setup deadlock.',
-          ),
-        allowLaunchWithoutMetro: z
-          .boolean()
-          .optional()
-          .describe('Risky: launch a debug RN/Expo build even if Metro is not serving (may RedBox).'),
+        headless: z.boolean().optional().describe('Boot the AVD headless (default true).'),
+        bindOnly: z.boolean().optional().describe('Bind/boot + adb reverse only (breaks a device/Metro deadlock).'),
+        allowLaunchWithoutMetro: z.boolean().optional().describe('Launch a debug RN/Expo build without Metro (may RedBox).'),
         consentId: z.string().optional(),
         approve: z.boolean().optional(),
       },
@@ -105,14 +97,22 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
           nextSteps: [`Online: ${res.available.join(', ') || '(none)'}`],
         });
       }
-      if (res.effective && !isAndroidEmulatorSerial(res.effective)) {
-        return qaError({
-          what: `Android target "${res.effective}" appears to be a real device. Swipium 1.0.0 supports Android Emulator only.`,
-          changedState: false,
-          retrySafe: true,
-          failureCode: 'BACKEND_UNSUPPORTED',
-          nextSteps: ['Start or create an Android Emulator, then retry with its emulator serial.'],
-        });
+      if (res.effective) {
+        // Same policy + wording as qa_test_this's target planner (src/core/targetPlan.ts): a physical
+        // device is refused with PHYSICAL_DEVICE_UNSUPPORTED, not a generic backend error.
+        const refusal = physicalDeviceRefusalFor(res.effective);
+        if (refusal) {
+          return qaError({
+            what: refusal.what,
+            changedState: false,
+            retrySafe: false,
+            failureCode: 'PHYSICAL_DEVICE_UNSUPPORTED',
+            nextSteps: [
+              'Start or create an Android Emulator, then retry with its emulator serial (see docs/physical-devices.md).',
+              'For iOS, use qa_prepare_ios_target with a simulator.',
+            ],
+          });
+        }
       }
       if (res.needSelection) {
         return qaError({
@@ -375,4 +375,16 @@ async function runHeavy(sessions: SessionStore, session: Session, driver: Direct
     });
   }
   upd({ status: 'done', progress: 'done', result: res.result, resultText: res.resultText, endedAt: Date.now() });
+}
+
+/** Physical-device refusal for an online adb serial, delegated to the shared target planner so
+ *  qa_prepare_target and qa_test_this classify serials identically. Null when it is an emulator. */
+export function physicalDeviceRefusalFor(serial: string): { what: string } | null {
+  const plan = planTarget({
+    requestedDevice: serial,
+    android: { online: [serial], avds: [] },
+    ios: { bootedSimulators: [], availableSimulators: [] },
+  });
+  if (plan.blocked?.failureCode !== 'PHYSICAL_DEVICE_UNSUPPORTED') return null;
+  return { what: plan.reason };
 }

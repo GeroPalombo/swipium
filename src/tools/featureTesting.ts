@@ -62,18 +62,12 @@ export async function resolveFeatureContext(
   }
   let root = session?.root;
   if (!root) {
-    const { resolveProjectRoot } = await import('../context/projectRoot.js');
+    const { resolveProjectRoot, unresolvedProjectRootError } = await import('../context/projectRoot.js');
     const resolved = await resolveProjectRoot(server, args.projectRoot);
     if (!resolved.root) {
       return {
         ok: false,
-        result: qaError({
-          what: 'Could not resolve a project root',
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Pass projectRoot="/abs/path" or a sessionId.'],
-          clientHint: resolved.hint,
-        }),
+        result: unresolvedProjectRootError(resolved),
       };
     }
     root = resolved.root;
@@ -113,31 +107,27 @@ export function registerFeatureTesting(server: McpServer, sessions: SessionStore
     {
       title: 'Test a feature (focused)',
       description:
-        'Run a focused test of a named feature. mode:"plan" (default) is the read-only planning path: it returns the resolved scope + objective + generated test cases + required fixtures + the exact ordered execution plan — use it whenever a feature test plan is needed before running anything. mode:"execute" runs a focused exploration toward the feature\'s best entry point as a background JOB — it generates cases, records pass/fail/blocked per case, updates the durable feature map, and generates a report (poll qa_job_status for the terminal result: reportUri, map delta, cases, blockers). Execute requires a prepared device session (run qa_test_this { mode:"execute" } first). Honest: a feature gated by auth/paywall/permission/missing-fixture returns blocked with setup guidance, not a false failure.',
+        'Focused test of one named feature. mode:"plan" (default, read-only): scope, objective, generated cases, required ' +
+        'fixtures, ordered plan. mode:"execute": a job that explores toward the feature, records pass/fail/blocked per case, ' +
+        'updates the app map, and writes a report (see the qa_job_status result). Without sessionId, execute bootstraps a ' +
+        'device from projectRoot (consent-gated). A feature behind auth/paywall/permission/missing fixture is blocked with ' +
+        'setup guidance, not failed.',
       inputSchema: {
-        sessionId: z
-          .string()
-          .optional()
-          .describe(
-            'Prepared session. If omitted in execute/interactive, Swipium bootstraps a device from projectRoot (same path as qa_test_this).',
-          ),
-        projectRoot: z
-          .string()
-          .optional()
-          .describe('Project root — used for plan mode and to bootstrap a device in execute/interactive when no sessionId is given.'),
+        sessionId: z.string().optional().describe('Prepared session; omitted → bootstrap from projectRoot.'),
+        projectRoot: z.string().optional(),
         feature: z.string().describe('The feature to test, in natural language.'),
         mode: z
           .enum(['plan', 'execute', 'interactive'])
           .optional()
-          .describe('plan (default) | execute (focused run as a job) | interactive (run until the first question).'),
+          .describe('plan (default) | execute (job) | interactive (until the first question).'),
         platform: z.enum(['android', 'ios']).optional(),
-        device: z.string().optional().describe('Specific device/simulator serial or udid to prepare when bootstrapping from projectRoot.'),
-        consentId: z.string().optional().describe('Consent id for the privileged boot/install/launch steps when bootstrapping a device.'),
-        approve: z.boolean().optional().describe('Approve the bootstrap consent request (paired with consentId).'),
+        device: z.string().optional().describe('Device/simulator to bootstrap on.'),
+        consentId: z.string().optional().describe('Bootstrap consent (boot/install/launch).'),
+        approve: z.boolean().optional(),
         creativity: z.enum(['conservative', 'standard', 'creative', 'adversarial']).optional(),
         allowAdversarial: z.boolean().optional(),
-        maxScreens: z.number().optional().describe('Max distinct screens for the focused exploration (default 8).'),
-        maxActions: z.number().optional().describe('Max actions for the focused exploration (default 20).'),
+        maxScreens: z.number().optional().describe('Default 8.'),
+        maxActions: z.number().optional().describe('Default 20.'),
         timeoutMs: z.number().optional(),
         generateCases: z.boolean().optional().describe('Generate test cases (default true).'),
         includeCode: z.boolean().optional(),

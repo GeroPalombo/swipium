@@ -21,6 +21,7 @@ import { staticCandidatesForObservation } from '../../appMap/screenMatch.js';
 import { DirectDriver } from '../../drivers/DirectDriver.js';
 import { log } from '../../lib/logger.js';
 import { readFileSync } from 'node:fs';
+import { extname, relative, sep } from 'node:path';
 import type { Session, SessionStore, JobRecord } from '../../session/store.js';
 import type { ExecuteArgs } from './types.js';
 import { createFinisher } from './terminal.js';
@@ -36,6 +37,48 @@ const FIRST_RUN_TRIGGER_PURPOSES: ReadonlySet<ScreenPurpose> = new Set<ScreenPur
   'permissions_prompt',
   'paywall',
 ]);
+
+const SUITE_MIME_BY_EXT: Record<string, string> = {
+  '.yaml': 'text/yaml',
+  '.yml': 'text/yaml',
+  '.js': 'text/javascript',
+  '.mjs': 'text/javascript',
+  '.py': 'text/x-python',
+  '.md': 'text/markdown',
+  '.json': 'application/json',
+};
+
+/**
+ * Register generated suite files as session artifacts (SWIP-07). qa_get_artifact and the
+ * swipium:// resource template resolve only URIs recorded via sessions.saveArtifact, so pushing
+ * bare `file://` paths into the job artifacts advertised an unfetchable deliverable. Each written
+ * file is copied into the session's artifact store and its swipium:// URI pushed into `artifacts`;
+ * the on-disk location stays visible in the artifact label (repo-relative path) and in the job
+ * result's `suite.written`. Names are prefixed with their .swipium subdir (pages/login.yaml →
+ * pages-login.yaml) so same-named files from different subdirs cannot collide.
+ */
+export function registerSuiteArtifacts(sessions: SessionStore, session: Session, written: string[], artifacts: string[]): string[] {
+  const uris: string[] = [];
+  const seen = new Set<string>();
+  for (const w of written) {
+    if (seen.has(w)) continue;
+    seen.add(w);
+    const rel = relative(session.root, w);
+    const name = rel
+      .replace(/^\.swipium[\\/]/, '')
+      .split(sep)
+      .join('-');
+    const mime = SUITE_MIME_BY_EXT[extname(w).toLowerCase()] ?? 'text/plain';
+    try {
+      const uri = sessions.saveArtifact(session, 'suite', name, readFileSync(w, 'utf8'), mime, `generated suite file (${rel})`);
+      uris.push(uri);
+      if (!artifacts.includes(uri)) artifacts.push(uri);
+    } catch (e) {
+      log('warn', 'suite artifact registration failed', { path: w, err: String(e) });
+    }
+  }
+  return uris;
+}
 
 export async function runExecutePipeline(sessions: SessionStore, session: Session, job: JobRecord, a: ExecuteArgs): Promise<void> {
   const signal = sessions.abortSignal(session, job.jobId);
@@ -116,8 +159,9 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
         nextExpected: 'Run smoke.',
       });
       attempted.push('prepare android (boot/install/launch)');
-      const driver = (session.driver as DirectDriver | undefined) ?? new DirectDriver();
-      driver.setSignal?.(signal);
+      // No unchecked cast: a session left on an iOS (WDA/simctl) driver gets a fresh adb driver.
+      const driver = session.driver instanceof DirectDriver ? session.driver : new DirectDriver();
+      driver.setSignal(signal);
       const res = await prepareAndroid(
         sessions,
         session,
@@ -271,10 +315,7 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
       if (suite.skipped) {
         suiteProg.done(`suite skipped — ${suite.skippedReason}`);
       } else {
-        for (const w of suite.written) {
-          const uri = `file://${w}`;
-          if (!artifacts.includes(uri)) artifacts.push(uri);
-        }
+        registerSuiteArtifacts(sessions, session, suite.written, artifacts);
         sessions.addWorkaround(session, `generated a POM suite (${suite.compiledFlows.filter((c) => c.ok).length} runnable flow(s))`);
         suiteProg.done(`suite ready — runnable=${suite.suiteRunnable}`);
       }

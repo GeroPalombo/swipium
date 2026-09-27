@@ -3,7 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { qaError, qaOk } from '../lib/result.js';
 import { parseSnapshot, signature } from '../snapshot/parse.js';
 import { repairFlow } from '../flows/repair.js';
-import { getDriver } from '../session/attach.js';
+import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import type { LocatorPlatform } from '../oracle/locator.js';
 import type { SessionStore } from '../session/store.js';
 
@@ -19,19 +19,22 @@ export function registerFlowRepair(server: McpServer, sessions: SessionStore): v
         flow: z.string().optional().describe('Flow name/path under .swipium/flows.'),
         flowYaml: z.string().optional().describe('Inline flow YAML.'),
         failedStep: z.number().int().min(0).describe('Zero-based failed step index from qa_flow_run.failedAtStep.'),
-        apply: z.boolean().optional().describe('Rewrite the flow file when the replacement is safe and flow is a file. Default false.'),
+        apply: z.boolean().optional().describe('Patch the flow file when safe (default false).'),
       },
     },
     async ({ sessionId, flow, flowYaml, failedStep, apply }) => {
       const session = sessions.get(sessionId);
-      const { driver } = session ? await getDriver(session) : { driver: undefined };
+      const { driver, blocked } = session ? await getDriver(session) : { driver: undefined, blocked: undefined };
       if (!session || !driver)
-        return qaError({
-          what: 'No device attached to this session',
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_prepare_target / qa_ios + qa_wda first.'],
-        });
+        return (
+          blockedDeviceResult(blocked) ??
+          qaError({
+            what: 'No device attached to this session',
+            changedState: false,
+            retrySafe: true,
+            nextSteps: ['Call qa_prepare_target / qa_ios + qa_wda first.'],
+          })
+        );
       if (driver.kind === 'simulator' || session.mode === 'visual-fallback') {
         return qaError({
           what: 'Flow repair needs a structured UI tree',
