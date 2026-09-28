@@ -13,7 +13,7 @@ import { parseFlow } from '../flows/schema.js';
 import { loadProjectConfig } from '../cli/scan.js';
 import { readinessForSession, type ReadinessLabel } from '../report/readiness.js';
 import type { RecordedAction, Session, SessionStore } from '../session/store.js';
-import { assertNoSecretLeaks, findSecretLeaks, secretSafeNotes } from '../suite/secretGuard.js';
+import { assertNoSecretLeaks, findSecretLeaks, inputBindings, secretSafeNotes, structuralLiterals } from '../suite/secretGuard.js';
 
 export interface CompiledFlowInfo {
   name: string;
@@ -49,7 +49,7 @@ export function appIdOf(session: Session): string | undefined {
 /** Write generated files under .swipium/, returning absolute paths written. */
 export function writeSuiteFiles(session: Session, files: GeneratedFile[]): string[] {
   // Backstop: refuse to write ANY file that still carries a registered secret value.
-  assertNoSecretLeaks(files, session.secrets, 'suite generation');
+  assertNoSecretLeaks(files, session.secrets, 'suite generation', { structural: structuralLiterals(session.recordedActions) });
   const base = join(session.root, '.swipium');
   const written: string[] = [];
   for (const f of files) {
@@ -69,7 +69,13 @@ export function pomForSession(
 ): { pom: PomResult; flowName: string } {
   const appId = appIdOf(session);
   const flowName = (name ?? `${(appId ?? 'app').split('.').pop()}-smoke`).replace(/[^\w.-]+/g, '-');
-  const pom = generatePom(actions, { name: flowName, appId, budgetProfile: session.budgetProfile, secrets: session.secrets });
+  const pom = generatePom(actions, {
+    name: flowName,
+    appId,
+    budgetProfile: session.budgetProfile,
+    secrets: session.secrets,
+    inputs: inputBindings(session), // typed text equal to a stored input → its ${SWIPIUM_TEST_*} placeholder
+  });
   return { pom, flowName };
 }
 
@@ -113,7 +119,7 @@ export function generateAndCompileSuite(sessions: SessionStore, session: Session
     { path: `testcases/${flowName}.cases.yaml`, content: tc.yaml },
     { path: `testcases/${flowName}.cases.md`, content: tc.markdown },
   ];
-  const leaks = findSecretLeaks(files, session.secrets);
+  const leaks = findSecretLeaks(files, session.secrets, { structural: structuralLiterals(actions) });
   if (leaks.length) {
     return {
       skipped: true,

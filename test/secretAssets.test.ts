@@ -104,7 +104,7 @@ describe('every generator replaces a registered secret with a placeholder', () =
   it('flow YAML', () => {
     const gen = generateFlow(recording(), { name: 'wifi', appId: 'com.android.settings', secrets: [SECRET] });
     expect(gen.yaml).not.toContain(SECRET);
-    expect(gen.yaml).toMatch(/text: \$\{SECRET_2\}/);
+    expect(gen.yaml).toMatch(/text: \$\{SWIPIUM_SECRET_2\}/); // same naming as the POM/suite generator
     expect(gen.durability.needsHumanData).toBe(3);
   });
 

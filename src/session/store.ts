@@ -8,18 +8,26 @@
 // marked failed on reload, and orphaned Metro pids are verified via `ps` and reaped.)
 
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { chmodSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import type { Driver } from '../drivers/Driver.js';
 import type { RawNode } from '../snapshot/parse.js';
 import type { ResponseMode } from '../lib/result.js';
 import { DEFAULT_RESPONSE_MODE } from '../lib/result.js';
-import { makeRedactor, redactStructuredText, structuredKindOf, type Redactor } from '../lib/redact.js';
-import { secretSafeActions, secretSafeNotes } from '../suite/secretGuard.js';
+import { makeRedactor, redactDeep, redactStructuredText, structuredKindOf, type Redactor } from '../lib/redact.js';
+import {
+  generatedOutputRedactor,
+  inputBindings,
+  inputPlaceholderFor,
+  secretSafeActions,
+  secretSafeNotes,
+  swipiumVarName,
+} from '../suite/secretGuard.js';
 import { withFileLock, writeFileAtomicSync } from '../lib/lockfile.js';
 import { log } from '../lib/logger.js';
 import { pidOwnedByLiveServer, reclaimPid } from './processRegistry.js';
+import { scheduleStartupPrune } from './retention.js';
 import { approvalMechanismFor, type ApprovalMechanism } from '../consent/consent.js';
 
 export type JobStatus = 'running' | 'done' | 'failed' | 'cancelled';
@@ -265,21 +273,40 @@ export function serializeGeneratedValues(records: GeneratedValueRecord[]): Gener
  *  disk. Recorded actions go through the same rewrite the generators use (a secret literal typed into
  *  a non-secure field becomes a secret step with no text); note/finding prose is redacted. URIs,
  *  paths and numbers are left alone. */
-export function serializeSecretSafe(s: Pick<Session, 'secrets' | 'recordedActions' | 'notes' | 'findings' | 'toolErrors'>): {
+export function serializeSecretSafe(
+  s: Pick<Session, 'secrets' | 'recordedActions' | 'notes' | 'findings' | 'toolErrors'> &
+    Partial<Pick<Session, 'jobs' | 'envChanges' | 'mutations' | 'fixtures'>>,
+): {
   recordedActions: RecordedAction[];
   notes: TestNote[];
   findings: FindingRecord[];
   toolErrors: ToolErrorRecord[];
+  jobs: JobRecord[];
+  envChanges: string[];
+  mutations: MutationRecord[];
+  fixtures: Fixture[];
 } {
   const toolErrors = s.toolErrors ?? [];
-  if (!s.secrets.size) return { recordedActions: s.recordedActions, notes: s.notes, findings: s.findings, toolErrors };
+  const jobs = [...(s.jobs?.values() ?? [])];
+  const envChanges = s.envChanges ?? [];
+  const mutations = s.mutations ?? [];
+  const fixtures = s.fixtures ?? [];
+  if (!s.secrets.size)
+    return { recordedActions: s.recordedActions, notes: s.notes, findings: s.findings, toolErrors, jobs, envChanges, mutations, fixtures };
   const redact: Redactor = makeRedactor(s.secrets);
   const r = (v?: string) => (v ? (redact(v) ?? v) : v);
+  // Structured records (job results, mutation targets, fixtures): strong secrets scrubbed anywhere,
+  // weak (dictionary-like) ones only as a whole value — package ids / selectors stay intact.
+  const structured = generatedOutputRedactor(s.secrets);
   return {
     recordedActions: secretSafeActions(s.recordedActions, s.secrets).actions,
     notes: secretSafeNotes(s.notes, s.secrets),
     findings: s.findings.map((f) => ({ ...f, detail: r(f.detail) ?? f.detail, evidence: r(f.evidence) })),
     toolErrors: toolErrors.map((t) => ({ ...t, message: r(t.message) ?? t.message })),
+    jobs: jobs.map((j) => ({ ...redactDeep(j, structured), error: r(j.error), progress: r(j.progress), resultText: r(j.resultText) })),
+    envChanges: envChanges.map((e) => r(e) ?? e),
+    mutations: mutations.map((m) => ({ ...redactDeep(m, structured), detail: r(m.detail) })),
+    fixtures: redactDeep(fixtures, structured),
   };
 }
 
@@ -348,6 +375,9 @@ export interface Session {
   /** App directory the user explicitly chose (monorepo_target resume / explicit projectRoot) —
    *  qa_test_this must not re-ask the monorepo question for this root. */
   chosenTarget?: string;
+  /** The ORIGINAL qa_test_this arguments of this session's last run (goal, goalText, flags), so a
+   *  resume / re-run can replay the user's intent. Persisted (secret values redacted) + rehydrated. */
+  lastTestThisArgs?: TestThisArgsRecord;
   workarounds: string[]; // resourcefulness trail (roadmap §11): safe fallbacks Swipium tried (visual fallback, build-from-source, pre-login) — surfaced in qa_report
   exploration?: ExplorationRecord; // last guided-exploration result (Phase 3.3) — surfaced in qa_report
   mode: SessionMode; // structured (uiautomator) vs visual-fallback (screenshots)
@@ -384,10 +414,23 @@ export interface Session {
   driverKind?: Driver['kind'];
   wdaUrl?: string;
   // live, not persisted:
+  /** Set while a session whose persisted transport is WDA runs on a FALLBACK driver (simctl) because
+   *  WDA was unreachable at rehydrate. The persisted driverKind/wdaUrl are NOT overwritten while this
+   *  is set (a brief WDA outage must not permanently downgrade the session), and getDriver retries
+   *  WDA on later calls (session/attach.ts). */
+  transportFallback?: { wanted: 'wda'; wdaUrl: string; since: number; lastProbeAt: number };
   inputValues: Map<string, string>; // varName → raw value (for the flow runner); never serialized
   driver?: Driver;
   lastSnapshot?: LastSnapshot;
   aborts: Map<string, AbortController>;
+}
+
+/** Original qa_test_this arguments kept on the session (see Session.lastTestThisArgs). */
+export interface TestThisArgsRecord {
+  goal?: string;
+  goalText?: string;
+  flags?: Record<string, unknown>;
+  at?: number;
 }
 
 export interface CreateSessionOptions {
@@ -468,6 +511,28 @@ export function isWithinRoot(child: string, parent: string): boolean {
   return c === p || c.startsWith(p.endsWith(sep) ? p : p + sep);
 }
 
+/** Owner-only permissions for ~/.swipium/runs session data (dirs 0700, files 0600). POSIX only;
+ *  best-effort (a chmod failure never breaks a write). */
+export const PRIVATE_DIR_MODE = 0o700;
+export const PRIVATE_FILE_MODE = 0o600;
+function restrictFile(path: string): void {
+  if (process.platform === 'win32') return;
+  try {
+    chmodSync(path, PRIVATE_FILE_MODE);
+  } catch {
+    /* best-effort */
+  }
+}
+function mkdirPrivate(dir: string): void {
+  mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
+  if (process.platform === 'win32') return;
+  try {
+    chmodSync(dir, PRIVATE_DIR_MODE); // mode above only applies to NEWLY created dirs (and umask)
+  } catch {
+    /* best-effort */
+  }
+}
+
 function defaultSessionDir(root: string, id: string): string {
   const projectHash = createHash('sha256').update(resolve(root)).digest('hex').slice(0, 16);
   return join(REGISTRY_DIR, 'runs', projectHash, id);
@@ -492,13 +557,16 @@ export class SessionStore {
     if (this.registryLoaded) return;
     this.registryLoaded = true;
     this.loadRegistry();
+    // Retention (session/retention.ts): one non-blocking background prune of old ~/.swipium/runs
+    // session dirs per process — never a registered or live session. SWIPIUM_RETENTION_DAYS=off disables.
+    scheduleStartupPrune(() => [...this.sessions.values()].map((x) => x.dir));
   }
 
   create(root: string, budget?: Partial<Budget>, opts?: CreateSessionOptions): Session {
     this.ensureRegistryLoaded();
     const id = randomUUID().slice(0, 8);
     const dir = opts?.sessionDir ?? defaultSessionDir(root, id);
-    mkdirSync(dir, { recursive: true });
+    mkdirPrivate(dir);
     const now = Date.now();
     const s: Session = {
       id,
@@ -588,8 +656,10 @@ export class SessionStore {
   private writeState(s: Session): void {
     try {
       const safe = serializeSecretSafe(s); // registered secret values never reach state.json
-      // Keep the plain transport fields in sync with the live driver (duck-typed: no driver import).
-      if (s.driver) {
+      // Keep the plain transport fields in sync with the live driver (duck-typed: no driver import) —
+      // except while the live driver is a fallback for an unreachable WDA: the persisted 'wda'
+      // transport stays authoritative so a later restart retries it.
+      if (s.driver && !(s.transportFallback && s.driver.kind === 'simulator')) {
         s.driverKind = s.driver.kind;
         const baseUrl = (s.driver as { baseUrl?: unknown }).baseUrl;
         if (s.driver.kind === 'wda' && typeof baseUrl === 'string') s.wdaUrl = baseUrl;
@@ -607,22 +677,24 @@ export class SessionStore {
         metroPid: s.metroPid,
         screenshotCount: s.screenshotCount,
         network: s.network,
-        envChanges: s.envChanges,
+        envChanges: safe.envChanges,
         workarounds: s.workarounds,
         chosenTarget: s.chosenTarget,
+        lastTestThisArgs:
+          s.lastTestThisArgs && s.secrets.size ? redactDeep(s.lastTestThisArgs, makeRedactor(s.secrets)) : s.lastTestThisArgs,
         mode: s.mode,
         responseMode: s.responseMode,
         sensitive: s.sensitive,
         budget: s.budget,
         counters: s.counters,
-        jobs: [...s.jobs.values()],
+        jobs: safe.jobs,
         artifacts: s.artifacts,
         findings: safe.findings,
         notes: safe.notes,
-        mutations: s.mutations,
+        mutations: safe.mutations,
         recordedActions: safe.recordedActions,
         toolErrors: safe.toolErrors,
-        fixtures: s.fixtures,
+        fixtures: safe.fixtures,
         auth: s.auth,
         milestones: s.milestones,
         budgetProfile: s.budgetProfile,
@@ -633,6 +705,7 @@ export class SessionStore {
       // Atomic write (tmp + rename) so a crash mid-write never leaves a truncated state.json.
       const target = join(s.dir, 'state.json');
       writeFileAtomicSync(target, JSON.stringify(state, null, 2));
+      restrictFile(target); // owner-only: state.json carries run history / paths
     } catch (e) {
       // A silent failure here means session state (jobs/artifacts/findings) is lost on restart.
       log('error', 'failed to persist session state.json — this session will not survive a server restart', {
@@ -742,6 +815,16 @@ export class SessionStore {
   }
   /** Append an action-IR step (bounded) for qa_generate target:"flow". */
   addRecordedAction(s: Session, ra: RecordedAction): void {
+    // Typed text equal to a stored session input (e.g. the email from qa_continue_from_blocker) is
+    // recorded as that input's ${VAR} placeholder, never the literal (generators do this too).
+    const bound = ra.action === 'type' ? inputPlaceholderFor(ra.text, inputBindings(s)) : undefined;
+    if (bound) {
+      ra = {
+        ...ra,
+        text: `\${${swipiumVarName(bound.varName)}}`,
+        ...(bound.secret ? { secret: true, exportability: 'needs-human-data' as const } : {}),
+      };
+    }
     s.recordedActions.push(ra);
     if (s.recordedActions.length > 300) s.recordedActions.splice(0, s.recordedActions.length - 300);
     this.persist(s);
@@ -788,6 +871,11 @@ export class SessionStore {
   clearInputValues(s: Session): void {
     s.inputValues.clear();
   }
+  /** Remember the ORIGINAL qa_test_this arguments (goal, goalText, flags) of this session's run. */
+  setLastTestThisArgs(s: Session, args: TestThisArgsRecord): void {
+    s.lastTestThisArgs = { ...args, at: args.at ?? Date.now() };
+    this.persist(s);
+  }
   /** Record the latest guided-exploration result (Phase 3.3) for qa_report. */
   setExploration(s: Session, rec: ExplorationRecord): void {
     s.exploration = rec;
@@ -802,7 +890,7 @@ export class SessionStore {
     if (!isWithinRoot(path, s.dir) || resolve(path) === resolve(s.dir)) {
       throw new Error(`Refusing to write artifact outside the session directory: ${kind}/${name}`);
     }
-    mkdirSync(sub, { recursive: true });
+    mkdirPrivate(sub);
     const redact = makeRedactor(s.secrets);
     const isRedactableText = typeof data === 'string' && isTextArtifactMime(mime);
     // JSON/XML artifacts are redacted structurally (string values / attribute values / text
@@ -810,7 +898,8 @@ export class SessionStore {
     const storedData = isRedactableText ? redactStructuredText(data, structuredKindOf(mime, name), redact) : data;
     const storedLabel = label ? redact(label) : label;
     const skipped = redact.skippedShortSecrets ?? 0;
-    writeFileSync(path, storedData);
+    writeFileSync(path, storedData, { mode: PRIVATE_FILE_MODE });
+    restrictFile(path); // an overwritten artifact keeps its old mode otherwise
     const uri = `swipium://session/${encodeUriSegment(s.id)}/${encodeUriSegment(kind)}/${encodeUriSegment(name)}`;
     // Binary artifacts (screenshots/recordings) cannot be redacted — tag them explicitly so
     // consumers (qa_get_artifact, reports) know pixels may show sensitive on-screen content.
@@ -879,8 +968,10 @@ export class SessionStore {
             }
           }
           // Orphaned-process handling: a prior server persisted its Metro pid. If no live
-          // server instance owns that pid, verify via `ps` that it still IS a bundler-ish
-          // process and reap it; a recycled pid is never signalled. Either way the reloaded
+          // server instance owns that pid, reclaimPid (processRegistry) reaps it ONLY when the
+          // registry's recorded fingerprint (start time + full command) still matches — a
+          // recycled or unverifiable pid is never signalled, and a process group is signalled
+          // only when Swipium spawned the child as a group leader. Either way the reloaded
           // session drops the pid — it is not ours to manage (or stop) anymore.
           if (typeof st.metroPid === 'number' && st.metroPid > 0) {
             if (!pidOwnedByLiveServer(st.metroPid)) {
@@ -912,6 +1003,10 @@ export class SessionStore {
             envChanges: st.envChanges ?? [],
             workarounds: st.workarounds ?? [],
             chosenTarget: typeof st.chosenTarget === 'string' ? st.chosenTarget : undefined,
+            lastTestThisArgs:
+              st.lastTestThisArgs && typeof st.lastTestThisArgs === 'object' && !Array.isArray(st.lastTestThisArgs)
+                ? (st.lastTestThisArgs as TestThisArgsRecord)
+                : undefined,
             mode: st.mode ?? 'structured',
             responseMode: st.responseMode ?? DEFAULT_RESPONSE_MODE,
             sensitive: st.sensitive ?? false,

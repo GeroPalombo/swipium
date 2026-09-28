@@ -36,6 +36,8 @@ function fakeOps(commands: Record<number, string>): Ops & { killed: number[] } {
     killed,
     pidAlive: (pid) => pid in commands,
     psCommand: (pid) => commands[pid] ?? null,
+    psStartTime: (pid) => (pid in commands ? `start-${pid}` : null),
+    psPgid: (pid) => (pid in commands ? pid : null),
     killTree: (pid) => (killed.push(pid), true),
   };
 }
@@ -48,6 +50,8 @@ const wda = (pid: number, over: Partial<Entry> = {}): Entry => ({
   sessionId: `sess-${pid}`,
   startedAt: NOW - HOUR,
   endpoint: `http://127.0.0.1:${8100 + (pid % 100)}`,
+  procStart: `start-${pid}`,
+  command: XCODEBUILD,
   ...over,
 });
 
@@ -103,9 +107,30 @@ describe('reapOrphanedProcesses — managed WDA adoption', () => {
   it('keeps reaping other kinds as before; a live concurrent owner is untouched', async () => {
     const LIVE_SERVER = 515151;
     seed([
-      { pid: 201, kind: 'metro', serverPid: DEAD_SERVER, startedAt: NOW - HOUR },
-      { pid: 202, kind: 'recording', serverPid: DEAD_SERVER, startedAt: NOW - HOUR },
-      { pid: 203, kind: 'emulator', serverPid: DEAD_SERVER, startedAt: NOW - HOUR },
+      {
+        pid: 201,
+        kind: 'metro',
+        serverPid: DEAD_SERVER,
+        startedAt: NOW - HOUR,
+        procStart: 'start-201',
+        command: 'node node_modules/.bin/react-native start',
+      },
+      {
+        pid: 202,
+        kind: 'recording',
+        serverPid: DEAD_SERVER,
+        startedAt: NOW - HOUR,
+        procStart: 'start-202',
+        command: 'xcrun simctl io booted recordVideo out.mp4',
+      },
+      {
+        pid: 203,
+        kind: 'emulator',
+        serverPid: DEAD_SERVER,
+        startedAt: NOW - HOUR,
+        procStart: 'start-203',
+        command: 'qemu-system-aarch64 -avd Pixel',
+      },
       wda(204, { serverPid: LIVE_SERVER }),
     ]);
     const ops = fakeOps({

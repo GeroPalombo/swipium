@@ -4,7 +4,7 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import { listSimulators, type Simulator } from '../lib/simctl.js';
@@ -31,7 +31,8 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
     },
     async ({ sessionId, listPackages: withPkgs, packageFilter }) => {
       const session = sessions.get(sessionId);
-      const { driver, blocked } = session ? await getDriver(session) : { driver: undefined, blocked: undefined };
+      if (!session) return unknownSessionError(sessionId);
+      const { driver, blocked } = await getDriver(session);
       const serial = driver?.currentDevice();
       if (!session || !driver || !serial) {
         return (
@@ -113,7 +114,8 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
     },
     async ({ sessionId, orientation }) => {
       const session = sessions.get(sessionId);
-      const { driver, blocked } = session ? await getDriver(session) : { driver: undefined, blocked: undefined };
+      if (!session) return unknownSessionError(sessionId);
+      const { driver, blocked } = await getDriver(session);
       const serial = driver?.currentDevice();
       if (!session || !driver || !serial) {
         return (
@@ -183,7 +185,8 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
     },
     async ({ sessionId, lat, lng, consentId, approve }) => {
       const session = sessions.get(sessionId);
-      const { driver, blocked } = session ? await getDriver(session) : { driver: undefined, blocked: undefined };
+      if (!session) return unknownSessionError(sessionId);
+      const { driver, blocked } = await getDriver(session);
       const serial = driver?.currentDevice();
       if (!session || !driver || !serial) {
         return (

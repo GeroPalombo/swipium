@@ -12,8 +12,8 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
@@ -37,6 +37,10 @@ jobs:
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
+      # TODO(supply-chain): migrate to npm trusted publishing (OIDC). Configure this repo +
+      # release.yml as a trusted publisher on npmjs.com, keep `id-token: write`, then drop
+      # NODE_AUTH_TOKEN/NPM_TOKEN below (requires npm CLI >= 11.5.1) and revoke the token.
+      # Not switched yet because the new auth path cannot be exercised before a real release.
       - run: npm publish --provenance --access public
         if: steps.npm_version.outputs.exists == 'false'
         env:

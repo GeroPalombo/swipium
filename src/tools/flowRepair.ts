@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaError, qaOk } from '../lib/result.js';
+import { qaError, qaOk, unknownSessionError } from '../lib/result.js';
 import { parseSnapshot, signature } from '../snapshot/parse.js';
 import { repairFlow } from '../flows/repair.js';
 import { blockedDeviceResult, getDriver } from '../session/attach.js';
@@ -13,18 +13,22 @@ export function registerFlowRepair(server: McpServer, sessions: SessionStore): v
     {
       title: 'Repair a failed flow step',
       description:
-        'Given a failed flow step and the current screen, suggest a stronger locator, app code changes such as adding accessibilityIdentifier/testID, and optionally patch simple YAML selector steps when safe.',
+        'Given a failed flow step and the current screen, suggest a stronger locator (same role, most similar text), app code changes such as adding accessibilityIdentifier/testID, and optionally patch simple YAML selector steps (apply only at high/medium confidence; flows must be under the project root).',
       inputSchema: {
         sessionId: z.string(),
         flow: z.string().optional().describe('Flow name/path under .swipium/flows.'),
         flowYaml: z.string().optional().describe('Inline flow YAML.'),
         failedStep: z.number().int().min(0).describe('Zero-based failed step index from qa_flow_run.failedAtStep.'),
-        apply: z.boolean().optional().describe('Patch the flow file when safe (default false).'),
+        apply: z
+          .boolean()
+          .optional()
+          .describe('Patch the flow file when safe (default false); refused at low confidence (applied:false + note).'),
       },
     },
     async ({ sessionId, flow, flowYaml, failedStep, apply }) => {
       const session = sessions.get(sessionId);
-      const { driver, blocked } = session ? await getDriver(session) : { driver: undefined, blocked: undefined };
+      if (!session) return unknownSessionError(sessionId);
+      const { driver, blocked } = await getDriver(session);
       if (!session || !driver)
         return (
           blockedDeviceResult(blocked) ??
@@ -70,7 +74,12 @@ export function registerFlowRepair(server: McpServer, sessions: SessionStore): v
           what: repaired.error,
           changedState: false,
           retrySafe: true,
-          nextSteps: ['Pass a valid flow and failedStep from qa_flow_run.'],
+          ...(repaired.errorCode === 'PATH_OUTSIDE_ROOT' ? { failureCode: 'UNSAFE_ACTION_REFUSED' as const } : {}),
+          nextSteps: [
+            repaired.errorCode === 'PATH_OUTSIDE_ROOT'
+              ? 'Pass a flow name or a path under the project root (.swipium/flows/*.yaml).'
+              : 'Pass a valid flow and failedStep from qa_flow_run.',
+          ],
         });
       const proposalArtifactUri = repaired.proposal
         ? sessions.saveArtifact(
@@ -98,7 +107,8 @@ export function registerFlowRepair(server: McpServer, sessions: SessionStore): v
         `repair for "${repaired.flow}" step ${failedStep}: ${s.replacementSelector ? `try "${s.replacementSelector}"` : 'no replacement selector found'} (${s.confidence} confidence)` +
         `${s.appCodeSuggestion ? `\napp change: ${s.appCodeSuggestion}` : ''}` +
         `${proposalArtifactUri ? `\nproposal: ${proposalArtifactUri}` : ''}` +
-        `${repaired.patched ? `\npatched ${repaired.source}` : ''}`;
+        `${repaired.patched ? `\npatched ${repaired.source}` : ''}` +
+        `${repaired.notes?.length ? `\n${repaired.notes.join('\n')}` : ''}`;
       return qaOk({ ...repaired, proposalArtifactUri }, summary);
     },
   );

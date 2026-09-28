@@ -3,7 +3,9 @@ import { isAbsolute, join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { parseSnapshot } from '../snapshot/parse.js';
 import { executeSeed, seedExactCommand } from '../flows/seedExec.js';
-import { grantPermission, revokePermission } from '../lib/device.js';
+import { assertAndroidPermission, grantPermission, revokePermission } from '../lib/device.js';
+import { assertAndroidAppId } from '../drivers/DirectDriver.js';
+import { isInvalidArgumentError } from '../lib/result.js';
 import { privacySet } from '../lib/simctl.js';
 import type { Driver } from '../drivers/Driver.js';
 import type { Session, SessionStore } from '../session/store.js';
@@ -153,15 +155,57 @@ async function assertVisible(driver: Driver, query: string): Promise<boolean> {
   );
 }
 
+/** Up-front argument check for adb-backed (Android) profiles: a malformed app id or permission
+ * name is rejected BEFORE any reset/launch mutates the device (the adb helpers would throw a raw
+ * INVALID_ARGUMENT mid-sequence otherwise). Returns the error detail, or undefined when valid. */
+function androidArgumentError(driver: Driver, appId: string | undefined, profile: StateProfile): string | undefined {
+  if (driver.kind !== 'direct') return undefined;
+  try {
+    if (appId) assertAndroidAppId(appId);
+    for (const name of Object.keys(profile.launch?.permissions ?? {})) {
+      for (const permission of permissionsFor('android', name)) assertAndroidPermission(permission);
+    }
+  } catch (e) {
+    if (isInvalidArgumentError(e)) return e.message;
+    throw e;
+  }
+  return undefined;
+}
+
 export async function prepareStateProfile(
   sessions: SessionStore,
   session: Session,
   driver: Driver,
   profile: StateProfile,
 ): Promise<StateLedger> {
+  const startedAt = new Date().toISOString();
+  const blocked = (detail: string): StateLedger => ({
+    profile: profile.name,
+    status: 'state_blocked',
+    steps: [{ kind: 'validate.arguments', status: 'blocked', detail }],
+    startedAt,
+    endedAt: new Date().toISOString(),
+  });
+  const invalid = androidArgumentError(driver, profile.appId ?? session.appId, profile);
+  if (invalid) return blocked(invalid);
+  try {
+    return await prepareStateProfileSteps(sessions, session, driver, profile, startedAt);
+  } catch (e) {
+    // Belt-and-braces: any INVALID_ARGUMENT a driver raises still lands as a typed blocked step.
+    if (isInvalidArgumentError(e)) return blocked(e.message);
+    throw e;
+  }
+}
+
+async function prepareStateProfileSteps(
+  sessions: SessionStore,
+  session: Session,
+  driver: Driver,
+  profile: StateProfile,
+  startedAt: string,
+): Promise<StateLedger> {
   const steps: StateLedger['steps'] = [];
   const seedTransactions: StateSeedTransaction[] = [];
-  const startedAt = new Date().toISOString();
   const appId = profile.appId ?? session.appId;
   let status: StateLedger['status'] = 'state_prepared';
 

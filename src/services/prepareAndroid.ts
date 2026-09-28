@@ -20,8 +20,10 @@ import {
   classifyAndroidInstallError,
 } from '../lib/android.js';
 import { metroReadiness } from '../lib/metroState.js';
+import { classifyAndroidSerials, verifiedEmulatorSerials } from '../session/attach.js';
 import { log } from '../lib/logger.js';
 import type { DirectDriver } from '../drivers/DirectDriver.js';
+import { isInvalidArgumentError } from '../lib/result.js';
 import type { Session, SessionStore } from '../session/store.js';
 
 export interface PrepareAndroidArgs {
@@ -75,7 +77,20 @@ export async function prepareAndroid(
   let emu: ChildProcess | undefined;
   try {
     let serial = a.serial;
+    // Never target a physical device from prepare (simulator/emulator-only policy): an explicit
+    // serial must be a verified emulator before anything is installed on it.
+    if (serial && !a.needBoot && !(await verifiedEmulatorSerials([serial])).includes(serial)) {
+      return {
+        ok: false,
+        failureCode: 'PHYSICAL_DEVICE_UNSUPPORTED',
+        error: `${serial} is not an Android emulator — Swipium never installs on physical devices (docs/physical-devices.md).`,
+      };
+    }
     if (a.needBoot && a.bootTarget) {
+      // Serials online BEFORE the boot: the emulator we start must be a NEW serial. Picking the first
+      // online device instead installed onto a user's phone that happened to be connected.
+      const before = new Set(await adbDevices());
+      serial = undefined;
       progress(`booting ${a.bootTarget}`);
       session.headless = a.headless ?? true;
       emu = bootEmulator(a.bootTarget, a.headless ?? true);
@@ -89,11 +104,19 @@ export async function prepareAndroid(
       sessions.milestone(session, 'simulator_boot_start');
       for (let i = 0; i < 60 && !serial; i++) {
         if (aborted()) return { ok: false, aborted: true };
-        const d = await adbDevices();
-        if (d.length) serial = d[0];
-        else await new Promise((r) => setTimeout(r, 2000));
+        const fresh = (await adbDevices()).filter((s) => !before.has(s));
+        if (fresh.length) {
+          const { emulators } = await classifyAndroidSerials(fresh);
+          serial = fresh.find((s) => emulators.includes(s));
+        }
+        if (!serial) await new Promise((r) => setTimeout(r, 2000));
       }
-      if (!serial) return { ok: false, failureCode: 'EMULATOR_BOOT_FAILED', error: 'emulator did not appear' };
+      if (!serial)
+        return {
+          ok: false,
+          failureCode: 'EMULATOR_BOOT_FAILED',
+          error: `emulator "${a.bootTarget}" did not appear as a new adb emulator serial (already online, not used: ${[...before].join(', ') || 'none'})`,
+        };
       const booted = await waitForBoot(serial, 180000);
       if (!booted) return { ok: false, failureCode: 'EMULATOR_BOOT_FAILED', error: `emulator "${a.bootTarget}" did not finish booting` };
       sessions.milestone(session, 'simulator_boot_end');
@@ -108,6 +131,19 @@ export async function prepareAndroid(
     }
     if (!serial) return { ok: false, failureCode: 'NO_DEVICE', error: 'no device' };
     if (aborted()) return { ok: false, aborted: true };
+    // adb lists a still-booting emulator as `device` early: always wait for sys.boot_completed
+    // (returns at once on a booted one) before installing/launching.
+    if (!a.needBoot) {
+      progress(`waiting for ${serial} to finish booting`);
+      if (!(await waitForBoot(serial, 180000))) {
+        return {
+          ok: false,
+          failureCode: 'DEVICE_NOT_READY',
+          error: `${serial} did not report sys.boot_completed=1 — wait for it to finish booting, then retry.`,
+        };
+      }
+      if (aborted()) return { ok: false, aborted: true };
+    }
 
     driver.useDevice(serial);
     session.device = serial; // bind early so all tools agree
@@ -265,6 +301,8 @@ export async function prepareAndroid(
   } catch (e) {
     if (aborted()) return { ok: false, aborted: true };
     log('error', 'prepareAndroid failed', { err: String(e) });
+    // A malformed app id (driver-side validation) is a caller error, not a launch failure.
+    if (isInvalidArgumentError(e)) return { ok: false, failureCode: 'INVALID_ARGUMENT', error: e.message };
     return { ok: false, failureCode: 'APP_LAUNCH_FAILED', error: String(e) };
   }
 }

@@ -34,7 +34,9 @@ MCP clients pick up the new tool list after a restart. Saved prompts or scripts 
 - MCP tool annotations on every tool (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint:false`), so clients can auto-approve read-only calls, and server `instructions` with the operating guide. The `tools/list` payload is about 26% smaller.
 - MCP resource listing for session artifacts and app-map sections, scoped to the current project and excluding sensitive-mode sessions.
 - Consent through MCP elicitation: on clients that support it, privileged actions are approved in a real user prompt, and the mutation ledger records how each action was approved (`elicitation`, `client-assertion`, or `policy`). `SWIPIUM_REQUIRE_ELICITATION=1` refuses every consent-gated action on clients without elicitation.
-- CLI: `swipium --help`, `--version`, `swipium serve`; unknown subcommands print usage and exit `2` instead of starting the server. New `swipium init cursor` and `swipium init vscode`; `init` accepts `--cwd <dir>`.
+- CLI: `swipium --help`, `--version`, `swipium serve`; an unknown subcommand prints usage and exits `2` instead of starting the server (unknown `--flags` such as `--stdio` still start the server, with a warning). New `swipium init cursor` and `swipium init vscode`; `init` accepts `--cwd <dir>`.
+- Disk retention: at startup Swipium prunes `~/.swipium/runs` session folders older than 30 days that are not in the session registry, always keeping the newest 20 per project (`SWIPIUM_RETENTION_DAYS`, `SWIPIUM_RETENTION_KEEP`; `0`/`off` disables). `swipium gc [--dry-run] [--days N] [--keep N]` reclaims space on demand, and `~/.swipium/projects.json` drops entries for deleted projects.
+- `qa_test_this` accepts `responseMode`, has a `needs_input` terminal job state (a credentials question found during a run is returned instead of dropped), and its terminal result carries a compact report summary.
 - `qa_device_info` on iOS simulators returns name, runtime, state, and screen size. `qa_resolve_target include:["context"]` lists booted and available iOS simulators.
 
 ### Changed
@@ -45,7 +47,12 @@ MCP clients pick up the new tool list after a restart. Saved prompts or scripts 
 - `qa_doctor` checks both platforms by default on macOS, and checks the Node version against `engines`.
 - `build_from_source` consent is now high risk and `start_metro` medium.
 - Generated Appium suites perform real scroll and swipe gestures; steps that cannot be generated fail with `UNEMITTABLE_STEP` instead of producing no-op code. A scroll recorded without a target is now replayed in the correct direction.
-- `qa_continue_from_blocker` returns `ignored[]` for answers the resumed tool cannot use, instead of dropping them silently.
+- `qa_continue_from_blocker` returns `ignored[]` for answers the resumed tool cannot use, instead of dropping them silently, and replays the original goal and flags of the interrupted `qa_test_this` call.
+- Flows resolve `${VAR}` from the server environment only for names starting with `SWIPIUM_` (explicit variables and stored session inputs still work). Generated flows and suites always use `SWIPIUM_`-prefixed names (`SWIPIUM_TEST_*` for stored inputs, `SWIPIUM_SECRET_N` otherwise), and `qa_flow_run` fills in the session's stored inputs. `swipium init flows` templates use `SWIPIUM_TEST_EMAIL`/`SWIPIUM_TEST_PASSWORD`.
+- Every app install is consent-gated, including an APK inside the project (Android now matches iOS). `qa_mobile_audit` `resilience`/`release_gate` profiles ask for network-change consent before toggling airplane mode, and restore its original state afterwards.
+- `qa_status` follows the last job: after a finished run it returns that run's next action instead of re-suggesting `qa_smoke`; smoke and report milestones are remembered.
+- Responses are smaller: the JSON block in normal response mode is compact and omits data already shown in the text (a 32-element `qa_snapshot` went from about 8.6k to 1.9k characters), and `qa_act`'s default diff falls back to the full list when most of the screen changed.
+- Fewer device round trips per action: adaptive settle interval, bounded screen-dump timeouts, a cheaper foreground/health check, longer-lived screen-size caches, one keyboard lookup per action, and the MCP cancel signal reaches the device call.
 
 ### Fixed
 
@@ -82,6 +89,16 @@ MCP clients pick up the new tool list after a restart. Saved prompts or scripts 
   - `qa_flow_check` and `qa_flow_run mode:"plan"` resolve the project root like other tools (`projectRoot`, MCP roots, `SWIPIUM_PROJECT_ROOT`, working directory).
   - Several errors that returned `UNKNOWN` now carry typed codes (`INVALID_ARGUMENT`, `FLOW_NOT_FOUND`, `KEYBOARD_NOT_DISMISSIBLE`, `CAPTURE_WITHHELD_SECURE`, `SENSITIVE_MODE_REFUSED`, `NO_DEVICE`).
   - `qa_status` reports a simulator session without WebDriverAgent as `visual-only`.
+- Found in pre-release review:
+  - With a physical phone connected, `qa_test_this` could install the app on the phone instead of the emulator it planned to boot. It now waits for the new emulator and never targets a physical device; a phone alone returns `PHYSICAL_DEVICE_UNSUPPORTED`, and a missing `adb` returns `ADB_NOT_FOUND`.
+  - `qa_test_this` on iOS without WebDriverAgent no longer blocks by default: it skips suite generation and runs visual-only. Plan-mode "next" calls include `mode:"execute"` so they don't repeat the plan.
+  - The file lock could spin forever on a stale lock it could not take over, blocking server startup.
+  - Common-word passwords ("test", "password") no longer rewrite selectors or block generation on template text.
+  - Apps whose package name contains `debug` or `alert` no longer show false banner/snackbar overlays.
+  - Tapping a switch or checkbox is detected as a change, instead of being retried and toggled back.
+  - `qa_flow_repair` proposes elements of the same kind, ranked by text similarity, and refuses to apply low-confidence repairs; a failed `qa_flow_run` points to it.
+  - Flow `clearOverlay` dismisses iOS alerts with the alert API. A brief WebDriverAgent outage while resuming no longer downgrades an iOS session permanently.
+  - Unknown sessions, invalid app IDs, and deliberate refusals return typed failure codes, and the report's tool status no longer counts them as tool errors.
 
 ### Security
 
@@ -93,6 +110,11 @@ MCP clients pick up the new tool list after a restart. Saved prompts or scripts 
 - A registered secret typed into an ordinary (non-password) field is recorded as a secret too, and every generator checks its output against the session's secrets: generation fails with `SECRET_IN_GENERATED_OUTPUT` and writes nothing rather than emit a secret. `state.json`, `test-suite.json`, and test cases no longer store secret values.
 - `qa_visual` baseline names and template paths are confined to the project (`VISUAL_PATH_REFUSED`); artifact names can no longer escape the session directory. On screens Swipium cannot inspect, OCR results that look like credentials are withheld.
 - `THREAT_MODEL.md` documents the limits of the re-call consent convention and the stronger elicitation path.
+- A cloned repository is treated as untrusted input: flows cannot read server environment variables outside `SWIPIUM_*`, and an `openUrl` containing a variable is consent-gated; consent shows the exact commands of flow seed steps and of repository-configured OCR/mask commands, labelled as unreviewed; a project config can no longer point iOS automation at a non-loopback WebDriverAgent (use `SWIPIUM_ALLOW_REMOTE_WDA` to allow specific URLs).
+- Consent prompts strip control characters and are bound to the session that requested them.
+- Orphan-process cleanup only signals a process whose recorded start time and command still match, so a reused process ID can no longer be killed; it runs after the server connects.
+- App IDs are validated and quoted for the device shell. Sensitive mode suppresses screenshots in flows and smoke runs. `qa_issue_log` redacts session secrets before writing the ledger. Session folders and files are private (`0700`/`0600`), and OCR temp files live in private per-call directories.
+- CI workflows pin third-party actions to commit SHAs.
 - Production dependencies updated for advisories in transitive MCP SDK dependencies (`fast-uri`, `hono`, `@hono/node-server`, `body-parser`).
 
 ### Removed

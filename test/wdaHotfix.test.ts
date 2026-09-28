@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WdaDriver } from '../src/drivers/WdaDriver.js';
+import { invalidateScreenSizeCache } from '../src/drivers/DirectDriver.js';
 import { TYPING_TIMEOUT_CAP_MS, wdaRequestTimeoutMs, withWdaCall } from '../src/lib/wda.js';
 import { buildPlan } from '../src/build/plan.js';
 
@@ -225,7 +226,8 @@ describe('WDA v1 compatibility fixes', () => {
       const predicateValues = fake.requests
         .filter((r) => r.url === '/session/wda-session-1/element' && r.body.using === 'predicate string')
         .map((r) => r.body.value);
-      expect(predicateValues).toEqual(['focused == 1', 'focused == 1']);
+      // clear + type reuse ONE focused-element lookup (was one lookup per call)
+      expect(predicateValues).toEqual(['focused == 1']);
       expect(fake.calls).toContain('POST /session/wda-session-1/element/element-1/clear');
       expect(fake.requests).toContainEqual(
         expect.objectContaining({
@@ -341,14 +343,16 @@ describe('WDA keyboard, orientation, timeouts and session recovery', () => {
     }
   });
 
-  it('screen size cache is keyed by orientation (rotation re-reads /window/size)', async () => {
+  it('screen size is cached without a per-call /orientation round trip; an orientation change invalidates it', async () => {
     const orientation = { value: 'PORTRAIT' };
     const fake = await startFakeWda({ orientation });
     try {
       const d = new WdaDriver(fake.url, { udid: 'SIM-1' });
       expect(await d.screenSize()).toEqual({ width: 393, height: 852 });
       expect(await d.screenSize()).toEqual({ width: 393, height: 852 });
+      expect(fake.calls.filter((c) => c === 'GET /session/wda-session-1/orientation')).toHaveLength(1);
       orientation.value = 'LANDSCAPE';
+      invalidateScreenSizeCache('SIM-1'); // what a Swipium orientation change (or a rotated page source) does
       expect(await d.screenSize()).toEqual({ width: 852, height: 393 });
       expect(fake.calls.filter((c) => c === 'GET /session/wda-session-1/window/size')).toHaveLength(2);
     } finally {

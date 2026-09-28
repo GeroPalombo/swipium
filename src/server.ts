@@ -9,6 +9,7 @@ import {
   burnConsent,
   peekConsent,
   requestConsentDecision,
+  runWithConsentScope,
   setElicitationProvider,
   type ApprovalMechanism,
   type ConsentRequest,
@@ -60,7 +61,7 @@ import { log } from './lib/logger.js';
 import { qaError, runWithResponseMode } from './lib/result.js';
 import { recordToolErrorFromResult } from './report/toolHealth.js';
 import { computeSchemaHash, describeZodField, setSchemaHash, type ToolSurfaceEntry } from './lib/schemaHash.js';
-import { SWIPIUM_VERSION, TOOL_COUNT, TOOL_NAMES, TOOL_NAME_SET, type ToolName } from './version.js';
+import { REMOVED_TOOLS, STALE_CLIENT_HINT, SWIPIUM_VERSION, TOOL_COUNT, TOOL_NAMES, TOOL_NAME_SET, type ToolName } from './version.js';
 import { toolAnnotations } from './lib/toolAnnotations.js';
 import { CAPABILITY_GROUPS } from './core/capabilityGroups.js';
 import { ensureAndroidToolsOnPath } from './lib/android.js';
@@ -86,15 +87,42 @@ export const ELICITATION_TIMEOUT_MS = 10 * 60_000;
  * `cancel`, a timeout, an aborted tool call or a transport error all reject/return 'cancelled'
  * — a refusal (MCP spec: cancel = dismissed without an explicit choice, never consent).
  */
+/** Consent-prompt field hygiene: the explain / command strings interpolate repo-derived values
+ * (flow names, queries, URLs, configured argv). Strip control characters (incl. newlines, which
+ * could fake a second "Will run:" line), bidi overrides and zero-width characters, collapse
+ * whitespace, and cap the length — the caller then QUOTES the result. Exported for tests. */
+export function sanitizePromptField(value: unknown, max = 300): string {
+  const flat = String(value ?? '')
+    .replace(/[\p{Cc}\u2028\u2029\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+/** The out-of-band consent prompt text. Every interpolated field is sanitised and quoted
+ * (JSON-style), the command is shown one quoted line per step, and the whole message is capped. */
+export function buildConsentPromptMessage(req: ConsentRequest): string {
+  const q = (v: unknown, max?: number) => JSON.stringify(sanitizePromptField(v, max));
+  const lines = [`Swipium requests consent (risk: ${q(req.risk, 20)}) for action ${q(req.action, 60)}.`, `Details: ${q(req.explain, 600)}`];
+  if (req.exactCommand) {
+    const steps = String(req.exactCommand)
+      .split(/\r?\n/)
+      .filter((l) => l.trim())
+      .slice(0, 4);
+    lines.push(steps.length > 1 ? 'Will run:' : `Will run: ${q(steps[0], 500)}`);
+    if (steps.length > 1) for (const step of steps) lines.push(`  ${q(step, 500)}`);
+  }
+  const msg = lines.join('\n');
+  return msg.length > 2000 ? `${msg.slice(0, 1999)}…` : msg;
+}
+
 function makeElicitationProvider(server: McpServer): ElicitationProvider {
   return async (req, ctx) => {
     // The SDK normalises a bare `elicitation: {}` capability to `{ form: {} }`.
     if (!server.server.getClientCapabilities()?.elicitation?.form) return 'unavailable';
     const answer = await server.server.elicitInput(
       {
-        message:
-          `Swipium requests consent (risk: ${req.risk}) for "${req.action}": ${req.explain}` +
-          (req.exactCommand ? `\nWill run: ${req.exactCommand}` : ''),
+        message: buildConsentPromptMessage(req),
         requestedSchema: {
           type: 'object',
           properties: {
@@ -252,8 +280,11 @@ function installResponseModeWrapper(server: McpServer, sessions: SessionStore, s
       const mode = (fromSession ?? (valid(first?.responseMode) ? first!.responseMode : 'normal')) as 'compact' | 'normal' | 'verbose';
       // Every call records the project root it resolves (if any) so the result carries
       // `rootSource` (+ a note when the root was only guessed from the server cwd).
+      // Consents minted/consumed during this call are bound to its sessionId (consent.ts).
       const run = async (callArgs: unknown[]) => {
-        const { value, resolved } = await withRootResolutionRecording(async () => runWithResponseMode(mode, () => handler(...callArgs)));
+        const { value, resolved } = await withRootResolutionRecording(async () =>
+          runWithConsentScope(first?.sessionId, () => runWithResponseMode(mode, () => handler(...callArgs))),
+        );
         return annotateRootSource(value, resolved);
       };
       const result = await run(a);
@@ -262,6 +293,78 @@ function installResponseModeWrapper(server: McpServer, sessions: SessionStore, s
       return out;
     });
   };
+}
+
+/** Legacy (≤ 1.5) call shapes that a client spawned before the upgrade may still send, mapped to
+ * the 2.0 replacement. Returned as a typed STALE_CLIENT error instead of a raw "Tool not found" /
+ * zod validation message, WITHOUT polluting the current schemas/descriptions. Exported for tests. */
+export function staleClientReplacement(name: string, args: Record<string, unknown> | undefined): string | undefined {
+  if (!TOOL_NAME_SET.has(name)) return REMOVED_TOOLS[name];
+  const action = args?.action;
+  if (name === 'qa_ios' && typeof action === 'string') {
+    if (action === 'screenshot') return 'qa_screenshot { sessionId }';
+    if (action.startsWith('wda_')) return `qa_wda { sessionId, action: "${action.slice(4) || 'status'}" }`;
+  }
+  if (name === 'qa_wait' && args?.for === 'job_done') return 'qa_job_status { sessionId, jobId, waitMs }';
+  return undefined;
+}
+
+function staleClientError(name: string, replacement: string): CallToolResult {
+  return qaError(
+    {
+      what: `${name} (this call shape) was removed in Swipium v${SWIPIUM_VERSION}; use ${replacement}`,
+      changedState: false,
+      retrySafe: true,
+      failureCode: 'STALE_CLIENT',
+      nextSteps: [`Call ${replacement} instead.`, 'Restart the MCP client so it reloads the current tool list.'],
+      clientHint: STALE_CLIENT_HINT,
+    },
+    { removedCall: name, replacement },
+  );
+}
+
+type RawHandler = (request: { params?: Record<string, unknown> }, extra: unknown) => Promise<unknown>;
+
+/** The SDK stores handlers per method; wrapping the stored (already SDK-wrapped) function keeps
+ * the SDK's own request/result validation intact. */
+function wrapRequestHandler(server: McpServer, method: string, wrap: (orig: RawHandler) => RawHandler): void {
+  const map = (server.server as unknown as { _requestHandlers?: Map<string, RawHandler> })._requestHandlers;
+  const orig = map?.get(method);
+  if (!map || !orig) {
+    log('warn', 'could not wrap MCP request handler (SDK internals changed?)', { method });
+    return;
+  }
+  map.set(method, wrap(orig));
+}
+
+/** Drop the per-schema `$schema` dialect key (~2.8 KB of repetition across the tool list). */
+export function stripSchemaDialect(result: unknown): unknown {
+  const tools = (result as { tools?: Array<Record<string, unknown>> } | undefined)?.tools;
+  if (!Array.isArray(tools)) return result;
+  for (const t of tools) {
+    for (const k of ['inputSchema', 'outputSchema'] as const) {
+      const sch = t[k] as Record<string, unknown> | undefined;
+      if (sch && typeof sch === 'object' && '$schema' in sch) delete sch.$schema;
+    }
+  }
+  return result;
+}
+
+/** tools/call: unknown removed-tool names and legacy call shapes → STALE_CLIENT (with the
+ * replacement + stale-client hint); tools/list: strip `$schema`. */
+function installProtocolShims(server: McpServer): void {
+  wrapRequestHandler(server, 'tools/call', (orig) => async (request, extra) => {
+    const name = String(request?.params?.name ?? '');
+    const args = request?.params?.arguments as Record<string, unknown> | undefined;
+    const replacement = staleClientReplacement(name, args);
+    if (replacement && !TOOL_NAME_SET.has(name)) return staleClientError(name, replacement);
+    const result = (await orig(request, extra)) as CallToolResult;
+    // Legacy enum values fail the CURRENT schema's validation → rewrite that raw error only.
+    if (replacement && result?.isError && !result.structuredContent)
+      return staleClientError(`${name} ${JSON.stringify(args?.action ?? args?.for)}`, replacement);
+    return result;
+  });
+  wrapRequestHandler(server, 'tools/list', (orig) => async (request, extra) => stripSchemaDialect(await orig(request, extra)));
 }
 
 /** Startup assertion (P0 §2 "silent tool-drop gate"): every registerTool() call must be
@@ -423,6 +526,7 @@ export function createServer(): ServerContext {
   // freeze the surface's content fingerprint.
   assertToolSurface(attemptedToolNames);
   setSchemaHash(computeSchemaHash(surface));
+  installProtocolShims(server);
 
   // Reusable workflow templates (MCP prompts capability) — thin orchestration of the tools above.
   registerPrompts(server);
@@ -521,17 +625,6 @@ export async function startServer(): Promise<void> {
   const { server, sessions } = createServer();
   const transport = new StdioServerTransport();
 
-  // Reap long-lived children (Metro, managed WDA, recorders) left behind by a crashed
-  // previous server run. Ownership + `ps` command checks make this safe next to a live
-  // concurrent instance and against recycled PIDs. A managed WDA < 12 h old whose /status is
-  // healthy is ADOPTED instead (re-owned by this server) so a resumed iOS session keeps its WDA
-  // — shutdown below intentionally leaves managed WDA running for exactly that reason.
-  try {
-    await reapOrphanedProcesses();
-  } catch (e) {
-    log('warn', 'orphaned-process sweep failed', { err: String(e) });
-  }
-
   // Persistence is debounced (SessionStore.persist) — make sure a graceful exit never
   // loses the trailing write. 'exit' handlers must be synchronous; flushAll is.
   process.once('exit', () => sessions.flushAll());
@@ -572,4 +665,20 @@ export async function startServer(): Promise<void> {
     void restoreThenExit(0, 'transport-close');
   };
   log('info', 'swipium connected over stdio');
+  // Reap long-lived children (Metro, managed WDA, recorders) left behind by a crashed previous
+  // server run — AFTER connect and in the background, so a slow sweep (lock wait, WDA /status
+  // probes) never delays the server becoming ready. Ownership + start-time/command fingerprint
+  // checks make this safe next to a live concurrent instance and against recycled PIDs. A managed
+  // WDA < 12 h old whose /status is healthy is ADOPTED instead (re-owned by this server) so a
+  // resumed iOS session keeps its WDA — shutdown intentionally leaves managed WDA running.
+  void startOrphanSweep();
+}
+
+/** Background orphan sweep; never rejects. Exported for tests. */
+export async function startOrphanSweep(reap: () => Promise<void> = reapOrphanedProcesses): Promise<void> {
+  try {
+    await reap();
+  } catch (e) {
+    log('warn', 'orphaned-process sweep failed', { err: String(e) });
+  }
 }

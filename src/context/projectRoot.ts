@@ -93,6 +93,27 @@ export function resolveFallbackRoot(opts: RootEnv = {}): ResolvedRoot | null {
   return null;
 }
 
+/** Choose among the client's MCP roots (review P2): the first existing file:// root that has a
+ * project marker; else the first one that is neither `/` nor $HOME. A client exposing
+ * [$HOME, app] must land on the app, not on the home directory. Exported for tests. */
+export function pickMcpRoot(uris: unknown[], home: string = homedir()): string | undefined {
+  const dirs: string[] = [];
+  for (const u of uris) {
+    if (typeof u !== 'string' || !u.startsWith('file://')) continue;
+    try {
+      const p = fileURLToPath(u);
+      if (isDir(p)) dirs.push(p);
+    } catch {
+      /* malformed URI — skip */
+    }
+  }
+  const unsafe = (p: string) => {
+    const abs = resolve(p);
+    return abs === parse(abs).root || (!!home && abs === resolve(home));
+  };
+  return dirs.find((p) => !unsafe(p) && hasProjectMarker(p)) ?? dirs.find((p) => !unsafe(p));
+}
+
 const UNRESOLVED_HINT =
   'No project root: the client exposed no MCP roots, SWIPIUM_PROJECT_ROOT / CLAUDE_PROJECT_DIR are unset, and the server cwd is not an app directory (no package.json / app.json / pubspec.yaml / Gradle files / android/ / ios/ / *.xcodeproj / Podfile). ' +
   'Pass projectRoot="/absolute/path/to/app", or set SWIPIUM_PROJECT_ROOT in the MCP server "env" (or a "cwd" where the client supports it).';
@@ -162,13 +183,11 @@ async function resolveProjectRootUnrecorded(server: McpServer, explicit?: string
     const caps = server.server.getClientCapabilities?.();
     if (caps?.roots) {
       const res = await server.server.listRoots();
-      const fileRoot = res.roots?.find((r) => typeof r.uri === 'string' && r.uri.startsWith('file://'));
-      if (fileRoot) {
-        const p = fileURLToPath(fileRoot.uri);
-        if (isDir(p)) {
-          return { root: p, source: 'mcp-roots' };
-        }
-      }
+      const picked = pickMcpRoot(
+        (res.roots ?? []).map((r) => r.uri),
+        opts.home ?? homedir(),
+      );
+      if (picked) return { root: picked, source: 'mcp-roots' };
     }
   } catch {
     // client doesn't support roots, or the call failed — fall through

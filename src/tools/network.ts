@@ -4,7 +4,7 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import type { Session, SessionStore } from '../session/store.js';
@@ -73,7 +73,8 @@ export function registerNetwork(server: McpServer, sessions: SessionStore): void
     },
     async ({ sessionId, action, consentId, approve }) => {
       const session = sessions.get(sessionId);
-      const { driver: d, blocked } = session ? await getDriver(session) : { driver: undefined, blocked: undefined };
+      if (!session) return unknownSessionError(sessionId);
+      const { driver: d, blocked } = await getDriver(session);
       if (!session || !d) {
         return (
           blockedDeviceResult(blocked) ??

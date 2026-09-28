@@ -8,7 +8,7 @@ import { openSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { run } from '../lib/spawn.js';
 import { detectFramework } from '../context/detect.js';
@@ -89,13 +89,7 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
     },
     async ({ sessionId, action, consentId, approve }) => {
       const session = sessions.get(sessionId);
-      if (!session)
-        return qaError({
-          what: `Unknown sessionId ${sessionId}`,
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_start_session first.'],
-        });
+      if (!session) return unknownSessionError(sessionId);
       // Centralized device resolution (P0.1/P0.3): use the session device, else the single
       // online one (bind it), else ask / guide — never a circular "no device" dead end.
       const dev = await resolveDevice(session);

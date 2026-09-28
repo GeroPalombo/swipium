@@ -224,11 +224,11 @@ describe('qa_act native-selector secret capture + gesture geometry (fake driver)
     // …but the response never echoes it
     expect(JSON.stringify(res)).not.toContain(password);
 
-    // and the generated flow carries a ${SECRET_n} placeholder, never the literal
+    // and the generated flow carries a SWIPIUM_-prefixed placeholder (env-resolvable), never the literal
     const gen = await generatedYaml(sessionId);
-    expect(gen.yaml).toContain('${SECRET_1}');
+    expect(gen.yaml).toContain('${SWIPIUM_SECRET_1}');
     expect(gen.yaml).not.toContain(password);
-    expect(gen.variables).toContain('SECRET_1');
+    expect(gen.variables).toContain('SWIPIUM_SECRET_1');
 
     // a subsequent snapshot must not leak the value either
     const snap = (await client.callTool({ name: 'qa_snapshot', arguments: { sessionId } })) as CallToolResult;
@@ -254,7 +254,7 @@ describe('qa_act native-selector secret capture + gesture geometry (fake driver)
     expect(JSON.stringify(res)).not.toContain(password);
 
     const gen = await generatedYaml(sessionId);
-    expect(gen.yaml).toContain('${SECRET_1}');
+    expect(gen.yaml).toContain('${SWIPIUM_TEST_PASSWORD}'); // named from the field, as the suite generator does
     expect(gen.yaml).not.toContain(password);
   }, 20_000);
 

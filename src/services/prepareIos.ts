@@ -7,7 +7,14 @@ import { existsSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { SimctlDriver } from '../drivers/SimctlDriver.js';
 import { WdaDriver } from '../drivers/WdaDriver.js';
-import { checkWda, createWdaSession, wdaSessionUdidMismatch } from '../lib/wda.js';
+import {
+  checkWda,
+  createWdaSession,
+  isLoopbackWdaUrl,
+  remoteWdaAllowedByUser,
+  REMOTE_WDA_ENV,
+  wdaSessionUdidMismatch,
+} from '../lib/wda.js';
 import { loadWdaConfig } from '../lib/wdaConfig.js';
 import { appBuildDestination } from '../ios/signing.js';
 import * as sim from '../lib/simctl.js';
@@ -214,7 +221,20 @@ export async function prepareIos(
   let wda: { reachable: boolean; url?: string } | undefined;
   let wdaSessionId: string | undefined;
   let requiresAttach = false;
-  if (attach !== 'skip') {
+  // Same rule as qa_wda: a non-loopback WDA URL (e.g. ios.wda.url from the repository's
+  // .swipium/config.json) is never contacted automatically — screens and typed text would go to
+  // another machine. Only the user's SWIPIUM_ALLOW_REMOTE_WDA pre-approves it; otherwise the
+  // consent path is an explicit `qa_wda attach { webDriverAgentUrl, allowNonLoopback:true }`.
+  if (attach !== 'skip' && !isLoopbackWdaUrl(wdaUrl) && !remoteWdaAllowedByUser(wdaUrl)) {
+    const why =
+      `WDA URL ${wdaUrl} is not loopback — refused to connect automatically (configured by the repository (.swipium/config.json) — unreviewed). ` +
+      `Attach it explicitly with qa_wda { action:"attach", webDriverAgentUrl, allowNonLoopback:true } (consent-gated), or set ${REMOTE_WDA_ENV}=<exact url> in the user environment.`;
+    if (attach === 'required') {
+      return { ok: false, failureCode: 'DESTRUCTIVE_REFUSED', error: why, udid: pick.udid, name: pick.name, bundleId, installed, launched };
+    }
+    wda = { reachable: false, url: wdaUrl };
+    sessions.addWorkaround(session, `${why} iOS verification is visual-only until then`);
+  } else if (attach !== 'skip') {
     const status = await checkWda(wdaUrl, 1500).catch(() => ({ reachable: false }));
     wda = { reachable: !!status.reachable, url: wdaUrl };
     if (status.reachable) {

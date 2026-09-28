@@ -1,5 +1,5 @@
 // SWIPIUM-REQ-04 — generated-code validation. Pure: validates emitted files WITHOUT a device.
-// Checks (REQ-04 §qa_automation_validate + acceptance criteria):
+// Checks (REQ-04 validation, formerly qa_automation_validate; now run via qa_generate + acceptance criteria):
 //   - no inlined secrets (env-only),
 //   - locator durability threshold (fails on brittle-only above threshold unless candidate-only),
 //   - capability config presence,
@@ -38,6 +38,9 @@ export interface ValidateOptions {
    *  included — is a SECRET_IN_GENERATED_OUTPUT error: the heuristics above cannot see a password
    *  typed into a field the UI did not flag as secure. */
   secretValues?: Iterable<string>;
+  /** Selector/screen strings of the recording (secretGuard.structuralLiterals): a weak secret equal
+   *  to one of them is a locator in the output, not a leak. */
+  structural?: Iterable<string>;
 }
 
 // password = "literal" / token: 'literal' etc. — but NOT process.env / os.environ references.
@@ -183,7 +186,7 @@ export function validateGeneratedSuite(files: GeneratedFile[], opts: ValidateOpt
   const findings: ValidationFinding[] = [];
   const secretFindings = [
     ...scanSecrets(files, opts.secrets ?? []),
-    ...findSecretLeaks(files, opts.secretValues).map((l): ValidationFinding => ({
+    ...findSecretLeaks(files, opts.secretValues, { structural: opts.structural }).map((l): ValidationFinding => ({
       code: 'SECRET_IN_GENERATED_OUTPUT',
       severity: 'error',
       file: l.path,

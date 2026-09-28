@@ -5,6 +5,7 @@
 
 import { existsSync, writeFileSync } from 'node:fs';
 import { makeRedactor, redactDeep } from '../lib/redact.js';
+import { inputBindings } from '../suite/secretGuard.js';
 import { dedupeFindings, repeatSuffix } from '../report/findingsDedupe.js';
 import { toolVerdictFor } from '../report/toolHealth.js';
 import { getDriver } from '../session/attach.js';
@@ -708,6 +709,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
           name: `${(appId ?? 'app').split('.').pop()}-recorded`,
           appId: appId ?? undefined,
           secrets: session.secrets,
+          inputs: inputBindings(session),
         });
         exportUri = sessions.saveArtifact(
           session,

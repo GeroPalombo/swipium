@@ -5,8 +5,17 @@
 // Safety rules:
 //  - Every entry records the OWNING server pid. A child whose owner is still a live
 //    node/swipium process belongs to a concurrent server instance and is never touched.
-//  - Before signalling, the child's command line is re-checked via `ps` so a PID recycled
-//    by the OS to an unrelated process is never killed.
+//  - Every entry records the child's FINGERPRINT at spawn time: its start time
+//    (`ps -o lstart=`) and full command line (for WDA that includes the project path and
+//    `-destination id=<udid>`). Before signalling (or adopting), BOTH are re-read via `ps` and
+//    must match exactly — a PID recycled by the OS to an unrelated process (another node, the
+//    adb server, the user's own xcodebuild/Appium WDA) is never killed or adopted. Entries
+//    without a fingerprint (written by an older build, or when `ps` was unavailable) are
+//    unverifiable and are dropped without signalling.
+//  - A process GROUP is only signalled when Swipium created the child as a group leader
+//    (spawned detached: pgid == pid at registration); otherwise only the pid itself is signalled.
+//  - The owning server's start time is recorded too, so a recycled server pid (any node process)
+//    is not mistaken for a live concurrent server.
 //  - Emulators are ADOPTED, not killed — an orphaned emulator stays booted and remains
 //    usable via adb for the next run.
 //  - Managed WDA (xcodebuild test-without-building) is deliberately NOT stopped on a graceful
@@ -35,6 +44,14 @@ export interface ManagedProcessEntry {
   startedAt: number;
   /** kind 'wda': the WDA base URL, probed (GET /status) before an orphan is adopted. */
   endpoint?: string;
+  /** Child fingerprint captured at registration: `ps -o lstart=` (whitespace-normalised). */
+  procStart?: string;
+  /** Child fingerprint captured at registration: full `ps -o command=` line (normalised). */
+  command?: string;
+  /** True only when the child led its own process group at registration (spawned detached). */
+  groupLeader?: boolean;
+  /** Owning server's `ps -o lstart=` at registration — a recycled server pid won't match it. */
+  serverStart?: string;
 }
 
 /** An orphaned managed WDA older than this is reaped even when healthy (bounded lifetime). */
@@ -46,13 +63,15 @@ const PROCESSES_FILE = join(REGISTRY_DIR, 'processes.json');
 const PROCESSES_LOCK = `${PROCESSES_FILE}.lock`;
 const MAX_ENTRIES = 100;
 
-/** What the child's `ps` command line must look like before we dare signal it. */
+/** Coarse sanity check on top of the exact fingerprint match (defence in depth). */
 const KIND_COMMAND_RE: Record<ManagedProcessKind, RegExp> = {
   metro: /metro|expo|react-native|npx|node/i,
   wda: /xcodebuild/i,
   recording: /screenrecord|recordvideo|simctl|adb/i,
   emulator: /emulator|qemu/i,
 };
+
+const norm = (s: string | null | undefined): string | null => (s == null ? null : s.trim().replace(/\s+/g, ' ') || null);
 
 function pidAlive(pid: number): boolean {
   try {
@@ -64,14 +83,21 @@ function pidAlive(pid: number): boolean {
 }
 
 /** The live command line for `pid`, or null when it is gone / unreadable (POSIX `ps`). */
-function psCommand(pid: number): string | null {
+function psField(pid: number, field: string): string | null {
+  if (process.platform === 'win32') return null;
   try {
-    const out = spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' });
+    const out = spawnSync('ps', ['-o', `${field}=`, '-p', String(pid)], { encoding: 'utf8' });
     if (out.status !== 0 || !out.stdout?.trim()) return null;
     return out.stdout.trim();
   } catch {
     return null;
   }
+}
+const psCommand = (pid: number): string | null => psField(pid, 'command');
+const psStartTime = (pid: number): string | null => norm(psField(pid, 'lstart'));
+function psPgid(pid: number): number | null {
+  const n = Number(psField(pid, 'pgid'));
+  return Number.isInteger(n) && n > 0 ? n : null;
 }
 
 function readEntries(): ManagedProcessEntry[] {
@@ -102,17 +128,36 @@ function mutateEntries(fn: (entries: ManagedProcessEntry[]) => ManagedProcessEnt
   }
 }
 
-/** Record a long-lived child we spawned so a future server instance can reap it if we crash. */
+/** Capture a live child's fingerprint (start time, command, group leadership) + our own start. */
+export function captureFingerprint(
+  pid: number,
+  ops: ProcessOps = REAL_OPS,
+): Pick<ManagedProcessEntry, 'procStart' | 'command' | 'groupLeader' | 'serverStart'> {
+  const procStart = norm(ops.psStartTime(pid));
+  const command = norm(ops.psCommand(pid));
+  const serverStart = norm(ops.psStartTime(process.pid));
+  return {
+    ...(procStart ? { procStart } : {}),
+    ...(command ? { command } : {}),
+    groupLeader: ops.psPgid(pid) === pid,
+    ...(serverStart ? { serverStart } : {}),
+  };
+}
+
+/** Record a long-lived child we spawned so a future server instance can reap it if we crash.
+ *  Must be called right after spawn() returned a pid (the child has exec'd by then), so the
+ *  recorded fingerprint is the child's own. */
 export function registerManagedProcess(
   pid: number | undefined,
   kind: ManagedProcessKind,
   sessionId?: string,
-  extra: { endpoint?: string } = {},
+  extra: { endpoint?: string; ops?: ProcessOps } = {},
 ): void {
   if (!pid || pid <= 0) return;
+  const fp = captureFingerprint(pid, extra.ops);
   mutateEntries((entries) => [
     ...entries.filter((e) => e.pid !== pid),
-    { pid, kind, serverPid: process.pid, sessionId, startedAt: Date.now(), ...(extra.endpoint ? { endpoint: extra.endpoint } : {}) },
+    { pid, kind, serverPid: process.pid, sessionId, startedAt: Date.now(), ...(extra.endpoint ? { endpoint: extra.endpoint } : {}), ...fp },
   ]);
 }
 
@@ -134,16 +179,23 @@ export function unregisterManagedProcess(pid: number | undefined): void {
 export interface ProcessOps {
   pidAlive(pid: number): boolean;
   psCommand(pid: number): string | null;
-  killTree(pid: number): boolean;
+  /** `ps -o lstart=` for the pid, or null when gone/unreadable. */
+  psStartTime(pid: number): string | null;
+  /** `ps -o pgid=` for the pid, or null. */
+  psPgid(pid: number): number | null;
+  /** SIGTERM the pid; its whole process group only when `group` (Swipium made it a leader). */
+  killTree(pid: number, group: boolean): boolean;
 }
 
-/** SIGTERM the child's process group (detached children lead their own group), else the pid. */
-function killTree(pid: number): boolean {
-  try {
-    process.kill(-pid, 'SIGTERM');
-    return true;
-  } catch {
-    /* not a group leader, or group already gone — fall back to the pid itself */
+/** SIGTERM the child's process group when Swipium spawned it as a group leader, else the pid. */
+function killTree(pid: number, group: boolean): boolean {
+  if (group) {
+    try {
+      process.kill(-pid, 'SIGTERM');
+      return true;
+    } catch {
+      /* group already gone — fall back to the pid itself */
+    }
   }
   try {
     process.kill(pid, 'SIGTERM');
@@ -153,13 +205,17 @@ function killTree(pid: number): boolean {
   }
 }
 
-const REAL_OPS: ProcessOps = { pidAlive, psCommand, killTree };
+const REAL_OPS: ProcessOps = { pidAlive, psCommand, psStartTime, psPgid, killTree };
 
-/** True when `serverPid` is a live process that plausibly IS a Swipium/node server. The `ps`
- *  check guards against an OS-recycled server pid making us "adopt" a real orphan forever. */
-function serverStillAlive(serverPid: number, ops: ProcessOps = REAL_OPS): boolean {
+/** True when `serverPid` is a live process that IS the server that registered the entry: its
+ *  start time must equal the recorded one (any node process could have recycled the pid). Legacy
+ *  entries without a recorded server start fall back to the old node/swipium command check —
+ *  that errs toward "alive" (never touch), which is the safe direction. */
+function serverStillAlive(entry: Pick<ManagedProcessEntry, 'serverPid' | 'serverStart'>, ops: ProcessOps = REAL_OPS): boolean {
+  const { serverPid } = entry;
   if (serverPid === process.pid) return false; // our pid at startup = a recycled dead server's
   if (!ops.pidAlive(serverPid)) return false;
+  if (entry.serverStart) return norm(ops.psStartTime(serverPid)) === entry.serverStart;
   const cmd = ops.psCommand(serverPid);
   return cmd != null && /node|swipium/i.test(cmd);
 }
@@ -167,19 +223,33 @@ function serverStillAlive(serverPid: number, ops: ProcessOps = REAL_OPS): boolea
 /** Is this child pid registered to a DIFFERENT, still-live server instance? (adopt, don't touch) */
 export function pidOwnedByLiveServer(pid: number): boolean {
   const entry = readEntries().find((e) => e.pid === pid);
-  return !!entry && serverStillAlive(entry.serverPid);
+  return !!entry && serverStillAlive(entry);
 }
 
 export type ReclaimOutcome = 'killed' | 'adopted' | 'gone' | 'recycled';
 
-/** Verify (via `ps`) that `pid` still runs a command matching `kind`, then kill or adopt it.
- *  Never signals a pid whose command no longer matches — that pid was recycled by the OS. */
-export function reclaimPid(pid: number, kind: ManagedProcessKind, ops: ProcessOps = REAL_OPS): ReclaimOutcome {
+/** Does the live `pid` still carry the fingerprint recorded at spawn (start time AND command)? */
+function fingerprintMatches(entry: ManagedProcessEntry, ops: ProcessOps): boolean {
+  if (!entry.procStart || !entry.command) return false; // unverifiable → never signal/adopt
+  const start = norm(ops.psStartTime(entry.pid));
+  const cmd = norm(ops.psCommand(entry.pid));
+  return start === entry.procStart && cmd === entry.command && KIND_COMMAND_RE[entry.kind].test(cmd);
+}
+
+/** Verify that `pid` is still EXACTLY the child we registered (start time + full command, per
+ *  the registry entry — or `entry` when given), then kill or adopt it. A pid with no verifiable
+ *  registry fingerprint, or whose fingerprint differs, is reported 'recycled' and never signalled.
+ *  Only a child Swipium spawned as a group leader has its process group signalled. */
+export function reclaimPid(
+  pid: number,
+  kind: ManagedProcessKind,
+  ops: ProcessOps = REAL_OPS,
+  entry: ManagedProcessEntry | undefined = readEntries().find((e) => e.pid === pid && e.kind === kind),
+): ReclaimOutcome {
   if (!ops.pidAlive(pid)) return 'gone';
-  const cmd = ops.psCommand(pid);
-  if (!cmd || !KIND_COMMAND_RE[kind].test(cmd)) return 'recycled';
+  if (!entry || entry.pid !== pid || !fingerprintMatches(entry, ops)) return 'recycled';
   if (kind === 'emulator') return 'adopted'; // still a real emulator — leave it booted (usable via adb)
-  return ops.killTree(pid) ? 'killed' : 'gone';
+  return ops.killTree(pid, entry.groupLeader === true) ? 'killed' : 'gone';
 }
 
 export interface ReapOptions {
@@ -201,9 +271,9 @@ async function adoptableWdaPids(entries: ManagedProcessEntry[], opts: Required<R
       e.kind === 'wda' &&
       typeof e.endpoint === 'string' &&
       opts.now - e.startedAt < WDA_ADOPT_MAX_AGE_MS &&
-      !serverStillAlive(e.serverPid, opts.ops) &&
+      !serverStillAlive(e, opts.ops) &&
       opts.ops.pidAlive(e.pid) &&
-      KIND_COMMAND_RE.wda.test(opts.ops.psCommand(e.pid) ?? ''),
+      fingerprintMatches(e, opts.ops), // a recycled pid now running the user's own WDA is NOT adopted
   );
   const healthy = await Promise.all(candidates.map((e) => opts.wdaHealthy(e.endpoint!).catch(() => false)));
   return new Set(candidates.filter((_, i) => healthy[i]).map((e) => e.pid));
@@ -221,7 +291,7 @@ export async function reapOrphanedProcesses(options: ReapOptions = {}): Promise<
   mutateEntries((entries) => {
     const keep: ManagedProcessEntry[] = [];
     for (const e of entries) {
-      if (serverStillAlive(e.serverPid, opts.ops)) {
+      if (serverStillAlive(e, opts.ops)) {
         keep.push(e); // a live concurrent server owns it — not ours to touch
         continue;
       }
@@ -235,13 +305,13 @@ export async function reapOrphanedProcesses(options: ReapOptions = {}): Promise<
         });
         continue;
       }
-      const outcome = reclaimPid(e.pid, e.kind, opts.ops);
+      const outcome = reclaimPid(e.pid, e.kind, opts.ops, e);
       if (outcome === 'killed') {
         log('warn', 'reaped orphaned child process from a previous server run', { pid: e.pid, kind: e.kind, sessionId: e.sessionId });
       } else if (outcome === 'adopted') {
         log('info', 'adopted orphaned emulator (left booted; reachable via adb)', { pid: e.pid, sessionId: e.sessionId });
       } else if (outcome === 'recycled') {
-        log('info', 'dropped orphan entry: PID was recycled by an unrelated process — not signalled', { pid: e.pid, kind: e.kind });
+        log('info', 'dropped orphan entry: PID recycled or fingerprint unverifiable — not signalled', { pid: e.pid, kind: e.kind });
       }
       // In every other non-live-owner case the entry is dropped: it has been handled.
     }

@@ -9,35 +9,62 @@ import { qaNeedsInput, NeedsInput } from '../../lib/needsInput.js';
 import { buildPlan, type BuildPlatform } from '../../build/plan.js';
 import { requireConsent, consumeConsent } from '../../consent/consent.js';
 import { buildTestThisPreflight } from '../../services/preflight.js';
-import { existsSync, readFileSync } from 'node:fs';
-import { sep } from 'node:path';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { isAbsolute, relative, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
-import type { Session, SessionStore } from '../../session/store.js';
+import type { SessionStore } from '../../session/store.js';
+import type { Session } from '../../session/store.js';
 import type { ExecuteArgs } from './types.js';
 import { runExecutePipeline } from './pipeline.js';
+import { hasUsableCredentials, credentialsLostOnRestart, isLoginDeclined } from './sessionIntent.js';
 
-/** Whether the secure store already has login credentials (so we don't re-ask). */
-function hasCredentials(session: Session): boolean {
-  return session.inputs.some((i) => /EMAIL|PASSWORD/.test(i.varName));
+function realOrResolved(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+}
+
+/** Whether `p` is inside `root` after resolving `..` segments and symlinks (a plain string prefix
+ *  check lets `<root>/../../x.apk` count as in-root). */
+export function isWithinRoot(p: string, root: string): boolean {
+  const rel = relative(realOrResolved(root), realOrResolved(p));
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 }
 
 /** Execute / interactive orchestration: handle questions + consent synchronously, then run the
  *  build/convert → prepare → smoke → report pipeline as a job. */
 export async function runExecuteMode(server: McpServer, sessions: SessionStore, session: Session, a: ExecuteArgs): Promise<CallToolResult> {
   // 1. Auth question — interactive (or stopOnNeedsInput / goal:test_login) asks; execute proceeds pre-login.
-  if (a.scan.likelyAuth && !hasCredentials(session) && (a.mode === 'interactive' || a.stopOnNeedsInput)) {
+  if (
+    a.scan.likelyAuth &&
+    !isLoginDeclined(session) &&
+    !hasUsableCredentials(session) &&
+    (a.mode === 'interactive' || a.stopOnNeedsInput)
+  ) {
+    // Stored credential METADATA survives a restart but the values do not — re-ask, and say why.
+    const lost = credentialsLostOnRestart(session);
     const attempted = [
       `scanned project (framework=${a.scan.framework}; detected likely auth: ${a.scan.authSignals.slice(0, 3).join(', ') || 'login UI'})`,
       `resolved artifact + target (${a.target.selected ?? 'unknown'})`,
       ...session.workarounds,
+      ...(lost ? ['found stored credential metadata, but the values were not kept across the server restart (secrets never persist)'] : []),
     ];
-    return qaNeedsInput(NeedsInput.credentials('Authenticated workflows need a test account.'), {
-      sessionId: session.id,
-      state: 'needs_input',
-      attempted,
-      appMapUri: a.appMapUri,
-      resumeWith: 'qa_continue_from_blocker',
-    });
+    return qaNeedsInput(
+      NeedsInput.credentials(
+        lost
+          ? 'Credentials were provided earlier, but their values are gone after a server restart (secrets are never persisted).'
+          : 'Authenticated workflows need a test account.',
+      ),
+      {
+        sessionId: session.id,
+        state: 'needs_input',
+        attempted,
+        appMapUri: a.appMapUri,
+        resumeWith: 'qa_continue_from_blocker',
+      },
+    );
   }
 
   // 2. Unified execution preflight (Milestone A): execute mode must request the SAME consent the
@@ -51,7 +78,7 @@ export async function runExecuteMode(server: McpServer, sessions: SessionStore, 
   }
   // Hash an external (outside-root) APK so the consent shows what is being installed.
   let externalApk: { path: string; sha256: string } | undefined;
-  if (a.isAndroid && !a.needBuild && a.effectiveApk && existsSync(a.effectiveApk) && !a.effectiveApk.startsWith(session.root + sep)) {
+  if (a.isAndroid && !a.needBuild && a.effectiveApk && existsSync(a.effectiveApk) && !isWithinRoot(a.effectiveApk, session.root)) {
     try {
       externalApk = { path: a.effectiveApk, sha256: createHash('sha256').update(readFileSync(a.effectiveApk)).digest('hex') };
     } catch {
@@ -70,7 +97,7 @@ export async function runExecuteMode(server: McpServer, sessions: SessionStore, 
     apkPath: a.isAndroid ? a.effectiveApk : undefined,
     externalApk,
     iosApp,
-    iosAppOutsideRoot: iosApp ? !iosApp.startsWith(session.root + sep) : undefined,
+    iosAppOutsideRoot: iosApp ? !isWithinRoot(iosApp, session.root) : undefined,
     iosReal: a.isIosReal,
     iosRealUdid: a.isIosReal ? a.target.device : undefined,
     iosRealApp: a.isIosReal ? a.art.best?.path : undefined,
@@ -95,10 +122,28 @@ export async function runExecuteMode(server: McpServer, sessions: SessionStore, 
         affects: preflight.consentAffects,
         explain: `Running "test this" needs these privileged steps (approved together so they don't re-prompt):\n${preflight.exactCommand}\nApprove to start; Swipium then installs, smokes, reports${a.generateSuite ? ', and generates a suite' : ''}.`,
       });
-      // The static app map was already built pre-launch — keep its URI on the consent result (Fix 1).
-      if (a.appMapUri && consentResult.structuredContent) {
-        consentResult.structuredContent = { ...(consentResult.structuredContent as Record<string, unknown>), appMapUri: a.appMapUri };
-      }
+      // A supplied consentId that could not be used must be explained — never a silent re-challenge.
+      const staleNote = a.consentId
+        ? `consent ${a.consentId} ${/unknown|expired|already-used/i.test(gate.reason ?? '') ? 'unknown or expired' : `not applied (${gate.reason ?? 'not usable'})`} — new challenge issued`
+        : undefined;
+      // sessionId rides on the consent result so the approving re-call reuses THIS session (no
+      // projectRoot needed); the static app map URI stays visible too (Fix 1).
+      const sc = (consentResult.structuredContent ?? {}) as Record<string, unknown>;
+      consentResult.structuredContent = {
+        ...sc,
+        sessionId: session.id,
+        ...(a.appMapUri ? { appMapUri: a.appMapUri } : {}),
+        ...(staleNote ? { consentNote: staleNote, previousConsentId: a.consentId } : {}),
+      };
+      const approveCall = { sessionId: session.id, mode: a.mode, consentId: sc.consentId, approve: true };
+      consentResult.content = [
+        ...(staleNote ? [{ type: 'text' as const, text: `⚠️ ${staleNote}.` }] : []),
+        ...(consentResult.content ?? []),
+        {
+          type: 'text' as const,
+          text: `After the user agrees: qa_test_this ${JSON.stringify(approveCall)} (plus your original goal/flags).`,
+        },
+      ];
       return consentResult;
     }
     mutationConsent = { required: true, consentId: a.consentId, approved: true };
@@ -139,6 +184,6 @@ export async function runExecuteMode(server: McpServer, sessions: SessionStore, 
   void run;
   return qaOk(
     { sessionId: session.id, state: 'running', mode: a.mode, jobId: job.jobId, kind: job.kind, appMapUri: a.appMapUri, target: a.target },
-    `🚀 test-this ${a.mode} started as job ${job.jobId} (${a.isAndroid ? 'Android' : 'iOS'} · ${a.target.selected}). Poll qa_job_status { sessionId:"${session.id}", jobId:"${job.jobId}" } for the terminal result (state: completed | blocked | unsafe).`,
+    `🚀 test-this ${a.mode} started as job ${job.jobId} (${a.isAndroid ? 'Android' : 'iOS'} · ${a.target.selected}). Poll qa_job_status { sessionId:"${session.id}", jobId:"${job.jobId}" } for the terminal result (state: completed | blocked | unsafe | needs_input).`,
   );
 }

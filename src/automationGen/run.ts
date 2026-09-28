@@ -13,7 +13,7 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { unresolvedProjectRootError } from '../context/projectRoot.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import type { GeneratedFile } from '../suite/pom.js';
@@ -21,6 +21,7 @@ import { assembleAutomationSuite, buildAutomationProfile, writeAutomationFiles, 
 import { buildSuitePlan } from './suitePlan.js';
 import { buildProjectProfile } from './projectProfile.js';
 import { validateGeneratedSuite } from './validation.js';
+import { structuralLiterals } from '../suite/secretGuard.js';
 import { UnemittableStepError } from './identifiers.js';
 import { getDriver } from '../session/attach.js';
 import { runExplore } from '../explore/runner.js';
@@ -184,12 +185,7 @@ export async function runAutomationGenerate(
 ): Promise<CallToolResult> {
   let session = sessionId ? sessions.get(sessionId) : undefined;
   if (sessionId && !session)
-    return qaError({
-      what: `Unknown sessionId ${sessionId}`,
-      changedState: false,
-      retrySafe: true,
-      nextSteps: ['Call qa_start_session first, or omit sessionId to bootstrap from projectRoot.'],
-    });
+    return unknownSessionError(sessionId, ['Call qa_start_session first, or omit sessionId to bootstrap from projectRoot.']);
 
   // Fix 6 — one-call "Automate my app": when no session/actions exist, build the static app map
   // (so it always exists) and bootstrap a device (consent-gated) + record actions via exploration.
@@ -291,6 +287,7 @@ export async function runAutomationGenerate(
     candidateOnly,
     secrets: assembled.model.secrets,
     secretValues: session.secrets,
+    structural: structuralLiterals(session.recordedActions),
   });
   // Defense in depth: a registered secret value in ANY generated file fails generation loudly —
   // nothing is written (neither the suite nor the test-suite.json merge).

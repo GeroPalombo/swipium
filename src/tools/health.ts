@@ -2,7 +2,7 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { checkHealth } from '../oracle/health.js';
 import { recordHealthFindings } from '../oracle/record.js';
 import { blockedDeviceResult, getDriver } from '../session/attach.js';
@@ -19,7 +19,8 @@ export function registerCheckHealth(server: McpServer, sessions: SessionStore): 
     },
     async ({ sessionId }) => {
       const session = sessions.get(sessionId);
-      const { driver, blocked } = session ? await getDriver(session) : { driver: undefined, blocked: undefined };
+      if (!session) return unknownSessionError(sessionId);
+      const { driver, blocked } = await getDriver(session);
       if (!session || !driver) {
         return (
           blockedDeviceResult(blocked) ??

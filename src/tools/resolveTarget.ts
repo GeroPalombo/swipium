@@ -1,8 +1,8 @@
 // qa_resolve_target (roadmap §5) — gather live device/simulator/artifact inputs and pick the
 // best target with an explained reason, alternatives, preconditions, and whether a boot is
 // needed. Pure decision logic lives in src/core/targetPlan.ts. `include` folds in what used to be
-// qa_detect_context (project context: framework, artifacts, Android devices + iOS simulators,
-// toolchain, blockers) and qa_plan (READY / BLOCKED / UNSAFE workflows, src/plan/plan.ts).
+// the (formerly separate, now removed) qa_detect_context tool (project context: framework, artifacts, Android devices + iOS simulators,
+// toolchain, blockers) and the former qa_plan tool (READY / BLOCKED / UNSAFE workflows, src/plan/plan.ts).
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';

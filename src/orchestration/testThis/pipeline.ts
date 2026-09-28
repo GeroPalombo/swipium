@@ -25,6 +25,31 @@ import { extname, relative, sep } from 'node:path';
 import type { Session, SessionStore, JobRecord } from '../../session/store.js';
 import type { ExecuteArgs } from './types.js';
 import { createFinisher } from './terminal.js';
+import { NeedsInput, type NeedsInputPayload } from '../../lib/needsInput.js';
+import { hasUsableCredentials, isLoginDeclined } from './sessionIntent.js';
+
+/** The one NeedsInput question a first-run stop maps to, with the exact resume call bound to the session. */
+export function firstRunQuestion(needsInput: { kind: string; reason: string }, sessionId: string, attempted: string[]): NeedsInputPayload {
+  const base =
+    needsInput.kind === 'otp_or_manual_verification'
+      ? NeedsInput.otp(`First-run stopped: ${needsInput.reason}.`)
+      : needsInput.kind === 'create_test_data'
+        ? NeedsInput.createTestData(needsInput.reason)
+        : NeedsInput.credentials(`First-run stopped: ${needsInput.reason}.`);
+  return { ...base, attempted: [...attempted], resume: { tool: base.resume.tool, args: { sessionId, ...base.resume.args } } };
+}
+
+/** Compact view of the app-map summary for the job result (full map stays at appMapUri). */
+function compactMapSummary(summary: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!summary) return undefined;
+  const cov = (summary.coverage ?? {}) as Record<string, unknown>;
+  return {
+    staticScreens: summary.staticScreens,
+    runtimeScreens: summary.runtimeScreens,
+    features: Array.isArray(summary.features) ? summary.features.length : undefined,
+    coveragePercent: cov.overallPercent,
+  };
+}
 
 // Runtime screen purposes that should trigger first-run autonomy even when static auth detection
 // missed them (SWIPIUM-REQ-02 Fix Group 5).
@@ -207,9 +232,11 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
     const driver = session.driver;
     if (!driver) return await finish('blocked', 'NO_DEVICE', '❌ No driver bound after prepare.');
     const smoke = await runSmoke(sessions, session, driver, { variables: sessions.inputVariables(session) });
+    sessions.milestone(session, 'smoke_completed'); // persisted flag — qa_status must not re-recommend qa_smoke
     for (const art of session.artifacts) if (!artifacts.includes(art.uri)) artifacts.push(art.uri);
     smokeProg.done(`smoke done — flows ${smoke.flowsPassed}/${smoke.flowsTotal}.`);
 
+    let pendingQuestion: NeedsInputPayload | undefined;
     // ---- C1.5 first-run autonomy (SWIPIUM-REQ-02): when the app appears gated AND the environment
     //      is a disposable test/staging one where generated accounts are policy-safe, progress
     //      through auth/onboarding before exploring. Safe-by-default: in an unknown/production-like
@@ -254,11 +281,33 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
           firstRunPatches.push(...fr.mapUpdates); // folded into the durable app map in §D
           sessions.addWorkaround(session, `first-run: ${fr.pathTaken} path → ${fr.accountOutcome} (${fr.environment.environment} env)`);
           frProg.done(`first-run ${fr.state} — account ${fr.accountOutcome}`);
+          if (fr.needsInput && !isLoginDeclined(session)) pendingQuestion = firstRunQuestion(fr.needsInput, session.id, attempted);
         }
       } catch (e) {
         log('warn', 'test_this first-run autonomy failed', { jobId: job.jobId, err: String(e) });
       }
     }
+
+    // A first-run question the caller asked to stop on (stopOnNeedsInput / goal:test_login) ends the
+    // job in needs_input — the ONE question + resume call ride on the result (report still generated).
+    if (pendingQuestion && a.stopOnNeedsInput) {
+      return await finish(
+        'needs_input',
+        undefined,
+        `❓ test-this ${a.mode} paused after smoke: ${pendingQuestion.question}\nsmoke: launch=${(smoke.baseline.launch as { outcome?: string } | undefined)?.outcome ?? 'unknown'}, flows ${smoke.flowsPassed}/${smoke.flowsTotal}.`,
+        { needsInput: pendingQuestion },
+      );
+    }
+    // Otherwise the question is OPTIONAL: pre-login coverage stands, and the question is surfaced on
+    // the completed result instead of being dropped.
+    const optionalQuestion: NeedsInputPayload | undefined =
+      pendingQuestion ??
+      (a.optionalQuestion && !hasUsableCredentials(session) && !isLoginDeclined(session)
+        ? {
+            ...a.optionalQuestion,
+            resume: { tool: a.optionalQuestion.resume.tool, args: { sessionId: session.id, ...a.optionalQuestion.resume.args } },
+          }
+        : undefined);
 
     // ---- C2. optional guided exploration (§9.1) ----
     if (a.explore && (smoke.baseline.launch as { outcome?: string } | undefined)?.outcome !== 'fail') {
@@ -369,12 +418,15 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
     // ---- E. terminal state (report is generated inside finish) ----
     const launchOutcome = (smoke.baseline.launch as { outcome?: string } | undefined)?.outcome;
     const hardFail = session.findings.some((f) => f.severity === 'high') || launchOutcome === 'fail';
+    // Compact: counts + paths, not every compiled flow (the report artifact embeds the full suite).
     const suiteResult = suite
       ? {
           generated: !suite.skipped,
           skippedReason: suite.skippedReason,
-          written: suite.written,
-          compiledFlows: suite.compiledFlows,
+          written: suite.written.slice(0, 20),
+          writtenCount: suite.written.length,
+          runnableFlows: suite.compiledFlows.filter((c) => c.ok).length,
+          totalFlows: suite.compiledFlows.length,
           suiteRunnable: suite.suiteRunnable,
           readinessLabels: suite.readinessLabels,
           manifestPath: suite.manifestPath ?? null,
@@ -385,12 +437,16 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
       `smoke: launch=${launchOutcome ?? 'unknown'}, flows ${smoke.flowsPassed}/${smoke.flowsTotal}; findings=${session.findings.length}.` +
       (suite
         ? `\nsuite: ${suite.skipped ? `skipped (${suite.skippedReason})` : `${suite.compiledFlows.filter((c) => c.ok).length}/${suite.compiledFlows.length} runnable flow(s)`}`
-        : '');
+        : '') +
+      (optionalQuestion ? `\noptional question (pre-login coverage only so far): ${optionalQuestion.question}` : '');
     await finish('completed', undefined, summary + (appMap?.appMapUri ? `\nappMap: ${appMap.appMapUri}` : ''), {
+      ...(optionalQuestion ? { optionalQuestion } : {}),
       smoke: { launch: launchOutcome ?? 'unknown', flowsPassed: smoke.flowsPassed, flowsTotal: smoke.flowsTotal },
       highFindings: session.findings.filter((f) => f.severity === 'high').length,
       ...(suiteResult ? { suite: suiteResult } : {}),
-      ...(appMap ? { appMapUri: appMap.appMapUri, appMapSummary: appMap.appMapSummary, mapCoverageDelta: appMap.mapCoverageDelta } : {}),
+      ...(appMap
+        ? { appMapUri: appMap.appMapUri, appMapSummary: compactMapSummary(appMap.appMapSummary), mapCoverageDelta: appMap.mapCoverageDelta }
+        : {}),
     });
   } catch (e) {
     if (signal?.aborted) return;

@@ -21,7 +21,8 @@ describe('swipium CLI dispatch', () => {
   it('unknown subcommands and flags are errors, not a silent server', () => {
     expect(parseCommand(['plan'])).toEqual({ kind: 'unknown', cmd: 'plan' });
     expect(parseCommand(['ci'])).toEqual({ kind: 'unknown', cmd: 'ci' });
-    expect(parseCommand(['--stdio'])).toEqual({ kind: 'unknown', cmd: '--stdio' });
+    // Unknown --flags with no subcommand serve (1.5 behaviour; see test/cliServe.test.ts).
+    expect(parseCommand(['--stdio'], () => undefined).kind).toBe('serve');
   });
 
   it('routes known subcommands with their args', () => {
@@ -35,7 +36,7 @@ describe('swipium CLI dispatch', () => {
 
   it('usage lists every subcommand (incl. report) and the version, and no phantom commands', () => {
     expect(USAGE).toContain(SWIPIUM_VERSION);
-    for (const c of ['init', 'scan', 'suite', 'verify', 'report --latest --format junit|sarif|github-summary', 'cursor', 'vscode']) {
+    for (const c of ['init', 'scan', 'suite', 'verify', 'report --format junit|sarif|github-summary|markdown|json', 'cursor', 'vscode']) {
       expect(USAGE).toContain(c);
     }
     expect(USAGE).not.toMatch(/swipium (plan|ci)\b/);

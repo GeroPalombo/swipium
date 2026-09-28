@@ -4,7 +4,8 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, qaError, invalidArgumentError, isInvalidArgumentError, unknownSessionError } from '../lib/result.js';
+import { assertAndroidAppId } from '../drivers/DirectDriver.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import { detectFramework } from '../context/detect.js';
@@ -14,6 +15,7 @@ import type { Driver } from '../drivers/Driver.js';
 
 const ACTIONS = ['launch', 'foreground', 'background', 'force_stop', 'restart', 'clear_data', 'fresh_start'] as const;
 const DESTRUCTIVE = new Set(['clear_data', 'fresh_start']);
+const APP_ID_NEXT_STEP = 'Re-run qa_prepare_target with a valid appId (e.g. com.example.app).';
 
 async function relaunchAndVerify(d: Driver, pkg: string): Promise<string> {
   await d.launchApp(pkg);
@@ -43,7 +45,8 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
     },
     async ({ sessionId, action, acknowledgeBundleRisk, consentId, approve }) => {
       const session = sessions.get(sessionId);
-      const { driver: d, blocked } = session ? await getDriver(session) : { driver: undefined, blocked: undefined };
+      if (!session) return unknownSessionError(sessionId);
+      const { driver: d, blocked } = await getDriver(session);
       if (!session || !d) {
         return (
           blockedDeviceResult(blocked) ??
@@ -58,6 +61,15 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
           retrySafe: true,
           nextSteps: ['Call qa_prepare_target (it sets the appId).'],
         });
+      }
+      // Reject a malformed Android app id up front (typed, before any consent/device work).
+      if (d.kind === 'direct') {
+        try {
+          assertAndroidAppId(pkg);
+        } catch (e) {
+          if (isInvalidArgumentError(e)) return invalidArgumentError(e, [APP_ID_NEXT_STEP]);
+          throw e;
+        }
       }
 
       // Destructive-wipe BUNDLE-RISK PREFLIGHT (Phase 2.1 follow-up): a `pm clear` on an RN/Expo
@@ -92,6 +104,7 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
                 what: `Refusing ${action}: ${fw} is an RN/Expo build, so a data wipe carries a bundle-cache-loss risk SEPARATE from the generic data loss. pm clear removes the cached JS bundle / dev-client state; a bundle-less or asset-only debug APK then comes back on an "Unable to load script" RedBox and cannot recover (Metro serving=${rd.serving} lowers but does not eliminate this — asset-only debug builds brick even with Metro up).`,
                 changedState: false,
                 retrySafe: true,
+                failureCode: 'BUNDLE_LOSS_REFUSED', // deliberate guardrail (unsafe_refused) — not a tool error
                 nextSteps: [
                   'Run NON-DESTRUCTIVE workflows first; sequence destructive ones LAST for debug builds.',
                   'Use a RELEASE/staging APK with an embedded JS bundle for clean-state tests.',
@@ -187,6 +200,7 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
             break;
         }
       } catch (e) {
+        const invalid = isInvalidArgumentError(e);
         sessions.recordMutation(session, {
           tool: 'qa_app_control',
           action: `app_${action}`,
@@ -196,6 +210,7 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
           status: 'blocked',
           detail: String(e),
         });
+        if (invalid) return invalidArgumentError(e, [APP_ID_NEXT_STEP]);
         return qaError({
           what: `app_control "${action}" failed: ${String(e)}`,
           changedState: true,

@@ -44,8 +44,71 @@ export type QaErrorPayload = {
 
 type QaErrorInput = Omit<QaErrorPayload, 'ok' | 'failureCode'> & { failureCode?: string };
 
+/** Compact (unindented) JSON fence — the text-channel copy of the payload. Indentation roughly
+ * doubled its size for no reader benefit (structuredContent carries the full payload anyway). */
 function fence(obj: unknown): string {
-  return '```json\n' + JSON.stringify(obj, null, 2) + '\n```';
+  return '```json\n' + JSON.stringify(obj) + '\n```';
+}
+
+/** Default recovery steps for an unknown/expired sessionId. */
+export const UNKNOWN_SESSION_NEXT_STEPS: readonly string[] = [
+  'Call qa_status without sessionId for orientation, or qa_start_session / qa_test_this to create a session.',
+];
+
+/**
+ * The one typed envelope for "that sessionId does not exist" — an invalid argument, so
+ * failureCode INVALID_ARGUMENT (never the UNKNOWN fallback) and retrySafe (nothing changed).
+ * Sites with a genuinely different recovery (e.g. "omit sessionId to bootstrap") pass nextSteps.
+ */
+export function unknownSessionError(sessionId: string | undefined, nextSteps?: readonly string[]): CallToolResult {
+  return qaError({
+    what: `Unknown sessionId "${sessionId ?? ''}"`,
+    changedState: false,
+    retrySafe: true,
+    failureCode: 'INVALID_ARGUMENT',
+    nextSteps: [...(nextSteps ?? UNKNOWN_SESSION_NEXT_STEPS)],
+  });
+}
+
+/** True for an argument-validation error thrown by a driver/helper (e.g. a malformed app id
+ * from assertAndroidAppId): `code === 'INVALID_ARGUMENT'` or a message prefixed `INVALID_ARGUMENT`. */
+export function isInvalidArgumentError(e: unknown): e is Error {
+  if (!(e instanceof Error)) return false;
+  return (e as Error & { code?: unknown }).code === 'INVALID_ARGUMENT' || /^INVALID_ARGUMENT\b/.test(e.message);
+}
+
+/** Typed envelope for a thrown INVALID_ARGUMENT error — rejected before touching the device. */
+export function invalidArgumentError(e: Error, nextSteps: string[], extra?: Record<string, unknown>): CallToolResult {
+  return qaError(
+    {
+      what: e.message.replace(/^INVALID_ARGUMENT:\s*/, ''),
+      changedState: false,
+      retrySafe: true,
+      failureCode: 'INVALID_ARGUMENT',
+      nextSteps,
+    },
+    extra,
+  );
+}
+
+/** Options for the text rendering of a result (structuredContent is never affected). */
+export interface QaTextOptions {
+  /** Top-level payload keys already rendered in the human text (e.g. `elements`, as @eN lines) —
+   * left out of the fenced JSON so the text channel doesn't carry them twice. */
+  textOmit?: readonly string[];
+}
+
+function withoutKeys(payload: Record<string, unknown>, keys?: readonly string[]): Record<string, unknown> {
+  if (!keys?.length) return payload;
+  const out: Record<string, unknown> = {};
+  const omitted: string[] = [];
+  for (const [k, v] of Object.entries(payload)) {
+    if (keys.includes(k)) omitted.push(k);
+    else out[k] = v;
+  }
+  // Say what was left out so a text-only reader knows where to find it.
+  if (omitted.length) out.renderedAbove = omitted;
+  return out;
 }
 
 /** Pull any artifact/resource URIs out of a payload so compact mode can still surface them. */
@@ -66,14 +129,16 @@ function uriLines(payload: Record<string, unknown>): string[] {
 /**
  * Compose the human text block for a result. compact = summary (+ any artifact URIs) only,
  * dropping the fenced-JSON duplicate that structuredContent already carries; normal/verbose
- * keep the fence for clients/humans reading the text channel.
+ * keep a compact fence for clients/humans reading the text channel (normal additionally leaves
+ * out keys the summary already rendered — opts.textOmit; verbose keeps them).
  */
-function renderText(summary: string, payload: Record<string, unknown>, mode: ResponseMode): string {
+function renderText(summary: string, payload: Record<string, unknown>, mode: ResponseMode, opts?: QaTextOptions): string {
   if (mode === 'compact') {
     const uris = uriLines(payload);
     return uris.length ? `${summary}\n${uris.join('\n')}` : summary;
   }
-  return `${summary}\n\n${fence(payload)}`;
+  // verbose keeps every key in the fence; normal drops the ones the summary already rendered.
+  return `${summary}\n\n${fence(mode === 'verbose' ? payload : withoutKeys(payload, opts?.textOmit))}`;
 }
 
 export function qaError(p: QaErrorInput, extra?: Record<string, unknown>): CallToolResult {
@@ -94,10 +159,10 @@ export function qaError(p: QaErrorInput, extra?: Record<string, unknown>): CallT
   return { isError: true, content: [{ type: 'text', text }], structuredContent: payload };
 }
 
-export function qaOk(payload: Record<string, unknown>, summary: string): CallToolResult {
+export function qaOk(payload: Record<string, unknown>, summary: string, opts?: QaTextOptions): CallToolResult {
   const structured = { ok: true, ...payload };
   return {
-    content: [{ type: 'text', text: renderText(summary, structured, currentResponseMode()) }],
+    content: [{ type: 'text', text: renderText(summary, structured, currentResponseMode(), opts) }],
     structuredContent: structured,
   };
 }

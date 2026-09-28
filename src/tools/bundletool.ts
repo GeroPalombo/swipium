@@ -4,7 +4,7 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, unknownSessionError } from '../lib/result.js';
 import { qaFail } from '../oracle/failures.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { resolveArtifact } from '../artifacts/resolve.js';
@@ -35,13 +35,7 @@ export function registerBundletool(server: McpServer, sessions: SessionStore): v
     },
     async ({ sessionId, aab, force, connectedDevice, install, device, consentId, approve }) => {
       const session = sessions.get(sessionId);
-      if (!session)
-        return qaError({
-          what: `Unknown sessionId "${sessionId}"`,
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_start_session first.'],
-        });
+      if (!session) return unknownSessionError(sessionId);
 
       // Resolve the .aab if not given.
       let aabPath = aab;
@@ -58,7 +52,7 @@ export function registerBundletool(server: McpServer, sessions: SessionStore): v
 
       // Installing an APK set runs app code on a real device/emulator → consent-gated (build-only
       // is safe and ungated). Confirm intent BEFORE any work, regardless of whether bundletool is
-      // installed. Mirrors qa_prepare_target / qa_prepare_ios_real_target.
+      // installed. Mirrors qa_prepare_target / qa_prepare_ios_target.
       let mutationConsent: { required: boolean; consentId?: string; approved: boolean; payloadHash?: string } | undefined;
       if (connectedDevice && install) {
         const affects = { aab: aabPath, device: device ?? '(only connected device)' };

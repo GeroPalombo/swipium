@@ -23,7 +23,7 @@ Tools resolve the app repository in this order:
 2. MCP roots from the client (Claude Code, Cursor, and VS Code provide them).
 3. The `SWIPIUM_PROJECT_ROOT` environment variable.
 4. `CLAUDE_PROJECT_DIR` (set by Claude Code for every stdio server).
-5. The server process's working directory, unless it is `/` or `$HOME`.
+5. The server process's working directory, unless it is `/` or `$HOME`, and only when it contains a project marker (`package.json`, `app.json`, `pubspec.yaml`, Gradle files, `Podfile`, an `.xcodeproj`/`.xcworkspace`, or an `android/` or `ios/` directory).
 
 If none of these resolves, the tool fails with `failureCode: "PROJECT_ROOT_UNRESOLVED"`. On clients without roots or `cwd` support (Claude Desktop, Windsurf), set `SWIPIUM_PROJECT_ROOT` in the server `env`.
 
@@ -124,7 +124,7 @@ Images default to metadata through `qa_get_artifact`. Request inline mode only w
 
 Swipium requests consent before high-impact local actions such as:
 
-- Booting a simulator when required by the plan.
+- Booting an Android emulator when required by the plan.
 - Installing external app artifacts.
 - Writing generated automation into a project directory.
 - Running mutating flow steps.

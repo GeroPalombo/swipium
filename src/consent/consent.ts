@@ -11,6 +11,7 @@
 // ApprovalMechanism and lands in the mutation ledger.
 
 import { randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 export type Risk = 'low' | 'medium' | 'high';
@@ -26,6 +27,22 @@ export interface ConsentRequest {
 interface PendingConsent {
   req: ConsentRequest;
   createdAt: number;
+  /** The session the challenge was minted in (when the minting call carried one): it can only be
+   *  consumed by a call in the SAME session — a consent minted in A is useless in B. */
+  sessionId?: string;
+}
+
+// The calling tool invocation's sessionId, set once per call by the server's tool wrapper
+// (src/server.ts) so every consent-gated tool is session-bound with zero per-tool changes.
+const consentScope = new AsyncLocalStorage<{ sessionId?: string }>();
+
+/** Run `fn` as part of a tool call made in `sessionId` (undefined = no session). */
+export function runWithConsentScope<T>(sessionId: string | undefined, fn: () => T): T {
+  return consentScope.run({ sessionId: typeof sessionId === 'string' && sessionId ? sessionId : undefined }, fn);
+}
+
+function currentConsentSession(): string | undefined {
+  return consentScope.getStore()?.sessionId;
 }
 
 // Pending challenges are bounded (review §4): a consent that is never resumed must not live
@@ -110,7 +127,8 @@ export function burnConsent(consentId: string): void {
 export function requireConsent(req: ConsentRequest): CallToolResult {
   prunePending();
   const consentId = randomUUID().slice(0, 8);
-  pending.set(consentId, { req, createdAt: Date.now() });
+  const sessionId = currentConsentSession();
+  pending.set(consentId, { req, createdAt: Date.now(), ...(sessionId ? { sessionId } : {}) });
   const payload = { requiresConsent: true, consentId, ...req };
   const text =
     `🔐 Consent required (${req.risk}): ${req.explain}\n` +
@@ -209,6 +227,11 @@ export function consumeConsent(
   }
   const req = entry?.req;
   if (!req) return { approved: false, reason: 'unknown or already-used consentId' };
+  // Session binding: checked BEFORE consuming (like the action binding) so a cross-session replay
+  // attempt never burns the challenge for its real session.
+  if (entry.sessionId !== undefined && entry.sessionId !== currentConsentSession()) {
+    return { approved: false, req, reason: 'consent was issued for a different session' };
+  }
   // Bind to the exact action/affects BEFORE consuming, so a mismatched id stays valid
   // for its real use rather than being silently burned.
   if (expected?.action && req.action !== expected.action) {

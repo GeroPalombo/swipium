@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { existsSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { sensitiveRefusal } from '../lib/sensitive.js';
 import { SimctlDriver } from '../drivers/SimctlDriver.js';
@@ -51,12 +51,7 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
       const { sessionId, action } = args;
       const session = sessions.get(sessionId);
       if (!session) {
-        return qaError({
-          what: `Unknown sessionId ${sessionId}`,
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_start_session first.'],
-        });
+        return unknownSessionError(sessionId);
       }
 
       if (!(await sim.simctlAvailable())) {

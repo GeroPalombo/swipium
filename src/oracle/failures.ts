@@ -30,6 +30,7 @@ export type FailureCode =
   | 'ASSERTION_FAILED'
   // environment
   | 'NO_DEVICE'
+  | 'ADB_NOT_FOUND'
   | 'NO_ARTIFACT'
   | 'INVALID_FLOW'
   | 'WRONG_ARCH'
@@ -252,7 +253,16 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     severity: 'high',
     retrySafe: true,
     summary: 'No online device or bootable emulator',
-    recovery: 'Boot/create a device (qa_doctor), then qa_prepare_target.',
+    recovery:
+      'Create an Android AVD (Android Studio → Device Manager, or avdmanager create avd …) or an iOS Simulator (Xcode), then re-run qa_test_this — it boots it for you.',
+  },
+  ADB_NOT_FOUND: {
+    bucket: 'environment',
+    severity: 'high',
+    retrySafe: true,
+    summary: 'adb (Android platform-tools) is not installed or not on PATH',
+    recovery:
+      'Install Android platform-tools + emulator (Android Studio SDK Manager or sdkmanager), put them on PATH or set ANDROID_HOME, create an AVD, then re-run qa_test_this.',
   },
   NO_ARTIFACT: {
     bucket: 'environment',
@@ -520,7 +530,7 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     severity: 'medium',
     retrySafe: false,
     summary: 'Login required, no usable credentials',
-    recovery: 'Provide a test account (a fixture with a testAccount, plus TEST_EMAIL/TEST_PASSWORD).',
+    recovery: 'Provide a test account (a fixture with a testAccount, plus SWIPIUM_TEST_EMAIL/SWIPIUM_TEST_PASSWORD).',
   },
   MISSING_FIXTURE: {
     bucket: 'missing_data',

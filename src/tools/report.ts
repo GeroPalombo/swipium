@@ -4,7 +4,7 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { generateSessionReport } from '../services/report.js';
 import type { SessionStore } from '../session/store.js';
 
@@ -28,12 +28,7 @@ export function registerReport(server: McpServer, sessions: SessionStore): void 
     async ({ sessionId, format, baseline, trendRoot }) => {
       const session = sessions.get(sessionId);
       if (!session) {
-        return qaError({
-          what: `Unknown sessionId ${sessionId}`,
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_start_session first.'],
-        });
+        return unknownSessionError(sessionId);
       }
 
       // format:"flow" with no recorded actions is a user error (kept from the original tool).

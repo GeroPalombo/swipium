@@ -6,12 +6,14 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { resolveProjectRoot, unresolvedProjectRootError } from '../context/projectRoot.js';
 import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import type { SessionStore } from '../session/store.js';
 import { accountCycleSafety, checksForProfile, ALL_PROFILES, type AuditProfile } from '../mobileAudit/profiles.js';
-import { runMobileAudit } from '../mobileAudit/runner.js';
+import { auditChangesNetwork, auditNetworkConsentRequest, runMobileAudit } from '../mobileAudit/runner.js';
+import { consumeConsent, requireConsent } from '../consent/consent.js';
 import { auditRunToMarkdown } from '../mobileAudit/results.js';
 import { generateSessionReport } from '../services/report.js';
 import { queryIssues } from '../issues/index.js';
@@ -27,10 +29,10 @@ async function rootFor(
   server: McpServer,
   sessions: SessionStore,
   args: { projectRoot?: string; sessionId?: string },
-): Promise<{ root?: string; hint?: string }> {
+): Promise<{ root?: string; hint?: string; error?: CallToolResult }> {
   if (args.sessionId) {
     const s = sessions.get(args.sessionId);
-    if (!s) return { hint: `Unknown sessionId ${args.sessionId}` };
+    if (!s) return { error: unknownSessionError(args.sessionId) };
     return { root: s.root };
   }
   const resolved = await resolveProjectRoot(server, args.projectRoot);
@@ -46,7 +48,7 @@ export function registerMobileAudit(server: McpServer, sessions: SessionStore): 
       description:
         'Plan or execute a release audit. profile: smoke, account_cycle (create → logout → login → forgot-password on a ' +
         'DISPOSABLE generated account), store_compliance (privacy/terms/account deletion/subscription/paywall), resilience ' +
-        '(offline/relaunch/rotation; network restored), release_gate (all + locator readiness + issue recurrence). mode:"plan" ' +
+        '(offline/relaunch/rotation; airplane toggle is consent-gated, original network restored), release_gate (all + locator readiness + issue recurrence). mode:"plan" ' +
         '(default) returns the checklist + safety contract without the device; "execute" (prepared session) runs every check, ' +
         'logs fail/blocked checks to the issue ledger with evidence, and returns release impact. No check passes without ' +
         'evidence.',
@@ -62,6 +64,8 @@ export function registerMobileAudit(server: McpServer, sessions: SessionStore): 
           .object({ commit: z.string().optional(), buildVersion: z.string().optional(), branch: z.string().optional() })
           .optional(),
         targetApp: z.string().optional(),
+        consentId: z.string().optional().describe('execute: consent for the resilience airplane-mode toggle (network_change).'),
+        approve: z.boolean().optional(),
       },
     },
     async ({
@@ -74,9 +78,11 @@ export function registerMobileAudit(server: McpServer, sessions: SessionStore): 
       offlineMode,
       sourceRevision,
       targetApp,
+      consentId,
+      approve,
     }) => {
-      const { root, hint } = await rootFor(server, sessions, { projectRoot, sessionId });
-      if (!root) return unresolvedProjectRootError({ source: 'none', hint });
+      const { root, hint, error } = await rootFor(server, sessions, { projectRoot, sessionId });
+      if (!root) return error ?? unresolvedProjectRootError({ source: 'none', hint });
 
       const prof = profile as AuditProfile;
       const policyForRev = loadPolicy(root);
@@ -108,8 +114,27 @@ export function registerMobileAudit(server: McpServer, sessions: SessionStore): 
               nextSteps: ['Prepare a device first (qa_test_this / qa_prepare_target), then re-run.'],
             })
           );
+        // resilience / release_gate toggle airplane mode: same network_change gate as qa_network.
+        let networkChangeApproved = false;
+        if (auditChangesNetwork(prof)) {
+          const req = auditNetworkConsentRequest(prof);
+          const gate = consumeConsent(consentId, approve, { action: req.action, affects: req.affects });
+          if (!gate.approved) {
+            sessions.recordMutation(session, {
+              tool: 'qa_mobile_audit',
+              action: req.action,
+              risk: req.risk,
+              target: req.affects,
+              consent: { required: true, approved: false },
+              status: 'requested',
+            });
+            return requireConsent(req);
+          }
+          networkChangeApproved = true;
+        }
         try {
           const run = await runMobileAudit(sessions, session, driver, {
+            networkChangeApproved,
             profile: prof,
             allowGeneratedData,
             allowTestAccountDeletion,

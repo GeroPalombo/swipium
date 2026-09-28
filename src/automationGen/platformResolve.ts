@@ -11,11 +11,14 @@ const IOS_DEVICE_UDID_RE = /^(?:[0-9A-F]{8}-[0-9A-F]{16}|[0-9A-F]{40})$/i;
 
 export type DevicePlatform = 'android' | 'ios';
 
-/** The live driver kind is authoritative (simulator/WDA ⇒ iOS, direct adb ⇒ Android); without a
- *  driver fall back to the device id shape — iOS UDIDs vs adb serials (emulator-5554, R58M…, ip:port). */
-export function sessionDevicePlatform(s: Pick<Session, 'device' | 'driver'> | undefined): DevicePlatform | undefined {
+/** The live driver kind is authoritative (simulator/WDA ⇒ iOS, direct adb ⇒ Android), then the
+ *  persisted driverKind; without either fall back to the device id shape — iOS UDIDs vs adb serials (emulator-5554, R58M…, ip:port). */
+export function sessionDevicePlatform(
+  s: (Pick<Session, 'device' | 'driver'> & { driverKind?: Session['driverKind'] }) | undefined,
+): DevicePlatform | undefined {
   if (!s) return undefined;
-  const kind = s.driver?.kind;
+  // No live driver after a restart → the persisted driverKind is still authoritative.
+  const kind = s.driver?.kind ?? s.driverKind;
   if (kind === 'simulator' || kind === 'wda') return 'ios';
   if (kind === 'direct') return 'android';
   const d = s.device?.trim();

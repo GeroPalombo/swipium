@@ -11,7 +11,8 @@ import { NeedsInput } from '../../lib/needsInput.js';
 
 export type State = 'ready' | 'needs_input' | 'blocked' | 'unsafe';
 
-export type ExecState = 'completed' | 'blocked' | 'unsafe';
+/** Terminal job states. `needs_input` pauses the run on ONE question (resume via qa_continue_from_blocker). */
+export type ExecState = 'completed' | 'blocked' | 'unsafe' | 'needs_input';
 
 export interface PlanStep {
   tool: string;
@@ -55,6 +56,7 @@ export interface TestThisInput {
   timeoutMs?: number;
   consentId?: string;
   approve?: boolean;
+  responseMode?: 'compact' | 'normal' | 'verbose';
 }
 
 export interface ExecuteArgs {

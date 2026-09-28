@@ -4,7 +4,7 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError, qaStop } from '../lib/result.js';
+import { qaOk, qaError, qaStop, unknownSessionError } from '../lib/result.js';
 import { isSecureNode } from '../lib/redact.js';
 import { sensitiveRefusal } from '../lib/sensitive.js';
 import { captureCoordinateSpace } from '../lib/coordSpace.js';
@@ -27,7 +27,8 @@ export function registerScreenshot(server: McpServer, sessions: SessionStore): v
     },
     async ({ sessionId, force, reason }) => {
       const session = sessions.get(sessionId);
-      const { driver, blocked } = session ? await getDriver(session) : { driver: undefined, blocked: undefined };
+      if (!session) return unknownSessionError(sessionId);
+      const { driver, blocked } = await getDriver(session);
       if (!session || !driver) {
         return (
           blockedDeviceResult(blocked) ??

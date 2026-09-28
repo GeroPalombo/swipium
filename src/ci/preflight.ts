@@ -1,8 +1,6 @@
 import { ciMutationAllowed, type Policy } from '../report/policy.js';
-import type { Flow, FlowStep } from '../flows/schema.js';
+import { flowEnvAllowed, isMutatingFlowStep, type Flow, type FlowStep } from '../flows/schema.js';
 import type { Pack } from '../flows/pack.js';
-
-const MUTATING_CI_STEPS = new Set<FlowStep['kind']>(['networkOffline', 'networkOnline', 'seed', 'restartApp']);
 
 export interface CiPreflightViolation {
   flow: string;
@@ -64,12 +62,16 @@ export function ciMutatingSteps(flow: Flow): CiPreflightViolation[] {
   const all = [...flow.setup, ...flow.steps, ...flow.teardown];
   const out: CiPreflightViolation[] = [];
   all.forEach((step, i) => {
-    if (!MUTATING_CI_STEPS.has(step.kind)) return;
+    // Same rule as qa_flow_run consent / qa_smoke: includes an openUrl that interpolates ${VAR}.
+    if (!isMutatingFlowStep(step)) return;
     out.push({
       flow: flow.name,
       step: i + 1,
       kind: step.kind,
-      reason: `${step.kind} changes device/app/test state and requires .swipium/policy.json ciAllowMutations`,
+      reason:
+        step.kind === 'openUrl'
+          ? 'openUrl interpolates a ${VAR} into a URL that leaves the device and requires .swipium/policy.json ciAllowMutations ("openUrl")'
+          : `${step.kind} changes device/app/test state and requires .swipium/policy.json ciAllowMutations`,
     });
   });
   return out;
@@ -91,7 +93,9 @@ export function ciRequiredVariables(flow: Flow): CiMissingVariable[] {
           step: i + 1,
           kind: step.kind,
           variable: match[1],
-          reason: `${step.kind} references \${${match[1]}}; set it in the CI environment before running Swipium.`,
+          reason: flowEnvAllowed(match[1])
+            ? `${step.kind} references \${${match[1]}}; set it in the CI environment before running Swipium.`
+            : `${step.kind} references \${${match[1]}}; flows read only SWIPIUM_* environment variables — rename it (e.g. SWIPIUM_${match[1]}) or pass it as an explicit variable.`,
         });
       }
     }
@@ -109,6 +113,9 @@ export function validateCiVariables(
     .filter((v) => {
       const explicit = variables[v.variable];
       if (explicit != null && explicit !== '') return false;
+      // The flow runner reads the environment only for SWIPIUM_* names, so any other env var
+      // does not satisfy the requirement (it would still be missing at run time).
+      if (!flowEnvAllowed(v.variable)) return true;
       return env[v.variable] == null || env[v.variable] === '';
     });
   return { ok: missing.length === 0, missing };

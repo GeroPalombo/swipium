@@ -33,10 +33,10 @@ steps:
   - waitForVisible: "Email"
   - inputText:
       into: "Email"
-      text: "\${TEST_EMAIL}"
+      text: "\${SWIPIUM_TEST_EMAIL}"
   - inputText:
       into: "Password"
-      text: "\${TEST_PASSWORD}"
+      text: "\${SWIPIUM_TEST_PASSWORD}"
       secret: true
   - tap: "Sign in"
   - waitForVisible:
@@ -57,10 +57,10 @@ steps:
   - tap: "accessibility id=login_email_field"
   - inputText:
       into: "accessibility id=login_email_field"
-      text: "\${TEST_EMAIL}"
+      text: "\${SWIPIUM_TEST_EMAIL}"
   - inputText:
       into: "accessibility id=login_password_field"
-      text: "\${TEST_PASSWORD}"
+      text: "\${SWIPIUM_TEST_PASSWORD}"
       secret: true
   - tap: "accessibility id=login_continue_button"
   - waitForVisible:

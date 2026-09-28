@@ -1,9 +1,9 @@
 import { z } from 'zod';
 import { spawn } from 'node:child_process';
-import { existsSync, openSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaError, qaOk } from '../lib/result.js';
+import { qaError, qaOk, unknownSessionError } from '../lib/result.js';
 import { consumeConsent, requireConsent } from '../consent/consent.js';
 import { sensitiveRefusal } from '../lib/sensitive.js';
 import { run } from '../lib/spawn.js';
@@ -18,6 +18,9 @@ import {
   waitForWdaReady,
   wdaSessionUdidMismatch,
   xcodeAvailable,
+  isLoopbackWdaUrl,
+  remoteWdaAllowedByUser,
+  REMOTE_WDA_ENV,
 } from '../lib/wda.js';
 import { loadWdaConfig, wdaSigningStatus, wdaUrlAllowedByConfig } from '../lib/wdaConfig.js';
 import { recordWdaTiming, wdaRecommendations, wdaTimingSummary } from '../lib/wdaTune.js';
@@ -28,6 +31,29 @@ import type { ArtifactRecord, Session, SessionStore } from '../session/store.js'
 
 const managedProcesses = new Map<string, { pid: number; logUri: string }>();
 
+function pidIsAlive(pid: number): boolean {
+  if (!(pid > 0)) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** A managed WDA this server still runs for the session (started here, or adopted at startup).
+ *  A dead in-memory entry is dropped. */
+function liveManagedWda(sessionId: string): { pid: number; adopted: boolean } | undefined {
+  const own = managedProcesses.get(sessionId);
+  if (own) {
+    if (pidIsAlive(own.pid)) return { pid: own.pid, adopted: false };
+    managedProcesses.delete(sessionId);
+    unregisterManagedProcess(own.pid);
+  }
+  const adopted = registeredWdaForSession(sessionId);
+  return adopted && pidIsAlive(adopted.pid) ? { pid: adopted.pid, adopted: true } : undefined;
+}
+
 interface WdaDiagnosticIssue {
   code: string;
   severity: 'blocker' | 'warn';
@@ -36,14 +62,7 @@ interface WdaDiagnosticIssue {
   failureCode?: string;
 }
 
-function isLoopback(raw: string): boolean {
-  try {
-    const u = new URL(raw);
-    return u.protocol === 'http:' && ['127.0.0.1', 'localhost', '::1'].includes(u.hostname);
-  } catch {
-    return false;
-  }
-}
+const isLoopback = isLoopbackWdaUrl;
 
 function latestWdaArtifacts(session: Session): {
   latestLog: ArtifactRecord | null;
@@ -144,13 +163,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
       approve,
     }) => {
       const session = sessions.get(sessionId);
-      if (!session)
-        return qaError({
-          what: `Unknown sessionId ${sessionId}`,
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_start_session first.'],
-        });
+      if (!session) return unknownSessionError(sessionId);
       // `device` is canonical (as on every other tool); `udid` is the deprecated alias.
       if (device && udidAlias && device !== udidAlias)
         return qaError({
@@ -165,19 +178,24 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
       const configured = loadWdaConfig(session.root);
       const url = webDriverAgentUrl ?? configured.url;
       const loopback = isLoopback(url);
-      const configAllowed = !loopback && wdaUrlAllowedByConfig(configured, url);
-      if (!loopback && !allowNonLoopback && !configAllowed) {
+      // Only the USER can pre-approve a remote WDA (env var in the MCP client config). The repo's
+      // .swipium/config.json (ios.wda.url / allowNonLoopbackUrls) arrives with the checkout, so it
+      // can never skip the per-call consent.
+      const userAllowed = !loopback && remoteWdaAllowedByUser(url);
+      const repoListed = !loopback && wdaUrlAllowedByConfig(configured, url);
+      if (!loopback && !allowNonLoopback && !userAllowed) {
         return qaError({
-          what: 'Refused non-loopback WDA URL',
+          what: `Refused non-loopback WDA URL ${url}${webDriverAgentUrl ? '' : ' (from the repository config .swipium/config.json)'}`,
           changedState: false,
           retrySafe: false,
           failureCode: 'DESTRUCTIVE_REFUSED',
           nextSteps: [
-            'Use a localhost WDA URL, pass allowNonLoopback with explicit consent, or add this exact URL to ios.wda.allowNonLoopbackUrls for a trusted isolated automation network.',
+            `Use a localhost WDA URL, pass allowNonLoopback:true and approve the consent prompt, or (user-level, trusted isolated network only) set ${REMOTE_WDA_ENV}=<exact url> in the MCP server environment.`,
+            ...(repoListed ? ['ios.wda.allowNonLoopbackUrls in the repository config no longer pre-approves a remote WDA.'] : []),
           ],
         });
       }
-      if (!loopback && !configAllowed) {
+      if (!loopback && !userAllowed) {
         const gate = consumeConsent(consentId, approve, { action: 'wda_non_loopback', affects: { url } });
         if (!gate.approved) {
           return requireConsent({
@@ -185,7 +203,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
             risk: 'medium',
             exactCommand: `connect to WebDriverAgent at ${url}`,
             affects: { url },
-            explain: `Use non-loopback WebDriverAgent URL ${url}? WDA is an automation server; only approve this on a trusted, isolated network.`,
+            explain: `Use non-loopback WebDriverAgent URL ${url}${webDriverAgentUrl ? '' : ' (configured by the repository (.swipium/config.json) — unreviewed)'}? WDA is an automation server that receives app screens and typed text; only approve this on a trusted, isolated network.`,
           });
         }
       }
@@ -240,7 +258,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
           // A WDA started by a previous server run and adopted at startup (processRegistry).
           const adopted = registeredWdaForSession(session.id);
           if (!adopted) return qaOk({ stopped: false }, 'no managed WDA process recorded for this session');
-          const outcome = reclaimPid(adopted.pid, 'wda'); // ps-checked: never signals a recycled pid
+          const outcome = reclaimPid(adopted.pid, 'wda', undefined, adopted); // fingerprint-checked: never signals a recycled pid
           unregisterManagedProcess(adopted.pid);
           sessions.addEnvChange(session, `wda stop pid ${adopted.pid} (adopted)`);
           sessions.recordMutation(session, {
@@ -308,6 +326,21 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
               `reused existing WDA at ${url}; /status is ready\nNext: qa_wda attach.`,
             );
           }
+        }
+        // Never start a second managed xcodebuild over a live one: the new runner would fight it
+        // for the port and the old one would be orphaned (managedProcesses would be overwritten).
+        const running = action === 'start' ? liveManagedWda(session.id) : undefined;
+        if (running) {
+          return qaError(
+            {
+              what: `A managed WDA (pid ${running.pid}${running.adopted ? ', adopted from a previous server run' : ''}) is already running for this session`,
+              changedState: false,
+              retrySafe: true,
+              failureCode: 'WDA_START_FAILED',
+              nextSteps: ['Use it (qa_wda attach), or stop it first with qa_wda { action:"stop" } and retry start.'],
+            },
+            { managedPid: running.pid, adopted: running.adopted, webDriverAgentUrl: url },
+          );
         }
         const xcode = await xcodeAvailable();
         if (!xcode.available) {
@@ -440,8 +473,14 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
         const rec = sessions.findArtifact(logUri)!;
         const fd = openSync(rec.rec.path, 'a');
         sessions.milestone(session, 'wda_start_start');
-        const child = spawn('xcodebuild', args, { detached: true, stdio: ['ignore', fd, fd] });
+        let child;
+        try {
+          child = spawn('xcodebuild', args, { detached: true, stdio: ['ignore', fd, fd] });
+        } finally {
+          closeSync(fd); // the child holds its own duplicate; ours would leak one fd per start
+        }
         sessions.milestone(session, 'wda_start_end');
+        child.on('error', () => undefined); // spawn failure surfaces as WDA_START_FAILED below, not a crash
         child.unref();
         managedProcesses.set(session.id, { pid: child.pid ?? -1, logUri });
         // Reapable if this server crashes; `endpoint` lets the next server adopt it when healthy.
@@ -765,7 +804,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
             action: 'wda_attach',
             risk: 'medium',
             target: { webDriverAgentUrl: url, udid: targetUdid, bundleId: appId ?? null, reportedDevice: mismatchedUdid },
-            consent: { required: !loopback && !configAllowed, consentId, approved: loopback || configAllowed || !!approve },
+            consent: { required: !loopback && !userAllowed, consentId, approved: loopback || userAllowed || !!approve },
             status: 'blocked',
             detail: 'WDA reported a different device',
           });
@@ -801,7 +840,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
             wdaSessionId: created.sessionId,
             capabilities: created.capabilities ?? null,
           },
-          consent: { required: !loopback && !configAllowed, consentId, approved: true },
+          consent: { required: !loopback && !userAllowed, consentId, approved: true },
           status: 'executed',
         });
         return qaOk(
@@ -815,7 +854,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
           action: 'wda_attach',
           risk: 'medium',
           target: { webDriverAgentUrl: url, udid: targetUdid, bundleId: appId ?? null },
-          consent: { required: !loopback && !configAllowed, consentId, approved: loopback || configAllowed || !!approve },
+          consent: { required: !loopback && !userAllowed, consentId, approved: loopback || userAllowed || !!approve },
           status: 'blocked',
           detail: String((e as Error).message ?? e),
         });

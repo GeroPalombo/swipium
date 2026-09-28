@@ -9,8 +9,20 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError, qaStop, qaAnnotate } from '../lib/result.js';
-import { parseFlow, type Flow, type FlowStep } from '../flows/schema.js';
+import { qaOk, qaError, qaStop, qaAnnotate, unknownSessionError } from '../lib/result.js';
+import {
+  FLOW_ENV_PREFIX,
+  isMutatingFlowStep,
+  lookupFlowVar,
+  parseFlow,
+  SECRET_VAR_NAME,
+  type Flow,
+  type FlowStep,
+} from '../flows/schema.js';
+import { seedExactCommand } from '../flows/seedExec.js';
+import { withinRootOrNull } from '../flows/paths.js';
+import { makeRedactor } from '../lib/redact.js';
+import type { FixtureSeed } from '../session/store.js';
 import { lintFlowObjectWithOptions } from '../flows/lint.js';
 import { runFlow } from '../flows/run.js';
 import { blockedDeviceResult, getDriver } from '../session/attach.js';
@@ -93,8 +105,6 @@ function flowSourceError(src: { error?: string; errorCode?: FlowSourceErrorCode 
   });
 }
 
-const MUTATING_FLOW_STEPS = new Set<FlowStep['kind']>(['networkOffline', 'networkOnline', 'seed', 'restartApp']);
-
 function stable(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stable);
   if (value && typeof value === 'object')
@@ -120,20 +130,47 @@ function allFlowSteps(flow: Flow): FlowStep[] {
   return [...flow.setup, ...flow.steps, ...flow.teardown];
 }
 
+/** Where a seed's command came from, stated in consent: fixtures are loaded from the repo's
+ *  .swipium/fixtures.json (or qa_start_session fixtures) — Swipium never reviewed them. */
+const SEED_ORIGIN = 'declared fixture (.swipium/fixtures.json or qa_start_session fixtures) — repo-supplied, UNREVIEWED';
+
+/** `${VAR}` URL preview for consent: the URL as it will be opened, with credential-like variable
+ *  values and registered session secrets masked, plus where each variable is read from. */
+function openUrlPreview(url: string, vars: Record<string, string>, secrets: Iterable<string>) {
+  const variables: Array<{ name: string; source: 'variables' | 'env' | 'missing' }> = [];
+  const resolved = url.replace(/\$\{([^}]+)\}/g, (_, name: string) => {
+    const v = lookupFlowVar(name, vars);
+    variables.push({ name, source: v == null ? 'missing' : vars[name] != null ? 'variables' : 'env' });
+    if (v == null) return `\${${name}}`;
+    return SECRET_VAR_NAME.test(name) ? `«${name}»` : v;
+  });
+  return { url, resolvedUrl: makeRedactor(secrets)(resolved) ?? resolved, variables };
+}
+
 function flowMutationAffects(
   flow: Flow,
-  session: { appId?: string; fixtures: Array<{ name: string; seed?: { type: string } }> },
+  session: { appId?: string; fixtures: Array<{ name: string; seed?: FixtureSeed }>; secrets?: Iterable<string> },
   source: string | undefined,
   repeat: number,
   externalProviders: Array<Record<string, unknown>> = [],
+  vars: Record<string, string> = {},
 ) {
   const mutations = allFlowSteps(flow)
     .map((step, index) => {
-      if (!MUTATING_FLOW_STEPS.has(step.kind)) return null;
+      if (!isMutatingFlowStep(step)) return null;
       if (step.kind === 'seed') {
-        const seedType = session.fixtures.find((f) => f.name === step.fixture)?.seed?.type ?? 'unknown';
-        return { step: index + 1, kind: step.kind, fixture: step.fixture, seedType };
+        const seed = session.fixtures.find((f) => f.name === step.fixture)?.seed;
+        return {
+          step: index + 1,
+          kind: step.kind,
+          fixture: step.fixture,
+          seedType: seed?.type ?? 'unknown',
+          // The EXACT argv / URL the seed will run — consent must show what executes.
+          command: seed ? seedExactCommand(seed) : null,
+          origin: SEED_ORIGIN,
+        };
       }
+      if (step.kind === 'openUrl') return { step: index + 1, kind: step.kind, ...openUrlPreview(step.url, vars, session.secrets ?? []) };
       return { step: index + 1, kind: step.kind };
     })
     .filter((x): x is NonNullable<typeof x> => !!x);
@@ -148,11 +185,22 @@ function flowMutationAffects(
   };
 }
 
+/** One line per mutating step for the consent's exactCommand (seeds show their argv/URL). */
+function mutationCommandLines(affects: ReturnType<typeof flowMutationAffects>): string[] {
+  return affects.mutations.map((m) => {
+    if (m.kind === 'seed' && 'fixture' in m)
+      return `${m.step}:seed ${m.fixture} [${m.seedType}] → ${m.command ?? '(no seed spec — step will fail)'}  (repo-supplied, unreviewed)`;
+    if (m.kind === 'openUrl' && 'resolvedUrl' in m)
+      return `${m.step}:openUrl ${m.resolvedUrl}  (variables: ${m.variables.map((v) => `${v.name}←${v.source}`).join(', ')})`;
+    return `${m.step}:${m.kind}`;
+  });
+}
+
 function flowMutationRisk(affects: ReturnType<typeof flowMutationAffects>): 'low' | 'medium' | 'high' {
   if (affects.mutations.some((m) => m.kind === 'seed' && m.seedType === 'script')) return 'high';
   if (
     affects.externalProviders.length ||
-    affects.mutations.some((m) => m.kind === 'networkOffline' || m.kind === 'networkOnline' || m.kind === 'seed')
+    affects.mutations.some((m) => m.kind === 'networkOffline' || m.kind === 'networkOnline' || m.kind === 'seed' || m.kind === 'openUrl')
   )
     return 'medium';
   return 'low';
@@ -164,6 +212,23 @@ function ocrSteps(flow: Flow): Array<{ step: number; kind: 'tapOcrText' | 'asser
     if (step.kind !== 'tapOcrText' && step.kind !== 'assertOcrText') return;
     out.push({ step: index + 1, kind: step.kind, query: step.query, minConfidence: step.minConfidence });
   });
+  return out;
+}
+
+const LOCATOR_FAILURES = new Set(['ELEMENT_NOT_FOUND', 'AMBIGUOUS_SELECTOR', 'STALE_REF', 'INVALID_SELECTOR', 'ASSERTION_FAILED']);
+
+/** nextSteps for a failed qa_flow_run: point at qa_flow_repair for the failing step. */
+export function failedFlowNextSteps(name: string, flowArg: string | undefined, failedAtStep?: number, failureCode?: string): string[] {
+  const out: string[] = [];
+  if (failedAtStep != null) {
+    const target = flowArg ? `flow:"${flowArg}"` : 'flowYaml:<same YAML>';
+    out.push(
+      `${failureCode && !LOCATOR_FAILURES.has(failureCode) ? 'If this is locator drift (renamed/moved control), ' : ''}call qa_flow_repair { ${target}, failedStep:${failedAtStep} } for a reviewable locator fix (review before apply).`,
+    );
+  }
+  if (failureCode === 'MISSING_FIXTURE')
+    out.push(`Pass missing values via qa_flow_run { variables } (flows read process.env only for ${FLOW_ENV_PREFIX}* names).`);
+  out.push(`If the app itself is wrong, record it with qa_note { workflow:"${name}", outcome:"fail" } with the step evidence.`);
   return out;
 }
 
@@ -208,7 +273,10 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
       if (!parsed.appId) warnings.push("No appId — a prepareTarget step will rely on the session's prepared appId.");
       if (allSteps.some((s) => s.kind === 'tap' && s.selector.startsWith('@')))
         warnings.push('Uses @ref selectors — refs are run-time only; prefer text/id selectors for durable flows.');
-      if (src.yamlText!.includes('${')) warnings.push('Uses ${VARIABLES} — provide them via qa_flow_run { variables } or the environment.');
+      if (src.yamlText!.includes('${'))
+        warnings.push(
+          `Uses \${VARIABLES} — provide them via qa_flow_run { variables }, stored session inputs, or ${FLOW_ENV_PREFIX}* environment variables (other env names are never read).`,
+        );
       const flowOcrSteps = ocrSteps(parsed);
       if (flowOcrSteps.length) {
         warnings.push(
@@ -278,8 +346,9 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
       if (root) {
         for (const s of allSteps) {
           if (s.kind === 'tapImage' || s.kind === 'assertImage') {
-            const p = isAbsolute(s.template) ? s.template : join(root, s.template);
-            if (!existsSync(p)) warnings.push(`image template not found: ${s.template} (resolve relative to the project root).`);
+            const p = withinRootOrNull(root, s.template);
+            if (!p) warnings.push(`image template outside the project root: ${s.template} — qa_flow_run will refuse it.`);
+            else if (!existsSync(p)) warnings.push(`image template not found: ${s.template} (resolve relative to the project root).`);
           }
         }
       }
@@ -323,7 +392,10 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
           .describe('plan: absolute app root for flow names (default: session root → MCP roots → env → cwd).'),
         flow: z.string().optional().describe('Flow name under .swipium/flows, or a .yaml path.'),
         flowYaml: z.string().optional().describe('Inline flow YAML.'),
-        variables: z.record(z.string()).optional().describe('run: ${VAR} values (over process.env); credential-like names redacted.'),
+        variables: z
+          .record(z.string())
+          .optional()
+          .describe('run: ${VAR} values (win over stored session inputs, then SWIPIUM_* env only); credential-like names redacted.'),
         repeat: z.number().int().min(1).max(10).optional().describe('run: repeat N times for flake classification (default 1).'),
         consentId: z.string().optional().describe('run: consent for mutating / OCR steps.'),
         approve: z.boolean().optional(),
@@ -436,6 +508,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
         notes.push(`ignored parameter(s) not applicable to mode:"run": ${runIgnored.join(', ')} — they refine the mode:"plan" preview`);
 
       const session = sessionId ? sessions.get(sessionId) : undefined;
+      if (sessionId && !session) return qaAnnotate(unknownSessionError(sessionId), notes);
       const { driver, blocked } = session ? await getDriver(session) : { driver: undefined, blocked: undefined };
       if (!session || !driver) {
         const refused = blockedDeviceResult(blocked);
@@ -549,7 +622,13 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
           );
         }
       }
-      const affects = flowMutationAffects(parsed, session, src.source, runs, externalProviders);
+      // Stored session inputs (qa_agent needs_input / first-run credentials) fill ${VAR}s so a
+      // generated flow replays without the agent re-sending raw secrets; explicit args win.
+      const sessionInputs = sessions.inputVariables(session);
+      const runVariables: Record<string, string> = { ...sessionInputs, ...(variables ?? {}) };
+      const usedSessionInputs = Object.keys(sessionInputs).filter((k) => variables?.[k] == null);
+      if (usedSessionInputs.length) notes.push(`using stored session input(s): ${usedSessionInputs.join(', ')} (values not shown)`);
+      const affects = flowMutationAffects(parsed, session, src.source, runs, externalProviders, runVariables);
       const mutationRisk = flowMutationRisk(affects);
       let mutationConsent: { required: boolean; consentId?: string; approved: boolean; payloadHash?: string } = {
         required: false,
@@ -576,11 +655,18 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
             requireConsent({
               action: 'flow_mutation_run',
               risk: mutationRisk,
-              exactCommand: `qa_flow_run ${parsed.name} (${[...affects.mutations.map((m) => `${m.step}:${m.kind}`), ...externalProviderSteps.map((s) => `${s.step}:${s.kind}`)].join(', ')})${externalCommand}`,
+              exactCommand: `qa_flow_run ${parsed.name} (${[...affects.mutations.map((m) => `${m.step}:${m.kind}`), ...externalProviderSteps.map((s) => `${s.step}:${s.kind}`)].join(', ')})${externalCommand}${mutationCommandLines(affects).length ? `\n${mutationCommandLines(affects).join('\n')}` : ''}`,
               affects,
-              explain: affects.externalProviders.length
-                ? `Run flow "${parsed.name}" with external visual provider steps? OCR steps pass ${runs * externalProviderSteps.length} screenshot(s) to the configured provider and any mutating steps can change app/device/test state.`
-                : `Run mutating flow "${parsed.name}"? Mutating steps can change app/device/test state and will be recorded in the mutation ledger.`,
+              explain:
+                (affects.externalProviders.length
+                  ? `Run flow "${parsed.name}" with external visual provider steps? OCR steps pass ${runs * externalProviderSteps.length} screenshot(s) to the configured provider and any mutating steps can change app/device/test state.`
+                  : `Run mutating flow "${parsed.name}"? Mutating steps can change app/device/test state and will be recorded in the mutation ledger.`) +
+                (affects.mutations.some((m) => m.kind === 'seed')
+                  ? " Seed steps run the exact command/URL shown, taken from the repo's fixture declarations — these are repo-supplied and UNREVIEWED by Swipium; approve only if you trust them."
+                  : '') +
+                (affects.mutations.some((m) => m.kind === 'openUrl')
+                  ? ' openUrl steps interpolate variables into a URL that leaves the test harness — check the destination.'
+                  : ''),
             }),
             notes,
           );
@@ -602,7 +688,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
         for (let i = 0; i < runs; i++) {
           const b = sessions.budgetStop(session);
           if (b) break;
-          results.push(await runFlow(sessions, session, driver, parsed, { variables, mutationConsent }));
+          results.push(await runFlow(sessions, session, driver, parsed, { variables: runVariables, mutationConsent }));
         }
         const flake = classifyFlakeResults(results, runs);
         return qaAnnotate(
@@ -628,7 +714,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
         );
       }
 
-      const result = await runFlow(sessions, session, driver, parsed, { variables, mutationConsent });
+      const result = await runFlow(sessions, session, driver, parsed, { variables: runVariables, mutationConsent });
 
       const head =
         `flow "${result.name}" ${result.passed ? '✅ PASSED' : `❌ FAILED at step ${result.failedAtStep} (${result.reason})`} ` +
@@ -642,7 +728,14 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
         .join('\n');
 
       // A failed flow is a structured result, not a protocol error — the agent should record it.
-      return qaAnnotate(qaOk({ ...result }, `${head}\n${stepLines}`), notes);
+      const nextSteps = result.passed ? undefined : failedFlowNextSteps(parsed.name, flow, result.failedAtStep, result.failureCode);
+      return qaAnnotate(
+        qaOk(
+          { ...result, ...(nextSteps ? { nextSteps } : {}) },
+          `${head}\n${stepLines}${nextSteps ? `\nnext:\n - ${nextSteps.join('\n - ')}` : ''}`,
+        ),
+        notes,
+      );
     },
   );
 }

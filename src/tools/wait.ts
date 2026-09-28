@@ -4,7 +4,7 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, unknownSessionError } from '../lib/result.js';
 import { resolveDevice } from '../session/attach.js';
 import { metroReadiness } from '../lib/metroState.js';
 import type { SessionStore } from '../session/store.js';
@@ -27,13 +27,7 @@ export function registerWait(server: McpServer, sessions: SessionStore): void {
     },
     async ({ sessionId, for: cond, timeoutMs }) => {
       const session = sessions.get(sessionId);
-      if (!session)
-        return qaError({
-          what: `Unknown sessionId ${sessionId}`,
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_start_session first.'],
-        });
+      if (!session) return unknownSessionError(sessionId);
       const deadline = Date.now() + (timeoutMs ?? (cond === 'device_online' ? 180000 : 60000));
       const intervalMs = 1500;
 

@@ -7,7 +7,7 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { qaNeedsInput } from '../lib/needsInput.js';
 import { getDriver } from '../session/attach.js';
 import { startProgress } from '../session/progress.js';
@@ -52,12 +52,7 @@ export async function resolveFeatureContext(
   if (args.sessionId && !session) {
     return {
       ok: false,
-      result: qaError({
-        what: `Unknown sessionId ${args.sessionId}`,
-        changedState: false,
-        retrySafe: true,
-        nextSteps: ['Call qa_start_session / qa_test_this first, or pass projectRoot.'],
-      }),
+      result: unknownSessionError(args.sessionId, ['Call qa_start_session / qa_test_this first, or pass projectRoot.']),
     };
   }
   let root = session?.root;
@@ -195,12 +190,7 @@ export function registerFeatureTesting(server: McpServer, sessions: SessionStore
       // feature" works even when the first instruction is feature-focused.
       let session = sessionId ? sessions.get(sessionId) : undefined;
       if (sessionId && !session) {
-        return qaError({
-          what: `Unknown sessionId ${sessionId}`,
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Omit sessionId to bootstrap from projectRoot, or pass a valid session.'],
-        });
+        return unknownSessionError(sessionId, ['Omit sessionId to bootstrap from projectRoot, or pass a valid session.']);
       }
       let driver = session ? (await getDriver(session)).driver : undefined;
       if (!session || !driver) {

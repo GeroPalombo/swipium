@@ -65,6 +65,11 @@ async function main(): Promise<void> {
     process.exitCode = await runReport(rest);
     return;
   }
+  if (cmd === 'gc') {
+    const { runGc } = await import('./cli/gc.js');
+    process.exitCode = await runGc(rest);
+    return;
+  }
 }
 
 main().catch((err) => {

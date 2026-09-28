@@ -7,7 +7,7 @@ import { realpathSync, statSync } from 'node:fs';
 import { isAbsolute, resolve as resolvePath, sep } from 'node:path';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { FAILURES, failureOwner, isSelfFixable, type FailureCode } from '../oracle/failures.js';
 import { progressLine } from '../session/progress.js';
 import { readinessForSession } from '../report/readiness.js';
@@ -15,6 +15,7 @@ import { SWIPIUM_VERSION, TOOL_COUNT, PROMPT_COUNT } from '../version.js';
 import { TEST_GOALS, type TestGoal } from '../orchestration/goal.js';
 import { CAPABILITY_GROUPS } from '../core/capabilityGroups.js';
 import type { Session, SessionStore } from '../session/store.js';
+import { recallTestThisIntent, markLoginDeclined } from '../orchestration/testThis/sessionIntent.js';
 
 function budgetRemaining(s: Session): { minutes: number; actions: number; screenshots: number } {
   const elapsedMin = (Date.now() - s.createdAt) / 60000;
@@ -35,8 +36,11 @@ function hasGeneratedAssets(s: Session): boolean {
 
 /** The mode qa_status reports (JSON and text alike). A WDA-less iOS simulator (SimctlDriver, kind
  * 'simulator') is visual-only regardless of the stored mode, which only flips on a failed UI dump. */
-export function effectiveMode(s: Pick<Session, 'mode' | 'driver'>): Session['mode'] | 'visual-only' {
-  return s.driver?.kind === 'simulator' ? 'visual-only' : s.mode;
+export function effectiveMode(
+  s: Pick<Session, 'mode' | 'driver'> & { driverKind?: Session['driverKind'] },
+): Session['mode'] | 'visual-only' {
+  // After a restart there is no live driver — the persisted driverKind still tells the transport.
+  return (s.driver?.kind ?? s.driverKind) === 'simulator' ? 'visual-only' : s.mode;
 }
 
 const SIMULATOR_UDID_RE = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i;
@@ -44,24 +48,50 @@ const SIMULATOR_UDID_RE = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9
 /** Which platform the session's bound device is on. The live driver kind is authoritative
  *  (simctl/WDA ⇒ iOS); a rehydrated session has no driver, so fall back to the device id shape —
  *  iOS simulators are UUIDs, adb serials never are. */
-export function sessionPlatform(s: Pick<Session, 'device' | 'driver'>): 'android' | 'ios' | undefined {
-  const kind = s.driver?.kind;
+export function sessionPlatform(
+  s: Pick<Session, 'device' | 'driver'> & { driverKind?: Session['driverKind'] },
+): 'android' | 'ios' | undefined {
+  const kind = s.driver?.kind ?? s.driverKind;
   if (kind === 'simulator' || kind === 'wda') return 'ios';
   if (kind === 'direct') return 'android';
   if (!s.device) return undefined;
   return SIMULATOR_UDID_RE.test(s.device) ? 'ios' : 'android';
 }
 
+/** Has a smoke pass run in this session? Persisted signals only: the qa_test_this pipeline's
+ *  `smoke_completed` milestone, or the launch_smoke note every smoke run records (qa_smoke too). */
+function smokeRan(s: Session): boolean {
+  return s.milestones?.smoke_completed != null || s.notes.some((n) => n.workflow === 'launch_smoke');
+}
+
+/** Latest time anything was exercised/observed (notes, findings, recorded actions). */
+function lastActivityAt(s: Session): number {
+  let t = 0;
+  for (const n of s.notes) t = Math.max(t, n.at ?? 0);
+  for (const f of s.findings) t = Math.max(t, f.at ?? 0);
+  for (const a of s.recordedActions) t = Math.max(t, a.at ?? 0);
+  return t;
+}
+
+/** The newest report artifact, if one exists. */
+function latestReport(s: Session): { uri: string; createdAt: number } | undefined {
+  return s.artifacts.filter((a) => a.kind === 'report' && /\/report\/report-/.test(a.uri)).sort((a, b) => b.createdAt - a.createdAt)[0];
+}
+
 /** Deterministic "what next" given the session's observed state (optionally goal-aware).
- *  An explicit state ladder — evaluated top-down, the first matching state wins:
- *    1. a job is running          → qa_job_status (poll it)
- *    2. no device bound           → qa_test_this  (orchestrate setup)
- *    3. device but no app         → qa_prepare_target (Android) / qa_prepare_ios_target (iOS sim)
- *    4. nothing exercised yet     → qa_smoke
- *    5. findings recorded         → qa_report (summarize with evidence)
- *    6. clean run, no assets yet  → qa_generate (make the run durable)
- *    7. clean run + assets exist  → qa_report (terminal: wrap up)
- *  Exported for unit tests (test/nextBestAction.test.ts). */
+ *  An explicit state ladder — evaluated top-down, the first matching state wins. Every rung keys
+ *  on state its recommended tool CHANGES, so following the advice always advances the ladder:
+ *    1. a job is running                   → qa_job_status (poll it)
+ *    2. the last qa_test_this job ended    → its nextRecommendedAction (report / explain blocker /
+ *       and nothing happened since            answer the needs_input question)
+ *    3. no device bound                    → qa_test_this  (orchestrate setup)
+ *    4. device but no app                  → qa_prepare_target (Android) / qa_prepare_ios_target (iOS sim)
+ *    5. no smoke yet and nothing recorded  → qa_smoke (records the smoke milestone)
+ *    6. findings, no report since          → qa_report
+ *    7. clean run, actions, no assets yet  → qa_generate (make the run durable)
+ *    8. no report since the last activity  → qa_report (wrap up)
+ *    9. a fresh report exists              → qa_get_artifact (read it — done)
+ *  Exported for unit tests (test/nextBestAction.test.ts, test/orchStatusLadder.test.ts). */
 export function nextBestAction(s: Session, goal?: string): { tool: string; why: string; args: Record<string, unknown> } {
   const sid = s.id;
   // 1. A job is still running — poll it before anything else.
@@ -72,14 +102,37 @@ export function nextBestAction(s: Session, goal?: string): { tool: string; why: 
       why: `job ${lastJob.jobId} (${lastJob.kind}) is still running`,
       args: { sessionId: sid, jobId: lastJob.jobId },
     };
-  // 2. No device bound — orchestrate setup end-to-end.
+  // 2. The last autopilot job is terminal and nothing was exercised after it: its own
+  //    nextRecommendedAction is authoritative (a finished run must not be re-smoked).
+  const result = lastJob?.result as
+    | { state?: string; failureCode?: string; nextRecommendedAction?: { tool: string; args?: Record<string, unknown>; why?: string } }
+    | undefined;
+  if (lastJob && result?.state && (lastJob.endedAt ?? lastJob.startedAt) >= lastActivityAt(s)) {
+    const nra = result.nextRecommendedAction;
+    if (result.state === 'blocked' || result.state === 'unsafe')
+      return {
+        tool: 'qa_explain_blocker',
+        why: `last job ${lastJob.jobId} ended ${result.state} (${result.failureCode ?? 'UNKNOWN'}) — explain the blocker and relay the fix`,
+        args: { failureCode: result.failureCode ?? 'UNKNOWN' },
+      };
+    if (nra?.tool)
+      return {
+        tool: nra.tool,
+        why:
+          result.state === 'needs_input'
+            ? `last job ${lastJob.jobId} is waiting on one question — ${nra.why ?? 'answer it and resume'}`
+            : `last job ${lastJob.jobId} ${result.state} — ${nra.why ?? 'follow its recommendation'}; no further calls needed after that`,
+        args: { ...(nra.args ?? {}) },
+      };
+  }
+  // 3. No device bound — orchestrate setup end-to-end.
   if (!s.device)
     return {
       tool: 'qa_test_this',
       why: goal ? `no device/app prepared yet — run the autopilot for goal "${goal}"` : 'no device/app prepared yet — orchestrate setup',
       args: { sessionId: sid, mode: 'execute', ...(goal ? { goal } : {}) },
     };
-  // 3. Device bound but no app launched — route to the platform's prepare tool (H9: after
+  // 4. Device bound but no app launched — route to the platform's prepare tool (H9: after
   //    `qa_ios boot` the bound device is a simulator; the Android-only qa_prepare_target would fail).
   if (!s.appId)
     return sessionPlatform(s) === 'ios'
@@ -89,21 +142,36 @@ export function nextBestAction(s: Session, goal?: string): { tool: string; why: 
           args: { sessionId: sid, device: s.device },
         }
       : { tool: 'qa_prepare_target', why: 'device bound but no app launched', args: { sessionId: sid } };
-  // 4. App is up but nothing has been exercised.
-  if (s.recordedActions.length === 0)
+  // 5. App is up but nothing has been exercised (a smoke pass is a milestone, not an action count).
+  if (!smokeRan(s) && s.recordedActions.length === 0)
     return { tool: 'qa_smoke', why: 'app is up but nothing exercised yet — run a smoke pass', args: { sessionId: sid } };
-  // 5. Findings recorded — reporting them beats generating more assets.
-  if (s.findings.length > 0)
+  const report = latestReport(s);
+  const reportFresh = !!report && report.createdAt >= lastActivityAt(s);
+  // 6. Findings recorded — reporting them beats generating more assets.
+  if (s.findings.length > 0 && !reportFresh)
     return { tool: 'qa_report', why: `${s.findings.length} finding(s) recorded — summarize with evidence`, args: { sessionId: sid } };
-  // 6. Clean run with recorded actions but no durable asset yet — make the run reusable.
-  if (!hasGeneratedAssets(s))
+  // 7. Clean run with recorded actions but no durable asset yet — make the run reusable.
+  if (s.findings.length === 0 && s.recordedActions.length > 0 && !hasGeneratedAssets(s))
     return {
       tool: 'qa_generate',
       why: 'actions recorded — turn the run into a durable POM suite',
       args: { sessionId: sid, target: 'suite' },
     };
-  // 7. Terminal: clean run and the suite already generated — wrap up.
-  return { tool: 'qa_report', why: 'clean run and test assets already generated — wrap up and report', args: { sessionId: sid } };
+  // 8. Wrap up with a report covering everything done so far.
+  if (!reportFresh)
+    return {
+      tool: 'qa_report',
+      why: hasGeneratedAssets(s)
+        ? 'clean run and test assets already generated — wrap up and report'
+        : 'smoke done — wrap up and report what was covered',
+      args: { sessionId: sid },
+    };
+  // 9. Terminal: a report newer than any activity exists — read it; nothing else to do.
+  return {
+    tool: 'qa_get_artifact',
+    why: 'the run is reported — read the report; no further Swipium calls are needed',
+    args: { uri: report!.uri },
+  };
 }
 
 /** Server `instructions` (MCP InitializeResult.instructions): the operating manual clients may put
@@ -121,7 +189,7 @@ export const SERVER_INSTRUCTIONS = [
   'Stop and ask the user only on needs_input (credentials, monorepo target, destructive approval, signing, external service) or a consent request; otherwise keep going.',
   'Consent: a result with requiresConsent must be shown to the user; re-call with consentId + approve:true only after they agree. CONSENT_DECLINED / CONSENT_CANCELLED / CONSENT_REFUSED mean nothing ran - do not retry without asking.',
   '',
-  'Project root: projectRoot arg, else MCP roots, else SWIPIUM_PROJECT_ROOT, else CLAUDE_PROJECT_DIR, else the server cwd (never / or $HOME). On PROJECT_ROOT_UNRESOLVED pass an absolute projectRoot.',
+  'Project root: projectRoot arg, else MCP roots, else SWIPIUM_PROJECT_ROOT, else CLAUDE_PROJECT_DIR, else the server cwd if it is not / or $HOME and contains a project marker (package.json, app.json, pubspec.yaml, Gradle/Xcode files, Podfile, android/, ios/). On PROJECT_ROOT_UNRESOLVED pass an absolute projectRoot.',
   'Feature work: read the app map first (qa_app_map_read / qa_app_map_query / qa_app_map_feature_scope); qa_test_feature tests one feature.',
   'Low-level tools (qa_start_session, qa_prepare_target / qa_prepare_ios_target, qa_snapshot, qa_act, qa_visual, qa_flow_run) are escape hatches when the autopilot is not enough.',
 ].join('\n');
@@ -194,12 +262,9 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
       }
       const s = sessions.get(sessionId);
       if (!s)
-        return qaError({
-          what: `Unknown sessionId ${sessionId}`,
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_status without sessionId for orientation, or qa_start_session / qa_test_this to create a session.'],
-        });
+        return unknownSessionError(sessionId, [
+          'Call qa_status without sessionId for orientation, or qa_start_session / qa_test_this to create a session.',
+        ]);
       const remaining = budgetRemaining(s);
       const lastJob = [...s.jobs.values()].sort((a, b) => b.startedAt - a.startedAt)[0];
       const next = nextBestAction(s, goal);
@@ -315,15 +380,14 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
     },
     async ({ sessionId, kind, values, secretFields }) => {
       const s = sessions.get(sessionId);
-      if (!s)
-        return qaError({
-          what: `Unknown sessionId ${sessionId}`,
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_start_session first.'],
-        });
-      const vals = values ?? {};
-      const secretRe = /pass|secret|token|otp|pin|cvv|key/i;
+      if (!s) return unknownSessionError(sessionId);
+      const vals: Record<string, string | boolean> = { ...(values ?? {}) };
+      // `code` covers OTP fields named code / verificationCode.
+      const secretRe = /pass|secret|token|otp|pin|cvv|key|code/i;
+      // "test pre-login only" (the credentials question's own fallback) is a DECISION, not an input:
+      // mark login out of scope for the session instead of reporting it as an unknown field.
+      const declined = (kind === 'credentials' || kind === 'otp_or_manual_verification') && extractDecline(vals);
+      if (declined) markLoginDeclined(sessions, s);
       const isSecret = (k: string) => secretFields?.includes(k) || secretRe.test(k);
 
       // Register inputs into the SECURE STORE (P0.5): each maps to a flow variable; secret values
@@ -368,6 +432,9 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
       sessions.persist(s);
       sessions.addWorkaround(s, `resumed from "${kind}" blocker with: ${accepted.join(', ') || '(no values)'}`);
       const reInvokeArgs: Record<string, unknown> = { sessionId: s.id, ...mapped.args };
+      // Replay the ORIGINAL qa_test_this intent (goal/goalText/flags) — a resume that drops it
+      // silently downgrades e.g. release_gate to the default smoke.
+      const intent = recallTestThisIntent(s) as Record<string, unknown>;
 
       // Decide the resume action by kind.
       const reInvokeKinds = new Set([
@@ -381,12 +448,22 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
       // Every resume is a DIRECTLY executable call. Credentials/OTP are now registered as secure
       // inputs, so re-invoking the autopilot drives the authenticated flows with them (the macro
       // tool resolves the already-prepared session/device and continues) — no bare qa_act guess.
-      const resume =
-        kind === 'credentials' || kind === 'otp_or_manual_verification'
+      const resume = declined
+        ? {
+            tool: 'qa_test_this',
+            why:
+              kind === 'credentials'
+                ? 'login marked out of scope for this session — continue with pre-login coverage only (authenticated flows are reported as blocked, not failed)'
+                : 'verification marked out of scope — flows behind it are skipped and reported as blocked',
+            args: { mode: 'execute', ...intent, sessionId: s.id, stopOnNeedsInput: false },
+          }
+        : kind === 'credentials' || kind === 'otp_or_manual_verification'
           ? {
               tool: 'qa_test_this',
-              why: 'credentials registered (redacted) — re-run the autopilot to drive authenticated flows with them',
-              args: { sessionId: s.id, mode: 'execute', stopOnNeedsInput: false },
+              why: storedVars.length
+                ? 'credentials registered (redacted) — re-run the autopilot to drive authenticated flows with them'
+                : 'no credentials were provided — re-run the autopilot (pre-login coverage)',
+              args: { mode: 'execute', ...intent, sessionId: s.id, stopOnNeedsInput: false },
             }
           : kind === 'destructive_exploration_approval' && mapped.approveDestructive
             ? {
@@ -397,20 +474,26 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
                 args: { sessionId: s.id, safeMode: 'dry_run_destructive' },
               }
             : reInvokeKinds.has(kind)
-              ? { tool: 'qa_test_this', why: 're-run orchestration with your choice applied', args: { mode: 'execute', ...reInvokeArgs } }
-              : { tool: 'qa_test_this', why: 'resume orchestration', args: { mode: 'execute', ...reInvokeArgs } };
+              ? {
+                  tool: 'qa_test_this',
+                  why: 're-run orchestration with your choice applied',
+                  args: { mode: 'execute', ...intent, ...reInvokeArgs },
+                }
+              : { tool: 'qa_test_this', why: 'resume orchestration', args: { mode: 'execute', ...intent, ...reInvokeArgs } };
 
       return qaOk(
         {
           kind,
           accepted,
+          ...(declined ? { loginOutOfScope: true } : {}),
           storedVariables: storedVars,
           ignored: mapped.ignored,
           ...(mapped.projectRoot ? { projectRoot: mapped.projectRoot } : {}),
           nextAction: resume,
           secretsRegistered: accepted.filter((a) => a.includes('redacted')).length,
         },
-        `Accepted ${accepted.length} field(s)${accepted.some((a) => a.includes('redacted')) ? ' (secrets redacted)' : ''}.` +
+        (declined ? 'Login marked out of scope for this session — testing continues pre-login only.\n' : '') +
+          `Accepted ${accepted.length} field(s)${accepted.some((a) => a.includes('redacted')) ? ' (secrets redacted)' : ''}.` +
           (storedVars.length ? `\nstored for replay: ${storedVars.join(', ')}` : '') +
           (mapped.ignored.length ? `\nnot applied: ${mapped.ignored.map((i) => `${i.field} (${i.howToApply})`).join('; ')}` : '') +
           `\n→ next: ${resume.tool} ${JSON.stringify(resume.args)} — ${resume.why}`,
@@ -536,6 +619,23 @@ export function mapBlockerChoices(kind: string, choices: Record<string, string |
     }
   }
   return out;
+}
+
+const DECLINE_KEYS = /^(choice|fallback|fallbackOption|option|answer|decision|selected|preLoginOnly|decline|declined|skip)$/i;
+const DECLINE_TEXT = /pre-?login only|stay pre-?login|decline|no credentials|skip (login|flows requiring verification)|^skip$/i;
+
+/** Detect (and remove from `vals`) a "decline the input" answer: a fallback-option string such as
+ *  "test pre-login only", or a boolean preLoginOnly/decline flag. Exported for tests. */
+export function extractDecline(vals: Record<string, string | boolean>): boolean {
+  let declined = false;
+  for (const [k, v] of Object.entries(vals)) {
+    if (!DECLINE_KEYS.test(k)) continue;
+    if ((typeof v === 'boolean' && v && /preLoginOnly|decline|skip/i.test(k)) || (typeof v === 'string' && DECLINE_TEXT.test(v.trim()))) {
+      declined = true;
+      delete vals[k];
+    }
+  }
+  return declined;
 }
 
 /** Map a NeedsInput field name to its canonical Swipium flow variable (P0.5). */

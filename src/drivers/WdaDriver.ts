@@ -1,4 +1,5 @@
-import type { Driver, NativeSelectorStrategy } from './Driver.js';
+import type { DumpOptions, Driver, ImeState, NativeSelectorStrategy } from './Driver.js';
+import { currentScreenSizeEpoch } from './DirectDriver.js';
 import * as sim from '../lib/simctl.js';
 import { parseSnapshot } from '../snapshot/parse.js';
 import {
@@ -33,6 +34,13 @@ import {
 } from '../lib/wda.js';
 
 const UNSUPPORTED = 'not supported by the WDA backend yet.';
+/** A cached screen size is re-validated (GET /orientation + /window/size) after this long even
+ * without an observed rotation. Rotations seen in a page source drop it immediately. */
+export const WDA_SCREEN_SIZE_TTL_MS = 30_000;
+/** How long a post-settle page source may answer `press back` (only while no action ran since). */
+export const WDA_BACK_SOURCE_FRESH_MS = 60_000;
+/** How long the element id found by clearFocusedText() is reused by the following inputText(). */
+export const WDA_FOCUSED_REUSE_MS = 10_000;
 export type WdaTimingKind = 'session_create' | 'source' | 'find_element' | 'tap' | 'type' | 'clear' | 'screenshot';
 
 type SimulatorControl = Pick<typeof sim, 'launchApp' | 'terminateApp' | 'openUrl' | 'simulatorLogs'> & {
@@ -123,9 +131,23 @@ export class WdaDriver implements Driver {
     }
   }
 
-  /** Bind an AbortSignal so a cancelled job aborts in-flight WDA HTTP requests. */
-  setSignal(signal?: AbortSignal): void {
+  /** Bind an AbortSignal so a cancelled job/tool call aborts in-flight WDA HTTP requests.
+   * Returns the previously bound signal (so an interactive call can restore a job's). */
+  setSignal(signal?: AbortSignal): AbortSignal | undefined {
+    const prev = this.signal;
     this.signal = signal;
+    return prev;
+  }
+
+  /** Last normalized page source from dumpXml() — cleared by every state-changing call, so while
+   * set it IS the current screen (as of `at`). Lets `press back` skip a fresh /source. */
+  private lastSource?: { sid?: string; xml: string; at: number };
+  /** Focused element found by clearFocusedText(), reused by the next inputText(). */
+  private focusedEl?: { sid: string; elementId: string; at: number };
+
+  /** Called by every state-changing operation. */
+  private touched(): void {
+    this.lastSource = undefined;
   }
 
   /** Set when a session was transparently re-created after "invalid session id" (WDA restart /
@@ -155,6 +177,8 @@ export class WdaDriver implements Driver {
         if (!isInvalidWdaSession(e)) throw e;
         this.sessionId = undefined;
         this.cachedScreenSize = undefined;
+        this.lastSource = undefined;
+        this.focusedEl = undefined;
         const fresh = await this.ensureSession({ recover: true });
         this.sessionRecovered = true;
         return fn(fresh);
@@ -237,6 +261,7 @@ export class WdaDriver implements Driver {
     }
   }
   async launchApp(pkg: string): Promise<void> {
+    this.touched();
     this.bundleId = pkg;
     if (this.udid) {
       await this.simulator.launchApp(this.udid, pkg);
@@ -244,6 +269,7 @@ export class WdaDriver implements Driver {
     await this.ensureSession();
   }
   async launchAppWithArgs(pkg: string, args: Record<string, unknown>): Promise<void> {
+    this.touched();
     this.bundleId = pkg;
     if (this.udid && this.simulator.launchAppWithArgs) {
       await this.simulator.launchAppWithArgs(this.udid, pkg, args);
@@ -255,6 +281,7 @@ export class WdaDriver implements Driver {
   async terminateApp(pkg: string): Promise<void> {
     const target = pkg || this.bundleId;
     if (!this.udid || !target) return this.no('app terminate');
+    this.touched();
     await this.simulator.terminateApp(this.udid, target);
   }
   clearData(): Promise<void> {
@@ -267,7 +294,14 @@ export class WdaDriver implements Driver {
   async imeFrame(): Promise<[number, number, number, number] | null> {
     return this.withSession((sid) => wdaKeyboardFrame(this.baseUrl, sid));
   }
+  /** imeShown + imeFrame in ONE keyboard lookup (both used to run the same /elements query):
+   * no keyboard element (or no usable rect) ⇒ not shown. */
+  async imeState(): Promise<ImeState> {
+    const frame = await this.imeFrame();
+    return { shown: frame !== null, frame };
+  }
   async hideKeyboard(): Promise<boolean> {
+    this.touched();
     return this.withSession(async (sid) => {
       if (!(await wdaKeyboardShown(this.baseUrl, sid))) return false;
       try {
@@ -309,20 +343,56 @@ export class WdaDriver implements Driver {
   async screenshot(): Promise<Buffer> {
     return this.withSession((sid) => this.timed('screenshot', () => wdaScreenshot(this.baseUrl, sid)));
   }
-  async dumpXml(): Promise<string> {
-    return normalizeWdaSource(await this.withSession((sid) => this.timed('source', () => wdaSource(this.baseUrl, sid))));
+  async dumpXml(opts: DumpOptions = {}): Promise<string> {
+    // opts.timeoutMs bounds the /source request (default 30 s) — the settle loop passes its
+    // remaining deadline. Retries are the caller's loop; WDA itself is not retried here.
+    let sid: string | undefined;
+    const xml = normalizeWdaSource(
+      await withWdaCall({ timeoutMs: opts.timeoutMs }, () =>
+        this.withSession((s) => {
+          sid = s;
+          return this.timed('source', () => wdaSource(this.baseUrl, s));
+        }),
+      ),
+    );
+    this.lastSource = { sid, xml, at: Date.now() };
+    this.noteSourceSize(xml);
+    return xml;
+  }
+  /** A page source whose root size is the cached size with SWAPPED axes = a rotation happened. */
+  private noteSourceSize(xml: string): void {
+    const c = this.cachedScreenSize;
+    if (!c) return;
+    const m = xml.match(/bounds="\[0,0\]\[(\d+),(\d+)\]"/);
+    if (!m) return;
+    const [w, h] = [Number(m[1]), Number(m[2])];
+    if (w === c.size.height && h === c.size.width && w !== h) this.cachedScreenSize = undefined;
   }
   async tapXY(x: number, y: number): Promise<void> {
+    this.touched();
     await this.withSession((sid) => this.timed('tap', () => tapWdaPoint(this.baseUrl, sid, x, y)));
   }
   async pressXY(x: number, y: number): Promise<void> {
     await this.tapXY(x, y);
   }
   async inputText(text: string): Promise<void> {
+    this.touched();
     return this.withSession((sid) => this.inputTextIn(sid, text));
   }
   private async inputTextIn(sid: string, text: string): Promise<void> {
     let focusedError: unknown;
+    // Reuse the element clearFocusedText() just found (saves one find round trip per type);
+    // on any failure fall through to a fresh lookup.
+    const reuse = this.focusedEl;
+    this.focusedEl = undefined;
+    if (reuse && reuse.sid === sid && Date.now() - reuse.at < WDA_FOCUSED_REUSE_MS) {
+      try {
+        await this.timed('type', () => typeWdaElement(this.baseUrl, sid, reuse.elementId, text));
+        return;
+      } catch (e) {
+        if (isInvalidWdaSession(e)) throw e;
+      }
+    }
     try {
       const el = await this.timed('find_element', () => findFocusedWdaElement(this.baseUrl, sid));
       await this.timed('type', () => typeWdaElement(this.baseUrl, sid, el.elementId, text));
@@ -341,13 +411,16 @@ export class WdaDriver implements Driver {
     }
   }
   async clearFocusedText(approxLen = 40): Promise<void> {
+    this.touched();
     return this.withSession((sid) => this.clearFocusedTextIn(sid, approxLen));
   }
   private async clearFocusedTextIn(sid: string, approxLen: number): Promise<void> {
     let clearError: unknown;
+    this.focusedEl = undefined;
     try {
       const el = await this.timed('find_element', () => findFocusedWdaElement(this.baseUrl, sid));
       await this.timed('clear', () => clearWdaElement(this.baseUrl, sid, el.elementId));
+      this.focusedEl = { sid, elementId: el.elementId, at: Date.now() };
       return;
     } catch (e) {
       clearError = e;
@@ -362,6 +435,8 @@ export class WdaDriver implements Driver {
     }
   }
   async pressKey(key: 'back' | 'home' | 'enter'): Promise<void> {
+    const cached = this.lastSource; // the screen as last dumped, if nothing acted since
+    this.touched();
     if (key === 'home') {
       await this.withSession((sid) => pressWdaHome(this.baseUrl, sid));
       return;
@@ -369,7 +444,9 @@ export class WdaDriver implements Driver {
     if (key === 'back') {
       // iOS has no system back key (WDA has no /back endpoint): tap the navigation bar's back
       // button when the screen has one, else perform the interactive-pop edge swipe.
-      await this.withSession((sid) => this.backIn(sid));
+      await this.withSession((sid) =>
+        this.backIn(sid, cached && cached.sid === sid && Date.now() - cached.at < WDA_BACK_SOURCE_FRESH_MS ? cached.xml : undefined),
+      );
       return;
     }
     await this.inputText('\n');
@@ -377,7 +454,15 @@ export class WdaDriver implements Driver {
 
   /** Last `back` strategy used ('nav_button' | 'edge_swipe') — surfaced by qa_act. */
   lastBackVia?: 'nav_button' | 'edge_swipe';
-  private async backIn(sid: string): Promise<void> {
+  private async backIn(sid: string, cachedXml?: string): Promise<void> {
+    // The latest post-settle source (nothing acted since) is the current screen: try its back
+    // button first and only fetch a fresh /source when it has none.
+    const cachedBtn = cachedXml ? iosBackButtonPoint(cachedXml) : null;
+    if (cachedBtn) {
+      await this.timed('tap', () => tapWdaPoint(this.baseUrl, sid, cachedBtn.x, cachedBtn.y));
+      this.lastBackVia = 'nav_button';
+      return;
+    }
     const xml = normalizeWdaSource(await this.timed('source', () => wdaSource(this.baseUrl, sid)));
     const btn = iosBackButtonPoint(xml);
     if (btn) {
@@ -400,28 +485,50 @@ export class WdaDriver implements Driver {
   }
 
   async acceptAlert(): Promise<void> {
+    this.touched();
     await this.withSession((sid) => acceptWdaAlert(this.baseUrl, sid));
   }
 
   async dismissAlert(): Promise<void> {
+    this.touched();
     await this.withSession((sid) => dismissWdaAlert(this.baseUrl, sid));
   }
   async swipe(x1: number, y1: number, x2: number, y2: number, ms = 300): Promise<void> {
+    this.touched();
     await this.withSession((sid) => dragWdaPoint(this.baseUrl, sid, x1, y1, x2, y2, ms / 1000));
   }
   adbReverseMetro(): Promise<void> {
     return this.no('dev-server port reverse');
   }
   // SWIP-17: size in points via GET /window/size instead of dumping the entire page source.
-  // Cached per (WDA session id, interface orientation): a rotation swaps the axes, so the
-  // cheap GET /orientation keys the cache; a new session naturally misses it. Builds without
-  // /orientation key on "unknown" (the pre-rotation behaviour).
-  private cachedScreenSize?: { sessionId: string; orientation: string; size: { width: number; height: number } };
+  // Cached per WDA session (a new session naturally misses it) WITHOUT a per-call /orientation
+  // round trip: the cache is dropped when a page source shows the axes swapped (rotation), when
+  // Swipium changes the orientation (invalidateScreenSizeCache epoch), and after
+  // WDA_SCREEN_SIZE_TTL_MS. On a miss, /orientation is still read to key the new entry.
+  private cachedScreenSize?: {
+    sessionId: string;
+    orientation: string;
+    epoch: number;
+    at: number;
+    size: { width: number; height: number };
+  };
   async screenSize(): Promise<{ width: number; height: number } | null> {
+    const hit = this.cachedScreenSize;
+    if (
+      hit &&
+      hit.sessionId === this.sessionId &&
+      hit.epoch === currentScreenSizeEpoch(this.udid) &&
+      Date.now() - hit.at < WDA_SCREEN_SIZE_TTL_MS
+    )
+      return { ...hit.size };
     return this.withSession(async (sid) => {
+      const epoch = currentScreenSizeEpoch(this.udid);
       const orientation = await wdaOrientation(this.baseUrl, sid).catch(() => 'unknown');
       const cached = this.cachedScreenSize;
-      if (cached?.sessionId === sid && cached.orientation === orientation) return cached.size;
+      if (cached?.sessionId === sid && cached.orientation === orientation && cached.epoch === epoch) {
+        cached.at = Date.now();
+        return { ...cached.size };
+      }
       let size: { width: number; height: number } | null;
       try {
         size = await wdaWindowSize(this.baseUrl, sid);
@@ -432,7 +539,7 @@ export class WdaDriver implements Driver {
         const m = xml.match(/bounds="\[0,0\]\[(\d+),(\d+)\]"/);
         size = m ? { width: Number(m[1]), height: Number(m[2]) } : null;
       }
-      if (size) this.cachedScreenSize = { sessionId: sid, orientation, size };
+      if (size) this.cachedScreenSize = { sessionId: sid, orientation, epoch, at: Date.now(), size };
       return size;
     });
   }
@@ -441,6 +548,7 @@ export class WdaDriver implements Driver {
   }
   async openUrl(url: string): Promise<void> {
     if (!this.udid) return this.no('open url without a simulator UDID');
+    this.touched();
     await this.simulator.openUrl(this.udid, url);
   }
   disableAnimations(): Promise<void> {
@@ -456,6 +564,7 @@ export class WdaDriver implements Driver {
   }
 
   async tapBySelector(using: NativeSelectorStrategy, value: string): Promise<void> {
+    this.touched();
     await this.withSession(async (sid) => {
       const el = await this.timed('find_element', () => findWdaElement(this.baseUrl, sid, using, value));
       await this.timed('tap', () => tapWdaElement(this.baseUrl, sid, el.elementId));
@@ -463,6 +572,7 @@ export class WdaDriver implements Driver {
   }
 
   async typeBySelector(using: NativeSelectorStrategy, value: string, text: string): Promise<void> {
+    this.touched();
     await this.withSession(async (sid) => {
       const el = await this.timed('find_element', () => findWdaElement(this.baseUrl, sid, using, value));
       await this.timed('type', () => typeWdaElement(this.baseUrl, sid, el.elementId, text));
@@ -470,6 +580,7 @@ export class WdaDriver implements Driver {
   }
 
   async clearBySelector(using: NativeSelectorStrategy, value: string): Promise<void> {
+    this.touched();
     await this.withSession(async (sid) => {
       const el = await this.timed('find_element', () => findWdaElement(this.baseUrl, sid, using, value));
       await this.timed('clear', () => clearWdaElement(this.baseUrl, sid, el.elementId));

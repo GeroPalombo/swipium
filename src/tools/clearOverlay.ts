@@ -4,7 +4,7 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import { parseSnapshot, boundsContain, type RawNode } from '../snapshot/parse.js';
 import { detectTreeOverlays, classifyForeground, obstructionAt } from '../snapshot/overlays.js';
@@ -70,7 +70,8 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
     },
     async ({ sessionId, strategy = 'auto', targetRef }) => {
       const session = sessions.get(sessionId);
-      const { driver: d, blocked } = session ? await getDriver(session) : { driver: undefined, blocked: undefined };
+      if (!session) return unknownSessionError(sessionId);
+      const { driver: d, blocked } = await getDriver(session);
       if (!session || !d) {
         return (
           blockedDeviceResult(blocked) ??

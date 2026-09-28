@@ -111,7 +111,7 @@ export function buildPlan(i: PlanInput): Plan {
         category: 'missing_test_data',
         requiredState: 'a test account (credentials)',
         recommendedSetup:
-          'Declare a fixture with a testAccount label (and provide TEST_EMAIL/TEST_PASSWORD via env), or add it to .swipium/fixtures.json.',
+          'Declare a fixture with a testAccount label (and provide SWIPIUM_TEST_EMAIL/SWIPIUM_TEST_PASSWORD via env), or add it to .swipium/fixtures.json.',
       });
     } else {
       ready.push({ workflow: 'login_smoke', budgetProfile: 'login_smoke', requires: [loginFixture.name] });

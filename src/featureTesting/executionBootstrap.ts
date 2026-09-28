@@ -124,7 +124,7 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
           retrySafe: true,
           failureCode: target.blocked.failureCode,
           nextSteps: [
-            'Bring a device online or create one (qa_doctor), then retry.',
+            'Create an Android AVD (Android Studio → Device Manager, or avdmanager create avd …) or an iOS Simulator (Xcode), then retry.',
             `Or run qa_test_this { projectRoot:"${root}", mode:"execute" }.`,
           ],
         },
@@ -134,7 +134,7 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
   }
   if (target.selected === 'ios-real') {
     return routeToTestThis('IPA_INSTALL_UNSUPPORTED', 'This artifact installs only on a real iOS device (signing/provisioning required).', [
-      'Use qa_prepare_ios_real_target.',
+      'Physical iOS devices are out of scope — build a simulator .app (qa_build {platform:"ios"}) and use qa_prepare_ios_target.',
     ]);
   }
 

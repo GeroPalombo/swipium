@@ -6,11 +6,11 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { generateFlow } from '../flows/generate.js';
 import { loadProjectConfig } from '../cli/scan.js';
 import type { SessionStore } from '../session/store.js';
-import { findSecretLeaks } from '../suite/secretGuard.js';
+import { findSecretLeaks, inputBindings, structuralLiterals } from '../suite/secretGuard.js';
 
 export interface FlowGenerateArgs {
   sessionId: string;
@@ -26,12 +26,7 @@ export async function runFlowGenerate(
 ): Promise<CallToolResult> {
   const session = sessions.get(sessionId);
   if (!session) {
-    return qaError({
-      what: `Unknown sessionId ${sessionId}`,
-      changedState: false,
-      retrySafe: true,
-      nextSteps: ['Call qa_start_session first.'],
-    });
+    return unknownSessionError(sessionId);
   }
   if (!session.recordedActions.length) {
     return qaError({
@@ -44,9 +39,17 @@ export async function runFlowGenerate(
 
   const appId = session.appId ?? (loadProjectConfig(session.root)?.appId as string | undefined) ?? undefined;
   const flowName = (name ?? `${(appId ?? 'app').split('.').pop()}-smoke`).replace(/[^\w.-]+/g, '-');
-  const gen = generateFlow(session.recordedActions, { name: flowName, appId, budgetProfile, secrets: session.secrets });
+  const gen = generateFlow(session.recordedActions, {
+    name: flowName,
+    appId,
+    budgetProfile,
+    secrets: session.secrets,
+    inputs: inputBindings(session), // typed text equal to a stored input → its ${SWIPIUM_TEST_*} placeholder
+  });
   // Backstop: never write (artifact or project file) a flow that still carries a registered secret.
-  const leaks = findSecretLeaks([{ path: `${flowName}.yaml`, content: gen.yaml }], session.secrets);
+  const leaks = findSecretLeaks([{ path: `${flowName}.yaml`, content: gen.yaml }], session.secrets, {
+    structural: structuralLiterals(session.recordedActions),
+  });
   if (leaks.length) {
     return qaError({
       what: `Flow not generated: a registered secret value would be written in plaintext (${leaks.map((l) => `${l.path}:${l.line}`).join(', ')})`,

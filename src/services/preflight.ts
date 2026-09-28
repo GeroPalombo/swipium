@@ -68,7 +68,7 @@ export function buildTestThisPreflight(i: TestThisPreflightInput): ExecutionPref
   if (i.needBuild) {
     steps.push({
       kind: 'build_from_source',
-      risk: 'medium',
+      risk: 'high', // runs arbitrary repo scripts (gradle/xcodebuild/npm) — same rating as qa_build
       consentRequired: true,
       affects: { platform: i.buildPlatform },
       exactCommand: i.buildCommand,
@@ -102,7 +102,7 @@ export function buildTestThisPreflight(i: TestThisPreflightInput): ExecutionPref
       steps.push({
         kind: 'install_apk',
         risk: 'low',
-        consentRequired: false,
+        consentRequired: true, // every install is consent-gated (matches install_ios_app and qa_prepare_target)
         affects: { path: i.apkPath },
         exactCommand: `adb install -r -g ${i.apkPath}`,
       });

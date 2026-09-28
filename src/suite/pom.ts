@@ -6,7 +6,7 @@
 
 import { stringify } from 'yaml';
 import type { RecordedAction } from '../session/store.js';
-import { secretSafeActions } from './secretGuard.js';
+import { secretSafeActions, secretVarName, type InputBinding } from './secretGuard.js';
 import { asciiFold } from '../automationGen/identifiers.js';
 
 export type Durability = 'durable' | 'semi' | 'brittle';
@@ -120,20 +120,6 @@ function pageNameFromScreen(screen: string | undefined, index: number): string {
   return `${pascal(base || activity)}Page`;
 }
 
-/** Derive a meaningful secret variable name (P0.5) — reuses an existing ${VAR} the agent set,
- *  else names from the field (password/otp/token), else a numbered SWIPIUM_SECRET_N. */
-function secretVarFor(a: { text?: string; selector?: string }, index: number): string {
-  const existing = a.text?.match(/^\$\{([^}]+)\}$/);
-  // Reuse an already-meaningful var; but rename a generic recorder placeholder (SECRET_N).
-  if (existing && !/^SECRET_\d+$/i.test(existing[1])) return existing[1];
-  const key = `${a.selector ?? ''}`.toLowerCase();
-  if (/pass/.test(key)) return 'SWIPIUM_TEST_PASSWORD';
-  if (/otp|code|2fa|mfa/.test(key)) return 'SWIPIUM_TEST_OTP';
-  if (/token|api[_-]?key/.test(key)) return 'SWIPIUM_TEST_TOKEN';
-  if (/pin/.test(key)) return 'SWIPIUM_TEST_PIN';
-  return `SWIPIUM_SECRET_${index}`;
-}
-
 function remediationFor(el: { selectorKind: string; selector?: string; screen?: string }): string | undefined {
   if (el.selectorKind === 'coords') {
     return `add a testID (RN) / accessibilityIdentifier (iOS) / android:contentDescription / Flutter Key + Semantics(identifier:) to the tapped element${el.screen ? ` on ${el.screen}` : ''} — it has no durable locator`;
@@ -174,11 +160,13 @@ export function generatePom(
     screenLabels?: Record<string, string>;
     /** Registered session secrets — any recorded literal equal to/containing one becomes a ${VAR}. */
     secrets?: Iterable<string>;
+    /** Stored session inputs (secretGuard.inputBindings): typed text equal to one becomes its ${VAR}. */
+    inputs?: InputBinding[];
   },
 ): PomResult {
   // Defense in depth: a registered secret typed into a field the UI did not flag as secure was
   // recorded as a literal — rewrite it as a secret step before anything is emitted.
-  actions = secretSafeActions(actions, opts.secrets).actions;
+  actions = secretSafeActions(actions, opts.secrets, opts.inputs).actions;
   // 1. segment into pages by recorded screen identity. This keeps signup, onboarding, paywall,
   // and home actions in separate page objects even when the foreground owner is the same app.
   const pages: PomPage[] = [];
@@ -266,7 +254,7 @@ export function generatePom(
         let text = a.text ?? '';
         if (a.secret) {
           // Secret values become ${SWIPIUM_TEST_*} variables — never the raw value (P0.5).
-          const v = secretVarFor(a, ++secretCount);
+          const v = secretVarName(a, ++secretCount);
           text = `\${${v}}`;
           variables.push(v);
         } else {

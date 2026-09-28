@@ -19,6 +19,7 @@ import type { AutomationFramework, LocatorReadiness, AutomationStatus } from '..
 import { join } from 'node:path';
 import { log } from '../lib/logger.js';
 import { redactDeep } from '../lib/redact.js';
+import { generatedOutputRedactor, structuralLiterals } from '../suite/secretGuard.js';
 
 export interface SuiteMergeResult {
   ok: boolean;
@@ -92,13 +93,16 @@ export interface MergeContext {
   liveFeatureIds?: string[];
   /** Registered session secrets — scrubbed from every case before test-suite.json / TC-*.yaml are written. */
   secrets?: Iterable<string>;
+  /** Selector/screen strings of the recording (secretGuard.structuralLiterals): a weak secret equal
+   *  to one is a locator, not a leak — never rewritten. */
+  structural?: Iterable<string>;
 }
 
 /** Core: merge already-canonical cases into the suite. Best-effort — never throws. */
 export function mergeCanonical(root: string, cases: CanonicalTestCase[], ctx: MergeContext): SuiteMergeResult {
   if (!cases.length) return EMPTY;
   // Defense in depth: no registered secret value may reach the persistent suite files.
-  if (ctx.secrets) cases = redactDeep(cases, ctx.secrets);
+  if (ctx.secrets) cases = redactDeep(cases, generatedOutputRedactor(ctx.secrets, ctx.structural));
   try {
     const applied = applyMerge(
       root,
@@ -233,5 +237,10 @@ export function mergeFromAutomation(root: string, session: Session, input: Autom
   } catch (e) {
     return { ...EMPTY, ok: false, warning: `automation→canonical conversion failed: ${String(e)}` };
   }
-  return mergeCanonical(root, cases, { ...ctx, source: 'generate', secrets: ctx.secrets ?? session.secrets });
+  return mergeCanonical(root, cases, {
+    ...ctx,
+    source: 'generate',
+    secrets: ctx.secrets ?? session.secrets,
+    structural: ctx.structural ?? structuralLiterals(session.recordedActions),
+  });
 }

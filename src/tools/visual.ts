@@ -22,7 +22,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFile
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { qaOk, qaError, qaStop } from '../lib/result.js';
+import { qaOk, qaError, qaStop, unknownSessionError } from '../lib/result.js';
 import { isSecureNode, makeRedactor, type Redactor } from '../lib/redact.js';
 import { parseSnapshot } from '../snapshot/parse.js';
 import { displayArgv } from '../lib/commandTemplate.js';
@@ -33,6 +33,7 @@ import { imageDiff, findTemplate } from '../lib/image.js';
 import { captureCoordinateSpace, toDevicePoint, type CoordinateSpace } from '../lib/coordSpace.js';
 import {
   configuredOcrCommand,
+  ocrCommandSource,
   findOcrRegion,
   runOcr,
   OCR_PROVIDER_CONTRACT,
@@ -40,7 +41,14 @@ import {
   type OcrRegion,
   type OcrResult,
 } from '../visual/ocr.js';
-import { boundedText, resolveMaskProvider, resolveVisualProvider, VisualProviderFailedError } from '../visual/provider.js';
+import {
+  boundedText,
+  maskCommandSource,
+  providerSourceLabel,
+  resolveMaskProvider,
+  resolveVisualProvider,
+  VisualProviderFailedError,
+} from '../visual/provider.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import { recordableTap } from '../flows/generate.js';
@@ -413,17 +421,33 @@ async function findText(ctx: VisualContext): Promise<CallToolResult> {
     });
   }
   const maskConfigured = !!maskPreview;
-  const gate = consumeConsent(consentId, approve, {
-    action: 'ocr_run',
-    affects: { argv: preview.argv, io: preview.io, query, maskConfigured },
-  });
+  // BOTH commands that will run are disclosed (argv + provenance) — a repo config could otherwise
+  // pair a harmless-looking ocrCommand with an arbitrary visualMaskCommand the user never sees.
+  const ocrSource = providerSourceLabel(ocrCommandSource(session.root) ?? 'environment', 'SWIPIUM_OCR_CMD');
+  const maskSource = maskPreview ? providerSourceLabel(maskCommandSource(session.root) ?? 'environment', 'SWIPIUM_VISUAL_MASK_CMD') : null;
+  const affects = {
+    argv: preview.argv,
+    io: preview.io,
+    ocrCommandSource: ocrSource,
+    query,
+    maskConfigured,
+    maskArgv: maskPreview?.argv ?? null,
+    maskIo: maskPreview?.io ?? null,
+    maskCommandSource: maskSource,
+  };
+  const gate = consumeConsent(consentId, approve, { action: 'ocr_run', affects });
   if (!gate.approved) {
+    const exactCommand = maskPreview
+      ? `1) mask [${maskSource}]: ${displayArgv(maskPreview.argv)}\n2) OCR [${ocrSource}]: ${displayArgv(preview.argv)}`
+      : `OCR [${ocrSource}]: ${displayArgv(preview.argv)}`;
     return requireConsent({
       action: 'ocr_run',
       risk: 'medium',
-      exactCommand: displayArgv(preview.argv),
-      affects: { argv: preview.argv, io: preview.io, query, maskConfigured },
-      explain: `Run the configured OCR command on the current screenshot to find "${query}"? The screen image is passed to that local program. If visualMaskCommand is configured, Swipium runs it first and sends the masked image.`,
+      exactCommand,
+      affects,
+      explain: maskPreview
+        ? `Run TWO local programs on the current screenshot to find "${query}": first the visualMaskCommand (${maskSource}), then the OCR command (${ocrSource}) on its masked output. The screen image is passed to both.`
+        : `Run the OCR command (${ocrSource}) on the current screenshot to find "${query}"? The screen image is passed to that local program.`,
     });
   }
   let ocr: OcrResult;
@@ -463,6 +487,7 @@ async function findText(ctx: VisualContext): Promise<CallToolResult> {
       what: 'Withheld — the screen reads like a password/OTP/payment screen and no fresh UI tree could confirm otherwise',
       changedState: false,
       retrySafe: true,
+      failureCode: 'CAPTURE_WITHHELD_SECURE',
       nextSteps: [
         'Pass force:true to return OCR results for this screen anyway (text is still secret-redacted), or navigate to a non-sensitive screen.',
       ],
@@ -762,7 +787,8 @@ export function registerVisual(server: McpServer, sessions: SessionStore): void 
     },
     async (args) => {
       const session = sessions.get(args.sessionId);
-      const { driver, blocked } = session ? await getDriver(session) : { driver: undefined, blocked: undefined };
+      if (!session) return unknownSessionError(args.sessionId);
+      const { driver, blocked } = await getDriver(session);
       if (!session || !driver) {
         return (
           blockedDeviceResult(blocked) ??
@@ -792,6 +818,7 @@ export function registerVisual(server: McpServer, sessions: SessionStore): void 
           what: 'Withheld — a secure field (password/OTP) is on screen',
           changedState: false,
           retrySafe: true,
+          failureCode: 'CAPTURE_WITHHELD_SECURE',
           nextSteps: ['Pass force:true to proceed (pixels are NOT redactable), or use a non-sensitive screen.'],
         });
       }
@@ -801,6 +828,7 @@ export function registerVisual(server: McpServer, sessions: SessionStore): void 
           what: 'Withheld — a baseline persists the screenshot, but no fresh UI tree can verify the screen has no password/OTP field, and this session has handled credentials',
           changedState: false,
           retrySafe: true,
+          failureCode: 'CAPTURE_WITHHELD_SECURE',
           nextSteps: [
             'Run qa_snapshot to refresh the UI tree (when a structured backend is attached), or pass force:true to proceed (pixels are NOT redactable).',
           ],

@@ -6,7 +6,7 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../../lib/result.js';
+import { qaOk, qaError, unknownSessionError } from '../../lib/result.js';
 import { qaFail } from '../../oracle/failures.js';
 import { requireConsent, consumeConsent } from '../../consent/consent.js';
 import { executeSeed, seedExactCommand, seedGitScopeViolation } from '../../flows/seedExec.js';
@@ -30,12 +30,7 @@ export function registerSeed(server: McpServer, sessions: SessionStore): void {
     async ({ sessionId, fixture: fixtureName, consentId, approve }) => {
       const session = sessions.get(sessionId);
       if (!session) {
-        return qaError({
-          what: `Unknown sessionId ${sessionId}`,
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_start_session first.'],
-        });
+        return unknownSessionError(sessionId);
       }
       const fixture = session.fixtures.find((f) => f.name === fixtureName);
       if (!fixture) {

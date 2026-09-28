@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { sensitiveRefusal } from '../lib/sensitive.js';
 import { run } from '../lib/spawn.js';
@@ -79,7 +79,8 @@ export function registerScreenRecord(server: McpServer, sessions: SessionStore):
     },
     async ({ sessionId, action, save, failed, consentId, approve }) => {
       const session = sessions.get(sessionId);
-      const { driver, blocked } = session ? await getDriver(session) : { driver: undefined, blocked: undefined };
+      if (!session) return unknownSessionError(sessionId);
+      const { driver, blocked } = await getDriver(session);
       const serial = driver?.currentDevice();
       if (!session || !driver || !serial) {
         return (

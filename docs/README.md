@@ -11,6 +11,8 @@ This directory contains public documentation for the Swipium MCP server.
 
 Environment variables and host-OS support are covered in the top-level [README](../README.md#configuration--environment-variables).
 
+Security: [Threat Model](../THREAT_MODEL.md) and [Security Policy](../SECURITY.md). Release history: [CHANGELOG](../CHANGELOG.md); upgrading from 1.x, see [Migrating from 1.5.0](../CHANGELOG.md#migrating-from-150) (also mirrored at the end of [tools.md](tools.md)).
+
 ## Scope
 
 Swipium is simulator-only:

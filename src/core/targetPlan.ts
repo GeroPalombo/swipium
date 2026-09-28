@@ -124,7 +124,11 @@ function planAndroid(i: TargetInputs, reasonPrefix: string): TargetPlan {
     alternatives: [],
     preconditions: [],
     willBoot: false,
-    blocked: { failureCode: 'NO_DEVICE', detail: 'No Android device online and no AVD available — create one (qa_doctor).' },
+    blocked: {
+      failureCode: 'NO_DEVICE',
+      detail:
+        'No Android device online and no AVD available — create one in Android Studio (Device Manager) or with avdmanager, then re-run qa_test_this.',
+    },
   };
 }
 

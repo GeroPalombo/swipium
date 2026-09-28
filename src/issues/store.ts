@@ -15,7 +15,7 @@
 // process appended) is rebuilt instead of trusted.
 
 import { createHash, randomUUID } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ensureGitignored } from '../lib/gitignore.js';
 import { withFileLock } from '../lib/lockfile.js';
@@ -106,7 +106,49 @@ export function appendEvents(root: string, events: IssueEvent[]): { path: string
   const path = issuesLogPath(root);
   const payload = events.map((e) => JSON.stringify(e)).join('\n') + '\n';
   appendFileSync(path, payload);
+  // Retention (policy.retention.pruneEvidenceAfterDays, default 90): large evidence files under
+  // .swipium/issues/artifacts/ older than N days are pruned on ledger write. The append-only event
+  // log itself is never pruned here (keepIssueEvents).
+  pruneEvidence(root, loadPolicy(root).retention?.pruneEvidenceAfterDays);
   return { path, count: events.length };
+}
+
+/** Delete evidence files under `.swipium/issues/artifacts/` whose mtime is older than `days`
+ *  (recursively; emptied sub-dirs removed). `days` ≤ 0 / non-finite = disabled. Best-effort: returns
+ *  the number of files deleted and never throws. */
+export function pruneEvidence(root: string, days: number | undefined, now: number = Date.now()): number {
+  if (typeof days !== 'number' || !Number.isFinite(days) || days <= 0) return 0;
+  const cutoff = now - days * 24 * 60 * 60 * 1000;
+  let deleted = 0;
+  const walk = (dir: string): boolean => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    let remaining = entries.length;
+    for (const e of entries) {
+      const p = join(dir, e.name);
+      try {
+        if (e.isDirectory()) {
+          if (walk(p)) {
+            rmSync(p, { recursive: true, force: true });
+            remaining--;
+          }
+        } else if (statSync(p).mtimeMs < cutoff) {
+          rmSync(p, { force: true });
+          deleted++;
+          remaining--;
+        }
+      } catch {
+        /* vanished / unreadable — skip */
+      }
+    }
+    return remaining === 0; // caller may remove an emptied sub-dir
+  };
+  walk(issuesArtifactsDir(root));
+  return deleted;
 }
 
 /**

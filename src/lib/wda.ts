@@ -5,6 +5,30 @@ import { join } from 'node:path';
 import { run } from './spawn.js';
 import type { FailureCode } from '../oracle/failures.js';
 
+/** Is `raw` a loopback WebDriverAgent URL (http/https to 127.0.0.0/8, localhost, or ::1)?
+ *  Note: WHATWG `URL.hostname` keeps the brackets for IPv6 ("[::1]"). */
+export function isLoopbackWdaUrl(raw: string): boolean {
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+    const host = u.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    return host === 'localhost' || host === '::1' || /^127(\.\d{1,3}){3}$/.test(host);
+  } catch {
+    return false;
+  }
+}
+
+/** User-level pre-approval of remote (non-loopback) WDA URLs: SWIPIUM_ALLOW_REMOTE_WDA, a
+ *  comma-separated list of exact base URLs set in the USER's environment (MCP client config).
+ *  The repository's .swipium/config.json can NOT pre-approve a remote WDA (a checkout must not
+ *  be able to point iOS automation at someone else's machine). */
+export const REMOTE_WDA_ENV = 'SWIPIUM_ALLOW_REMOTE_WDA';
+export function remoteWdaAllowedByUser(url: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  const norm = (u: string) => u.trim().replace(/\/+$/, '');
+  const list = (env[REMOTE_WDA_ENV] ?? '').split(',').map(norm).filter(Boolean);
+  return list.includes(norm(url));
+}
+
 export interface WdaStatus {
   reachable: boolean;
   ready: boolean;

@@ -7,7 +7,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { qaNeedsInput } from '../lib/needsInput.js';
 import { resolveProjectRoot, unresolvedProjectRootError } from '../context/projectRoot.js';
 import { buildAppMap, summarizeMap, type BuildMode } from '../appMap/build.js';
@@ -61,10 +62,10 @@ async function rootFor(
   server: McpServer,
   sessions: SessionStore,
   args: { projectRoot?: string; sessionId?: string },
-): Promise<{ root?: string; session?: Session; hint?: string }> {
+): Promise<{ root?: string; session?: Session; hint?: string; error?: CallToolResult }> {
   if (args.sessionId) {
     const s = sessions.get(args.sessionId);
-    if (!s) return { hint: `Unknown sessionId ${args.sessionId}` };
+    if (!s) return { error: unknownSessionError(args.sessionId) };
     return { root: s.root, session: s };
   }
   const resolved = await resolveProjectRoot(server, args.projectRoot);
@@ -123,8 +124,8 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
       // (caught by test/errorContract.test.ts). structuredContent stays self-describing.
     },
     async ({ projectRoot, sessionId, mode, includeCodeIndex, forceRescan }) => {
-      const { root, session, hint } = await rootFor(server, sessions, { projectRoot, sessionId });
-      if (!root) return unresolvedProjectRootError({ source: 'none', hint });
+      const { root, session, hint, error } = await rootFor(server, sessions, { projectRoot, sessionId });
+      if (!root) return error ?? unresolvedProjectRootError({ source: 'none', hint });
       remember(root);
       const m = (mode ?? 'full') as BuildMode;
       const exploreGraph = m === 'static_only' ? null : latestExploreGraph(sessions, session);
@@ -189,8 +190,8 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
       },
     },
     async ({ projectRoot, sessionId, section, featureId, screenId }) => {
-      const { root, hint } = await rootFor(server, sessions, { projectRoot, sessionId });
-      if (!root) return unresolvedProjectRootError({ source: 'none', hint });
+      const { root, hint, error } = await rootFor(server, sessions, { projectRoot, sessionId });
+      if (!root) return error ?? unresolvedProjectRootError({ source: 'none', hint });
       remember(root);
       const map = readExistingMap(root);
       if (!map)
@@ -315,8 +316,8 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
       },
     },
     async ({ query, projectRoot, sessionId, intent, limit }) => {
-      const { root, hint } = await rootFor(server, sessions, { projectRoot, sessionId });
-      if (!root) return unresolvedProjectRootError({ source: 'none', hint });
+      const { root, hint, error } = await rootFor(server, sessions, { projectRoot, sessionId });
+      if (!root) return error ?? unresolvedProjectRootError({ source: 'none', hint });
       remember(root);
       const map = readExistingMap(root);
       if (!map)
@@ -362,6 +363,7 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
       if (!featureId && !query) {
         return qaError({
           what: 'Provide one of: featureId or query',
+          failureCode: 'INVALID_ARGUMENT',
           changedState: false,
           retrySafe: true,
           nextSteps: ['e.g. qa_app_map_feature_scope { query:"login" }'],
@@ -448,8 +450,8 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
       }
 
       // FEATURE-ID path: exact map lookup (requires an existing map).
-      const { root, hint } = await rootFor(server, sessions, { projectRoot, sessionId });
-      if (!root) return unresolvedProjectRootError({ source: 'none', hint });
+      const { root, hint, error } = await rootFor(server, sessions, { projectRoot, sessionId });
+      if (!root) return error ?? unresolvedProjectRootError({ source: 'none', hint });
       remember(root);
       const map = readExistingMap(root);
       if (!map)
@@ -557,8 +559,8 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
       },
     },
     async ({ projectRoot, sessionId, note, testCases, automationSuite, environment, featureCoverage }) => {
-      const { root, hint } = await rootFor(server, sessions, { projectRoot, sessionId });
-      if (!root) return unresolvedProjectRootError({ source: 'none', hint });
+      const { root, hint, error } = await rootFor(server, sessions, { projectRoot, sessionId });
+      if (!root) return error ?? unresolvedProjectRootError({ source: 'none', hint });
       remember(root);
       // Synchronous load→mutate→save cycle, held under the cross-process app-map lock (see store.ts).
       return withAppMapLock(root, () => {

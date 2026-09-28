@@ -13,9 +13,11 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { resolveProjectRoot, unresolvedProjectRootError } from '../context/projectRoot.js';
 import type { SessionStore } from '../session/store.js';
+import { makeRedactor } from '../lib/redact.js';
 import {
   markFixed,
   markSuppressed,
@@ -47,10 +49,10 @@ async function rootFor(
   server: McpServer,
   sessions: SessionStore,
   args: { projectRoot?: string; sessionId?: string },
-): Promise<{ root?: string; hint?: string; appId?: string }> {
+): Promise<{ root?: string; hint?: string; error?: CallToolResult; appId?: string }> {
   if (args.sessionId) {
     const s = sessions.get(args.sessionId);
-    if (!s) return { hint: `Unknown sessionId ${args.sessionId}` };
+    if (!s) return { error: unknownSessionError(args.sessionId) };
     return { root: s.root, appId: s.appId };
   }
   const resolved = await resolveProjectRoot(server, args.projectRoot);
@@ -80,6 +82,27 @@ function lifecycleRecord(r: IssueRecord): Record<string, unknown> {
     stateBeforeSuppression: r.stateBeforeSuppression,
     lastVerifiedFixedAt: r.lastVerifiedFixedAt,
   };
+}
+
+/** Free-text qa_issue_log fields persisted to .swipium/issues-log.jsonl. */
+const FREE_TEXT_FIELDS = ['title', 'summary', 'howFixed', 'suppressionReason', 'fixedBy'] as const;
+
+function sessionSecrets(sessions: SessionStore, sessionId?: string): Iterable<string> {
+  return (sessionId ? sessions.get(sessionId)?.secrets : undefined) ?? [];
+}
+
+/** Redact registered session secrets from the agent-supplied free-text fields (exported for tests). */
+export function redactIssueArgs<T extends Partial<Record<(typeof FREE_TEXT_FIELDS)[number], string>>>(
+  args: T,
+  secrets: Iterable<string>,
+): T {
+  const redact = makeRedactor(secrets);
+  const out = { ...args };
+  for (const k of FREE_TEXT_FIELDS) {
+    const v = out[k];
+    if (typeof v === 'string') (out as Record<string, unknown>)[k] = redact(v) ?? v;
+  }
+  return out;
 }
 
 export function registerIssues(server: McpServer, sessions: SessionStore): void {
@@ -136,9 +159,12 @@ export function registerIssues(server: McpServer, sessions: SessionStore): void 
           .describe('metrics bucketing (default week).'),
       },
     },
-    async (args) => {
-      const { root, hint, appId } = await rootFor(server, sessions, { projectRoot: args.projectRoot, sessionId: args.sessionId });
-      if (!root) return unresolvedProjectRootError({ source: 'none', hint });
+    async (rawArgs) => {
+      // The ledger is a committed repo file: scrub every registered session secret (typed
+      // passwords, OTPs, secret flow variables) out of agent-supplied free text before it lands.
+      const args = redactIssueArgs(rawArgs, sessionSecrets(sessions, rawArgs.sessionId));
+      const { root, hint, appId, error } = await rootFor(server, sessions, { projectRoot: args.projectRoot, sessionId: args.sessionId });
+      if (!root) return error ?? unresolvedProjectRootError({ source: 'none', hint });
       const mode = args.mode ?? 'history';
       const now = nowIso();
 

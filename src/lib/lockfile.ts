@@ -41,6 +41,11 @@ import { log } from './logger.js';
 export const STALE_LOCK_MS = 10_000;
 const MAX_WAIT_MS = 2_000;
 const RETRY_SLEEP_MS = 25;
+/** 'retry' (lock vanished / stale takeover attempted) loops without sleeping at most this many
+ *  times in a row; after that it sleeps like 'busy'. A takeover that can never succeed (EACCES on
+ *  the claim, rename failure, a fresh claim from a crashed taker) must not busy-spin — it would
+ *  block the event loop forever (the deadline is checked on EVERY iteration too). */
+const MAX_IMMEDIATE_RETRIES = 3;
 const OWNER_FILE = 'owner';
 const TOMBSTONE_MARK = '.stale-';
 const CLAIM_FILE = '.takeover';
@@ -285,11 +290,13 @@ export function withFileLock<T>(lockPath: string, fn: () => T, opts: FileLockOpt
   const staleMs = opts.staleMs ?? STALE_LOCK_MS;
   const deadline = Date.now() + (opts.maxWaitMs ?? MAX_WAIT_MS);
   const token = newToken();
+  let immediate = 0;
   for (;;) {
     const r = tryAcquire(lockPath, token, staleMs);
     if (r === 'acquired') break;
-    if (r === 'retry') continue;
     if (Date.now() > deadline) throw timeoutError(lockPath);
+    if (r === 'retry' && immediate++ < MAX_IMMEDIATE_RETRIES) continue;
+    immediate = 0;
     sleepSync(RETRY_SLEEP_MS);
   }
   try {
@@ -305,11 +312,13 @@ export async function withFileLockAsync<T>(lockPath: string, fn: () => Promise<T
   const staleMs = opts.staleMs ?? STALE_LOCK_MS;
   const deadline = Date.now() + (opts.maxWaitMs ?? MAX_WAIT_MS);
   const token = newToken();
+  let immediate = 0;
   for (;;) {
     const r = tryAcquire(lockPath, token, staleMs);
     if (r === 'acquired') break;
-    if (r === 'retry') continue;
     if (Date.now() > deadline) throw timeoutError(lockPath);
+    if (r === 'retry' && immediate++ < MAX_IMMEDIATE_RETRIES) continue;
+    immediate = 0;
     await new Promise((res) => setTimeout(res, RETRY_SLEEP_MS));
   }
   const heartbeat = setInterval(

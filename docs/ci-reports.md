@@ -59,8 +59,7 @@ on: [pull_request]
 
 permissions:
   contents: read
-  checks: write          # mikepenz/action-junit-report
-  pull-requests: write   # mikepenz/action-junit-report PR annotations
+  checks: write          # mikepenz/action-junit-report (add pull-requests: write only if you set comment: true)
   security-events: write # github/codeql-action/upload-sarif
   actions: read          # upload-sarif on private repositories
 
@@ -69,12 +68,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with: { distribution: temurin, java-version: '17' }
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: '20' }
 
       - name: Build debug APK
@@ -94,7 +93,7 @@ jobs:
       # android-emulator-runner runs each `script` line as its own shell command, so keep
       # the agent logic in a script file.
       - name: Agent QA run (needs an LLM)
-        uses: reactivecircus/android-emulator-runner@v2
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
@@ -119,14 +118,14 @@ jobs:
 
       - name: Publish JUnit
         if: always()
-        uses: mikepenz/action-junit-report@v6
+        uses: mikepenz/action-junit-report@a9170d5795813c01ab4901ffb045b52bab4ab09d # v6
         with:
           report_paths: swipium/junit.xml
           include_passed: true
 
       - name: Upload SARIF to code scanning
         if: always()
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
         with:
           sarif_file: swipium/results.sarif
           category: swipium
@@ -135,7 +134,7 @@ jobs:
       # that show real secrets on screen.
       - name: Keep raw evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: swipium-runs
           path: /home/runner/.swipium/runs/ # $HOME on GitHub-hosted ubuntu runners
@@ -152,8 +151,8 @@ jobs:
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Swipium as the only MCP server for this run. projectRoot is passed explicitly in the prompt:
-# the server does not infer the project from its working directory.
+# Swipium as the only MCP server for this run. projectRoot is passed explicitly in the prompt;
+# passing projectRoot explicitly avoids relying on the working-directory fallback.
 cat > /tmp/swipium-mcp.json <<'JSON'
 { "mcpServers": { "swipium": { "command": "npx", "args": ["-y", "swipium"] } } }
 JSON

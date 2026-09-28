@@ -6,7 +6,7 @@
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { qaOk, qaError } from '../../lib/result.js';
+import { qaOk, unknownSessionError } from '../../lib/result.js';
 import { qaFail } from '../../oracle/failures.js';
 import { qaNeedsInput, NeedsInput } from '../../lib/needsInput.js';
 import { scanProject } from '../../context/scan.js';
@@ -27,6 +27,7 @@ import { log } from '../../lib/logger.js';
 import type { Session, SessionStore } from '../../session/store.js';
 import { type State, type PlanStep, type TestThisInput, selToPlatform } from './types.js';
 import { runExecuteMode } from './execute.js';
+import { rememberTestThisIntent } from './sessionIntent.js';
 
 export async function handleTestThis(server: McpServer, sessions: SessionStore, input: TestThisInput): Promise<CallToolResult> {
   const {
@@ -48,6 +49,7 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
     timeoutMs,
     consentId,
     approve,
+    responseMode,
   } = input;
   // Goal routing (Milestone C): the goal sets orchestration FLAGS only; explicit booleans win.
   // Default policy = "leave behind automation when possible" (fastSmoke opts out).
@@ -55,21 +57,37 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
   // ---- resolve / create session ----
   let session: Session | undefined = sessionId ? sessions.get(sessionId) : undefined;
   if (sessionId && !session) {
-    return qaError({
-      what: `Unknown sessionId "${sessionId}"`,
-      changedState: false,
-      retrySafe: true,
-      nextSteps: ['Omit sessionId to create one, or pass a valid session.'],
-    });
+    return unknownSessionError(sessionId, ['Omit sessionId to create one, or pass a valid session.']);
   }
   if (!session) {
     const { resolveProjectRoot, unresolvedProjectRootError } = await import('../../context/projectRoot.js');
     const resolved = await resolveProjectRoot(server, projectRoot);
     if (!resolved.root) return unresolvedProjectRootError(resolved);
-    session = sessions.create(resolved.root, undefined, {});
+    session = sessions.create(resolved.root, undefined, responseMode ? { responseMode } : {});
     // An explicit projectRoot IS the user's target choice — never re-ask the monorepo question for it.
     if (projectRoot) session.chosenTarget = resolved.root;
+  } else if (responseMode && session.responseMode !== responseMode) {
+    session.responseMode = responseMode;
+    sessions.persist(session);
   }
+  // Remember the user's intent (goal/goalText/flags) so a blocker resume replays it.
+  rememberTestThisIntent(sessions, session, input);
+  // The EXACT re-invocation for plan steps that route back through qa_test_this: execute mode plus
+  // the caller's original goal/flags — a bare {sessionId} would just re-plan forever.
+  const reinvokeArgs: Record<string, unknown> = { sessionId: session.id, mode: 'execute' };
+  for (const [k, v] of Object.entries({
+    goal,
+    goalText,
+    fastSmoke,
+    platform,
+    device,
+    explore,
+    generateSuite,
+    stopOnNeedsInput,
+    buildIfNeeded,
+    allowOutsideRoot,
+  }))
+    if (v !== undefined) reinvokeArgs[k] = v;
   let root = session.root;
   const wa = (note: string) => sessions.addWorkaround(session!, note);
 
@@ -191,8 +209,8 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
       wa('only a .aab is present; qa_test_this will convert it to an installable universal APK with bundletool');
       steps.push({
         tool: 'qa_test_this',
-        why: 'Convert the .aab to an installable universal APK before install',
-        args: { sessionId: session.id },
+        why: 'Convert the .aab to an installable universal APK before install (execute mode runs the conversion)',
+        args: { ...reinvokeArgs },
         status: 'pending',
       });
     }
@@ -217,7 +235,7 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
           why: expoAndroidLocalRun
             ? 'No reusable APK/dev build found; run Expo Android local build/install/Metro path'
             : `No artifact found; build ${targetPlatform} from source before install`,
-          args: { sessionId: session.id },
+          args: { ...reinvokeArgs },
           status: 'pending',
           produces: ['artifact.path', 'artifact.appId'],
         });
@@ -272,8 +290,9 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
     simPresent ? listSimulators() : Promise.resolve([]),
   ]);
   // H6: pattern OR property-verified emulators (localhost:5555, Genymotion) — same as getDriver.
+  // ALL online serials go to the planner (it refuses physical ones with PHYSICAL_DEVICE_UNSUPPORTED
+  // when nothing else is viable) — pre-filtering to emulators hid that and reported NO_DEVICE.
   const emulators = await verifiedEmulatorSerials(onlineAll);
-  const online = onlineAll.filter((s) => emulators.includes(s));
   if (device && onlineAll.includes(device) && !emulators.includes(device)) {
     return qaFail('PHYSICAL_DEVICE_UNSUPPORTED', {
       what: `Android target "${device}" appears to be a physical device. Swipium supports the Android Emulator only.`,
@@ -287,7 +306,7 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
     preferRealDevice: false,
     artifactPlatform,
     artifactInstallTargets: art.best?.installableOn,
-    android: { online, avds, emulators },
+    android: { online: onlineAll, avds, emulators },
     ios: {
       bootedSimulators: sims.filter((s) => s.state === 'Booted').map((s) => ({ udid: s.udid, name: s.name })),
       availableSimulators: sims.filter((s) => s.state !== 'Booted').map((s) => ({ udid: s.udid, name: s.name })),
@@ -296,39 +315,99 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
   };
   const target = planTarget(tInputs);
   if (target.blocked) {
+    const androidWanted = platform === 'android' || artifactPlatform === 'android' || /android/i.test(target.blocked.detail);
+    const blockedExtra = {
+      sessionId: session.id,
+      targetPlan: target,
+      workaroundsAttempted: session.workarounds,
+      appMapUri,
+      state: 'blocked' as State,
+    };
+    const avdSteps = [
+      'Create an Android Virtual Device: Android Studio → Device Manager → Create device, or ' +
+        '`avdmanager create avd -n Pixel_7 -k "system-images;android-34;google_apis;arm64-v8a" -d pixel_7` (install the image with sdkmanager first).',
+      `Then re-run qa_test_this ${JSON.stringify(reinvokeArgs)} — Swipium boots the AVD itself (one consent).`,
+    ];
+    if (target.blocked.failureCode === 'NO_DEVICE' && androidWanted && !adbPresent) {
+      return qaFail('ADB_NOT_FOUND', {
+        what: 'adb (Android platform-tools) is not on PATH, so Swipium cannot see or boot any Android emulator.',
+        nextSteps: [
+          'Install Android platform-tools (Android Studio → SDK Manager, or `sdkmanager "platform-tools" "emulator"`) and put $ANDROID_HOME/platform-tools and $ANDROID_HOME/emulator on PATH (or set ANDROID_HOME).',
+          ...avdSteps,
+          ...(simPresent ? ['Or test on iOS: qa_test_this {"mode":"execute","platform":"ios"}.'] : []),
+        ],
+        extra: blockedExtra,
+      });
+    }
     return qaFail(target.blocked.failureCode, {
-      what: target.blocked.detail,
-      extra: { sessionId: session.id, targetPlan: target, workaroundsAttempted: session.workarounds, appMapUri, state: 'blocked' as State },
+      ...(target.blocked.failureCode === 'NO_DEVICE' && androidWanted
+        ? { what: 'No Android emulator is online and no AVD exists to boot.', nextSteps: avdSteps }
+        : target.blocked.failureCode === 'PHYSICAL_DEVICE_UNSUPPORTED'
+          ? {
+              what: target.blocked.detail,
+              nextSteps: ['Physical devices are out of scope (docs/physical-devices.md) — use an emulator instead.', ...avdSteps],
+            }
+          : { what: target.blocked.detail }),
+      extra: blockedExtra,
     });
   }
   if (target.willBoot) wa(`no online ${selToPlatform[target.selected!]} target — will boot ${target.bootTarget}`);
 
   const isAndroid = selToPlatform[target.selected!] === 'android';
   const isIosReal = false;
-  const requiresStructuredIos =
-    !isAndroid &&
-    !isIosReal &&
-    (goalFlags.explore || goalFlags.generateSuite || goalFlags.goal === 'test_login' || goalFlags.goal === 'create_automation_suite');
-  if (requiresStructuredIos) {
+  // Effective flags: iOS without WebDriverAgent can still launch + smoke visually, so the DEFAULT
+  // suite generation / goal-implied exploration degrade (recorded as a workaround) instead of
+  // blocking. Only work the caller explicitly asked for that truly needs WDA blocks.
+  let effExplore = goalFlags.explore;
+  let effGenerateSuite = goalFlags.generateSuite;
+  let effRequiredOutputs = goalFlags.requiredOutputs;
+  const structuredNeeds: string[] = [];
+  if (!isAndroid && !isIosReal) {
+    if (effGenerateSuite) structuredNeeds.push('suite generation');
+    if (effExplore) structuredNeeds.push('guided exploration');
+    if (goalFlags.goal === 'test_login') structuredNeeds.push('driving the login form');
+  }
+  if (structuredNeeds.length) {
     const wdaConfig = loadWdaConfig(root);
     const wda = await checkWda(wdaConfig.url, 1500);
     if (!wda.reachable || !wda.ready) {
-      return qaFail('WDA_UNREACHABLE', {
-        what: `iOS ${goalFlags.goal} requires a structured WebDriverAgent backend, but WDA is not ready at ${wdaConfig.url}`,
-        nextSteps: [
-          'Run qa_wda { action:"doctor" } to inspect WDA setup.',
-          'Run qa_wda { action:"build" } and qa_wda { action:"start" }, or attach an external WDA URL.',
-          ...(appMapUri ? [`Static app map is still available: qa_app_map_read { projectRoot:"${root}" }`] : []),
-        ],
-        extra: {
-          sessionId: session.id,
-          state: 'blocked' as State,
-          goal: goalFlags.goal,
-          target,
-          wda: { config: { url: wdaConfig.url, mode: wdaConfig.mode, derivedDataPath: wdaConfig.derivedDataPath }, status: wda },
-          appMapUri,
-        },
-      });
+      // Hard requirement = something the caller explicitly asked for (flag or a WDA-only goal).
+      const hard: string[] = [];
+      if (generateSuite === true || goalFlags.goal === 'create_automation_suite') hard.push('suite generation');
+      if (explore === true || goalFlags.goal === 'explore' || goalFlags.goal === 'reproduce_bug') hard.push('guided exploration');
+      if (goalFlags.goal === 'test_login') hard.push('driving the login form');
+      if (hard.length) {
+        const visualSmoke = { ...reinvokeArgs, platform: 'ios', goal: 'smoke' } as Record<string, unknown>;
+        delete visualSmoke.explore;
+        delete visualSmoke.generateSuite;
+        delete visualSmoke.goalText;
+        return qaFail('WDA_UNREACHABLE', {
+          what:
+            `iOS ${hard.join(' + ')} (requested via ${goal ? `goal "${goalFlags.goal}"` : 'explicit flags'}) needs the structured ` +
+            `WebDriverAgent backend, and WDA is not ready at ${wdaConfig.url}. A visual-only smoke (launch + screenshots + health) does not need WDA.`,
+          nextSteps: [
+            `Visual-only alternative now: qa_test_this ${JSON.stringify(visualSmoke)}`,
+            'Or set up WDA: qa_wda { action:"doctor" } → qa_wda { action:"build" } → qa_wda { action:"start" } (or attach an external WDA URL), then re-run the same qa_test_this call.',
+            ...(appMapUri ? [`Static app map is still available: qa_app_map_read { projectRoot:"${root}" }`] : []),
+          ],
+          extra: {
+            sessionId: session.id,
+            state: 'blocked' as State,
+            goal: goalFlags.goal,
+            requiresWdaFor: hard,
+            target,
+            wda: { config: { url: wdaConfig.url, mode: wdaConfig.mode, derivedDataPath: wdaConfig.derivedDataPath }, status: wda },
+            appMapUri,
+          },
+        });
+      }
+      effExplore = false;
+      effGenerateSuite = false;
+      effRequiredOutputs = effRequiredOutputs.filter((o) => o !== 'suite' && o !== 'exploration');
+      wa(
+        `WebDriverAgent not ready at ${wdaConfig.url} — skipping ${structuredNeeds.join(' + ')}; running a visual-only iOS smoke (set up WDA via qa_wda to enable them)`,
+      );
+      preAttempted.push(`checked WebDriverAgent at ${wdaConfig.url} — not ready; degraded to visual-only`);
     }
   }
 
@@ -420,9 +499,9 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
       goal: goalFlags.goal,
       goalText,
       releaseGate: goalFlags.releaseGate,
-      requiredOutputs: goalFlags.requiredOutputs,
-      generateSuite: goalFlags.generateSuite,
-      explore: goalFlags.explore,
+      requiredOutputs: effRequiredOutputs,
+      generateSuite: effGenerateSuite,
+      explore: effExplore,
       stopOnNeedsInput: goalFlags.stopOnNeedsInput,
       artifactChoice,
       targetChoice,

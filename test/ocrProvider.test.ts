@@ -102,7 +102,8 @@ describe('OCR provider execution (runOcr)', () => {
     const img = res.regions.find((r) => r.text.startsWith('img:'))!.text.slice(4);
     expect(realpathSync(cwd)).toBe(root);
     expect(img.startsWith(realpathSync(tmpdir()))).toBe(true);
-    expect(realpathSync(join(img, '..'))).toBe(join(img, '..')); // no symlinked component
+    // no symlinked component (the per-call mkdtemp dir itself is removed after the run)
+    expect(realpathSync(join(img, '..', '..'))).toBe(join(img, '..', '..'));
     expect(res.regions.some((r) => r.text === 'Log in')).toBe(true);
   });
 

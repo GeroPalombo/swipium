@@ -16,6 +16,21 @@ export interface SnapshotElement {
 /** Result of Driver.canDeliverText — `reason` is safe to show (it never echoes the value). */
 export type TextDeliverability = { ok: true } | { ok: false; reason: string };
 
+/** Per-call bounds for a UI-tree dump. The settle loop passes its remaining deadline so a single
+ * dump can never outlive it (a stuck uiautomator used to take 5 attempts x 20 s). */
+export interface DumpOptions {
+  /** Total wall-clock budget for this dump, retries included (ms). */
+  timeoutMs?: number;
+  /** Max attempts (backends that retry transient failures). */
+  attempts?: number;
+}
+
+/** Soft-keyboard state in ONE backend round trip (shown + on-screen rect when known). */
+export interface ImeState {
+  shown: boolean;
+  frame: [number, number, number, number] | null;
+}
+
 export type NativeSelectorStrategy = 'accessibility id' | 'name' | 'predicate string' | 'class chain';
 
 export interface Driver {
@@ -37,6 +52,9 @@ export interface Driver {
   /** On-screen soft-keyboard rect [x1,y1,x2,y2] in tap coordinates, or null when unknown.
    * Optional: callers fall back to a bottom-of-screen heuristic. */
   imeFrame?(): Promise<[number, number, number, number] | null>;
+  /** Keyboard shown + frame in a single round trip (Android: one `adb shell` for both dumpsys).
+   * Optional: callers fall back to imeShown()/imeFrame(). */
+  imeState?(): Promise<ImeState>;
   /** Hide the soft keyboard if shown (never a blind BACK). Resolves true when it acted. */
   hideKeyboard?(): Promise<boolean>;
   /** Dump the last `lines` of logcat (optionally only lines matching `grep`). Evidence, not inference. */
@@ -50,7 +68,10 @@ export interface Driver {
 
   screenshot(): Promise<Buffer>;
   /** Raw uiautomator XML (parsing → @eN refs happens in the snapshot module, M3). */
-  dumpXml(): Promise<string>;
+  dumpXml(opts?: DumpOptions): Promise<string>;
+  /** Bind the current tool call's cancellation signal to in-flight backend calls; returns the
+   * previously bound signal so the caller can restore it (background jobs bind their own). */
+  setSignal?(signal?: AbortSignal): AbortSignal | undefined;
 
   tapXY(x: number, y: number): Promise<void>;
   /** Press-and-hold at a point for `ms` (a same-point swipe) — RN often ignores instant taps. */

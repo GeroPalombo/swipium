@@ -508,7 +508,7 @@ export async function runExplore(
         category: 'missing_test_data',
         reason: 'login required, no credentials available',
         missingPrecondition: 'test account credentials',
-        recommendedSetup: 'Provide TEST_EMAIL/TEST_PASSWORD (qa_continue_from_blocker) or accept pre-login coverage.',
+        recommendedSetup: 'Provide SWIPIUM_TEST_EMAIL/SWIPIUM_TEST_PASSWORD (qa_continue_from_blocker) or accept pre-login coverage.',
       });
       summary.blockers++;
       if (stopOnAuth) {

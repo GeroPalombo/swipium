@@ -309,11 +309,56 @@ export function parseFlow(yamlText: string): ParseResult {
   };
 }
 
-/** Resolve ${VAR} from a variables map (then process.env). Returns the value + any missing names. */
+/** Environment variables a flow may read implicitly. A flow file can come from an untrusted
+ *  (cloned) repo, so `${NAME}` falls back to process.env ONLY for names with this prefix — never
+ *  arbitrary server secrets like DATABASE_URL / AWS_SECRET_ACCESS_KEY (THREAT_MODEL). Explicit
+ *  qa_flow_run `variables` and the session's stored inputs are not restricted. */
+export const FLOW_ENV_PREFIX = 'SWIPIUM_';
+const FLOW_ENV_NAME = /^SWIPIUM_/;
+
+/** True when `${name}` may be read from process.env. */
+export function flowEnvAllowed(name: string): boolean {
+  return FLOW_ENV_NAME.test(name);
+}
+
+/** Value of `${name}`: explicit vars first, then process.env for SWIPIUM_* names only. */
+export function lookupFlowVar(name: string, vars: Record<string, string>): string | undefined {
+  const v = vars[name];
+  if (v != null) return v;
+  return flowEnvAllowed(name) ? process.env[name] : undefined;
+}
+
+/** Credential-like variable names whose resolved values are registered as session secrets. */
+export const SECRET_VAR_NAME = /pass|secret|token|otp|pin|cvv|key|code/i;
+
+/** True when a string references at least one `${VAR}`. */
+export function hasFlowVariable(value: string): boolean {
+  return /\$\{[^}]+\}/.test(value);
+}
+
+/** Steps that change app/device/test state (consent-gated; never run implicitly by qa_smoke).
+ *  An `openUrl` that interpolates a `${VAR}` counts: the resolved value leaves the machine in the
+ *  URL (deep link / browser), so it must be shown and approved. */
+export function isMutatingFlowStep(step: FlowStep): boolean {
+  if (step.kind === 'networkOffline' || step.kind === 'networkOnline' || step.kind === 'seed' || step.kind === 'restartApp') return true;
+  return step.kind === 'openUrl' && hasFlowVariable(step.url);
+}
+
+/** Human-readable reason for a missing variable (says which env names are readable). */
+export function missingVarMessage(missing: string[]): string {
+  const blockedEnv = missing.filter((n) => !flowEnvAllowed(n) && process.env[n] != null);
+  return (
+    `unresolved variable(s): ${missing.join(', ')} — pass them via qa_flow_run { variables }` +
+    ` (flows read process.env only for ${FLOW_ENV_PREFIX}* names)` +
+    (blockedEnv.length ? `; ${blockedEnv.join(', ')} exist in the server environment but are not ${FLOW_ENV_PREFIX}* so were not read` : '')
+  );
+}
+
+/** Resolve ${VAR} from a variables map (then process.env, SWIPIUM_* names only). Returns the value + any missing names. */
 export function resolveVars(value: string, vars: Record<string, string>): { out: string; missing: string[] } {
   const missing: string[] = [];
   const out = value.replace(/\$\{([^}]+)\}/g, (_, name: string) => {
-    const v = vars[name] ?? process.env[name];
+    const v = lookupFlowVar(name, vars);
     if (v == null) {
       missing.push(name);
       return '';

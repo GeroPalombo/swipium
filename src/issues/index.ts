@@ -304,7 +304,7 @@ function linkRunLocked(
 }
 
 /**
- * Verify a FIXED issue with current-run evidence (REQ-08 `qa_issue_verify_fixed`). Requires the issue
+ * Verify a FIXED issue with current-run evidence (REQ-08; `qa_issue_log` mode:"verify_fixed"). Requires the issue
  * to be in state `fixed` and at least one evidence reference (report/test/audit). Appends a
  * `verified_fixed` linked_run event so reports can honestly claim "verified this run".
  */

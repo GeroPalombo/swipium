@@ -7,14 +7,14 @@
 // synchronously BEFORE the job is kicked off.
 
 import { z } from 'zod';
-import { readFileSync } from 'node:fs';
-import { sep } from 'node:path';
+import { readFileSync, realpathSync } from 'node:fs';
+import { isAbsolute, relative, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, qaError, invalidArgumentError, isInvalidArgumentError, unknownSessionError } from '../lib/result.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { listAvds, resolveApk, apkPackageId } from '../lib/android.js';
-import { DirectDriver } from '../drivers/DirectDriver.js';
+import { DirectDriver, assertAndroidAppId } from '../drivers/DirectDriver.js';
 import { detectFramework } from '../context/detect.js';
 import { metroReadiness, reverseSet } from '../lib/metroState.js';
 import { resolveDevice, bindDevice } from '../session/attach.js';
@@ -55,12 +55,7 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
     async ({ sessionId, apk, appId, avd, device, force, headless, bindOnly, allowLaunchWithoutMetro, consentId, approve }) => {
       const session = sessions.get(sessionId);
       if (!session) {
-        return qaError({
-          what: `Unknown sessionId "${sessionId}"`,
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_start_session first.'],
-        });
+        return unknownSessionError(sessionId);
       }
       const rnDebug = needsMetro(session.root);
 
@@ -85,6 +80,17 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
             retrySafe: true,
             nextSteps: ['Pass appId explicitly.'],
           });
+      }
+      // Single entry-point validation: a malformed app id (explicit or APK-derived) is a typed
+      // caller error here, not a raw driver throw later (app ids reach `adb shell`).
+      if (resolvedAppId !== undefined) {
+        try {
+          assertAndroidAppId(resolvedAppId);
+        } catch (e) {
+          if (isInvalidArgumentError(e))
+            return invalidArgumentError(e, ['Pass a valid Android application id, e.g. appId="com.example.app".']);
+          throw e;
+        }
       }
 
       // ---- device resolution (centralized; binds single online, asks on >1) ----
@@ -125,9 +131,21 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
       const needBoot = !res.effective;
 
       // ---- external-APK detection (needs the file hash for the plan consent) ----
+      // Containment is checked on REAL paths: `<root>/../../x.apk` or a symlink out of the root is external.
       let externalApk: { path: string; sha256: string } | undefined;
-      if (!bindOnly && apkPath && !apkPath.startsWith(session.root + sep)) {
+      if (!bindOnly && apkPath && !apkWithinRoot(apkPath, session.root)) {
         externalApk = { path: apkPath, sha256: createHash('sha256').update(readFileSync(apkPath)).digest('hex') };
+      }
+      // ---- install detection: EVERY install is consent-gated (like iOS), in-root APKs included
+      //      (risk low). Only an already-installed app on a live emulator skips the prompt. ----
+      let installNeeded = false;
+      if (!bindOnly) {
+        if (needBoot) installNeeded = true;
+        else if (res.effective) {
+          const probe = new DirectDriver();
+          probe.useDevice(res.effective);
+          installNeeded = !!force || !(await probe.isInstalled(resolvedAppId!).catch(() => false));
+        }
       }
 
       // ---- COMBINED plan consent (Phase 2.1): all privileged steps approved at once,
@@ -140,20 +158,30 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
           what: 'No device online and no AVD to boot',
           changedState: false,
           retrySafe: true,
-          nextSteps: ['Create an AVD (see qa_doctor), or start a device, then retry.'],
+          nextSteps: [
+            'Create an AVD: Android Studio → Device Manager → Create device, or `avdmanager create avd -n Pixel_7 -k "system-images;android-34;google_apis;arm64-v8a" -d pixel_7`.',
+            'Or start an Android emulator yourself, then retry (physical devices are out of scope).',
+          ],
         });
       }
       const plan = [
         needBoot ? `boot_emulator(${bootTarget}${hl ? ',headless' : ',windowed'})` : null,
         rnDebug ? 'set_metro_reverse' : null,
-        externalApk ? `install_external_apk(${externalApk.sha256.slice(0, 12)}…)` : !bindOnly ? 'install_if_needed' : null,
+        externalApk
+          ? `install_external_apk(${externalApk.sha256.slice(0, 12)}…)`
+          : installNeeded
+            ? 'install_apk'
+            : !bindOnly
+              ? 'install_if_needed'
+              : null,
         bindOnly ? 'bind_only' : 'launch_app',
       ].filter(Boolean) as string[];
-      const privileged = needBoot || !!externalApk;
+      const privileged = needBoot || !!externalApk || installNeeded;
       const planAffects = {
         plan,
         boot: needBoot ? { avd: bootTarget, headless: hl } : null,
         externalApkSha256: externalApk?.sha256 ?? null,
+        install: installNeeded ? { appId: resolvedAppId ?? null, apk: apkPath ?? null } : null,
       };
       let mutationConsent: HeavyArgs['mutationConsent'];
       let preparePlanMutation: HeavyArgs['preparePlanMutation'];
@@ -174,7 +202,9 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
               : '',
             externalApk
               ? `• install EXTERNAL apk (outside project root), sha256 ${externalApk.sha256.slice(0, 16)}…: adb install -r -g ${externalApk.path}`
-              : '',
+              : installNeeded
+                ? `• install ${resolvedAppId ?? 'the app'} from ${apkPath ?? '(resolved APK)'}: adb install -r -g ${apkPath ?? '<apk>'}`
+                : '',
           ]
             .filter(Boolean)
             .join('\n');
@@ -375,6 +405,20 @@ async function runHeavy(sessions: SessionStore, session: Session, driver: Direct
     });
   }
   upd({ status: 'done', progress: 'done', result: res.result, resultText: res.resultText, endedAt: Date.now() });
+}
+
+function realOr(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+}
+
+/** Whether an APK path lies inside the project root, compared on normalized real paths. */
+export function apkWithinRoot(apkPath: string, root: string): boolean {
+  const rel = relative(realOr(root), realOr(resolve(root, apkPath)));
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 }
 
 /** Physical-device refusal for an online adb serial, delegated to the shared target planner so

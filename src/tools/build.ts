@@ -10,7 +10,7 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError, qaAnnotate } from '../lib/result.js';
+import { qaOk, qaError, qaAnnotate, unknownSessionError } from '../lib/result.js';
 import { qaFail } from '../oracle/failures.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { resolveProjectRoot, unresolvedProjectRootError } from '../context/projectRoot.js';
@@ -112,16 +112,7 @@ export function registerBuild(server: McpServer, sessions: SessionStore): void {
         );
       }
       const session = sessions.get(sessionId);
-      if (!session)
-        return qaAnnotate(
-          qaError({
-            what: `Unknown sessionId "${sessionId}"`,
-            changedState: false,
-            retrySafe: true,
-            nextSteps: ['Call qa_start_session first.'],
-          }),
-          notes,
-        );
+      if (!session) return qaAnnotate(unknownSessionError(sessionId), notes);
 
       const plan = await buildPlan({ projectRoot: session.root, platform: platform as BuildPlatform, variant });
       if (plan.failureCode) return qaAnnotate(qaFail(plan.failureCode, { what: plan.notes[0] ?? 'Cannot build', extra: { plan } }), notes);

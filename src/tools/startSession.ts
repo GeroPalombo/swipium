@@ -112,7 +112,7 @@ export function registerStartSession(server: McpServer, sessions: SessionStore):
       title: 'Start a QA session',
       description:
         'Open a QA session (only needed for low-level tools; qa_test_this creates one). projectRoot: arg, else MCP roots, else ' +
-        'SWIPIUM_PROJECT_ROOT / CLAUDE_PROJECT_DIR, else the server cwd (never / or $HOME). Budget defaults to 8 min / 20 ' +
+        'SWIPIUM_PROJECT_ROOT / CLAUDE_PROJECT_DIR, else the server cwd if it is not / or $HOME and contains a project marker (package.json, app.json, pubspec.yaml, Gradle/Xcode files, Podfile, android/, ios/). Budget defaults to 8 min / 20 ' +
         'actions / 8 screenshots; profile resizes it. fixtures (or .swipium/fixtures.json) declare preconditions so unmet ones ' +
         'report as blocked, not failed. responseMode compact keeps transcripts small.',
       inputSchema: {

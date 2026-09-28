@@ -176,8 +176,19 @@ export async function getDriver(session: Session): Promise<{
   needSelection?: boolean;
   /** Set when a device is online but may not be bound (physical device / still booting). */
   blocked?: AttachBlocked;
+  /** Human-readable transport note (e.g. WDA unreachable → simctl fallback; WDA restored). */
+  note?: string;
 }> {
-  if (session.driver) return { driver: session.driver, rehydrated: false };
+  if (session.driver) {
+    // A rehydrated WDA session running on the simctl fallback retries WDA (throttled) — a brief
+    // outage during rehydrate must not leave the session downgraded for its whole life.
+    if (session.transportFallback && session.driver.kind !== 'simulator') session.transportFallback = undefined; // re-attached explicitly
+    if (session.transportFallback) {
+      const upgraded = await retryWdaTransport(session);
+      if (upgraded) return { driver: upgraded, rehydrated: true, note: WDA_RESTORED_NOTE };
+    }
+    return { driver: session.driver, rehydrated: false };
+  }
   if (testDriverFactory) {
     // Tests own device resolution entirely — never fall through to real adb discovery.
     const driver = testDriverFactory(session);
@@ -264,7 +275,7 @@ function lastWdaUrlFor(session: Session, udid: string): string | undefined {
 async function rebindIosSimulator(
   session: Session,
   udid: string,
-): Promise<{ driver?: Driver; rehydrated: boolean; needSelection?: boolean; blocked?: AttachBlocked }> {
+): Promise<{ driver?: Driver; rehydrated: boolean; needSelection?: boolean; blocked?: AttachBlocked; note?: string }> {
   const sims = await iosProbe.listSimulators().catch(() => [] as Simulator[]);
   const sim = sims.find((x) => x.udid.toUpperCase() === udid.toUpperCase());
   if (!sim || !/^booted$/i.test(sim.state)) {
@@ -290,23 +301,63 @@ async function rebindIosSimulator(
         ? undefined
         : lastWdaUrlFor(session, udid);
   let driver: Driver;
+  let note: string | undefined;
   if (wdaUrl && (await iosProbe.wdaReachable(wdaUrl))) {
-    const cfg = loadWdaConfig(session.root);
-    // reuseRunningApp → forceAppLaunch:false + shouldTerminateApp:false: a rehydrate must never
-    // terminate + relaunch the app under test (see createWdaSession).
-    driver = new WdaDriver(wdaUrl, {
-      udid,
-      bundleId: session.appId,
-      capabilities: cfg?.capabilities,
-      settings: cfg?.settings,
-      reuseRunningApp: true,
-    });
+    driver = wdaDriverFor(session, wdaUrl, udid);
+    session.transportFallback = undefined;
   } else {
     driver = new SimctlDriver(udid);
+    if (session.driverKind === 'wda' && wdaUrl) {
+      // Persisted transport is WDA but it is unreachable right now: run on simctl for the moment,
+      // but keep driverKind/wdaUrl as persisted (store.writeState skips the sync while this is
+      // set) and retry WDA on the next getDriver calls.
+      const now = Date.now();
+      session.transportFallback = { wanted: 'wda', wdaUrl, since: now, lastProbeAt: now };
+      note = wdaFallbackNote(wdaUrl);
+      if (!session.workarounds.includes(note)) session.workarounds.push(note);
+    }
   }
   session.driver = driver;
   session.lastSnapshot = undefined; // refs invalid after (re)bind
-  return { driver, rehydrated: true };
+  return { driver, rehydrated: true, ...(note ? { note } : {}) };
+}
+
+// reuseRunningApp → forceAppLaunch:false + shouldTerminateApp:false: a rehydrate must never
+// terminate + relaunch the app under test (see createWdaSession).
+function wdaDriverFor(session: Session, wdaUrl: string, udid: string): Driver {
+  const cfg = loadWdaConfig(session.root);
+  return new WdaDriver(wdaUrl, {
+    udid,
+    bundleId: session.appId,
+    capabilities: cfg?.capabilities,
+    settings: cfg?.settings,
+    reuseRunningApp: true,
+  });
+}
+
+/** Minimum gap between WDA re-probes while a session runs on the simctl fallback. */
+export const WDA_RETRY_INTERVAL_MS = 10_000;
+
+const wdaFallbackNote = (wdaUrl: string): string =>
+  `WDA at ${wdaUrl} was unreachable when this iOS session was re-attached — running on the simctl fallback ` +
+  `(visual/lifecycle only; no structured snapshot). The session stays a WDA session and WDA is retried ` +
+  `automatically; or re-attach with qa_wda.`;
+
+export const WDA_RESTORED_NOTE = 'WDA is reachable again — this session is back on its WDA transport (previous @eN refs are invalid).';
+
+/** Re-probe the persisted WDA endpoint of a fallback session (throttled); rebind on success. */
+async function retryWdaTransport(session: Session): Promise<Driver | undefined> {
+  const fb = session.transportFallback;
+  if (!fb || !session.device) return undefined;
+  const now = Date.now();
+  if (now - fb.lastProbeAt < WDA_RETRY_INTERVAL_MS) return undefined;
+  fb.lastProbeAt = now;
+  if (!(await iosProbe.wdaReachable(fb.wdaUrl).catch(() => false))) return undefined;
+  const driver = wdaDriverFor(session, fb.wdaUrl, session.device);
+  session.driver = driver;
+  session.transportFallback = undefined;
+  session.lastSnapshot = undefined;
+  return driver;
 }
 
 export const REHYDRATE_NOTE =

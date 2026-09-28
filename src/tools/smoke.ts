@@ -6,11 +6,11 @@
 //
 // Scope note: a single honest orchestrator. Generic credential-login / per-screen-visual smokes
 // are app-specific and fragile to synthesize, so login is handled by authoring a login *flow*
-// (run here automatically) rather than a separate qa_login_smoke that guesses.
+// (run here automatically) rather than a separate login-smoke tool that guesses.
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import { runSmoke } from '../services/smoke.js';
 import type { SessionStore } from '../session/store.js';
@@ -32,7 +32,8 @@ export function registerSmoke(server: McpServer, sessions: SessionStore): void {
     },
     async ({ sessionId, launch, runFlows, variables }) => {
       const session = sessions.get(sessionId);
-      const { driver: d, blocked } = session ? await getDriver(session) : { driver: undefined, blocked: undefined };
+      if (!session) return unknownSessionError(sessionId);
+      const { driver: d, blocked } = await getDriver(session);
       if (!session || !d) {
         return (
           blockedDeviceResult(blocked) ??

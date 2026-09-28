@@ -42,6 +42,21 @@ const NAV_CHROME_RE =
 /** Scrolling list containers: an edge-touching row inside one is content, not a pinned overlay. */
 const LIST_CONTAINER_RE = /RecyclerView|ListView|ScrollView|GridView|ViewPager|XCUIElementType(?:Table|CollectionView|ScrollView)\b/;
 
+/** The app-chosen part of a resource-id: `com.acme.shop.debug:id/promo_banner` → `promo_banner`.
+ * The package prefix must never carry an overlay/nav signal — with applicationIdSuffix ".debug"
+ * EVERY id contains "debug" (and package names can contain notification/alert/toolbar…). iOS
+ * accessibility identifiers have no package prefix and are used whole. */
+export function localResourceId(id: string): string {
+  const i = id.indexOf(':id/');
+  if (i >= 0) return id.slice(i + 4);
+  return id.startsWith('id/') ? id.slice(3) : id;
+}
+
+/** Class + package-less id — what the overlay / nav-chrome signals are tested against. */
+function signalText(n: RawNode): string {
+  return `${n.cls} ${localResourceId(n.id)}`;
+}
+
 function ancestorsOf(allNodes: RawNode[], n: RawNode): RawNode[] {
   return allNodes.filter((m) => m.dfs < n.dfs && m.subtreeEnd >= n.dfs);
 }
@@ -76,12 +91,15 @@ function detectBanners(allNodes: RawNode[], screen?: [number, number]): Overlay[
     if (isTextFieldClass(n.cls)) continue;
     const ancestors = ancestorsOf(allNodes, n);
     const lineage = [...ancestors, n];
-    if (lineage.some((m) => NAV_CHROME_RE.test(`${m.cls} ${m.id}`))) continue;
+    if (lineage.some((m) => NAV_CHROME_RE.test(signalText(m)))) continue;
     if (ancestors.some((m) => m.scrollable || LIST_CONTAINER_RE.test(m.cls))) continue;
     const sub = allNodes.filter((m) => m.dfs >= n.dfs && m.dfs <= n.subtreeEnd);
     const dismissible = sub.some((m) => (m.clickable || m.cls.includes('Button')) && DISMISS_RE.test(`${m.text} ${m.desc}`));
+    // The window root (dfs 0) is the whole app window — its class/id never marks an overlay.
     const overlaySignal =
-      lineage.some((m) => OVERLAY_SIGNAL_RE.test(`${m.cls} ${m.id}`)) || dismissible || OVERLAY_TEXT_RE.test(`${n.text} ${n.desc}`);
+      lineage.some((m) => m.dfs !== 0 && OVERLAY_SIGNAL_RE.test(signalText(m))) ||
+      dismissible ||
+      OVERLAY_TEXT_RE.test(`${n.text} ${n.desc}`);
     if (!overlaySignal) continue;
     const label = (n.text || n.desc).trim().slice(0, 60);
     out.push({

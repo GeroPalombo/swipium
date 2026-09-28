@@ -25,6 +25,27 @@ export interface MobileAuditRunOptions {
   sourceRevision?: SourceRevision;
   now: string;
   reportUri?: string;
+  /** The user approved the airplane-mode toggle the resilience checks need (consent action
+   *  `network_change`, same gate as qa_network). Without it the offline/restoration checks are
+   *  reported blocked and the device network is never touched. */
+  networkChangeApproved?: boolean;
+}
+
+/** True when a profile's execution toggles airplane mode (needs network_change consent). */
+export function auditChangesNetwork(profile: AuditProfile): boolean {
+  return profile === 'resilience' || profile === 'release_gate';
+}
+
+/** The consent request a caller should raise before executing a network-changing audit — the same
+ *  `network_change` action/risk qa_network uses, with the exact toggles shown. */
+export function auditNetworkConsentRequest(profile: AuditProfile) {
+  return {
+    action: 'network_change',
+    risk: 'medium' as const,
+    exactCommand: 'airplane mode ON (offline_entry), then OFF (network_restoration), then restore the recorded original state',
+    affects: { to: 'offline', tool: 'qa_mobile_audit', profile },
+    explain: `qa_mobile_audit ${profile} toggles airplane mode for the offline/restoration checks and restores the device's original network state afterwards. Allow it?`,
+  };
 }
 
 function platformOf(driver: Driver): IssuePlatform {
@@ -115,18 +136,54 @@ export async function runMobileAudit(
       await finalize('paywall', 'Paywall classification', await C.checkPaywall(ev, text));
       await finalize('external_links', 'External links', C.checkExternalLinks());
     } else if (prof === 'resilience') {
+      const networkApproved = opts.networkChangeApproved === true;
+      let preAudit: boolean | undefined;
+      let auditOwnsRestore = false;
       try {
-        await finalize('offline_entry', 'Offline entry', await C.checkOfflineEntry(ev));
-        await finalize('network_restoration', 'Network restoration', await C.checkNetworkRestoration(ev));
+        if (!networkApproved) {
+          await finalize('offline_entry', 'Offline entry', {
+            status: 'blocked',
+            reason: 'airplane-mode toggle needs network_change consent — the device network was not touched',
+            evidenceUris: [],
+            nextStep: 'Re-run qa_mobile_audit execute with the network_change consent approved (same gate as qa_network).',
+          });
+          await finalize('network_restoration', 'Network restoration', {
+            status: 'skipped',
+            reason: 'network was not changed (no consent)',
+            evidenceUris: [],
+          });
+        } else {
+          // Record the ORIGINAL airplane state before the first toggle so the finally-block
+          // restores it (not a blind "airplane OFF" that would flip a device that started offline).
+          preAudit = await driver.airplaneOn().catch(() => undefined);
+          if (!session.network?.changed) {
+            session.network = { changed: true, originalAirplane: preAudit ?? false };
+            auditOwnsRestore = true;
+            sessions.persist(session);
+          }
+          sessions.recordMutation(session, {
+            tool: 'qa_mobile_audit',
+            action: 'network_change',
+            risk: 'medium',
+            target: { to: 'offline', profile: prof, originalAirplane: preAudit ?? null },
+            consent: { required: true, approved: true },
+            status: 'executed',
+            detail: 'resilience offline_entry / network_restoration',
+          });
+          await finalize('offline_entry', 'Offline entry', await C.checkOfflineEntry(ev));
+          await finalize('network_restoration', 'Network restoration', await C.checkNetworkRestoration(ev));
+        }
         await finalize('process_relaunch', 'Process kill / relaunch', await C.checkProcessRelaunch(ev));
         await finalize('rotation', 'Rotation', C.checkRotation());
       } finally {
-        // GUARANTEED network restore — even if a resilience check threw (REQ-08 safety).
-        try {
-          await driver.setAirplane(false);
-          await restoreNetwork(sessions, session, driver);
-        } catch {
-          /* best-effort */
+        // GUARANTEED network restore to the recorded ORIGINAL state — even if a check threw.
+        if (networkApproved) {
+          try {
+            if (auditOwnsRestore) await restoreNetwork(sessions, session, driver);
+            else if (preAudit !== undefined) await driver.setAirplane(preAudit);
+          } catch {
+            /* best-effort */
+          }
         }
       }
     } else if (prof === 'account_cycle') {

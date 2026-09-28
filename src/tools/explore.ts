@@ -6,7 +6,7 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import { runExplore } from '../explore/runner.js';
@@ -136,13 +136,7 @@ export function registerExplore(server: McpServer, sessions: SessionStore): void
       approve,
     }) => {
       const session = sessions.get(sessionId);
-      if (!session)
-        return qaError({
-          what: `Unknown sessionId ${sessionId}`,
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_start_session first.'],
-        });
+      if (!session) return unknownSessionError(sessionId);
       const { driver, blocked } = await getDriver(session);
       if (!driver) {
         return (

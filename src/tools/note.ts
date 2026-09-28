@@ -6,11 +6,17 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import type { SessionStore, TestOutcome, TestCategory } from '../session/store.js';
 
 const OUTCOMES = ['pass', 'fail', 'blocked', 'skipped', 'not_applicable'] as const;
 const CATEGORIES = ['app_bug', 'mcp_limitation', 'missing_test_data', 'intentionally_skipped', 'destructive_refused', 'other'] as const;
+
+/** Default category for an uncategorized note: a failure is an app bug (app-owned, medium in the
+ *  issue ledger); other outcomes stay uncategorized. */
+export function defaultNoteCategory(outcome: string): TestCategory | undefined {
+  return outcome === 'fail' ? 'app_bug' : undefined;
+}
 
 export function registerNote(server: McpServer, sessions: SessionStore): void {
   server.registerTool(
@@ -25,7 +31,7 @@ export function registerNote(server: McpServer, sessions: SessionStore): void {
         sessionId: z.string(),
         workflow: z.string().describe('e.g. "Delete saved flight"'),
         outcome: z.enum(OUTCOMES),
-        category: z.enum(CATEGORIES).optional(),
+        category: z.enum(CATEGORIES).optional().describe('Default for outcome:"fail" is app_bug; use mcp_limitation for tool problems.'),
         reason: z.string().optional(),
         missingPrecondition: z.string().optional().describe('e.g. "no saved flight exists"'),
         requiredState: z.string().optional(),
@@ -48,12 +54,7 @@ export function registerNote(server: McpServer, sessions: SessionStore): void {
     }) => {
       const session = sessions.get(sessionId);
       if (!session) {
-        return qaError({
-          what: `Unknown sessionId ${sessionId}`,
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_start_session first.'],
-        });
+        return unknownSessionError(sessionId);
       }
       // A visual-only pass should carry its evidence so the report isn't taking it on faith.
       if (verifiedVisually && outcome === 'pass' && !(artifactUris && artifactUris.length)) {
@@ -81,11 +82,15 @@ export function registerNote(server: McpServer, sessions: SessionStore): void {
           f.name.toLowerCase() === workflow.toLowerCase() ||
           (missingPrecondition && f.name.toLowerCase() === missingPrecondition.toLowerCase()),
       );
+      // A failing note with no category is an app finding by default: left uncategorized, the
+      // issue-ledger bridge would triage it as a low-severity Swipium `mcp_limitation`. Agents
+      // mark tool problems explicitly with category:"mcp_limitation".
+      const effectiveCategory: TestCategory | undefined = (category as TestCategory | undefined) ?? defaultNoteCategory(outcome);
       sessions.addNote(session, {
         at: Date.now(),
         workflow,
         outcome: outcome as TestOutcome,
-        category: category as TestCategory | undefined,
+        category: effectiveCategory,
         reason,
         missingPrecondition: missingPrecondition ?? fx?.requiredState,
         requiredState: requiredState ?? fx?.requiredState,
@@ -95,8 +100,8 @@ export function registerNote(server: McpServer, sessions: SessionStore): void {
       });
       const tally = session.notes.reduce<Record<string, number>>((a, n) => ((a[n.outcome] = (a[n.outcome] ?? 0) + 1), a), {});
       return qaOk(
-        { recorded: { workflow, outcome, category }, tally },
-        `noted: "${workflow}" → ${outcome}${category ? ` (${category})` : ''}${missingPrecondition ? ` — missing: ${missingPrecondition}` : ''}\ntally: ${Object.entries(
+        { recorded: { workflow, outcome, category: effectiveCategory }, tally },
+        `noted: "${workflow}" → ${outcome}${effectiveCategory ? ` (${effectiveCategory}${category ? '' : ', default for a failing note'})` : ''}${missingPrecondition ? ` — missing: ${missingPrecondition}` : ''}\ntally: ${Object.entries(
           tally,
         )
           .map(([k, v]) => `${k}=${v}`)

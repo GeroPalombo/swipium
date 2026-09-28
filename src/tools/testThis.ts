@@ -42,7 +42,7 @@ export function registerTestThis(server: McpServer, sessions: SessionStore): voi
         fastSmoke: z.boolean().optional().describe('Just launch + smoke; skip suite generation (ignored with goal/generateSuite).'),
         platform: z.enum(['android', 'ios']).optional().describe('Force a platform (default inferred).'),
         device: z.string().optional(),
-        preferRealDevice: z.boolean().optional(),
+        preferRealDevice: z.boolean().optional().describe('Out of scope: returns PHYSICAL_DEVICE_UNSUPPORTED.'),
         allowOutsideRoot: z.boolean().optional(),
         buildIfNeeded: z.boolean().optional().describe('Build from source when no artifact exists (default true).'),
         generateSuite: z.boolean().optional().describe('execute: also generate a POM suite from the run.'),
@@ -52,6 +52,10 @@ export function registerTestThis(server: McpServer, sessions: SessionStore): voi
         timeoutMs: z.number().optional().describe('waitForCompletion cap (default 120000).'),
         consentId: z.string().optional(),
         approve: z.boolean().optional(),
+        responseMode: z
+          .enum(['compact', 'normal', 'verbose'])
+          .optional()
+          .describe('Text channel for this session: compact = summary + URIs (structuredContent stays full).'),
       },
     },
     async (input) => handleTestThis(server, sessions, input),

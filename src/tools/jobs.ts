@@ -3,7 +3,7 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { progressLine } from '../session/progress.js';
 import type { SessionStore } from '../session/store.js';
 
@@ -36,9 +36,11 @@ export function registerJobs(server: McpServer, sessions: SessionStore): void {
     async ({ sessionId, jobId, waitMs }, extra) => {
       const session = sessions.get(sessionId);
       let job = session?.jobs.get(jobId);
-      if (!session || !job) {
+      if (!session) return unknownSessionError(sessionId);
+      if (!job) {
         return qaError({
-          what: session ? `Unknown job ${jobId}` : `Unknown sessionId ${sessionId}`,
+          what: `Unknown job ${jobId}`,
+          failureCode: 'INVALID_ARGUMENT',
           changedState: false,
           retrySafe: true,
           nextSteps: ['Use the sessionId + jobId returned by the tool that started the job (qa_status lists the last job).'],
@@ -81,13 +83,7 @@ export function registerJobs(server: McpServer, sessions: SessionStore): void {
     },
     async ({ sessionId, jobId }) => {
       const session = sessions.get(sessionId);
-      if (!session)
-        return qaError({
-          what: `Unknown sessionId ${sessionId}`,
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_start_session first.'],
-        });
+      if (!session) return unknownSessionError(sessionId);
       const ok = sessions.cancelJob(session, jobId);
       return qaOk({ jobId, cancelled: ok }, ok ? `cancelled ${jobId}` : `job ${jobId} not running (already finished or unknown)`);
     },

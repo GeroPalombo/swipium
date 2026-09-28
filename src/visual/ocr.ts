@@ -2,7 +2,14 @@ import { rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadProjectConfig } from '../cli/scan.js';
 import { captureCoordinateSpace, toDevicePoint, type CoordinateSpace } from '../lib/coordSpace.js';
-import { maskScreenshotForProvider, providerTempDir, runVisualProvider, type ProviderIo, type VisualProviderCommand } from './provider.js';
+import {
+  makeProviderWorkDir,
+  maskScreenshotForProvider,
+  runVisualProvider,
+  type ProviderIo,
+  type ProviderSource,
+  type VisualProviderCommand,
+} from './provider.js';
 import type { Driver } from '../drivers/Driver.js';
 
 export interface OcrRegion {
@@ -64,6 +71,12 @@ export function configuredOcrCommand(root: string): VisualProviderCommand | unde
   return cfg ?? process.env.SWIPIUM_OCR_CMD;
 }
 
+/** Provenance of the OCR command configuredOcrCommand() would use. */
+export function ocrCommandSource(root: string): ProviderSource | undefined {
+  if (loadProjectConfig(root)?.ocrCommand) return 'repository';
+  return process.env.SWIPIUM_OCR_CMD ? 'environment' : undefined;
+}
+
 export function parseOcrOutput(stdout: string): { text: string; regions: OcrRegion[] } {
   const trimmed = stdout.trim();
   if (!trimmed) return { text: '', regions: [] };
@@ -99,8 +112,10 @@ export async function runOcr(driver: Driver, root: string, command: VisualProvid
   const png = await driver.screenshot();
   const coordinateSpace = await captureCoordinateSpace(driver, png);
   // Real (symlink-resolved) temp path: tesseract/leptonica cannot open macOS /tmp/... paths.
-  const imgPath = join(providerTempDir(), `swipium-ocr-${Date.now()}.png`);
-  const cleanup = [imgPath];
+  // A private mkdtemp (0700) dir per call — never a predictable name in the shared tmpdir.
+  const workDir = makeProviderWorkDir('swipium-ocr-');
+  const imgPath = join(workDir, 'screen.png');
+  const cleanup = [workDir];
   try {
     writeFileSync(imgPath, png);
     const masking = await maskScreenshotForProvider(root, imgPath, { task: 'ocr' });
@@ -128,7 +143,7 @@ export async function runOcr(driver: Driver, root: string, command: VisualProvid
   } finally {
     for (const path of cleanup) {
       try {
-        rmSync(path, { force: true });
+        rmSync(path, { recursive: true, force: true });
       } catch {
         // best-effort cleanup
       }

@@ -7,7 +7,7 @@ import { isAbsolute, join } from 'node:path';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, unknownSessionError } from '../lib/result.js';
 import { qaFail, type FailureCode } from '../oracle/failures.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { prepareIos } from '../services/prepareIos.js';
@@ -54,13 +54,7 @@ export function registerPrepareIosTarget(server: McpServer, sessions: SessionSto
     },
     async ({ sessionId, app, bundleId, device, launch, attachWda, consentId, approve }) => {
       const session = sessions.get(sessionId);
-      if (!session)
-        return qaError({
-          what: `Unknown sessionId "${sessionId}"`,
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_start_session first.'],
-        });
+      if (!session) return unknownSessionError(sessionId);
 
       // Installing app code is privileged → consent (mirrors qa_ios install).
       let mutationConsent: { required: boolean; consentId?: string; approved: boolean; payloadHash?: string } | undefined;

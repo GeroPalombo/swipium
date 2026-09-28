@@ -5,7 +5,7 @@
 // so agents don't have to infer "healthy process but broken app" from raw snapshot text.
 
 import type { Driver } from '../drivers/Driver.js';
-import { parseSnapshot } from '../snapshot/parse.js';
+import { parseSnapshot, type RawNode } from '../snapshot/parse.js';
 
 export type HealthLayer = 'native' | 'app';
 
@@ -82,19 +82,43 @@ function firstMatch(nodes: HealthNode[], re: RegExp): string | undefined {
   return undefined;
 }
 
-export async function checkHealth(driver: Driver, appId?: string, xml?: string): Promise<HealthResult> {
-  const foreground = await driver.foregroundOwner().catch(() => 'unknown');
+/** The package that owns the dumped window (Android uiautomator root `package=`), or undefined. */
+export function dumpRootPackage(nodes: ReadonlyArray<Pick<RawNode, 'attrs'>> | undefined): string | undefined {
+  const pkg = nodes?.[0]?.attrs?.package;
+  return pkg ? pkg : undefined;
+}
+
+/**
+ * Health check. `opts.nodes` = the ALREADY-PARSED allNodes of `xml` (callers that just parsed the
+ * post-action dump pass them — re-parsing a big screen cost ~60 ms per action).
+ *
+ * Foreground: on Android the dump's root `package=` already says which app owns the window. When
+ * it IS the app under test and no crash/ANR copy is on screen, the heavy `dumpsys activity
+ * activities` (foregroundOwner) is skipped (foreground = the package); it still runs whenever the
+ * caller did not supply the dump, the root package differs from appId, is absent (WDA / older
+ * dumps), or a crash/ANR pattern matched.
+ */
+export async function checkHealth(driver: Driver, appId?: string, xml?: string, opts: { nodes?: RawNode[] } = {}): Promise<HealthResult> {
   let source = xml;
   if (source === undefined) source = await driver.dumpXml().catch(() => '');
 
   // Parse to nodes so evidence is the VISIBLE text (not attribute names) — best-effort.
-  let nodes: HealthNode[] = [];
-  try {
-    nodes = parseSnapshot(source).allNodes.map((n) => ({ text: n.text, desc: n.desc, cls: n.cls, id: n.id }));
-  } catch {
-    nodes = [];
+  let raw: RawNode[] | undefined = opts.nodes;
+  if (!raw) {
+    try {
+      raw = parseSnapshot(source).allNodes;
+    } catch {
+      raw = [];
+    }
   }
+  const nodes: HealthNode[] = raw.map((n) => ({ text: n.text, desc: n.desc, cls: n.cls, id: n.id }));
   const joined = nodes.map((n) => `${n.text} ${n.desc} ${n.cls ?? ''} ${n.id ?? ''}`).join('  ') || source;
+
+  const rootPkg = dumpRootPackage(raw);
+  // Only on the post-action path (caller supplied the dump): a standalone health check (no xml)
+  // keeps the full dumpsys answer, which also names the resumed activity.
+  const trustRoot = xml !== undefined && !!appId && rootPkg === appId && !ANR_RE.test(joined) && !CRASH_RE.test(joined);
+  const foreground = trustRoot ? rootPkg! : await driver.foregroundOwner().catch(() => 'unknown');
 
   const findings: Finding[] = [];
 

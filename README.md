@@ -139,7 +139,7 @@ Every tool needs to know which app repository it's testing. Swipium resolves it 
 2. MCP roots, when the client provides them (Claude Code, Cursor, VS Code).
 3. `SWIPIUM_PROJECT_ROOT` in the server's environment.
 4. `CLAUDE_PROJECT_DIR`, which Claude Code sets automatically.
-5. The server's working directory, unless it is `/` or your home directory. Set it with `cwd` in clients that support it (Codex, Gemini CLI) or with `init --cwd <dir>`.
+5. The server's working directory, if it is not `/` or your home directory **and** it contains a project marker (`package.json`, `app.json`, `pubspec.yaml`, Gradle files, `Podfile`, an `.xcodeproj`/`.xcworkspace`, or an `android/` or `ios/` directory). Set it with `cwd` in clients that support it (Codex, Gemini CLI) or with `init --cwd <dir>`.
 
 If none of these resolves, tools fail with `failureCode: "PROJECT_ROOT_UNRESOLVED"`.
 
@@ -272,17 +272,26 @@ Set these in the MCP server's `env` block, or in the shell for CLI commands.
 | `SWIPIUM_PROJECT_ROOT` | Absolute path of the app repo, used when the client provides no MCP roots (see [Project root](#project-root)). |
 | `ANDROID_HOME` / `ANDROID_SDK_ROOT` | Android SDK location, checked for `platform-tools/adb`, `emulator/emulator`, and `build-tools/*/aapt2` before `PATH`. |
 | `SWIPIUM_TEST_EMAIL`, `SWIPIUM_TEST_USERNAME`, `SWIPIUM_TEST_PASSWORD`, `SWIPIUM_TEST_OTP`, `SWIPIUM_TEST_TOKEN`, `SWIPIUM_TEST_PIN` | Test-account values for login/first-run flows. Flows reference them as `${SWIPIUM_TEST_EMAIL}` etc. and are redacted in outputs. Never inline secrets in flow files. |
+| Other `SWIPIUM_*` variables | Flows resolve `${VAR}` references **only** for variables prefixed `SWIPIUM_`; any other name (e.g. `${HOME}`, `${AWS_SECRET_ACCESS_KEY}`) is not read from the environment, so a flow from a cloned repo cannot exfiltrate unrelated env vars. |
+| `SWIPIUM_RETENTION_DAYS` / `SWIPIUM_RETENTION_KEEP` | Disk retention for `~/.swipium/runs` session directories: age limit (default 30 days; `0` or `off` disables pruning) and how many recent sessions per project are always kept (default 20). See `swipium gc` below. |
+| `SWIPIUM_ALLOW_REMOTE_WDA` | Comma-separated list of exact non-loopback WebDriverAgent base URLs you pre-approve. Set it in your MCP client's server environment, never in the repository. |
 | `SWIPIUM_OCR_CMD` | OCR provider for `qa_visual` `find_text` (none is bundled). A command whose `{image}` placeholder is replaced by a PNG path and which prints JSON `[{"text","confidence","bbox":{x,y,width,height}}]` in screenshot pixels. `ocrCommand` in `.swipium/config.json` (an argv array) takes precedence. |
 | `SWIPIUM_VISUAL_MASK_CMD` | Optional command that masks screenshots before visual providers see them (`visualMaskCommand` in config wins). |
-| `SWIPIUM_REQUIRE_ELICITATION=1` | Refuse high-risk actions when the client can't show a real consent prompt, instead of falling back to the re-call convention. |
+| `SWIPIUM_REQUIRE_ELICITATION=1` | Refuse **every** consent-gated action (builds, Metro, installs, data wipes, seeds, …), not only high-risk ones, when the client can't show a real consent prompt, instead of falling back to the re-call convention. |
 | `BUNDLETOOL_JAR` | Path to `bundletool.jar`, for installing `.aab` artifacts. |
 | `DEVELOPMENT_TEAM` / `XCODE_DEVELOPMENT_TEAM` | Apple team ID for WebDriverAgent signing (or `ios.wda.developmentTeam` in config). |
+
+Generated flows, suites, and code never contain credential values; they reference placeholders instead. Values the run collected as stored inputs use the canonical `SWIPIUM_TEST_*` names above; other secret fields get a numbered `SWIPIUM_SECRET_N`; generated (non-secret) test data uses `SWIPIUM_GEN_<FIELD>` (e.g. `SWIPIUM_GEN_NAME`). Provide these in the environment when you replay.
+
+**Disk retention.** At startup, and on demand with `swipium gc [--dry-run] [--days N] [--keep N]`, Swipium prunes session directories under `~/.swipium/runs` that are older than `SWIPIUM_RETENTION_DAYS` (default 30) and no longer in the session registry, always keeping the newest `SWIPIUM_RETENTION_KEEP` (default 20) per project. `--dry-run` lists what would be removed; `gc` also drops `~/.swipium/projects.json` entries for projects that no longer exist.
+
+**WebDriverAgent URL.** A non-loopback WDA URL (anything other than `localhost`, `127.0.0.0/8`, or `[::1]`) requires explicit consent (`qa_wda` with `allowNonLoopback:true`); `.swipium/config.json` cannot pre-approve it. The only pre-approval is `SWIPIUM_ALLOW_REMOTE_WDA` in your own MCP client configuration.
 
 Generated Appium code (`qa_generate target:"appium"`) reads its own variables (`SWIPIUM_PLATFORM`, `SWIPIUM_NO_RESET`, `APPIUM_HOST`/`APPIUM_PORT`, `ANDROID_*`, `IOS_*`). Those are documented in the README it generates, not in the server.
 
 ## Tool Docs
 
-Start with `qa_test_this` for low-context requests. The full, current list of tools and parameters is in [docs/tools.md](docs/tools.md). `swipium verify` prints exactly which tools your installed version exposes. Release-by-release changes are in the [CHANGELOG](CHANGELOG.md).
+Start with `qa_test_this` for low-context requests. The full, current list of tools and parameters is in [docs/tools.md](docs/tools.md). `swipium verify` prints exactly which tools your installed version exposes. Release-by-release changes are in the [CHANGELOG](CHANGELOG.md); upgrading from 1.x, see [Migrating from 1.5.0](CHANGELOG.md#migrating-from-150) for renamed and removed tools.
 
 ## Why Swipium?
 
@@ -298,7 +307,7 @@ Start with `qa_test_this` for low-context requests. The full, current list of to
 
 Swipium runs locally as a stdio process: no network listener, no remote service. Destructive actions are consent-gated server-side, and known secret shapes are redacted from snapshots, artifacts, and reports. Trust boundaries, threats, and controls are documented in the [Threat Model](THREAT_MODEL.md). Report vulnerabilities per the [Security Policy](SECURITY.md).
 
-Consent is elicitation-aware: when the connected MCP client supports the elicitation capability, each consent prompt is routed to a real out-of-band user prompt — the server asks the human directly and only an explicit approval runs the gated action, instead of trusting the model to relay approval via a re-call. How each approval was decided (`elicitation` vs. `client-assertion`) is recorded in the session's mutation ledger. Set `SWIPIUM_REQUIRE_ELICITATION=1` to refuse high-risk actions outright when the client cannot elicit, rather than falling back to the portable re-call convention.
+Consent is elicitation-aware: when the connected MCP client supports the elicitation capability, each consent prompt is routed to a real out-of-band user prompt — the server asks the human directly and only an explicit approval runs the gated action, instead of trusting the model to relay approval via a re-call. How each consent was decided — `elicitation` (the human answered an out-of-band prompt), `client-assertion` (the client re-called with approval), or `policy` (the server refused without asking) — is recorded in the session's mutation ledger. Set `SWIPIUM_REQUIRE_ELICITATION=1` to refuse every consent-gated action outright (recorded as `policy`) when the client cannot elicit, rather than falling back to the portable re-call convention.
 
 ## Docs
 

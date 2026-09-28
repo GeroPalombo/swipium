@@ -2,7 +2,7 @@
 // fixture seed (deeplink / script / api), used by flow
 // runner's `seed` step (a flow is the author's explicit consent surface). It performs the action,
 // persists a redacted artifact for scripts, logs the env change on success, and returns a result —
-// it does NOT prompt for consent or record qa_notes (callers decide how to report).
+// it does NOT prompt for consent or record qa_note outcomes (callers decide how to report).
 
 import { existsSync } from 'node:fs';
 import { isAbsolute, resolve, sep } from 'node:path';

@@ -12,7 +12,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { resolveProjectRoot, unresolvedProjectRootError } from '../context/projectRoot.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { generatePom, type GeneratedFile, type PomResult } from '../suite/pom.js';
@@ -22,7 +22,7 @@ import { parseFlow } from '../flows/schema.js';
 import { runFlow } from '../flows/run.js';
 import { loadProjectConfig } from '../cli/scan.js';
 import { generateAndCompileSuite } from '../services/suiteGenerate.js';
-import { assertNoSecretLeaks, findSecretLeaks, secretSafeNotes } from '../suite/secretGuard.js';
+import { assertNoSecretLeaks, findSecretLeaks, inputBindings, secretSafeNotes, structuralLiterals } from '../suite/secretGuard.js';
 import { getDriver } from '../session/attach.js';
 import { readinessForSession } from '../report/readiness.js';
 import { loadStateProfile, prepareStateProfile, teardownStateProfile, verifyStateProfile } from '../state/profile.js';
@@ -100,7 +100,7 @@ function suiteDir(session: Session): string {
 
 /** Write generated files under .swipium/, returning absolute paths written. */
 function writeFiles(session: Session, files: GeneratedFile[]): string[] {
-  assertNoSecretLeaks(files, session.secrets, 'suite generation'); // backstop — never write a secret
+  assertNoSecretLeaks(files, session.secrets, 'suite generation', { structural: structuralLiterals(session.recordedActions) }); // backstop — never write a secret
   const base = suiteDir(session);
   const written: string[] = [];
   for (const f of files) {
@@ -114,7 +114,7 @@ function writeFiles(session: Session, files: GeneratedFile[]): string[] {
 
 /** Loud refusal when generated files would carry a registered secret value (nothing is written). */
 function secretLeakError(session: Session, files: GeneratedFile[]): CallToolResult | null {
-  const leaks = findSecretLeaks(files, session.secrets);
+  const leaks = findSecretLeaks(files, session.secrets, { structural: structuralLiterals(session.recordedActions) });
   if (!leaks.length) return null;
   return qaError({
     what: `Not generated: a registered secret value would be written in plaintext (${leaks
@@ -148,6 +148,7 @@ function pomFor(session: Session, name?: string): { pom: PomResult; flowName: st
     appId,
     budgetProfile: session.budgetProfile,
     secrets: session.secrets,
+    inputs: inputBindings(session), // typed text equal to a stored input → its ${SWIPIUM_TEST_*} placeholder
   });
   return { pom, flowName };
 }
@@ -163,13 +164,7 @@ export interface PomGenerateArgs {
 /** Core handler for qa_generate target:"pom" — page objects + locator audit from recorded actions. */
 export async function runPomGenerate(sessions: SessionStore, { sessionId, name, save }: PomGenerateArgs): Promise<CallToolResult> {
   const session = sessions.get(sessionId);
-  if (!session)
-    return qaError({
-      what: `Unknown sessionId ${sessionId}`,
-      changedState: false,
-      retrySafe: true,
-      nextSteps: ['Call qa_start_session first.'],
-    });
+  if (!session) return unknownSessionError(sessionId);
   const noActions = requireActions(session);
   if (noActions) return noActions;
 
@@ -207,13 +202,7 @@ export async function runSuiteGenerate(
   { sessionId, name, save, compile, replay, stateProfile, consentId, approve }: SuiteGenerateArgs,
 ): Promise<CallToolResult> {
   const session = sessions.get(sessionId);
-  if (!session)
-    return qaError({
-      what: `Unknown sessionId ${sessionId}`,
-      changedState: false,
-      retrySafe: true,
-      nextSteps: ['Call qa_start_session first.'],
-    });
+  if (!session) return unknownSessionError(sessionId);
   const noActions = requireActions(session);
   if (noActions) return noActions;
 
@@ -540,13 +529,7 @@ export async function runTestcaseGenerate(
   { sessionId, name, format, save }: TestcaseGenerateArgs,
 ): Promise<CallToolResult> {
   const session = sessions.get(sessionId);
-  if (!session)
-    return qaError({
-      what: `Unknown sessionId ${sessionId}`,
-      changedState: false,
-      retrySafe: true,
-      nextSteps: ['Call qa_start_session first.'],
-    });
+  if (!session) return unknownSessionError(sessionId);
   const noActions = requireActions(session);
   if (noActions) return noActions;
 

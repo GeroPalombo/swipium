@@ -9,7 +9,7 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError, qaAnnotate } from '../lib/result.js';
+import { qaOk, qaError, qaAnnotate, unknownSessionError } from '../lib/result.js';
 import { qaNeedsInput, NeedsInput, type NeedsInputPayload } from '../lib/needsInput.js';
 import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import { planFirstRun } from '../firstRun/firstRunPlanner.js';
@@ -50,13 +50,7 @@ export function registerFirstRun(server: McpServer, sessions: SessionStore): voi
       const notes: string[] = [];
 
       const session = sessions.get(sessionId);
-      if (!session)
-        return qaError({
-          what: `Unknown sessionId ${sessionId}`,
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_start_session first.'],
-        });
+      if (!session) return unknownSessionError(sessionId);
       const { driver, blocked } = await getDriver(session);
       if (!driver)
         return (

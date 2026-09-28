@@ -169,5 +169,13 @@ describe('error-envelope contract across the full tool surface', () => {
     expect(Array.isArray(s!.nextSteps), `nextSteps missing: ${JSON.stringify(s)}`).toBe(true);
     expect((s!.nextSteps as unknown[]).length, 'nextSteps must be non-empty').toBeGreaterThan(0);
     for (const step of s!.nextSteps as unknown[]) expect(typeof step).toBe('string');
+
+    // A bogus sessionId is a typed caller error, never the UNKNOWN fallback: every tool handed one
+    // must fail with a classified failureCode, and INVALID_ARGUMENT (unknownSessionError) when the
+    // unknown session is what it failed on.
+    if (args.sessionId === MISSING_SESSION) {
+      expect(s!.failureCode, `${name} returned UNKNOWN for a bogus sessionId: ${JSON.stringify(s)}`).not.toBe('UNKNOWN');
+      if (/unknown session/i.test(s!.what as string)) expect(s!.failureCode).toBe('INVALID_ARGUMENT');
+    }
   });
 });
