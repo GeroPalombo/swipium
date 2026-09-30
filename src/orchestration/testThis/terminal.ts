@@ -1,4 +1,4 @@
-// qa_test_this terminal-state assembly — every terminal state (completed OR blocked) generates a
+// qa_test_this terminal-state assembly: every terminal state (completed OR blocked) generates a
 // report artifact (Milestone B) and lands the uniform TerminalEnvelope on the job result, so the
 // outcome is summarizable from structured output without log parsing.
 
@@ -26,7 +26,7 @@ export interface FinishContext {
 
 export type Finish = (state: ExecState, failureCode: string | undefined, summary: string, extra?: Record<string, unknown>) => Promise<void>;
 
-/** Every terminal state — completed OR blocked — generates a report artifact (Milestone B). */
+/** Every terminal state (completed OR blocked) generates a report artifact (Milestone B). */
 export function createFinisher(ctx: FinishContext): Finish {
   const { sessions, session, job, a, attempted, artifacts, upd } = ctx;
   return async (state: ExecState, failureCode: string | undefined, summary: string, extra: Record<string, unknown> = {}) => {
@@ -82,7 +82,7 @@ export function createFinisher(ctx: FinishContext): Finish {
       : session.findings.some((f) => f.layer === 'app' && f.severity === 'medium')
         ? 'degraded'
         : 'OK';
-    // The report already exists — point the agent AT it (fetch/open), not back at qa_report.
+    // The report already exists, so point the agent AT it (fetch/open), not back at qa_report.
     const question = extra.needsInput as
       { kind?: string; question?: string; resume?: { tool: string; args: Record<string, unknown> } } | undefined;
     const nextRecommendedAction =
@@ -131,7 +131,7 @@ export function createFinisher(ctx: FinishContext): Finish {
       progress: state,
       result: {
         ...envelope,
-        // Pre-launch static app map URI is present in EVERY terminal state — including blocked (Fix 1).
+        // Pre-launch static app map URI is present in EVERY terminal state, including blocked (Fix 1).
         appMapUri: a.appMapUri,
         goal: a.goal,
         requiredOutputs: a.requiredOutputs,
@@ -143,7 +143,7 @@ export function createFinisher(ctx: FinishContext): Finish {
         inputsProvided: session.inputs.map((i) => i.varName),
         // Compact report pointer: verdict one-liner + URI; the full report lives at reportUri.
         reportSummary: reportUri
-          ? `${appVerdict?.status ?? 'n/a'} app · ${coverageVerdict?.status ?? 'n/a'} coverage · ${toolVerdict?.status ?? 'n/a'} tool — read ${reportUri}`
+          ? `${appVerdict?.status ?? 'n/a'} app · ${coverageVerdict?.status ?? 'n/a'} coverage · ${toolVerdict?.status ?? 'n/a'} tool. Read ${reportUri}`
           : null,
         notes: session.notes.length,
         findings: session.findings.length,

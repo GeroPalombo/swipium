@@ -2,15 +2,15 @@
 // Order (first hit wins):
 //   1. explicit `projectRoot` arg (must be absolute + an existing directory; an invalid explicit
 //      value is an error, never silently replaced by a fallback)
-//   2. MCP roots (the client's declared workspace — the proper mechanism)
+//   2. MCP roots (the client's declared workspace, the proper mechanism)
 //   3. env SWIPIUM_PROJECT_ROOT (user-set in the client's server config)
 //   4. env CLAUDE_PROJECT_DIR (Claude Code sets it for every stdio server it launches)
-//   5. process.cwd() — only when it is a real directory that is NOT the filesystem root and NOT
+//   5. process.cwd(), only when it is a real directory that is NOT the filesystem root and NOT
 //      $HOME, AND it contains a project marker (package.json, app.json, pubspec.yaml, Gradle
 //      build/settings files, android/, ios/, *.xcodeproj, *.xcworkspace, Podfile). GUI clients
 //      often launch servers from `/`, `~` or an arbitrary directory, which must never be treated
 //      as an app repo; clients that honor a configured `cwd` (Codex, Gemini, VS Code) land here.
-// Unresolved → failureCode PROJECT_ROOT_UNRESOLVED (see unresolvedProjectRootError).
+// Unresolved: failureCode PROJECT_ROOT_UNRESOLVED (see unresolvedProjectRootError).
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { existsSync, readdirSync, statSync } from 'node:fs';
@@ -80,7 +80,7 @@ export function isUsableCwd(cwd: string, home: string = homedir()): boolean {
   return isDir(abs) && hasProjectMarker(abs);
 }
 
-/** Steps 3–5 of the chain (env vars, then cwd). Exported for tests and CLI reuse. Env values are
+/** Steps 3-5 of the chain (env vars, then cwd). Exported for tests and CLI reuse. Env values are
  * explicit user/client configuration and are trusted as-is; only the cwd guess needs a marker. */
 export function resolveFallbackRoot(opts: RootEnv = {}): ResolvedRoot | null {
   const env = opts.env ?? process.env;
@@ -104,7 +104,7 @@ export function pickMcpRoot(uris: unknown[], home: string = homedir()): string |
       const p = fileURLToPath(u);
       if (isDir(p)) dirs.push(p);
     } catch {
-      /* malformed URI — skip */
+      /* malformed URI, skip */
     }
   }
   const unsafe = (p: string) => {
@@ -119,7 +119,7 @@ const UNRESOLVED_HINT =
   'Pass projectRoot="/absolute/path/to/app", or set SWIPIUM_PROJECT_ROOT in the MCP server "env" (or a "cwd" where the client supports it).';
 
 /** Per-tool-call record of the first project root resolveProjectRoot() found (AsyncLocalStorage,
- * like the response mode) — lets the server wrapper surface `rootSource` on EVERY tool that
+ * like the response mode). Lets the server wrapper surface `rootSource` on EVERY tool that
  * resolves a root without threading it through each result builder. */
 const rootResolutionStore = new AsyncLocalStorage<{ resolved?: { root: string; source: ProjectRootSource } }>();
 
@@ -190,10 +190,10 @@ async function resolveProjectRootUnrecorded(server: McpServer, explicit?: string
       if (picked) return { root: picked, source: 'mcp-roots' };
     }
   } catch {
-    // client doesn't support roots, or the call failed — fall through
+    // client doesn't support roots, or the call failed; fall through
   }
 
-  // 3–5) env vars, then a meaningful cwd
+  // 3-5) env vars, then a meaningful cwd
   const fallback = resolveFallbackRoot(opts);
   if (fallback) return fallback;
 

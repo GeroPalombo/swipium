@@ -49,11 +49,9 @@ export function buildFeatureTestPlan(scope: FeatureScope, objective: FeatureObje
 
   const blockers: string[] = [];
   if (scope.recommendedStrategy === 'manual_blocked')
-    blockers.push(
-      'Feature involves destructive/payment/auth-gated or unlocated surfaces — needs setup/consent before automated execution.',
-    );
+    blockers.push('Feature involves destructive/payment/auth-gated or unlocated surfaces. Needs setup/consent before automated execution.');
   if (!scope.staticScreens.length && !scope.runtimeScreens.length)
-    blockers.push('No static or runtime entry point located — exploration may not converge.');
+    blockers.push('No static or runtime entry point located, so exploration may not converge.');
 
   const automationReadiness: AutomationReadiness = blockers.length
     ? 'blocked'

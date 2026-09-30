@@ -43,8 +43,8 @@ export function resolveVisualProvider(
 
 /**
  * Temp directory for images handed to a local provider. `tmpdir()` can be a symlink (macOS:
- * /tmp → /private/tmp, /var/folders → /private/var/folders) and some native tools
- * (tesseract/leptonica) fail to open the symlinked path — always hand out the real path.
+ * /tmp > /private/tmp, /var/folders > /private/var/folders) and some native tools
+ * (tesseract/leptonica) fail to open the symlinked path, so always hand out the real path.
  */
 export function providerTempDir(): string {
   const dir = tmpdir();
@@ -55,16 +55,16 @@ export function providerTempDir(): string {
   }
 }
 
-/** A fresh private (0700, mkdtemp) directory for one provider call's images — never a
+/** A fresh private (0700, mkdtemp) directory for one provider call's images, never a
  *  predictable name in the shared tmpdir. The caller removes it (recursively) when done. */
 export function makeProviderWorkDir(prefix: 'swipium-ocr-' | 'swipium-masked-'): string {
   return mkdtempSync(join(providerTempDir(), prefix));
 }
 
-/** Where a provider command came from — shown in the consent prompt. A repository-configured
+/** Where a provider command came from. Shown in the consent prompt. A repository-configured
  *  command (.swipium/config.json) arrived with the checkout and has not been reviewed by the user. */
 export type ProviderSource = 'repository' | 'environment';
-export const REPO_COMMAND_LABEL = 'configured by the repository (.swipium/config.json) — unreviewed';
+export const REPO_COMMAND_LABEL = 'configured by the repository (.swipium/config.json), unreviewed';
 export function providerSourceLabel(source: ProviderSource, envVar: string): string {
   return source === 'repository' ? REPO_COMMAND_LABEL : `configured by the ${envVar} environment variable (user)`;
 }
@@ -167,7 +167,7 @@ export async function maskScreenshotForProvider(root: string, imagePath: string,
   const masksApplied = Array.isArray(parsed.masksApplied)
     ? parsed.masksApplied.filter((v): v is string => typeof v === 'string')
     : ['external_mask'];
-  // Only our private work dir is ever cleaned up — never a provider-chosen path outside it.
+  // Only our private work dir is ever cleaned up, never a provider-chosen path outside it.
   return { imagePath: produced, tempPaths: [workDir], masksApplied, providerConfigured: true };
 }
 

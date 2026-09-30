@@ -1,6 +1,6 @@
 // Bootstrap a prepared device session for qa_test_feature execute/
 // interactive when no prepared session exists. Reuses the SAME resolver/planner/prepare path as
-// qa_test_this (resolveArtifact → planTarget → prepareAndroid/prepareIos), with the SAME consent
+// qa_test_this (resolveArtifact > planTarget > prepareAndroid/prepareIos), with the SAME consent
 // gate so the high-level feature tool is never less safe than the lower-level prepare tools. When a
 // device/artifact is not available it returns a typed, actionable target-preparation blocker that
 // routes to qa_test_this; the complex lanes (build-from-source, .aab convert, real iOS) are routed
@@ -48,7 +48,7 @@ export interface BootstrapArgs {
 
 export type BootstrapResult = { ok: true; session: Session; driver: Driver } | { ok: false; result: CallToolResult };
 
-/** Resolve project → create session → resolve artifact/target → (consent) prepare the device. */
+/** Resolve project > create session > resolve artifact/target > (consent) prepare the device. */
 export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<BootstrapResult> {
   const { resolveProjectRoot, unresolvedProjectRootError } = await import('../context/projectRoot.js');
   const resolved = await resolveProjectRoot(a.server, a.projectRoot);
@@ -83,12 +83,12 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
   const art = await resolveArtifact({ projectRoot: root, platform: a.platform ?? 'any' });
   if (!art.best) {
     return routeToTestThis('NO_BUILD_ARTIFACT', `No installable artifact under ${root} to test "${a.feature}".`, [
-      'Build it: qa_build { mode:"plan" } → qa_build { mode:"run" }.',
+      'Build it: qa_build { mode:"plan" } > qa_build { mode:"run" }.',
       `Searched: ${art.searchedLocations.slice(0, 5).join('; ') || '(root only)'}.`,
     ]);
   }
   if (art.best.type === 'aab') {
-    return routeToTestThis('AAB_NEEDS_BUNDLETOOL', 'Only a .aab is present — convert it to an installable APK first.', [
+    return routeToTestThis('AAB_NEEDS_BUNDLETOOL', 'Only a .aab is present. Convert it to an installable APK first.', [
       `Convert: qa_bundletool { aab:"${art.best.path}" }.`,
     ]);
   }
@@ -100,7 +100,7 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
     adbPresent ? listAvds() : Promise.resolve<string[]>([]),
     simPresent ? listSimulators() : Promise.resolve([]),
   ]);
-  // H6: property-verified emulators (localhost:5555, Genymotion) — same policy as getDriver.
+  // H6: property-verified emulators (localhost:5555, Genymotion) use the same policy as getDriver.
   const emulators = await verifiedEmulatorSerials(online);
   const tInputs: TargetInputs = {
     requestedPlatform: a.platform,
@@ -125,7 +125,7 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
           retrySafe: true,
           failureCode: target.blocked.failureCode,
           nextSteps: [
-            'Create an Android AVD (Android Studio → Device Manager, or avdmanager create avd …) or an iOS Simulator (Xcode), then retry.',
+            'Create an Android AVD (Android Studio > Device Manager, or avdmanager create avd …) or an iOS Simulator (Xcode), then retry.',
             `Or run qa_test_this { projectRoot:"${root}", mode:"execute" }.`,
           ],
         },
@@ -135,7 +135,7 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
   }
   if (target.selected === 'ios-real') {
     return routeToTestThis('IPA_INSTALL_UNSUPPORTED', 'This artifact installs only on a real iOS device (signing/provisioning required).', [
-      'Physical iOS devices are out of scope — build a simulator .app (qa_build {platform:"ios"}) and use qa_prepare_ios_target.',
+      'Physical iOS devices are out of scope. Build a simulator .app (qa_build {platform:"ios"}) and use qa_prepare_ios_target.',
     ]);
   }
 
@@ -149,7 +149,7 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
     try {
       externalApk = { path: effectiveApk, sha256: createHash('sha256').update(readFileSync(effectiveApk)).digest('hex') };
     } catch {
-      /* unreadable — treated as in-root install */
+      /* unreadable: treated as in-root install */
     }
   }
   const preflight = buildTestThisPreflight({

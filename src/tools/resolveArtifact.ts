@@ -1,4 +1,4 @@
-// qa_resolve_artifact — find the best installable build for the project, wherever
+// qa_resolve_artifact: find the best installable build for the project, wherever
 // it lives, and explain exactly where Swipium looked. Wraps src/artifacts/resolve.ts and returns
 // a typed NO_BUILD_ARTIFACT / AAB_NEEDS_BUNDLETOOL / outside-root blocker instead of guessing.
 
@@ -25,7 +25,7 @@ export function registerResolveArtifact(server: McpServer, sessions: SessionStor
         projectRoot: z.string().optional().describe('Absolute path; else the usual root resolution.'),
         platform: z.enum(['android', 'ios', 'any']).optional(),
         buildType: z.enum(['debug', 'release', 'any']).optional(),
-        path: z.string().optional().describe('Explicit artifact path — short-circuits the search.'),
+        path: z.string().optional().describe('Explicit artifact path; skips the search.'),
         allowOutsideRoot: z.boolean().optional().describe('Allow a candidate outside the project root.'),
         requireInstallableOn: z.enum(['android-emulator', 'android-real', 'ios-simulator', 'ios-real']).optional(),
       },
@@ -64,7 +64,7 @@ export function registerResolveArtifact(server: McpServer, sessions: SessionStor
           what: result.failureCode === 'NO_BUILD_ARTIFACT' ? `No installable artifact found under ${root}` : result.warnings[0],
           nextSteps: [
             ...(result.warnings.length ? result.warnings : []),
-            'Build from source: qa_build { mode:"plan" } → qa_build { mode:"run" }.',
+            'Build from source: qa_build { mode:"plan" } > qa_build { mode:"run" }.',
             `Searched: ${result.searchedLocations.slice(0, 8).join('; ')}${result.searchedLocations.length > 8 ? ' …' : ''}`,
           ],
           extra: { searchedLocations: result.searchedLocations, candidates: result.candidates.slice(0, 5) },

@@ -64,7 +64,7 @@ describe('MCP resource listing (OPP-02)', () => {
     expect(png).toBeTruthy();
     expect(png!.name).toBe('shot-001.png');
     expect(png!.mimeType).toBe('image/png');
-    expect(png!.description).toBe('screenshot — after login');
+    expect(png!.description).toBe('screenshot: after login');
     const log = byUri.get(logUri);
     expect(log).toBeTruthy();
     expect(log!.name).toBe('device.log');

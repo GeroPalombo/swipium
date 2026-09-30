@@ -89,12 +89,12 @@ export const PROMPT_NAMES = [
 
 export const PROMPT_COUNT = PROMPT_NAMES.length;
 
-/** Tools removed from the public surface, mapped to their replacement — shown in the stale-client
+/** Tools removed from the public surface, mapped to their replacement. Shown in the stale-client
  * hint so an agent that still sees (or remembers) an old name knows the call to use instead. */
 export const REMOVED_TOOLS: Readonly<Record<string, string>> = {
   qa_agent_brief: 'server instructions + qa_status (no sessionId)',
-  qa_capabilities: 'qa_status (no sessionId) — capability groups',
-  qa_next_best_action: 'qa_status { sessionId, goal? } → nextBestAction',
+  qa_capabilities: 'qa_status (no sessionId): capability groups',
+  qa_next_best_action: 'qa_status { sessionId, goal? } > nextBestAction',
   qa_detect_context: 'qa_resolve_target { include: ["context"] }',
   qa_plan: 'qa_resolve_target { sessionId, include: ["plan"] }',
   qa_assert_visual: 'qa_visual { mode: "assert", assertion, pass? }',
@@ -103,7 +103,7 @@ export const REMOVED_TOOLS: Readonly<Record<string, string>> = {
 /** Shown when a client may be running an older build than what's installed on disk. */
 export const STALE_CLIENT_HINT =
   `Swipium v${SWIPIUM_VERSION} exposes ${TOOL_COUNT} tools + ${PROMPT_COUNT} prompts. If your MCP client lists a ` +
-  `different set — e.g. it still shows ${Object.keys(REMOVED_TOOLS).join(' / ')} (replaced by ` +
-  `qa_status, qa_resolve_target include:[…] and qa_visual mode:"assert"), or qa_ios wda_* / screenshot actions ` +
-  `(use qa_wda / qa_screenshot), or qa_wait for:"job_done" (use qa_job_status waitMs) — it is running a server ` +
-  `spawned before the upgrade. Restart the client to reload Swipium.`;
+  `different set, it is running a server spawned before the upgrade. Signs: it still shows ` +
+  `${Object.keys(REMOVED_TOOLS).join(' / ')} (replaced by qa_status, qa_resolve_target include:[…] and ` +
+  `qa_visual mode:"assert"), or qa_ios wda_* / screenshot actions (use qa_wda / qa_screenshot), or ` +
+  `qa_wait for:"job_done" (use qa_job_status waitMs). Restart the client to reload Swipium.`;

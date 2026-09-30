@@ -1,8 +1,8 @@
-// qa_prepare_target — get the app running on a device.
+// qa_prepare_target: get the app running on a device.
 //
 // Fast path (device online + app installed + !force): run synchronously, return the result.
 // Long-op path (needs emulator boot or an install): create a JOB, run async, return a
-// `jobId` immediately (poll with qa_job_status) — so client tool-call timeouts don't hit
+// `jobId` immediately (poll with qa_job_status), so client tool-call timeouts don't hit
 // the slow paths (review #2). Interactive consent (boot, external-APK) is resolved
 // synchronously BEFORE the job is kicked off.
 
@@ -23,7 +23,7 @@ import { planTarget } from '../core/targetPlan.js';
 import type { Session, SessionStore, JobRecord } from '../session/store.js';
 import { runWithSignal } from '../lib/abortScope.js';
 
-/** RN/Expo debug builds load JS from Metro; launching before Metro is SERVING → RedBox. */
+/** RN/Expo debug builds load JS from Metro; launching before Metro is SERVING > RedBox. */
 function needsMetro(root: string): boolean {
   const fw = detectFramework(root);
   return fw === 'expo' || fw === 'bare-react-native';
@@ -35,7 +35,7 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
     {
       title: 'Prepare a target device + app',
       description:
-        'Prepare an Android Emulator target in order: device → Metro → install → launch, with one combined consent for ' +
+        'Prepare an Android Emulator target in order: device > Metro > install > launch, with one combined consent for ' +
         'privileged steps (boot, install). Binds the single online device (asks if several), sets adb reverse for RN/Expo, ' +
         'waits for Metro to serve, installs if needed, launches, verifies. Long operations return a jobId. bindOnly binds/boots ' +
         'without install/launch.',
@@ -60,7 +60,7 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
       }
       const rnDebug = needsMetro(session.root);
 
-      // ---- appId (+apk if needed for detection) — not needed for bindOnly ----
+      // ---- appId (+apk if needed for detection); not needed for bindOnly ----
       let resolvedAppId = appId;
       let apkPath: string | undefined = apk;
       if (!bindOnly && !resolvedAppId) {
@@ -123,7 +123,7 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
       }
       if (res.needSelection) {
         return qaError({
-          what: 'Multiple devices online — choose one',
+          what: 'Multiple devices online, choose one',
           changedState: false,
           retrySafe: true,
           failureCode: 'MULTIPLE_DEVICES',
@@ -161,7 +161,7 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
           changedState: false,
           retrySafe: true,
           nextSteps: [
-            'Create an AVD: Android Studio → Device Manager → Create device, or `avdmanager create avd -n Pixel_7 -k "system-images;android-34;google_apis;arm64-v8a" -d pixel_7`.',
+            'Create an AVD: Android Studio > Device Manager > Create device, or `avdmanager create avd -n Pixel_7 -k "system-images;android-34;google_apis;arm64-v8a" -d pixel_7`.',
             'Or start an Android emulator yourself, then retry (physical devices are out of scope).',
           ],
         });
@@ -215,7 +215,7 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
             risk: externalApk ? 'medium' : 'low',
             exactCommand: lines,
             affects: planAffects,
-            explain: `This prepare needs ${privileged ? 'these privileged steps' : 'no consent'} (approved together so they don't re-prompt):\n${lines}\nPlan: ${plan.join(' → ')}`,
+            explain: `This prepare needs ${privileged ? 'these privileged steps' : 'no consent'} (approved together so they don't re-prompt):\n${lines}\nPlan: ${plan.join(' > ')}`,
           });
         }
         mutationConsent = { required: true, consentId, approved: true, payloadHash: externalApk?.sha256 };
@@ -250,13 +250,13 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
           sessions.persist(session);
           return qaOk(
             { device: serial, bound: true, metro: rd },
-            `Bound ${serial}.${rnDebug ? ` Metro: serving=${rd.serving} reverse=${rd.reverseSet} ready=${rd.ready}.` : ''} (bindOnly — no install/launch)`,
+            `Bound ${serial}.${rnDebug ? ` Metro: serving=${rd.serving} reverse=${rd.reverseSet} ready=${rd.ready}.` : ''} (bindOnly, no install/launch)`,
           );
         }
         const installed = await driver.isInstalled(resolvedAppId!);
         if (installed && !force) {
           // Launch gate (Phase 2.1, P1.5): refuse only if Metro is NOT SERVING. A missing
-          // reverse is not fatal — emulators reach the host via 10.0.2.2 — so serving is the
+          // reverse is not fatal (emulators reach the host via 10.0.2.2), so serving is the
           // real signal. allowLaunchWithoutMetro overrides.
           if (rnDebug && !allowLaunchWithoutMetro) {
             const rd = await metroReadiness(serial);
@@ -273,7 +273,7 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
             }
           }
           if (rnDebug && allowLaunchWithoutMetro)
-            sessions.addEnvChange(session, 'OVERRIDE allowLaunchWithoutMetro — launched without confirmed Metro readiness');
+            sessions.addEnvChange(session, 'OVERRIDE allowLaunchWithoutMetro: launched without confirmed Metro readiness');
           sessions.milestone(session, 'app_launch_start');
           await driver.launchApp(resolvedAppId!);
           await new Promise((r) => setTimeout(r, 2500));
@@ -312,7 +312,7 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
             `${launchedOk ? '✅' : '⚠️'} ${resolvedAppId} on ${serial} (already present); foreground=${foreground}.`,
           );
         }
-        // install needed → JOB
+        // install needed > JOB
         return startJob(sessions, session, driver, {
           needBoot: false,
           serial,
@@ -327,7 +327,7 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
         });
       }
 
-      // ---- BOOT path → JOB (consent already granted via the plan) ----
+      // ---- BOOT path > JOB (consent already granted via the plan) ----
       const driver = new DirectDriver();
       return startJob(sessions, session, driver, {
         needBoot: true,
@@ -356,7 +356,7 @@ interface HeavyArgs {
   apk?: string;
   force?: boolean;
   headless?: boolean;
-  rnDebug?: boolean; // RN/Expo → set reverse + gate launch on Metro serving
+  rnDebug?: boolean; // RN/Expo: set reverse + gate launch on Metro serving
   allowLaunchWithoutMetro?: boolean;
   bindOnly?: boolean;
   mutationConsent?: { required: boolean; consentId?: string; approved: boolean; payloadHash?: string };
@@ -365,7 +365,7 @@ interface HeavyArgs {
 
 function startJob(sessions: SessionStore, session: Session, driver: DirectDriver, a: HeavyArgs) {
   const job = sessions.createJob(session, a.needBoot ? 'boot+install' : 'install');
-  // Driver calls inside the job inherit the job's cancellation signal (abortScope) — never a
+  // Driver calls inside the job inherit the job's cancellation signal (abortScope), never a
   // mutable slot on the shared driver that a concurrent qa_snapshot/qa_act could swap.
   void runWithSignal(sessions.abortSignal(session, job.jobId), () => runHeavy(sessions, session, driver, job, a));
   return qaOk(
@@ -429,7 +429,7 @@ export function apkWithinRoot(apkPath: string, root: string): boolean {
  *  (by serial pattern or by device properties). */
 export async function physicalDeviceRefusalFor(serial: string): Promise<{ what: string } | null> {
   // Property-verified emulators (localhost:5555, Genymotion) are accepted like `emulator-N`
-  // serials — the same getprop probe qa_test_this / qa_resolve_target / auto-attach use.
+  // serials: the same getprop probe qa_test_this / qa_resolve_target / auto-attach use.
   const emulators = await verifiedEmulatorSerials([serial]);
   const plan = planTarget({
     requestedDevice: serial,

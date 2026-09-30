@@ -1,4 +1,4 @@
-// SWIPIUM Issue Log — report integration bridge.
+// SWIPIUM Issue Log: report integration bridge.
 //
 // Converts a finished run's health findings + structured test outcomes into normalized issue
 // observations, records them in the durable ledger (so recurrence works across runs), and returns
@@ -106,7 +106,7 @@ function inferScreenPurpose(n: BridgeNote): string | undefined {
 function noteToObservation(n: BridgeNote): IssueObservation {
   const subsystem = detectSubsystem(`${n.workflow} ${n.reason ?? ''}`);
   return {
-    title: `${n.workflow} → ${n.outcome}`,
+    title: `${n.workflow} > ${n.outcome}`,
     summary: n.reason ? n.reason.slice(0, 200) : `${n.workflow} ${n.outcome}`,
     failureCode: n.failureCode,
     workflow: n.workflow,
@@ -136,7 +136,7 @@ function shouldRecordNote(n: BridgeNote): boolean {
   if (n.outcome !== 'fail' && n.outcome !== 'blocked') return false;
   if (n.category === 'intentionally_skipped') return false;
   // Record when it carries a recognized category, a failure code, or is an uncategorized failure
-  // (an uncategorized fail/blocked is still worth remembering — the classifier triages it).
+  // (an uncategorized fail/blocked is still worth remembering; the classifier triages it).
   return !n.category || RECORDED_NOTE_CATEGORIES.has(n.category) || Boolean(n.failureCode);
 }
 

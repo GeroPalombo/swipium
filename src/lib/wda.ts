@@ -121,7 +121,7 @@ function isMissingWdaRoute(e: unknown): boolean {
 /** Per-call options for WDA HTTP requests. Threaded implicitly (AsyncLocalStorage) so every
  * helper below inherits the caller's cancellation signal without a parameter on each one. */
 export interface WdaCallOptions {
-  /** Job/tool cancellation — aborts the in-flight HTTP request. */
+  /** Job/tool cancellation. Aborts the in-flight HTTP request. */
   signal?: AbortSignal;
   /** Overrides the per-endpoint default timeout (wdaRequestTimeoutMs). */
   timeoutMs?: number;
@@ -137,7 +137,7 @@ export function withWdaCall<T>(call: WdaCallOptions, fn: () => Promise<T>): Prom
 }
 
 /** Typing endpoints get this much extra time per character (WDA types key by key, and slow
- * simulators manage ~10–30 chars/s), capped at TYPING_TIMEOUT_CAP_MS. */
+ * simulators manage ~10-30 chars/s), capped at TYPING_TIMEOUT_CAP_MS. */
 export const TYPING_TIMEOUT_PER_CHAR_MS = 50;
 export const TYPING_TIMEOUT_CAP_MS = 5 * 60_000;
 const BASE_TIMEOUT_MS = 15_000;
@@ -150,7 +150,7 @@ function typedLength(body: unknown): number {
     if (Array.isArray(j.value)) return j.value.reduce<number>((n, v) => n + [...String(v)].length, 0);
     if (typeof j.text === 'string') return [...j.text].length;
   } catch {
-    // not JSON — no scaling
+    // not JSON, no scaling
   }
   return 0;
 }
@@ -171,7 +171,7 @@ export function wdaRequestTimeoutMs(method: string, path: string, body?: unknown
 function anySignal(signals: AbortSignal[]): AbortSignal {
   const any = (AbortSignal as unknown as { any?: (s: AbortSignal[]) => AbortSignal }).any;
   if (any) return any(signals);
-  // Node 20.0-20.2 lack AbortSignal.any — forward the first abort manually.
+  // Node 20.0-20.2 lack AbortSignal.any, so forward the first abort manually.
   const ctl = new AbortController();
   for (const s of signals) {
     if (s.aborted) {
@@ -194,7 +194,7 @@ async function wdaFetch<T>(baseUrl: string, path: string, init?: RequestInit): P
   const call = wdaCallContext.getStore() ?? {};
   const timeoutMs = call.timeoutMs ?? wdaRequestTimeoutMs(method, path, init?.body);
   const timeout = AbortSignal.timeout(timeoutMs);
-  // The per-call cancellation scope (abortScope) applies even outside withWdaCall — e.g. session
+  // The per-call cancellation scope (abortScope) applies even outside withWdaCall, e.g. session
   // creation or helpers invoked directly by a driver method.
   const scoped = currentSignal();
   const signal = anySignal([
@@ -477,14 +477,14 @@ export function classifyWdaConnectionFailure(message: string): FailureCode {
 /** Capabilities that make WDA attach to a running app without relaunching it, and leave it
  * running when the session is torn down. Names verified against appium/WebDriverAgent
  * (FBCapabilities.m: FB_CAP_FORCE_APP_LAUNCH / FB_CAP_SHOULD_TERMINATE_APP; both read from the
- * W3C `capabilities.alwaysMatch`/`firstMatch` via FBParseCapabilities — `desiredCapabilities` is
+ * W3C `capabilities.alwaysMatch`/`firstMatch` via FBParseCapabilities; `desiredCapabilities` is
  * ignored). */
 export const WDA_REUSE_RUNNING_APP_CAPABILITIES = Object.freeze({ forceAppLaunch: false, shouldTerminateApp: false });
 
 /**
  * POST /session. App-lifecycle rules (WebDriverAgent FBSessionCommands.handleCreateSession):
  *  - A new session FIRST kills the active one; that teardown terminates the old session's app when
- *    the OLD session's `shouldTerminateApp` (default YES, reset per session) is set — the NEW
+ *    the OLD session's `shouldTerminateApp` (default YES, reset per session) is set. The NEW
  *    request's caps are applied only afterwards. So every bundle-bound session defaults to
  *    `shouldTerminateApp:false` (a caller/config value wins), otherwise a later rebind/recovery
  *    would kill the app no matter what that later request sends. Launch behaviour is unchanged.
@@ -542,7 +542,7 @@ export async function wdaScreenshot(baseUrl: string, sessionId: string): Promise
   return Buffer.from(String(valueOf<string>(json)), 'base64');
 }
 
-/** Screen size in points via GET /session/:id/window/size — far cheaper than dumping the
+/** Screen size in points via GET /session/:id/window/size. Far cheaper than dumping the
  * full page source (one of WDA's slowest endpoints). Older WDA builds may not serve it. */
 export async function wdaWindowSize(baseUrl: string, sessionId: string): Promise<{ width: number; height: number }> {
   const json = await wdaFetch<unknown>(baseUrl, `/session/${sessionId}/window/size`);
@@ -586,7 +586,7 @@ export async function findWdaElement(baseUrl: string, sessionId: string, using: 
   return { elementId };
 }
 
-/** Read one element attribute (e.g. `type` → XCUIElementTypeSecureTextField). Empty string when unset. */
+/** Read one element attribute (e.g. `type` > XCUIElementTypeSecureTextField). Empty string when unset. */
 export async function wdaElementAttribute(baseUrl: string, sessionId: string, elementId: string, name: string): Promise<string> {
   const json = await wdaFetch<unknown>(baseUrl, `/session/${sessionId}/element/${elementId}/attribute/${name}`);
   const v = valueOf<unknown>(json);
@@ -743,7 +743,7 @@ function iosBounds(attrs: Record<string, unknown>): string {
 const IOS_TEXT_INPUT_RE = /XCUIElementType(?:Secure)?TextField\b|XCUIElementTypeSearchField\b|XCUIElementTypeTextView\b/;
 
 /**
- * The accessibility identifier of a WDA source node. WDA's XML has no `identifier` attribute —
+ * The accessibility identifier of a WDA source node. WDA's XML has no `identifier` attribute:
  * XCUITest reports `name` = accessibilityIdentifier when one is set, else the label. So `name`
  * counts as an id when it differs from the label (e.g. name="com.apple.settings.general",
  * label="General"); name === label (or no label) is just the label echoed back.

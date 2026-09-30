@@ -1,4 +1,4 @@
-// Safe process execution: arg arrays only (never shell strings → injection-safe),
+// Safe process execution: arg arrays only (never shell strings > injection-safe),
 // with timeout + AbortSignal threading.
 
 import { spawn } from 'node:child_process';
@@ -13,12 +13,12 @@ export interface RunResult {
 
 /** Default kill timer for spawned commands (2 minutes). A stuck `adb`/`xcodebuild` would
  * otherwise hang the single-threaded server forever. Long-running call sites (builds,
- * emulator boot, AAB conversion) must pass an explicit generous `timeoutMs` — or opt out
+ * emulator boot, AAB conversion) must pass an explicit generous `timeoutMs`, or opt out
  * entirely with `timeoutMs: 0` (or `Infinity`). */
 export const DEFAULT_SPAWN_TIMEOUT_MS = 120_000;
 
 /** Resolve the caller's `timeoutMs` to the effective kill-timer delay.
- *  undefined → DEFAULT_SPAWN_TIMEOUT_MS; 0 / negative / Infinity → no timeout (opt-out). */
+ *  undefined > DEFAULT_SPAWN_TIMEOUT_MS; 0 / negative / Infinity > no timeout (opt-out). */
 function effectiveTimeoutMs(timeoutMs: number | undefined): number | undefined {
   if (timeoutMs === undefined) return DEFAULT_SPAWN_TIMEOUT_MS;
   if (timeoutMs <= 0 || !Number.isFinite(timeoutMs)) return undefined;
@@ -26,7 +26,7 @@ function effectiveTimeoutMs(timeoutMs: number | undefined): number | undefined {
 }
 
 export interface RunOptions {
-  /** Kill timer in ms. Omitted → DEFAULT_SPAWN_TIMEOUT_MS (120s). Pass 0 (or Infinity) to
+  /** Kill timer in ms. Omitted > DEFAULT_SPAWN_TIMEOUT_MS (120s). Pass 0 (or Infinity) to
    * explicitly disable the timeout for a legitimately unbounded command. */
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -185,7 +185,7 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
     if (opts.input !== undefined && child.stdin) {
       // A child that exits before draining stdin (crash, `head`, non-zero exit) emits
       // EPIPE/ECONNRESET on the stdin Writable. Without a listener that is an unhandled
-      // stream 'error' → uncaught exception → the whole stdio MCP server process dies.
+      // stream 'error' > uncaught exception > the whole stdio MCP server process dies.
       // Swallow it silently (attached BEFORE writing): the 'close' handler above already
       // settles the promise with the child's exit code, so rejecting here would double-settle.
       child.stdin.on('error', () => {});
@@ -203,7 +203,7 @@ export interface BinaryRunResult {
 }
 
 /** Like run(), but collects stdout as raw bytes (for screenshots etc.). Same timeout
- * convention: omitted → DEFAULT_SPAWN_TIMEOUT_MS (120s); 0 / Infinity → disabled. */
+ * convention: omitted > DEFAULT_SPAWN_TIMEOUT_MS (120s); 0 / Infinity > disabled. */
 export function runBinary(cmd: string, args: string[], opts: RunOptions = {}): Promise<BinaryRunResult> {
   try {
     assertNoGitScope(cmd, args);

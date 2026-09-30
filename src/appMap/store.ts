@@ -2,7 +2,7 @@
 // `.swipium/app-map.json`; timestamped snapshots accumulate under `.swipium/app-map.history/`; the
 // code-symbol + feature indexes live under `.swipium/app-map.index/`. Loading ALWAYS routes through
 // migrateAppMap() so an older on-disk shape keeps working. We never commit the map automatically
-// (Non-Goals) — but we DO keep `.swipium/` out of the user's VCS via ensureGitignored().
+// (Non-Goals), but we DO keep `.swipium/` out of the user's VCS via ensureGitignored().
 
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -34,9 +34,9 @@ export function appMapResourceUri(root: string): string {
   return `swipium://project/${projectId(root)}/app-map`;
 }
 
-/** Run a load→mutate→save cycle over app-map.json under the cross-process advisory lock. Every
+/** Run a load > mutate > save cycle over app-map.json under the cross-process advisory lock. Every
  *  WRITE cycle (buildAppMap, linkAutomationSuite, qa_app_map_update, the suite mirror) wraps its
- *  whole cycle in this — locking only the save would still let two writers load the same base map
+ *  whole cycle in this. Locking only the save would still let two writers load the same base map
  *  and clobber each other. saveAppMap itself never locks, so there is no nested acquisition. */
 export function withAppMapLock<T>(root: string, fn: () => T): T {
   mkdirSync(join(root, SWIPIUM), { recursive: true }); // the lock dir's parent must exist before mkdir(lock)
@@ -69,11 +69,11 @@ function recoverFromHistory(root: string): { raw: unknown; file: string } | null
       try {
         return { raw: JSON.parse(readFileSync(join(dir, file), 'utf8')), file };
       } catch {
-        /* torn snapshot — try the next-older one */
+        /* torn snapshot, try the next-older one */
       }
     }
   } catch {
-    /* best-effort — fall through to a fresh map */
+    /* best-effort: fall through to a fresh map */
   }
   return null;
 }
@@ -86,7 +86,7 @@ export function loadAppMap(root: string, fallbackProject: ProjectIdentity, at: s
   try {
     raw = JSON.parse(readFileSync(path, 'utf8'));
   } catch {
-    // corrupt canonical file → restore the newest parseable history snapshot instead of silently
+    // corrupt canonical file > restore the newest parseable history snapshot instead of silently
     // resetting to a fresh map; fresh only when no snapshot parses either. Flagged via migration.
     const recovered = recoverFromHistory(root);
     const migration = migrateAppMap(recovered?.raw ?? null, fallbackProject, at);
@@ -108,7 +108,7 @@ export interface SaveResult {
 }
 
 /** Write the canonical map + a timestamped history snapshot. Keeps the last 30 snapshots.
- *  Lock-free by design: callers hold withAppMapLock() across their full load→mutate→save cycle. */
+ *  Lock-free by design: callers hold withAppMapLock() across their full load > mutate > save cycle. */
 export function saveAppMap(root: string, map: AppKnowledgeMap): SaveResult {
   mkdirSync(join(root, SWIPIUM), { recursive: true });
   mkdirSync(appMapHistoryDir(root), { recursive: true });

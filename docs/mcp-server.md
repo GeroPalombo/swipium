@@ -70,7 +70,7 @@ perform it. After a successful apply it runs `swipium verify`. Options: `--scope
 | Cursor | Merges a `swipium` entry under `mcpServers` | `.cursor/mcp.json` (for all projects, add the same entry to `~/.cursor/mcp.json` yourself) |
 | VS Code | Merges a `swipium` entry under `servers`; prints a `code --add-mcp …` line for the user profile | `.vscode/mcp.json` |
 | Claude Desktop | Not supported by `init`; configure manually | `claude_desktop_config.json` |
-| Windsurf | Not supported by `init`; configure manually | `mcp_config.json` (Cascade → MCP settings) |
+| Windsurf | Not supported by `init`; configure manually | `mcp_config.json` (Cascade > MCP settings) |
 
 Which command gets written:
 

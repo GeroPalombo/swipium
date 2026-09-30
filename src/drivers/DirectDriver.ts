@@ -1,4 +1,4 @@
-// DirectDriver — the v1 Android backend. Reads the accessibility tree via
+// DirectDriver: the v1 Android backend. Reads the accessibility tree via
 // the platform UI-dump tool and acts via `adb shell input`. No external
 // automation server.
 //
@@ -10,13 +10,13 @@ import { currentSignal } from '../lib/abortScope.js';
 import { adbDevices } from '../lib/android.js';
 import type { DumpOptions, Driver, ImeState, TextDeliverability } from './Driver.js';
 
-/** Characters the device-side /system/bin/sh (mksh) treats specially — each gets a backslash.
- * Includes brace/glob expansion (`{a,b}` → `a b`, `[s]dcard` → `sdcard`). Backslash itself is
+/** Characters the device-side /system/bin/sh (mksh) treats specially; each gets a backslash.
+ * Includes brace/glob expansion (`{a,b}` > `a b`, `[s]dcard` > `sdcard`). Backslash itself is
  * escaped first (see escapeAdbInputText) so later escapes aren't doubled. */
 const DEVICE_SHELL_META = /([&|;()<>"'$`*?!#~^{}[\]])/g;
 
 /** PURE: can adb `input text` deliver `text` verbatim? It cannot deliver characters outside
- * printable ASCII (Unicode, newline, tab) — the device-side shell/IME drops or mangles them.
+ * printable ASCII (Unicode, newline, tab). The device-side shell/IME drops or mangles them.
  * qa_act checks this BEFORE focusing/clearing a field so a refusal changes nothing on device. */
 export function adbTextDeliverability(text: string): TextDeliverability {
   const unsupported = [...new Set(text.match(/[^\x20-\x7E]/g) ?? [])];
@@ -51,13 +51,13 @@ export function adbInputTextChunks(text: string): string[] {
   return chunks.filter((c) => c.length > 0);
 }
 
-/** PURE: POSIX single-quote a value for the device shell (`'` → `'\''`), so deep links and
+/** PURE: POSIX single-quote a value for the device shell (`'` > `'\''`), so deep links and
  * launch extras with `&`, `;`, spaces or quotes reach `am` as ONE literal argument. */
 export function deviceShellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-/** PURE: display rotation (0-3) from `dumpsys input` — `SurfaceOrientation: N` (per touch
+/** PURE: display rotation (0-3) from `dumpsys input`, i.e. `SurfaceOrientation: N` (per touch
  * device) or the viewport `orientation=N` line on newer builds. null when absent. */
 export function parseInputRotation(dumpsysInput: string): number | null {
   const m =
@@ -118,7 +118,7 @@ export function dumpRotation(xml: string): number | null {
   return m ? Number(m[1]) % 4 : null;
 }
 
-/** PURE: current-axes screen size from a uiautomator dump's ROOT node — only when the root is
+/** PURE: current-axes screen size from a uiautomator dump's ROOT node, only when the root is
  * anchored at [0,0] and its aspect agrees with the dump's rotation (a dialog/split-screen window
  * root is not the screen). null otherwise. */
 export function dumpRootScreen(xml: string): { width: number; height: number } | null {
@@ -142,7 +142,7 @@ const KEYCODE: Record<'back' | 'home' | 'enter', string> = {
 };
 
 /** How long a DirectDriver reuses its last screen size + rotation (review round 2: swipes used
- * to run `wm size` + a full `dumpsys input` — a few hundred ms — on EVERY gesture). A device-side
+ * to run `wm size` + a full `dumpsys input` (a few hundred ms) on EVERY gesture). A device-side
  * rotation is picked up sooner than the TTL: every UI dump carries `<hierarchy rotation=N>`, and a
  * rotation different from the cached one drops the cache (plus invalidateScreenSizeCache for
  * Swipium's own orientation changes). */
@@ -243,7 +243,7 @@ export class DirectDriver implements Driver {
     }
   }
 
-  /** Keyboard shown + frame in ONE `adb shell` (both dumpsys, separated) — the keyboard guard
+  /** Keyboard shown + frame in ONE `adb shell` (both dumpsys, separated). The keyboard guard
    * used to pay two adb round trips on every tap/type. */
   async imeState(): Promise<ImeState> {
     try {
@@ -326,7 +326,7 @@ export class DirectDriver implements Driver {
   }
 
   async screenshot(): Promise<Buffer> {
-    // exec-out returns raw PNG bytes on stdout — must be collected as binary.
+    // exec-out returns raw PNG bytes on stdout, so it must be collected as binary.
     const r = await runBinary('adb', [...this.base(), 'exec-out', 'screencap', '-p'], {
       timeoutMs: 15000,
       signal: currentSignal(),
@@ -386,7 +386,7 @@ export class DirectDriver implements Driver {
   }
 
   async pressXY(x: number, y: number, ms: number): Promise<void> {
-    // Same-point swipe with a duration — registers on RN views that ignore instant taps.
+    // Same-point swipe with a duration. It registers on RN views that ignore instant taps.
     const sx = String(Math.round(x));
     const sy = String(Math.round(y));
     await this.adb(['shell', 'input', 'swipe', sx, sy, sx, sy, String(Math.round(ms))]);
@@ -401,7 +401,7 @@ export class DirectDriver implements Driver {
     // the device-side shell/IME drops or mangles them, so refuse loudly instead of mistyping.
     const verdict = adbTextDeliverability(text);
     if (!verdict.ok) throw new Error(verdict.reason);
-    // Empty text: nothing to type — `input text` with no argument is a usage error.
+    // Empty text: nothing to type, and `input text` with no argument is a usage error.
     if (!text) return;
     // `adb shell` space-joins its args into one string the DEVICE-side sh re-parses, so every
     // shell-significant character needs a backslash escape (escapeAdbInputText). A literal
@@ -409,12 +409,12 @@ export class DirectDriver implements Driver {
     for (const chunk of adbInputTextChunks(text)) {
       const escaped = escapeAdbInputText(chunk);
       try {
-        // H2: the argv IS the (possibly secret) text — never let it into the error message.
+        // H2: the argv IS the (possibly secret) text, so never let it into the error message.
         await this.adb(['shell', 'input', 'text', escaped], { sensitiveLastArg: true });
       } catch (e) {
         let msg = String((e as Error)?.message ?? e);
         for (const v of [escaped, chunk, text]) if (v.length >= 3 && msg.includes(v)) msg = msg.split(v).join('«redacted»');
-        // cause: the spawn error is already argv-redacted (redactArgs) — safe to chain.
+        // cause: the spawn error is already argv-redacted (redactArgs), so it's safe to chain.
         throw new Error(`adb input text failed (${text.length} chars, value withheld): ${msg}`, { cause: e });
       }
     }

@@ -174,7 +174,7 @@ export function queryAppMap(
         recommendedNextTool: {
           tool: 'qa_flow_run',
           args: {},
-          why: c.stale ? 'This test looks stale — re-run / repair it' : 'Run this existing test case',
+          why: c.stale ? 'This test looks stale, re-run / repair it' : 'Run this existing test case',
         },
       });
     }

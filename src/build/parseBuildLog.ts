@@ -1,5 +1,5 @@
 // Build-failure log parsing (Dev2 plan §4 "framework-specific build log parsing"). A build
-// that exits non-zero is an ENVIRONMENT/BUILD failure, never an app QA failure — but "build
+// that exits non-zero is an ENVIRONMENT/BUILD failure, never an app QA failure. But "build
 // failed" is useless to a developer. This module turns the captured build log into a typed
 // blocker with the LIKELY OWNER (app dev vs environment vs user) and a CONCRETE fix, plus the
 // relevant log tail (the lines that actually mention the error, not the whole transcript).
@@ -10,7 +10,7 @@
 import type { BuildStep } from './plan.js';
 import type { FailureCode, FailureOwner } from '../oracle/failures.js';
 
-/** Which build tool produced a log — drives which signatures we look for. */
+/** Which build tool produced a log. Drives which signatures we look for. */
 export type BuildLogTool = 'gradle' | 'xcodebuild' | 'flutter' | 'cocoapods' | 'expo' | 'node-install' | 'unknown';
 
 export interface BuildFailureAnalysis {
@@ -137,7 +137,7 @@ const XCODE_SIGNATURES: Signature[] = [
     failureCode: 'SIMULATOR_RUNTIME_MISSING',
     owner: 'environment',
     reason: 'No usable iOS simulator runtime/destination for the build.',
-    fix: 'Install a matching iOS simulator runtime in Xcode (Settings → Platforms) or pick an available destination, then rebuild.',
+    fix: 'Install a matching iOS simulator runtime in Xcode (Settings > Platforms) or pick an available destination, then rebuild.',
   },
   {
     name: 'compile',

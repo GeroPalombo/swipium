@@ -1,6 +1,6 @@
-// qa_app_control — app lifecycle so agents don't shell out to `adb` (Phase 2 CR1/CR3).
+// qa_app_control: app lifecycle so agents don't shell out to `adb` (Phase 2 CR1/CR3).
 // force_stop / restart / background / foreground / launch (non-destructive) and
-// clear_data / fresh_start (destructive → consent). Reports package, foreground, killed.
+// clear_data / fresh_start (destructive, needs consent). Reports package, foreground, killed.
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -31,7 +31,7 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
     {
       title: 'App lifecycle control',
       description:
-        'Control the app under test: launch, foreground, background, force_stop, restart (force_stop + launch — for persistence ' +
+        'Control the app under test: launch, foreground, background, force_stop, restart (force_stop + launch, for persistence ' +
         'checks), clear_data and fresh_start (wipe data; destructive, consent-gated; RN/Expo builds also need ' +
         'acknowledgeBundleRisk).',
       inputSchema: {
@@ -64,7 +64,7 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
       const pkg = session.appId;
       if (!pkg) {
         return qaError({
-          what: 'No appId on this session — nothing was run',
+          what: 'No appId on this session, nothing was run',
           changedState: false,
           retrySafe: true,
           failureCode: 'INVALID_ARGUMENT',
@@ -83,7 +83,7 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
 
       // Destructive-wipe BUNDLE-RISK PREFLIGHT (Phase 2.1 follow-up): a `pm clear` on an RN/Expo
       // *debug* build wipes the cached JS bundle. Even with Metro serving, a bundle-less /
-      // asset-only debug APK won't refetch and comes back on an "Unable to load script" RedBox —
+      // asset-only debug APK won't refetch and comes back on an "Unable to load script" RedBox,
       // i.e. a data wipe can BRICK the build. This is a DISTINCT risk from generic data loss:
       // approving "wipe app data" is not approving "make my debug build unloadable". So for
       // RN/Expo we refuse by DEFAULT (regardless of Metro state) and require an explicit
@@ -110,10 +110,10 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
             });
             return qaError(
               {
-                what: `Refusing ${action}: ${fw} is an RN/Expo build, so a data wipe carries a bundle-cache-loss risk SEPARATE from the generic data loss. pm clear removes the cached JS bundle / dev-client state; a bundle-less or asset-only debug APK then comes back on an "Unable to load script" RedBox and cannot recover (Metro serving=${rd.serving} lowers but does not eliminate this — asset-only debug builds brick even with Metro up).`,
+                what: `Refusing ${action}: ${fw} is an RN/Expo build, so a data wipe carries a bundle-cache-loss risk SEPARATE from the generic data loss. pm clear removes the cached JS bundle / dev-client state; a bundle-less or asset-only debug APK then comes back on an "Unable to load script" RedBox and cannot recover (Metro serving=${rd.serving} lowers but does not eliminate this; asset-only debug builds brick even with Metro up).`,
                 changedState: false,
                 retrySafe: true,
-                failureCode: 'BUNDLE_LOSS_REFUSED', // deliberate guardrail (unsafe_refused) — not a tool error
+                failureCode: 'BUNDLE_LOSS_REFUSED', // deliberate guardrail (unsafe_refused), not a tool error
                 nextSteps: [
                   'Run NON-DESTRUCTIVE workflows first; sequence destructive ones LAST for debug builds.',
                   'Use a RELEASE/staging APK with an embedded JS bundle for clean-state tests.',
@@ -131,7 +131,7 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
           // Override present: record it as a distinct guardrail override (honest reporting).
           sessions.addEnvChange(
             session,
-            `OVERRIDE acknowledgeBundleRisk: ${action} on RN/Expo (${fw}) — bundle-cache-loss risk accepted (metroServing=${rd.serving})`,
+            `OVERRIDE acknowledgeBundleRisk: ${action} on RN/Expo (${fw}): bundle-cache-loss risk accepted (metroServing=${rd.serving})`,
           );
         }
       }
@@ -220,7 +220,7 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
             mark();
             await d.clearData(pkg);
             sessions.addEnvChange(session, `fresh_start ${pkg} (wiped + relaunched)`);
-            session.lastSnapshot = undefined; // state reset → refs invalid
+            session.lastSnapshot = undefined; // state reset, so refs are invalid
             foreground = await relaunchAndVerify(d, pkg);
             break;
         }
@@ -257,7 +257,7 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
       });
       return qaOk(
         { packageName: pkg, action, changedState: true, processKilled, foreground, foregroundIsApp: launchedOk },
-        `${action} on ${pkg} → foreground=${foreground}${processKilled !== undefined ? ` processKilled=${processKilled}` : ''}`,
+        `${action} on ${pkg} > foreground=${foreground}${processKilled !== undefined ? ` processKilled=${processKilled}` : ''}`,
       );
     },
   );

@@ -40,7 +40,7 @@ export function androidHome(): string {
 }
 
 /**
- * Resolve an Android SDK tool (`adb` → platform-tools/adb, `emulator` → emulator/emulator)
+ * Resolve an Android SDK tool (`adb` > platform-tools/adb, `emulator` > emulator/emulator)
  * from the SDK candidates BEFORE falling back to PATH. GUI MCP clients (Claude Desktop,
  * Cursor launched from the Dock) don't inherit the shell PATH, so a bare `adb` often fails
  * there even though Android Studio installed it. Returns the absolute path, or the bare name
@@ -68,8 +68,8 @@ function onPath(file: string, dirs: string[], exists: (p: string) => boolean): b
 }
 
 /**
- * APPEND existing SDK tool dirs (platform-tools, emulator) to this process's PATH — only for a
- * tool that is NOT already resolvable on PATH — so every `run('adb', …)` /
+ * APPEND existing SDK tool dirs (platform-tools, emulator) to this process's PATH (only for a
+ * tool that is NOT already resolvable on PATH), so every `run('adb', …)` /
  * `spawn('emulator', …)` call site, and `which`, can find the SDK copy in GUI clients whose
  * PATH lacks it, without ever shadowing the user's own adb/emulator (a different adb version
  * than the one the user's adb server runs would kill that server). Idempotent. Returns the dirs
@@ -149,7 +149,7 @@ export function resolveApk(projectRoot: string, explicit?: string): ApkResolutio
 /**
  * Boot an AVD headless. Returns the ChildProcess so the caller can `kill()` it on cancel.
  * We `unref()` it so a running emulator does NOT keep the MCP process alive after the
- * client disconnects (unref does not prevent kill — the caller still holds the handle).
+ * client disconnects (unref does not prevent kill; the caller still holds the handle).
  * `detached:true` + `stdio:'ignore'` so it survives an intentional server exit as an
  * orphan rather than being torn down mid-run. NOTE: deliberate session/shutdown teardown
  * (track + kill booted emulators on session-close) is a follow-up lifecycle pass.
@@ -172,7 +172,7 @@ export async function deviceFreeDataBytes(serial: string): Promise<number | null
     const lines = r.stdout.trim().split('\n').filter(Boolean);
     const data = lines[lines.length - 1]; // the mount row
     const cols = data.trim().split(/\s+/);
-    // Filesystem  1K-blocks  Used  Available  Use%  Mounted  → Available is index 3
+    // Filesystem  1K-blocks  Used  Available  Use%  Mounted  > Available is index 3
     const availKb = Number(cols[3]);
     return Number.isFinite(availKb) ? availKb * 1024 : null;
   } catch {
@@ -255,7 +255,7 @@ export async function deviceSdk(serial: string): Promise<number | null> {
   }
 }
 
-/** PURE: is an APK's minSdk satisfied by a device API level? Unknown values → compatible (don't block on missing info). */
+/** PURE: is an APK's minSdk satisfied by a device API level? Unknown values > compatible (don't block on missing info). */
 export function minSdkCompatible(apkMinSdk: number | null, deviceApiLevel: number | null): boolean {
   if (apkMinSdk == null || deviceApiLevel == null) return true;
   return deviceApiLevel >= apkMinSdk;
@@ -285,7 +285,7 @@ export function classifyAndroidInstallError(message: string): FailureCode {
   return 'INSTALL_FAILED';
 }
 
-/** Native ABIs an APK ships (empty = pure/no native code → installs on any ABI). */
+/** Native ABIs an APK ships (empty = pure/no native code > installs on any ABI). */
 export async function apkNativeAbis(apk: string): Promise<string[]> {
   const aapt2 = findAapt2();
   if (!aapt2) return [];

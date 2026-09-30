@@ -10,10 +10,10 @@ export interface SnapshotElement {
   bounds: [number, number, number, number]; // x1,y1,x2,y2
   clickable: boolean;
   focused?: boolean;
-  secure?: boolean; // password / secure-text field — value must be masked
+  secure?: boolean; // password / secure-text field; value must be masked
 }
 
-/** Result of Driver.canDeliverText — `reason` is safe to show (it never echoes the value). */
+/** Result of Driver.canDeliverText. `reason` is safe to show (it never echoes the value). */
 export type TextDeliverability = { ok: true } | { ok: false; reason: string };
 
 /** Per-call bounds for a UI-tree dump. The settle loop passes its remaining deadline so a single
@@ -63,22 +63,22 @@ export interface Driver {
   airplaneOn(): Promise<boolean>;
   /** Toggle airplane mode via `cmd connectivity airplane-mode`. */
   setAirplane(on: boolean): Promise<void>;
-  /** Foreground package/activity owner — basis of the system/app/foreign classifier. */
+  /** Foreground package/activity owner, the basis of the system/app/foreign classifier. */
   foregroundOwner(): Promise<string>;
 
   screenshot(): Promise<Buffer>;
-  /** Raw uiautomator XML (parsing → @eN refs happens in the snapshot module, M3). */
+  /** Raw uiautomator XML (parsing into @eN refs happens in the snapshot module, M3). */
   dumpXml(opts?: DumpOptions): Promise<string>;
 
   tapXY(x: number, y: number): Promise<void>;
-  /** Press-and-hold at a point for `ms` (a same-point swipe) — RN often ignores instant taps. */
+  /** Press-and-hold at a point for `ms` (a same-point swipe). RN often ignores instant taps. */
   pressXY(x: number, y: number, ms: number): Promise<void>;
   /** Backend-native element lookup when a flow carries a platform selector string. */
   tapBySelector?(using: NativeSelectorStrategy, value: string): Promise<void>;
   typeBySelector?(using: NativeSelectorStrategy, value: string, text: string): Promise<void>;
   clearBySelector?(using: NativeSelectorStrategy, value: string): Promise<void>;
   existsBySelector?(using: NativeSelectorStrategy, value: string): Promise<boolean>;
-  /** True when the natively-selected element is a secure text field (password/OTP) — e.g.
+  /** True when the natively-selected element is a secure text field (password/OTP), e.g.
    * XCUIElementTypeSecureTextField on iOS. Keeps values typed by selector out of records. */
   isSecureBySelector?(using: NativeSelectorStrategy, value: string): Promise<boolean>;
   /** Native platform alert handling when the backend supports it, e.g. WDA on iOS. */

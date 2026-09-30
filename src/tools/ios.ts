@@ -1,8 +1,8 @@
-// qa_ios — iOS Simulator control via simctl. Boots/selects a simulator,
+// qa_ios: iOS Simulator control via simctl. Boots/selects a simulator,
 // installs a .app, launches/terminates, opens deep links, resets privacy, and erases. Booting/
 // launching binds a SimctlDriver into the session so the shared visual tools (qa_screenshot,
 // qa_visual, qa_report) work on iOS unchanged. Screenshots go through qa_screenshot (secure-field
-// guard + budget) and WebDriverAgent through qa_wda — qa_ios no longer duplicates either.
+// guard + budget) and WebDriverAgent through qa_wda. qa_ios no longer duplicates either.
 
 import { z } from 'zod';
 import { existsSync } from 'node:fs';
@@ -19,7 +19,7 @@ import type { Session, SessionStore } from '../session/store.js';
 
 /** The simulator UDID this session drives, whatever the iOS backend (SimctlDriver, or WdaDriver
  *  after qa_wda attach): session.device, else the driver's own device. Undefined when nothing is
- *  bound, or the bound device is not a simulator (an adb serial / a physical iOS device — simctl
+ *  bound, or the bound device is not a simulator (an adb serial / a physical iOS device; simctl
  *  cannot drive either). Exported for tests. */
 export function boundSimulatorUdid(session: Pick<Session, 'device' | 'driver'>): string | undefined {
   const driver = session.driver;
@@ -332,7 +332,7 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
           );
           return qaOk(
             { uri, bytes: text.length, last: args.last ?? '5m', bundleId: bundleId ?? null },
-            `captured iOS simulator logs → ${uri}`,
+            `captured iOS simulator logs > ${uri}`,
           );
         } catch (err) {
           return qaError({
@@ -467,7 +467,7 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
           consent: { required: true, consentId: args.consentId, approved: true },
           status: 'executed',
         });
-        return qaOk({ erased: target }, `erased simulator ${target} (it is now shut down — qa_ios boot to use it again).`);
+        return qaOk({ erased: target }, `erased simulator ${target} (it is now shut down; qa_ios boot to use it again).`);
       }
     },
   );

@@ -46,7 +46,7 @@ export interface InputRequirement {
   ref: string; // @eN element ref from the snapshot
   field: FieldKind;
   label?: string;
-  secure: boolean; // password / secure-text — value must be masked
+  secure: boolean; // password / secure-text; value must be masked
   required: boolean;
   locator?: FieldLocator;
   bounds?: [number, number, number, number];
@@ -54,7 +54,7 @@ export interface InputRequirement {
 
 export type PlannedActionType = 'tap' | 'type' | 'back' | 'scroll' | 'skip' | 'wait';
 
-/** The value an input action will type — never the raw value (that stays in the secure store). */
+/** The value an input action will type. Never the raw value (that stays in the secure store). */
 export interface PlannedInputValue {
   varName: string; // flow variable the value is stored under (e.g. SWIPIUM_TEST_EMAIL)
   secret: boolean;

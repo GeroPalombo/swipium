@@ -1,6 +1,6 @@
-// Vision Gap Fix 9 — the single "suite knowledge merge" service. The vision requires the persistent
+// Vision Gap Fix 9: the single "suite knowledge merge" service. The vision requires the persistent
 // suite (.swipium/test-suite.json) to stay current after EVERY flow that observes or creates QA
-// knowledge — exploration, automation generation, and report — without depending on
+// knowledge (exploration, automation generation, and report) without depending on
 // a later qa_report or a manual suite generation. Each flow funnels its cases through here so stable
 // ids, dedup, provenance, and the run ledger are enforced in ONE place (store.applyMerge), and a merge
 // failure is returned as a WARNING (best-effort) rather than failing an otherwise-valid QA run.
@@ -23,7 +23,7 @@ import { generatedOutputRedactor, structuralLiterals } from '../suite/secretGuar
 
 export interface SuiteMergeResult {
   ok: boolean;
-  /** Non-fatal reason the merge was skipped or failed — surfaced as a warning, never a hard error. */
+  /** Non-fatal reason the merge was skipped or failed. Surfaced as a warning, never a hard error. */
   warning?: string;
   created: string[];
   updated: string[];
@@ -31,7 +31,7 @@ export interface SuiteMergeResult {
   delta?: SuiteDelta;
   suiteUri?: string;
   written: string[];
-  /** Canonical ids touched (created + updated) — used to backfill automation traces. */
+  /** Canonical ids touched (created + updated), used to backfill automation traces. */
   caseIds: string[];
 }
 
@@ -51,15 +51,15 @@ function fallbackProject(root: string): ProjectIdentity {
 
 /**
  * Mirror a COMPACT index of the persistent suite into the app map's testSuite section so the durable
- * map (and qa_app_map_query / feature scoping) reflect the growing suite — the "map + suite as one
+ * map (and qa_app_map_query / feature scoping) reflect the growing suite: the "map + suite as one
  * growing QA business context" loop the vision requires. Best-effort: no map yet ⇒ no-op.
  */
 function mirrorSuiteIndexToMap(root: string, now: string): void {
   try {
-    // Synchronous load→mutate→save cycle, held under the cross-process app-map lock (see store.ts).
+    // Synchronous load > mutate > save cycle, held under the cross-process app-map lock (see store.ts).
     withAppMapLock(root, () => {
       const loaded = loadAppMap(root, fallbackProject(root), now);
-      if (!loaded.map) return; // no durable map yet — feature scope still reads the suite directly
+      if (!loaded.map) return; // no durable map yet, feature scope still reads the suite directly
       const suite = loadSuite(root);
       const refs: TestCaseRef[] = suite.cases.map((c) => ({
         id: c.id,
@@ -91,14 +91,14 @@ export interface MergeContext {
   sessionId?: string;
   /** Feature ids still live in the current app map; lets the merge auto-deprecate vanished features. */
   liveFeatureIds?: string[];
-  /** Registered session secrets — scrubbed from every case before test-suite.json / TC-*.yaml are written. */
+  /** Registered session secrets, scrubbed from every case before test-suite.json / TC-*.yaml are written. */
   secrets?: Iterable<string>;
   /** Selector/screen strings of the recording (secretGuard.structuralLiterals): a weak secret equal
-   *  to one is a locator, not a leak — never rewritten. */
+   *  to one is a locator, not a leak. Never rewritten. */
   structural?: Iterable<string>;
 }
 
-/** Core: merge already-canonical cases into the suite. Best-effort — never throws. */
+/** Core: merge already-canonical cases into the suite. Best-effort, never throws. */
 export function mergeCanonical(root: string, cases: CanonicalTestCase[], ctx: MergeContext): SuiteMergeResult {
   if (!cases.length) return EMPTY;
   // Defense in depth: no registered secret value may reach the persistent suite files.
@@ -144,7 +144,7 @@ export function mergeFromExploration(root: string, exploration: ExplorationRecor
   try {
     cases = casesFromExploration({ exploration, source: 'exploration', now: ctx.now, appId: ctx.appId });
   } catch (e) {
-    return { ...EMPTY, ok: false, warning: `exploration→canonical conversion failed: ${String(e)}` };
+    return { ...EMPTY, ok: false, warning: `exploration > canonical conversion failed: ${String(e)}` };
   }
   return mergeCanonical(root, cases, { ...ctx, source: 'exploration' });
 }
@@ -160,16 +160,16 @@ export interface AutomationMergeInput {
   assembled: AssembledSuite;
   /** Whether the generated suite passed validation (clean secrets + durability). */
   validationOk: boolean;
-  /** App-map feature/screen ids the suite covers (from deriveAutomationLinks) — used to ENRICH the
+  /** App-map feature/screen ids the suite covers (from deriveAutomationLinks), used to ENRICH the
    *  automation metadata of existing feature cases, not only to create a new POM case (Fix #4). */
   links?: { featureIds: string[]; screenIds: string[] };
 }
 
 /**
- * Fix 7 — merge automation metadata into the persistent suite. Converts the generated POM smoke flow
+ * Fix 7: merge automation metadata into the persistent suite. Converts the generated POM smoke flow
  * into a canonical case carrying the real page-object/test-file paths, framework, locator readiness and
  * automation status, AND (Fix #4) upgrades the automation link of EXISTING suite cases whose app-map
- * feature/screen links overlap the generated suite — so a prior feature case is marked automated
+ * feature/screen links overlap the generated suite, so a prior feature case is marked automated
  * instead of a parallel POM-only case silently superseding it.
  */
 export function mergeFromAutomation(root: string, session: Session, input: AutomationMergeInput, ctx: MergeContext): SuiteMergeResult {
@@ -235,7 +235,7 @@ export function mergeFromAutomation(root: string, session: Session, input: Autom
       }
     }
   } catch (e) {
-    return { ...EMPTY, ok: false, warning: `automation→canonical conversion failed: ${String(e)}` };
+    return { ...EMPTY, ok: false, warning: `automation > canonical conversion failed: ${String(e)}` };
   }
   return mergeCanonical(root, cases, {
     ...ctx,

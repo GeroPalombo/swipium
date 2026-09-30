@@ -1,4 +1,4 @@
-// qa_act — the single consolidated action tool (locked schema).
+// qa_act: the single consolidated action tool (locked schema).
 // Resolves a target (ref | selector | coords), performs the action, waits for the screen
 // to settle, then returns the post-action snapshot + a deterministic health check. So one
 // call both acts AND observes the result.
@@ -56,7 +56,7 @@ const nativeSelectorSchema = z.object({
   value: z.string(),
 });
 
-/** After the focus tap, wait for the soft keyboard instead of a fixed sleep — poll
+/** After the focus tap, wait for the soft keyboard instead of a fixed sleep. Poll
  * imeShown() in ~100ms steps up to capMs (the old sleep), proceeding as soon as it's up.
  * The tap stays a REAL touch (RN ignores synthetic focus, so tap-then-type is required);
  * backends whose imeShown() throws get the original fixed sleep. */
@@ -67,7 +67,7 @@ async function awaitIme(d: Driver, capMs: number, floorMs = 0): Promise<void> {
     while (Date.now() < deadline) {
       if (await d.imeShown()) {
         // Field hop: the IME was ALREADY up before the tap, so "shown" says nothing about the
-        // new field having focus yet — give RN a floor to move focus before typing.
+        // new field having focus yet, so give RN a floor to move focus before typing.
         const rest = floorMs - (Date.now() - started);
         if (rest > 0) await new Promise((r) => setTimeout(r, rest));
         return;
@@ -75,13 +75,13 @@ async function awaitIme(d: Driver, capMs: number, floorMs = 0): Promise<void> {
       await new Promise((r) => setTimeout(r, Math.min(100, Math.max(1, deadline - Date.now()))));
     }
   } catch {
-    // imeShown unsupported here — preserve the original fixed-sleep behavior
+    // imeShown unsupported here: keep the original fixed-sleep behavior
     await new Promise((r) => setTimeout(r, Math.max(0, deadline - Date.now())));
   }
 }
 
 /** Values to scrub from driver error text: session secrets + the value just typed, in raw AND
- * adb-escaped form (escaping would otherwise defeat plain-substring redaction — H2). */
+ * adb-escaped form (escaping would otherwise defeat plain-substring redaction, H2). */
 function errorSecrets(session: Session, typed?: string): string[] {
   const out = [...session.secrets];
   for (const v of [...session.secrets, ...(typed ? [typed] : [])]) {
@@ -91,11 +91,11 @@ function errorSecrets(session: Session, typed?: string): string[] {
   return out;
 }
 
-/** A typed value that IS — or contains — a value already registered as a session secret (typed
+/** A typed value that IS (or contains) a value already registered as a session secret (typed
  * into a secure field earlier, or provided as a secret input) must be recorded exactly like a
- * secure-field value: `secret:true`, no plaintext (→ a ${SECRET_n} variable at generate time),
+ * secure-field value: `secret:true`, no plaintext (> a ${SECRET_n} variable at generate time),
  * even when the field it goes into is an ordinary text field. Containment needs >= 3 chars so a
- * 1–2 char secret can't mark every value that happens to include it. */
+ * 1-2 char secret can't mark every value that happens to include it. */
 export function matchesSessionSecret(secrets: Iterable<string>, text: string): boolean {
   if (!text) return false;
   for (const s of secrets) {
@@ -110,7 +110,7 @@ const POSITION_FINGERPRINT_ELEMENTS = 80;
 
 /** Positional fingerprint of a screen: identity + bounds of its first N surfaced elements. The
  * presence-only signature set misses a scroll that moved content without adding/removing any
- * element (WDA keeps off-screen cells in its tree) — bounds catch it. */
+ * element (WDA keeps off-screen cells in its tree). Bounds catch it. */
 export function positionalFingerprint(byRef: Map<string, RawNode> | undefined): string | undefined {
   if (!byRef?.size) return undefined;
   return [...byRef.values()]
@@ -134,7 +134,7 @@ export function stateByIdentity(byRef: Map<string, RawNode> | undefined): Map<st
   return out;
 }
 
-/** Refs (in `post`) whose checked/selected/value state differs from `pre` for the SAME identity —
+/** Refs (in `post`) whose checked/selected/value state differs from `pre` for the SAME identity:
  * a Switch/Checkbox toggle, a tab selection. The presence-only signature misses these, so a real
  * toggle looked like "no change" and the press retry toggled it straight back. */
 export function stateChangedRefs(pre: Map<string, string>, postByRef: Map<string, RawNode>): string[] {
@@ -160,13 +160,13 @@ function stateLabel(n: RawNode): string {
 }
 
 /** Share of post-action elements that are new before observe:"diff" falls back to the full list
- * (after a navigation "diff" = every new element + every old one listed as removed — larger
+ * (after a navigation "diff" = every new element + every old one listed as removed, larger
  * than "full"). */
 export const DIFF_FULL_FALLBACK_RATIO = 0.5;
 
 /** Only `${SWIPIUM_*}` placeholders are expanded in typed text (anything else stays literal). */
 const INPUT_PLACEHOLDER_RE = /\$\{(SWIPIUM_[A-Z0-9_]+)\}/g;
-/** Env-sourced placeholder values whose NAME looks secret join the redaction set — the shared
+/** Env-sourced placeholder values whose NAME looks secret join the redaction set. Uses the shared
  *  SECRET_VAR_NAME (flows/schema.ts), so `code` (SWIPIUM_VERIFICATION_CODE) counts here too. */
 const SECRET_VAR_NAME_RE = SECRET_VAR_NAME;
 
@@ -216,21 +216,21 @@ function targetErrorCode(error: string): FailureCode {
 /** Minimum wait after a focus tap when the keyboard was already shown (field hop). */
 export const IME_HOP_FLOOR_MS = 250;
 /** A reported IME frame taller than this fraction of the screen is not a keyboard rect (older
- * builds size the IME window near full-screen; accessory bars/suggestion strips can inflate it)
- * — it is treated as UNKNOWN rather than as "the keyboard covers everything". */
+ * builds size the IME window near full-screen; accessory bars/suggestion strips can inflate it),
+ * so it is treated as UNKNOWN rather than as "the keyboard covers everything". */
 export const IME_MAX_HEIGHT_FRACTION = 0.55;
 /** Warning attached when the keyboard is up but its area could not be determined. */
-export const IME_UNKNOWN_AREA_WARNING = 'keyboard is up; could not determine its area — tapped without hiding it';
+export const IME_UNKNOWN_AREA_WARNING = 'keyboard is up; could not determine its area; tapped without hiding it';
 
 /** Warning attached to a qa_act result when the WDA session had to be re-created (after an
  * invalid-session error). The recovery sends forceAppLaunch:false + shouldTerminateApp:false, but
  * WDA can still have lost the app (e.g. it crashed / WDA restarted), so this does not promise it. */
-export const WDA_SESSION_RECOVERED_WARNING = 'WDA session was re-created (requested without relaunching the app) — verify the screen state';
+export const WDA_SESSION_RECOVERED_WARNING = 'WDA session was re-created (requested without relaunching the app); verify the screen state';
 
 type Rect = [number, number, number, number];
 
 /** Keyboard state for the obstruction check: shown? and, when KNOWN, where. `rect` is absent
- * when the backend cannot report a plausible frame — callers must not guess (a bottom-40%
+ * when the backend cannot report a plausible frame. Callers must not guess (a bottom-40%
  * guess hid the keyboard for targets that were actually above it: accessory bars, chips). */
 async function keyboardArea(d: Driver): Promise<{ shown: boolean; rect?: Rect }> {
   let frame: Rect | null;
@@ -265,7 +265,7 @@ async function reresolveAfterKeyboard(
   const old = session.lastSnapshot?.fullByRef.get(t.ref);
   const parsed = parseSnapshot(await d.dumpXml());
   session.lastSnapshot = { fullByRef: parsed.fullByRef, signatures: new Set(parsed.elements.map(signature)), allNodes: parsed.allNodes };
-  if (!old) return { error: `${t.ref} is no longer on screen after hiding the keyboard — re-run qa_snapshot.` };
+  if (!old) return { error: `${t.ref} is no longer on screen after hiding the keyboard; re-run qa_snapshot.` };
   let best: { ref: string; node: RawNode; dist: number } | undefined;
   for (const [ref, node] of parsed.fullByRef) {
     if (node.cls !== old.cls || node.id !== old.id || node.text !== old.text || node.desc !== old.desc) continue;
@@ -273,13 +273,13 @@ async function reresolveAfterKeyboard(
     const dist = Math.abs(c.x - t.x) + Math.abs(c.y - t.y);
     if (!best || dist < best.dist) best = { ref, node, dist };
   }
-  if (!best) return { error: `${t.ref} is no longer on screen after hiding the keyboard — re-run qa_snapshot.` };
+  if (!best) return { error: `${t.ref} is no longer on screen after hiding the keyboard; re-run qa_snapshot.` };
   return { ...center(best.node.bounds), via: best.ref, ref: best.ref, textLen: best.node.text.length, secure: isSecureNode(best.node) };
 }
 
 /** H5: a tap on a point under the soft keyboard lands on a KEY (typing a stray character).
  * Only when a KNOWN keyboard frame contains the target's center: hide the keyboard (never a
- * blind BACK), re-resolve the target, and proceed when it is uncovered — else
+ * blind BACK), re-resolve the target, and proceed when it is uncovered, else
  * KEYBOARD_OBSTRUCTION. When the frame is UNKNOWN (no/implausible frame) the keyboard is NOT
  * hidden: the tap proceeds with a warning. Returns the (possibly re-resolved) point, whether the
  * IME is up at tap time, and an optional warning for the result. */
@@ -298,7 +298,7 @@ async function guardKeyboard(
     return {
       result: qaError(
         {
-          what: `Target at (${t.x},${t.y}) is covered by the soft keyboard and this backend could not hide it — nothing was tapped.`,
+          what: `Target at (${t.x},${t.y}) is covered by the soft keyboard and this backend could not hide it. Nothing was tapped.`,
           changedState: false,
           retrySafe: true,
           failureCode: 'KEYBOARD_OBSTRUCTION',
@@ -330,7 +330,7 @@ async function guardKeyboard(
     return {
       result: qaError(
         {
-          what: `The soft keyboard was hidden, but the target at (${again.x},${again.y}) is still covered by it — nothing was tapped.`,
+          what: `The soft keyboard was hidden, but the target at (${again.x},${again.y}) is still covered by it. Nothing was tapped.`,
           changedState: true,
           retrySafe: true,
           failureCode: 'KEYBOARD_OBSTRUCTION',
@@ -351,7 +351,7 @@ async function guardKeyboard(
 }
 
 // Per-action schema contract feasibility note: SDK ^1.19 registerTool DOES accept an
-// arbitrary ZodType (AnySchema) as inputSchema, and validateToolInput parses unions correctly —
+// arbitrary ZodType (AnySchema) as inputSchema, and validateToolInput parses unions correctly,
 // but the tools/list serializer goes through normalizeObjectSchema(), which only understands
 // plain object schemas / raw shapes and silently falls back to an EMPTY object schema for a
 // root z.discriminatedUnion (verified empirically: the tool lists as {"type":"object",
@@ -367,7 +367,7 @@ const REQUIRED_BY_ACTION: Partial<Record<string, readonly ('text' | 'direction' 
   open_url: ['url'],
 };
 
-/** The ONE cross-field validation layer — names both the action and the missing field. */
+/** The ONE cross-field validation layer. Names both the action and the missing field. */
 function missingRequiredField(action: string, args: Record<string, unknown>): CallToolResult | undefined {
   for (const field of REQUIRED_BY_ACTION[action] ?? []) {
     // `text` may legitimately be '' (typing nothing in replace mode); the other fields may not.
@@ -478,7 +478,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
       },
     },
     // Cancellation (MCP notifications/cancelled): the call's signal is scoped to THIS call
-    // (abortScope) — an in-flight adb child / WDA request is aborted without touching a
+    // (abortScope): an in-flight adb child / WDA request is aborted without touching a
     // concurrently running job's own cancellation.
     async (args, extra) =>
       runWithSignal(extra?.signal, async () => {
@@ -515,7 +515,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
         }
         // Budget gate (review §4.1 / Rec 4): refuse new work once the session budget is spent.
         // `wait` is exempt from the action/screenshot caps (it's synchronization, not an
-        // action), but it is NOT exempt from the TIME budget — otherwise repeated waits could
+        // action), but it is NOT exempt from the TIME budget, otherwise repeated waits could
         // burn the clock indefinitely.
         const stopReason = sessions.budgetStop(session);
         if (stopReason && (action !== 'wait' || /time budget/.test(stopReason))) {
@@ -607,21 +607,21 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
         sessions.milestone(session, 'first_action');
 
         const preSigs = session.lastSnapshot?.signatures ?? new Set<string>();
-        // F: positions too — a scroll/swipe can move content without adding/removing elements.
+        // F: positions too. A scroll/swipe can move content without adding/removing elements.
         const prePositions = positionalFingerprint(session.lastSnapshot?.fullByRef);
         // Toggle/selection state of the pre-action screen (a Switch flip changes no signature).
         const preState = stateByIdentity(session.lastSnapshot?.fullByRef);
-        // The value actually typed (after ${SWIPIUM_*} expansion) — redacted from results/errors.
+        // The value actually typed (after ${SWIPIUM_*} expansion), redacted from results/errors.
         let typedValue: string | undefined;
-        // untilVisible's last probe dump — seeds the post-action settle (no redundant dump).
+        // untilVisible's last probe dump. Seeds the post-action settle (no redundant dump).
         let settleSeed: { xml: string; at: number } | undefined;
         // I: set when the soft keyboard was hidden because it covered the target.
         let keyboardHidden = false;
-        // Observation mode is fixed at action start — diff needs a pre-action baseline.
+        // Observation mode is fixed at action start; diff needs a pre-action baseline.
         const observe: 'diff' | 'full' | 'none' = args.observe ?? (session.lastSnapshot ? 'diff' : 'full');
         let meta: Record<string, unknown> = {};
         // remembered so a no-change tap can be retried as a longer press (RN tap quirk)
-        // imeUp: the soft keyboard was shown at tap time — a re-press could hit a key (H5).
+        // imeUp: the soft keyboard was shown at tap time, so a re-press could hit a key (H5).
         let tapRetry: { x: number; y: number; instant: boolean; imeUp: boolean } | undefined;
         // action-IR step to record once the action succeeds (built here while lastSnapshot is
         // still the PRE-navigation screen, so a tapped @ref still resolves to its label).
@@ -666,7 +666,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               // Overlay obstruction check (CR4): if another element is drawn over the target
               // point, return a structured blockedByOverlay instead of tapping blindly.
               if (!args.ignoreOverlay && t.via !== 'coords' && session.lastSnapshot?.allNodes) {
-                // works for ref AND selector taps — t.ref is the resolved @eN in either case
+                // works for ref AND selector taps: t.ref is the resolved @eN in either case
                 const node = t.ref ? session.lastSnapshot.fullByRef.get(t.ref) : undefined;
                 const obs = obstructionAt(session.lastSnapshot.allNodes, node, t.x, t.y);
                 if (obs.obstructed) {
@@ -677,7 +677,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
                       retrySafe: true,
                       failureCode: 'OVERLAY_OBSTRUCTION',
                       nextSteps: [
-                        'Call qa_clear_overlay (auto, or hide_keyboard/minimize_logbox), then retry — or pass ignoreOverlay:true to tap anyway.',
+                        'Call qa_clear_overlay (auto, or hide_keyboard/minimize_logbox), then retry. Or pass ignoreOverlay:true to tap anyway.',
                       ],
                     },
                     { blockedByOverlay: true, obstructedBy: obs.by },
@@ -703,7 +703,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               const expanded = expandInputPlaceholders(args.text!, { values: session.inputValues, secretVars });
               if (expanded.missing.length) {
                 return qaError({
-                  what: `No value for ${expanded.missing.map((v) => `\${${v}}`).join(', ')} — nothing was typed.`,
+                  what: `No value for ${expanded.missing.map((v) => `\${${v}}`).join(', ')}. Nothing was typed.`,
                   changedState: false,
                   retrySafe: true,
                   failureCode: 'MISSING_TEST_DATA',
@@ -716,7 +716,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               const text = expanded.text;
               typedValue = text;
               const recordText = recordableTypedText(args.text!, text, expanded.vars, session.inputValues);
-              // D: validate deliverability BEFORE any focus tap / clear — a refused value must
+              // D: validate deliverability BEFORE any focus tap / clear. A refused value must
               // leave the field (and the device) exactly as it was.
               const deliverable = d.canDeliverText?.(text);
               if (deliverable && !deliverable.ok) {
@@ -752,7 +752,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
                   });
                 // This path must capture secrets exactly like the generic path below, or a
                 // password typed by native selector is recorded VERBATIM into generated flows.
-                // Heuristic first (selector value looks secret — same SECRET_RE the generic
+                // Heuristic first (selector value looks secret, same SECRET_RE the generic
                 // resolver applies to ids), then the real signal: probe the resolved element's
                 // type (XCUIElementTypeSecureTextField). A failing probe keeps the heuristic verdict.
                 let secure = isSecureNode({ id: native.value, desc: '', attrs: {} });
@@ -760,7 +760,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
                   try {
                     secure = await d.isSecureBySelector(native.using, native.value);
                   } catch {
-                    // probe unavailable (older WDA / element churn) — heuristic alone decides
+                    // probe unavailable (older WDA / element churn): heuristic alone decides
                   }
                 }
                 if (secure) {
@@ -782,7 +782,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
                   selector: args.target?.selector,
                   submit: !!args.submit,
                 };
-                // Never store a secret's value in the IR — secrets become a ${VAR} at generate time.
+                // Never store a secret's value in the IR; secrets become a ${VAR} at generate time.
                 {
                   const nativeTarget = recordableNativeTarget(session, native);
                   toRecord = {
@@ -806,7 +806,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               t = g.t;
               if (g.warning) warnings.push(g.warning);
               if (g.hidKeyboard) keyboardHidden = true;
-              // Typing into a secure field → remember the value so it's scrubbed everywhere, and
+              // Typing into a secure field > remember the value so it's scrubbed everywhere, and
               // record that a login was performed (auth-state reporting, P1.5).
               if (t.secure) {
                 session.secrets.add(text);
@@ -818,7 +818,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               if ((args.mode ?? 'replace') === 'replace') await d.clearFocusedText(t.textLen);
               await d.inputText(text);
               if (args.submit) await d.pressKey('enter');
-              // Never echo the typed value — it may be a password/OTP/email/token and would
+              // Never echo the typed value. It may be a password/OTP/email/token and would
               // leak into the agent transcript + artifacts (sensitive-mode).
               const recordSecret = !!t.secure || knownSecret;
               meta = {
@@ -829,7 +829,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
                 via: t.via,
                 submit: !!args.submit,
               };
-              // Never store a secret's value in the IR — secrets become a ${VAR} at generate time.
+              // Never store a secret's value in the IR; secrets become a ${VAR} at generate time.
               {
                 const targetRecord = recordableTap(session, stripSelector(args.target), t);
                 toRecord = {
@@ -877,12 +877,12 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
             }
             case 'swipe': {
               const direction = args.direction!; // presence enforced by missingRequiredField
-              // Derive the gesture from the real screen size — WDA swipes are in POINTS
+              // Derive the gesture from the real screen size. WDA swipes are in POINTS
               // (≤~440pt wide), so the old fixed 540/1200 constants were off-screen on iOS; the
               // legacy constants survive only inside the shared fallback for screenSize()===null.
               // A supplied target that fails to resolve is a structured error (not a
-              // silent default swipe), and a resolved point is used verbatim — 0 is a legitimate
-              // coordinate. Endpoints keep an ~8% inset clear of iOS system-gesture zones.
+              // silent default swipe), and a resolved point is used verbatim (0 is a legitimate
+              // coordinate). Endpoints keep an ~8% inset clear of iOS system-gesture zones.
               const size = await d.screenSize().catch(() => null);
               let vec: SwipeVec;
               if (args.target) {
@@ -907,7 +907,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               const u = args.untilVisible;
               // A match only counts as FOUND when its center is on screen and not under the soft
               // keyboard: a row just crossing the bottom edge is "in the tree" but a center tap on it
-              // would land off-screen / on a key — keep swiping instead.
+              // would land off-screen / on a key, so keep swiping instead.
               const kb = u ? await keyboardArea(d) : undefined;
               const probe = async () => {
                 const xml = await d.dumpXml();
@@ -972,7 +972,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
                   anchorNodes = now.nodes;
                   found = now.hit;
                   if (found) break;
-                  // Screen identical after a swipe → end of the list; more swipes can't help.
+                  // Screen identical after a swipe > end of the list; more swipes can't help.
                   if (now.sig === prevSig) {
                     endOfList = true;
                     break;
@@ -999,7 +999,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               const key = args.key!; // presence enforced by missingRequiredField
               await d.pressKey(key);
               meta = { key };
-              // iOS has no back key: WdaDriver taps the nav-bar back button or edge-swipes — say which.
+              // iOS has no back key: WdaDriver taps the nav-bar back button or edge-swipes. Say which.
               if (key === 'back' && d.kind === 'wda') {
                 const via = (d as { lastBackVia?: string }).lastBackVia;
                 if (via) meta.backVia = via;
@@ -1018,12 +1018,12 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
         } catch (e) {
           // Cancelled mid-action: not a driver failure (no WDA_UNREACHABLE / SNAPSHOT_FAILED tool
           // error, no finding). The action may have partly run, so changedState stays true.
-          if (isAbortError(e)) return cancelledResult(`Action "${action}" cancelled — the call was aborted before it finished`, true);
+          if (isAbortError(e)) return cancelledResult(`Action "${action}" cancelled: the call was aborted before it finished`, true);
           const msg = String((e as Error)?.message ?? e);
           const failureCode: FailureCode = /BACKEND_UNSUPPORTED|not supported by the WDA backend/.test(msg)
             ? 'BACKEND_UNSUPPORTED'
             : classifyFlowDriverError(e);
-          // H2: driver errors can echo argv/stderr — scrub known secrets AND the value just typed.
+          // H2: driver errors can echo argv/stderr. Scrub known secrets AND the value just typed.
           const redactErr = makeRedactor(errorSecrets(session, action === 'type' ? (typedValue ?? args.text) : undefined));
           return qaError({
             what: `Action "${action}" failed: ${redactErr(String(e)) ?? ''}`,
@@ -1049,7 +1049,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
         // Post-action observation is wrapped so a settle/dump/parse failure (e.g. the
         // looping-animation case) returns a Swipium-shaped result, never a raw MCP error.
         try {
-          // settle → observe → health (seeded with untilVisible's last probe — it was taken after the
+          // settle > observe > health (seeded with untilVisible's last probe; it was taken after the
           // last swipe, so re-dumping it first would be pure latency)
           let s = await settle(d, { timeoutMs: args.timeoutMs ?? 8000, ...(settleSeed ? { seed: settleSeed } : {}) });
           // Cancelled while observing: an empty/aborted dump is not evidence (no WDA_UNREACHABLE
@@ -1066,7 +1066,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
           let changed = !setsEqual(preSigs, postSigs) || movedContent() || toggled.length > 0;
 
           // No-change retry (review §4.5/§4.7): an instant tap that did nothing is often the RN
-          // tap quirk — retry ONCE as a longer press before believing it's blocked.
+          // tap quirk. Retry ONCE as a longer press before believing it's blocked.
           let retriedAsPress = false;
           // Never when the keyboard was up at tap time: the retry would re-press a point the IME
           // may own and type a second stray character (H5).
@@ -1081,7 +1081,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
           }
 
           session.lastSnapshot = { fullByRef: post.fullByRef, signatures: postSigs, allNodes: post.allNodes };
-          // A structured dump succeeded → a visual-fallback session is structured again (per-screen).
+          // A structured dump succeeded > a visual-fallback session is structured again (per-screen).
           const modeRecovered = s.xml ? sessions.noteStructuredDump(session) : false;
           const health = await checkHealth(d, session.appId, s.xml, { nodes: post.allNodes });
           if (health.cancelled)
@@ -1101,35 +1101,35 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
           await recordHealthFindings(sessions, session, health.findings, d, health.foreground);
 
           const banner =
-            `${action} ${JSON.stringify(meta)} → changed=${changed}${retriedAsPress ? ' (retried as press)' : ''} ` +
+            `${action} ${JSON.stringify(meta)} > changed=${changed}${retriedAsPress ? ' (retried as press)' : ''} ` +
             `settled=${s.settled} quality=${post.quality.verdict} native=${health.nativeHealthy ? 'ok' : health.nativeStatus} app=${health.appStatus}` +
-            (budgetReached ? `\n⏹ budget reached: ${budgetReached} — call qa_report.` : '') +
+            (budgetReached ? `\n⏹ budget reached: ${budgetReached}, call qa_report.` : '') +
             (modeRecovered ? '\nmode: structured again (a UI tree dump succeeded; visual-fallback cleared)' : '') +
             (!changed && retriedAsPress
-              ? `\nNo change even after a press retry — likely wrong coords / disabled element / overlay / auth wall.`
+              ? `\nNo change even after a press retry. Likely wrong coords / disabled element / overlay / auth wall.`
               : '');
           const findings = health.findings.length
             ? '\n' +
               health.findings
-                .map((f) => `[${f.severity}] ${f.layer ?? '?'}/${f.kind}: ${f.detail}${f.evidence ? ` — "${f.evidence}"` : ''}`)
+                .map((f) => `[${f.severity}] ${f.layer ?? '?'}/${f.kind}: ${f.detail}${f.evidence ? `: "${f.evidence}"` : ''}`)
                 .join('\n')
             : '';
 
-          // `observe` changes ONLY the element presentation below — everything above
+          // `observe` changes ONLY the element presentation below. Everything above
           // (lastSnapshot bookkeeping, press retry, health recording, counters, budget lines)
           // is identical in all modes.
           let elementPayload: Record<string, unknown> = {};
           let elementsText = '';
           const added = observe === 'diff' ? post.elements.filter((e) => !preSigs.has(signature(e))) : [];
           // Mostly-new screen (navigation): a diff would list every new element AND every old one
-          // as removed — bigger than the full list. Return the (capped) full list + removedCount.
+          // as removed, bigger than the full list. Return the (capped) full list + removedCount.
           const diffAsFull =
             observe === 'diff' && post.elements.length > 0 && added.length > post.elements.length * DIFF_FULL_FALLBACK_RATIO;
           if (observe === 'diff' && !diffAsFull) {
             const removed = [...preSigs].filter((sig) => !postSigs.has(sig)).map((sig) => redact(sig) ?? sig);
             const { elements: addedShown, rendered: renderedAdded, omitted } = presentElements(added, redact);
             const unchangedElements = post.elements.length - added.length;
-            const hint = `${unchangedElements} unchanged element(s) not shown — pass observe:"full" to see the whole screen.`;
+            const hint = `${unchangedElements} unchanged element(s) not shown; pass observe:"full" to see the whole screen.`;
             elementPayload = { elementsOmitted: omitted, elements: addedShown, removed, unchangedElements, hint };
             elementsText =
               `\n\nDIFF vs pre-action: +${added.length} / -${removed.length}` +
@@ -1147,14 +1147,14 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               removedCount,
             };
             elementsText =
-              `\n\nNEW SCREEN (${added.length}/${post.elements.length} elements new, ${removedCount} previous gone) — full list:` +
+              `\n\nNEW SCREEN (${added.length}/${post.elements.length} elements new, ${removedCount} previous gone), full list:` +
               `\n${rendered}`;
           } else if (observe === 'full') {
             const { elements: outElements, rendered, omitted } = presentElements(post.elements, redact);
             elementPayload = { elementsOmitted: omitted, elements: outElements };
             elementsText = `\n\n${rendered}`;
           } else {
-            const hint = `${post.elements.length} element(s) not shown (observe:"none") — pass observe:"full" or run qa_snapshot to see the screen.`;
+            const hint = `${post.elements.length} element(s) not shown (observe:"none"); pass observe:"full" or run qa_snapshot to see the screen.`;
             elementPayload = { hint };
             elementsText = `\n\n${hint}`;
           }

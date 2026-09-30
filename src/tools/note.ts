@@ -1,7 +1,7 @@
-// qa_note — record a structured test outcome (Phase 2.2). Lets the agent state explicitly
+// qa_note: record a structured test outcome (Phase 2.2). Lets the agent state explicitly
 // that a workflow passed / failed / was blocked / skipped / not-applicable, with the reason,
 // missing precondition, required state, and recommended setup. This is how a report
-// distinguishes a real app bug from "no saved flight existed to delete" — so missing test
+// distinguishes a real app bug from "no saved flight existed to delete", so missing test
 // data and intentional skips stop being mislabeled as failures.
 
 import { z } from 'zod';
@@ -66,7 +66,7 @@ export function registerNote(server: McpServer, sessions: SessionStore): void {
         });
       }
       // A "blocked" outcome with no explanation is exactly the unhelpful case this tool exists
-      // to prevent — nudge for the precondition.
+      // to prevent. Nudge for the precondition.
       if (outcome === 'blocked' && !missingPrecondition && !reason) {
         return qaError({
           what: 'A "blocked" outcome needs a missingPrecondition or reason so the report is actionable.',
@@ -101,7 +101,7 @@ export function registerNote(server: McpServer, sessions: SessionStore): void {
       const tally = session.notes.reduce<Record<string, number>>((a, n) => ((a[n.outcome] = (a[n.outcome] ?? 0) + 1), a), {});
       return qaOk(
         { recorded: { workflow, outcome, category: effectiveCategory }, tally },
-        `noted: "${workflow}" → ${outcome}${effectiveCategory ? ` (${effectiveCategory}${category ? '' : ', default for a failing note'})` : ''}${missingPrecondition ? ` — missing: ${missingPrecondition}` : ''}\ntally: ${Object.entries(
+        `noted: "${workflow}" > ${outcome}${effectiveCategory ? ` (${effectiveCategory}${category ? '' : ', default for a failing note'})` : ''}${missingPrecondition ? `, missing: ${missingPrecondition}` : ''}\ntally: ${Object.entries(
           tally,
         )
           .map(([k, v]) => `${k}=${v}`)

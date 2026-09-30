@@ -15,7 +15,7 @@ export type AppiumStrategy = 'accessibilityId' | 'id' | 'name' | 'iosPredicate' 
 export interface AppiumLocator {
   strategy: AppiumStrategy;
   value: string;
-  /** True for accessibility id / resource id — durable across releases. */
+  /** True for accessibility id / resource id: durable across releases. */
   durable: boolean;
   /** Coordinate (and, to a lesser degree, raw text) is brittle and not release-grade. */
   releaseGrade: boolean;
@@ -35,7 +35,7 @@ export interface CrossPlatformElement {
   sourceFile?: string;
 }
 
-/** `visualCheck` is a manual visual checkpoint (qa_visual assert prose) — emitted as a clearly-marked
+/** `visualCheck` is a manual visual checkpoint (qa_visual assert prose), emitted as a clearly-marked
  *  TODO comment, never as a text assertion. */
 export type AppiumActionKind = 'tap' | 'tapAt' | 'inputText' | 'press' | 'swipe' | 'scrollTo' | 'openUrl' | 'assertVisible' | 'visualCheck';
 
@@ -46,7 +46,7 @@ export interface AppiumStep {
   element?: string;
   action: AppiumActionKind;
   text?: string;
-  /** True when `text` is a ${VAR} secret placeholder — never inline the value. */
+  /** True when `text` is a ${VAR} secret placeholder. Never inline the value. */
   secret?: boolean;
   /** Env var name backing a secret/templated value. */
   varName?: string;
@@ -72,13 +72,13 @@ export interface AppiumSuiteModel {
   steps: AppiumStep[];
   /** Non-secret ${VARS} the suite needs (test data). */
   variables: string[];
-  /** Secret ${VARS} — must come from the environment, never inlined. */
+  /** Secret ${VARS}. Must come from the environment, never inlined. */
   secrets: string[];
   audit: PomResult['audit'];
   platforms: { android: boolean; ios: boolean };
 }
 
-/** PomPage name (LoginPage) → screen class name (LoginScreen). */
+/** PomPage name (LoginPage) > screen class name (LoginScreen). */
 export function screenClassName(pageName: string): string {
   return /Page$/.test(pageName) ? pageName.replace(/Page$/, 'Screen') : `${pageName}Screen`;
 }
@@ -96,7 +96,7 @@ function locator(strategy: AppiumStrategy, value: string): AppiumLocator {
 
 /**
  * Compute the platform-specific Appium locators for one POM element selectorKind.
- * Returns { android, ios, fallback } — any of which may be undefined.
+ * Returns { android, ios, fallback }, any of which may be undefined.
  */
 function locatorsFor(
   selectorKind: string,
@@ -120,7 +120,7 @@ function locatorsFor(
     case 'class_chain':
       return { ios: platforms.ios ? locator('iosClassChain', value) : undefined };
     case 'text': {
-      // text → Android UiAutomator text match (semi), iOS name match (semi). Both fragile.
+      // text > Android UiAutomator text match (semi), iOS name match (semi). Both fragile.
       const android = platforms.android ? locator('androidUiautomator', value) : undefined;
       const ios = platforms.ios ? locator('name', value) : undefined;
       return { android, ios, fallback: locator('androidUiautomator', value) };
@@ -190,7 +190,7 @@ function toStep(s: PomTestStep, secrets: Set<string>, variables: Set<string>): A
       else variables.add(m[1]);
       return { ...base, action: 'inputText', text: s.text, secret: s.secret, varName: m[1] };
     }
-    // literal non-secret text — also scan for embedded ${VARS}
+    // literal non-secret text; also scan for embedded ${VARS}
     for (const mm of (s.text ?? '').matchAll(/\$\{([^}]+)\}/g)) variables.add(mm[1]);
     return { ...base, action: 'inputText', text: s.text ?? '', secret: s.secret };
   }

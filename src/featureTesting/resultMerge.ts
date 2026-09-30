@@ -94,13 +94,13 @@ export function mergeFeatureRun(
     const evidence = [...c.evidence];
     if (note) {
       status = noteToStatus(note.outcome);
-      actualResult.push(`${note.outcome}${note.reason ? ` — ${note.reason}` : ''}`);
+      actualResult.push(`${note.outcome}${note.reason ? `: ${note.reason}` : ''}`);
       if (note.artifactUris) evidence.push(...note.artifactUris);
     } else if (globallyBlocked && status === 'not_run') {
-      // Honest: the run was blocked before reaching this case — blocked, not failed.
+      // Honest: the run was blocked before reaching this case. Blocked, not failed.
       status = 'blocked';
       actualResult.push(
-        `blocked — ${signals.blockReason ?? signals.exploration?.stoppedReason ?? 'feature run was blocked before this case'}`,
+        `blocked: ${signals.blockReason ?? signals.exploration?.stoppedReason ?? 'feature run was blocked before this case'}`,
       );
     } else if (status === 'not_run') {
       actualResult.push('not executed in this run');
@@ -136,7 +136,7 @@ export function mergeFeatureRun(
     blockers.push(signals.blockGuidance ?? signals.blockReason ?? signals.exploration?.stoppedReason ?? 'feature run blocked');
   for (const n of signals.notes)
     if (n.outcome === 'blocked')
-      blockers.push(`${n.workflow}: ${n.reason ?? 'blocked'}${n.recommendedSetup ? ` — ${n.recommendedSetup}` : ''}`);
+      blockers.push(`${n.workflow}: ${n.reason ?? 'blocked'}${n.recommendedSetup ? ` (${n.recommendedSetup})` : ''}`);
 
   const coverage: FeatureCoverage = {
     featureId: scope.featureId,

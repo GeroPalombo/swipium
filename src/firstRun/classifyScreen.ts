@@ -14,7 +14,7 @@ import type { ScreenClassification, ScreenPurpose, InputRequirement, FieldKind, 
 export interface StaticScreenCandidate {
   id: string;
   purpose?: ScreenPurpose;
-  /** Match hints — text/route names the static screen is known by. */
+  /** Match hints: text/route names the static screen is known by. */
   hints?: string[];
 }
 
@@ -109,7 +109,7 @@ const SETTINGS = /\b(settings|preferences|account settings|privacy|notifications
 const ERROR = /\b(something went wrong|unfortunately|has stopped|isn'?t responding|render error|unhandled|red\s?box|try again later)\b/i;
 
 /**
- * Classify the current screen. Combines field structure (password + email → auth) with lexical
+ * Classify the current screen. Combines field structure (password + email > auth) with lexical
  * signals and any static app-map candidate matches.
  */
 export function classifyCurrentScreen(obs: ScreenObservation): ScreenClassification {
@@ -127,7 +127,7 @@ export function classifyCurrentScreen(obs: ScreenObservation): ScreenClassificat
   const hasUsername = requiredInputs.some((i) => i.field === 'username');
   const hasCredentialSetupCopy = CREDENTIAL_SETUP.test(text);
 
-  // Scored candidates → pick the strongest.
+  // Scored candidates: pick the strongest.
   const scores: Partial<Record<ScreenPurpose, number>> = {};
   const note = (p: ScreenPurpose, w: number, why: string) => {
     scores[p] = (scores[p] ?? 0) + w;
@@ -144,7 +144,7 @@ export function classifyCurrentScreen(obs: ScreenObservation): ScreenClassificat
   if (hasOtpField || OTP.test(text))
     note('otp_or_email_verification', 3, hasOtpField ? 'OTP/code field present' : 'verification/one-time-code copy');
   // Credential-setup step: "create/set/choose password|username" copy, or a password (+confirm)
-  // and/or username field with no email and no sign-in verb — a dedicated credential-creation step
+  // and/or username field with no email and no sign-in verb. That is a dedicated credential-creation step
   // inside a multi-step signup. Detected BEFORE the email+password auth branch so it wins when the
   // copy is explicit.
   const credentialSetupByFields = (hasPassword || hasUsername) && !hasEmail && !hasLogin;
@@ -190,7 +190,7 @@ export function classifyCurrentScreen(obs: ScreenObservation): ScreenClassificat
   const confidence = topScore === 0 ? 0.2 : Math.min(0.98, 0.35 + Math.min(topScore, 5) * 0.1) * (0.6 + 0.4 * dominance);
 
   if (purpose === 'unknown' || topScore === 0) {
-    blockedReasons.push('no decisive structural or lexical signal — screen purpose is unknown');
+    blockedReasons.push('no decisive structural or lexical signal; screen purpose is unknown');
   }
 
   // Safe actions: navigation/forward controls that are non-destructive (for onboarding/permission).

@@ -112,7 +112,7 @@ describe('qa_visual find_text: mask consent, temp dirs, withheld code', () => {
     const cmd = String(env.exactCommand);
     expect(cmd).toContain('.swipium/mask.js');
     expect(cmd).toContain('.swipium/ocr.js');
-    expect(cmd).toContain('configured by the repository (.swipium/config.json) — unreviewed');
+    expect(cmd).toContain('configured by the repository (.swipium/config.json), unreviewed');
     const affects = env.affects as Record<string, unknown>;
     expect(affects.maskArgv).toEqual(['node', '.swipium/mask.js', '<screenshot>', '<masked-screenshot>']);
     expect(String(affects.maskCommandSource)).toMatch(/repository/);

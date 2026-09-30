@@ -95,7 +95,7 @@ export function ciRequiredVariables(flow: Flow): CiMissingVariable[] {
           variable: match[1],
           reason: flowEnvAllowed(match[1])
             ? `${step.kind} references \${${match[1]}}; set it in the CI environment before running Swipium.`
-            : `${step.kind} references \${${match[1]}}; flows read only SWIPIUM_* environment variables — rename it (e.g. SWIPIUM_${match[1]}) or pass it as an explicit variable.`,
+            : `${step.kind} references \${${match[1]}}; flows read only SWIPIUM_* environment variables. Rename it (e.g. SWIPIUM_${match[1]}) or pass it as an explicit variable.`,
         });
       }
     }

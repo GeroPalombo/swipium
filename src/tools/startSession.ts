@@ -1,4 +1,4 @@
-// qa_start_session — resolve projectRoot (src/context/projectRoot.ts) and open a session.
+// qa_start_session: resolve projectRoot (src/context/projectRoot.ts) and open a session.
 
 import { z } from 'zod';
 import { loadProjectFixtures } from '../fixtures/load.js';
@@ -129,7 +129,7 @@ export function registerStartSession(server: McpServer, sessions: SessionStore):
           .array(z.object({ name: z.string() }).passthrough())
           .optional()
           .describe(
-            'Declared preconditions (merged with .swipium/fixtures.json): {name, requiredState?, recommendedSetup?, value?, disposable?, fields?, seed?, …} — full shape in docs/tools.md#qa_start_session.',
+            'Declared preconditions (merged with .swipium/fixtures.json): {name, requiredState?, recommendedSetup?, value?, disposable?, fields?, seed?, …}. Full shape in docs/tools.md#qa_start_session.',
           ),
       },
     },
@@ -148,7 +148,7 @@ export function registerStartSession(server: McpServer, sessions: SessionStore):
         return unresolvedProjectRootError(resolved);
       }
 
-      // Budget profile → recommended minutes; explicit profile sets the budget unless the
+      // Budget profile sets recommended minutes; explicit profile sets the budget unless the
       // caller also gave maxMinutes. Warn when the resulting time budget is below the class min.
       const profileMinutes = profile ? BUDGET_PROFILES[profile] : undefined;
       const effBudget = { ...(budget ?? {}) };
@@ -156,12 +156,12 @@ export function registerStartSession(server: McpServer, sessions: SessionStore):
       const warnings: string[] = [];
       if (profileMinutes != null && effBudget.maxMinutes != null && effBudget.maxMinutes < profileMinutes) {
         warnings.push(
-          `Requested ${effBudget.maxMinutes}m is below the ${profile} class (${profileMinutes}m) — likely too short; consider raising maxMinutes.`,
+          `Requested ${effBudget.maxMinutes}m is below the ${profile} class (${profileMinutes}m), likely too short; consider raising maxMinutes.`,
         );
       }
 
       // Surface a prior `swipium scan` (.swipium/config.json) so the agent knows the
-      // recommended profile / appId without re-scanning. Informational — never auto-overrides
+      // recommended profile / appId without re-scanning. Informational only, never auto-overrides
       // an explicit profile choice.
       const projectConfig = loadProjectConfig(resolved.root);
       if (projectConfig && !profile && typeof projectConfig.recommendedProfile === 'string') {
@@ -211,7 +211,7 @@ export function registerStartSession(server: McpServer, sessions: SessionStore):
           declaredPreconditions: mergedFixtures,
           warnings,
         },
-        `Session ${session.id} started (Swipium v${SWIPIUM_VERSION}, ${TOOL_COUNT} tools — if your client lists fewer, restart it).\n` +
+        `Session ${session.id} started (Swipium v${SWIPIUM_VERSION}, ${TOOL_COUNT} tools; if your client lists fewer, restart it).\n` +
           `projectRoot: ${session.root} (via ${resolved.source})\n` +
           `budget: ${JSON.stringify(session.budget)}${profile ? ` (profile=${profile})` : ''}\n` +
           (mergedFixtures.length ? `preconditions declared: ${mergedFixtures.map((f) => f.name).join(', ')}\n` : '') +

@@ -158,7 +158,7 @@ Autopilot, orientation, job polling, blockers, and artifacts.
 
 ### qa_test_this
 
-Autopilot for a low-context request such as "test this app". It resolves the project, finds or builds an artifact, picks a simulator, then plans or executes prepare → smoke → (explore) → report → (suite).
+Autopilot for a low-context request such as "test this app". It resolves the project, finds or builds an artifact, picks a simulator, then plans or executes prepare > smoke > (explore) > report > (suite).
 
 - **`mode`**: `plan` (default) has no side effects and returns the plan, preconditions, and any consent it will need. `execute` returns `state:"running"` and a `jobId` at once. `interactive` asks the credentials question up front (when the project likely has a login and no credentials are available) and then runs as a job like `execute`. `waitForCompletion:true` blocks up to `timeoutMs` (default 120000) and returns the terminal result directly.
 - **`goal`** sets default flags; explicit `explore`, `generateSuite`, and `stopOnNeedsInput` win.
@@ -179,7 +179,7 @@ Autopilot for a low-context request such as "test this app". It resolves the pro
 - **needs_input**: the run stopped on one question it was asked to stop for (`stopOnNeedsInput`, `goal:"test_login"`, or `interactive`), such as a login form that needs credentials. The result carries `needsInput` (the question, its fields, and a `resume` call), and `nextRecommendedAction` is that call. When the question can be asked before any work starts, `qa_test_this` returns `state:"needs_input"` directly, with no `jobId`. Without those flags, the run completes with pre-login coverage and returns the question as `optionalQuestion`. Answering "test pre-login only" sets `loginOutOfScope:true` for the session.
 - **Resumes**: a blocker resume replays the original `goal`, `goalText`, and flags. Plan steps that route back through `qa_test_this` (a build or an `.aab` conversion) carry `mode:"execute"` and the original goal.
 - **iOS without WebDriverAgent**: the default run skips suite generation and exploration, records a workaround, and runs a visual-only smoke. Only explicitly requested WDA work fails with `WDA_UNREACHABLE`: the `generateSuite` or `explore` flags, or goals `create_automation_suite`, `explore`, `reproduce_bug`, and `test_login`. Its `nextSteps` include a `goal:"smoke"` call.
-- **Consent retries**: an unknown, used, or expired `consentId` is never silently replaced. The result says `consent <id> unknown or expired — new challenge issued` in `consentNote` (with `previousConsentId`) and returns a new challenge.
+- **Consent retries**: an unknown, used, or expired `consentId` is never silently replaced. The result says `consent <id> unknown or expired; new challenge issued` in `consentNote` (with `previousConsentId`) and returns a new challenge.
 - **Failure codes**: `PROJECT_ROOT_UNRESOLVED`, `PROJECT_ROOT_EMPTY`, `NOT_MOBILE_PROJECT`, `NO_BUILD_ARTIFACT`, `BUILD_FAILED` and the typed build codes, `PHYSICAL_DEVICE_UNSUPPORTED`, `ADB_NOT_FOUND`, `NO_DEVICE`, `WDA_UNREACHABLE`, `IPA_NEEDS_REAL_DEVICE`.
 
 ### qa_status
@@ -211,7 +211,7 @@ Explains any code in the catalog: `{failureCode, bucket, owner, severity, retryS
 
 ### qa_continue_from_blocker
 
-Answers a `needs_input` question. Parameters: `sessionId`, `kind` (for example `credentials` or `monorepo_target`), `values` (field → value), and `secretFields`.
+Answers a `needs_input` question. Parameters: `sessionId`, `kind` (for example `credentials` or `monorepo_target`), `values` (a map of field to value), and `secretFields`.
 
 - A value is secret when its field name looks like a credential (`pass`, `secret`, `token`, `otp`, `pin`, `cvv`, `key`, or `code`) **or** the field is listed in `secretFields`, which adds to that rule and never replaces it.
 - Secret values join the redaction set immediately and are never echoed or logged. They are held in memory only, so after a server restart a login run asks again.
@@ -268,7 +268,7 @@ Opens a session. Only needed for low-level tools; `qa_test_this` creates its own
 
 ### qa_prepare_target
 
-Prepares an Android Emulator in order: device → Metro → install → launch, then verifies the foreground.
+Prepares an Android Emulator in order: device > Metro > install > launch, then verifies the foreground.
 
 - **Parameters**: `sessionId`, `apk`, `appId`, `avd`, `device` (required when more than one device is online), `headless` (default true), `force`, `bindOnly` (bind or boot plus `adb reverse` only, which breaks a device/Metro deadlock), `allowLaunchWithoutMetro` (launch a debug RN/Expo build without Metro; it may show a RedBox), `consentId`/`approve`.
 - **Consent**: one combined `prepare_plan` consent for the privileged steps. Every install is gated: an APK inside the project root is risk low, an external one medium (the prompt shows its sha256). Inside-ness is decided on resolved real paths, so `<root>/../x.apk` and symlinks that leave the root count as external. An already-installed app launches without a prompt.
@@ -434,7 +434,7 @@ Every action also takes `observe` and `timeoutMs` (the settle-wait cap).
 - **Back on iOS**: iOS has no back key. On WDA, `press key:"back"` taps the navigation bar's back button when one is on screen, otherwise it swipes from the left edge. `backVia` reports `nav_button` or `edge_swipe`. Without either, `BACKEND_UNSUPPORTED`.
 - **Typing on Android**: text is escaped for the device shell (spaces, braces, brackets, glob characters, a literal `%s`). Characters `adb input text` cannot deliver (non-ASCII or control characters) return `TEXT_INPUT_UNSUPPORTED` with `changedState:false`; the value is checked before the field is focused or cleared.
 - **Placeholders**: `type` expands `${SWIPIUM_*}` placeholders from session inputs (for example credentials given to `qa_continue_from_blocker`), else from the server environment. An unresolvable placeholder returns `MISSING_TEST_DATA` before anything is tapped. Secret handling of typed values is in [Secrets and redaction](concepts.md#secrets-and-redaction).
-- **Warnings**: non-fatal caveats come back in `warnings[]`, for example `WDA session was re-created (requested without relaunching the app) — verify the screen state`.
+- **Warnings**: non-fatal caveats come back in `warnings[]`, for example `WDA session was re-created (requested without relaunching the app); verify the screen state`.
 - **Mode recovery**: a successful observation switches a visual-fallback session back to structured mode (`modeRecovered:true`). An observation that never reaches idle switches it to visual-fallback for that screen only.
 - **Device binding**: a device still booting is `DEVICE_NOT_READY`; a physical device is `PHYSICAL_DEVICE_UNSUPPORTED`. A session is only re-bound to its own device: a resumed iOS session re-attaches its simulator (WDA when it had attached WDA and it is reachable, else the simulator backend). An offline device is never replaced by a different online one.
 - **Failure codes**: `INVALID_ARGUMENT` (missing field or target), `STALE_REF`, `ELEMENT_NOT_FOUND`, `AMBIGUOUS_SELECTOR`, `KEYBOARD_OBSTRUCTION`, `OVERLAY_OBSTRUCTION`, `TEXT_INPUT_UNSUPPORTED`, `MISSING_TEST_DATA`, `BACKEND_UNSUPPORTED`, `NO_DEVICE`.
@@ -619,7 +619,7 @@ Turns the actions recorded in a session (`qa_act`, `qa_smoke`, `qa_explore`) int
 
 - **Appium code**: every recorded step becomes real code. Swipes and scrolls are real gestures (bounded scroll-until-visible loops). A step that cannot be expressed fails generation with `UNEMITTABLE_STEP` instead of emitting a silent no-op. Class, method, and file names are sanitized, so they are always valid identifiers in the target language.
 - **Platform**: the generated suite's default `SWIPIUM_PLATFORM` is resolved from the explicit `platform` argument, then the platform of the session's device, then the project profile, then Android. `ios` means Appium XCUITest and `android` means UiAutomator2. The plan reports `primaryPlatform` and `platformSource`. Generated suites also read `SWIPIUM_NO_RESET` at run time.
-- **Visual assertions**: a `qa_visual mode:"assert"` step is free-form prose, not on-screen text, so it becomes a clearly marked manual checkpoint: a `TODO(manual visual check — not automated)` comment in code, a `visualCheck` POM step, an evidence-capturing `assertVisual` step in compiled flows, and "MANUAL visual check" in test cases. Only real text assertions become `assertTextVisible`.
+- **Visual assertions**: a `qa_visual mode:"assert"` step is free-form prose, not on-screen text, so it becomes a clearly marked manual checkpoint: a `TODO(manual visual check, not automated)` comment in code, a `visualCheck` POM step, an evidence-capturing `assertVisual` step in compiled flows, and "MANUAL visual check" in test cases. Only real text assertions become `assertTextVisible`.
 - **Secrets**: recorded secrets become `${SWIPIUM_*}` placeholders (see [Generated output](concepts.md#generated-output)). If a registered secret value would still be written, generation fails with `SECRET_IN_GENERATED_OUTPUT` and nothing is written. The Appium `validation.secretsClean` check scans every generated file, comments included.
 
 ## Test suite
@@ -674,7 +674,7 @@ Plans or executes a named release audit. `profile` (required):
 | profile | Checks |
 | --- | --- |
 | `smoke` | Launch and baseline checks. |
-| `account_cycle` | Create → logout → login → forgot-password on a disposable generated account. Needs `allowGeneratedData`. |
+| `account_cycle` | Create > logout > login > forgot-password on a disposable generated account. Needs `allowGeneratedData`. |
 | `store_compliance` | Privacy policy, terms, account deletion, subscription, and paywall. |
 | `resilience` | Offline, relaunch, and rotation. |
 | `release_gate` | All of the above, plus locator readiness and issue recurrence. |
@@ -860,7 +860,7 @@ A client still running a pre-upgrade tool list, or an agent that remembers old n
 | --- | --- |
 | `qa_agent_brief` | Server `instructions`, or `qa_status` without `sessionId` |
 | `qa_capabilities` | `qa_status` without `sessionId` (`capabilityGroups`) |
-| `qa_next_best_action {sessionId, goal}` | `qa_status {sessionId, goal}` → `nextBestAction` |
+| `qa_next_best_action {sessionId, goal}` | `qa_status {sessionId, goal}` > `nextBestAction` |
 | `qa_detect_context {projectRoot}` | `qa_resolve_target {projectRoot, include:["context"]}` |
 | `qa_plan {sessionId}` | `qa_resolve_target {sessionId, include:["plan"]}` |
 | `qa_assert_visual {assertion, pass}` | `qa_visual {mode:"assert", assertion, pass}` |

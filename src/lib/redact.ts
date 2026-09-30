@@ -1,6 +1,6 @@
 // Sensitive-mode redaction. Two mechanisms:
-//  1. isSecureNode → a field whose VALUE must never be shown (password/OTP/etc.).
-//  2. makeRedactor → scrub known secret values (things typed into secure fields) from any
+//  1. isSecureNode: a field whose VALUE must never be shown (password/OTP/etc.).
+//  2. makeRedactor: scrub known secret values (things typed into secure fields) from any
 //     string we emit (snapshots, inspect, report, dump-xml artifacts, logs).
 
 import type { RawNode } from '../snapshot/parse.js';
@@ -25,7 +25,7 @@ export const SUBSTRING_REDACTION_MIN = 4;
 /** Digit-only values shorter than this (PINs, OTPs, CVVs) are scrubbed as whole TOKENS instead:
  * a 4-digit PIN "2026" must not blank the year inside "20260928" or a build number. */
 export const NUMERIC_TOKEN_MAX = 8;
-/** Values shorter than this are never matched at all: a 1–2 char secret ("7", "ab") would blank
+/** Values shorter than this are never matched at all: a 1-2 char secret ("7", "ab") would blank
  * step numbers, element refs ("@e7"), versions ("1.7.0") and ordinary words. They are reported
  * via `Redactor.skippedShortSecrets` so the caller can warn that redaction was not applied. */
 export const TOKEN_REDACTION_MIN = 3;
@@ -46,18 +46,18 @@ type Matcher = { kind: 'substring'; value: string } | { kind: 'token'; re: RegEx
 
 /**
  * Build a redactor for SECRET values (everything registered in `session.secrets` is a value
- * captured from a secure field — password / PIN / OTP / CVV — or a secret flow variable).
+ * captured from a secure field (password / PIN / OTP / CVV) or a secret flow variable).
  * Matching rule by value:
  *  - < TOKEN_REDACTION_MIN chars: NOT matched (would corrupt ordinary text); counted in
  *    `skippedShortSecrets` so callers can warn;
- *  - substring: values with ≥ SUBSTRING_REDACTION_MIN chars that are not short digit runs —
+ *  - substring: values with ≥ SUBSTRING_REDACTION_MIN chars that are not short digit runs:
  *    every occurrence is scrubbed, even inside a longer token (passwords, API tokens);
  *  - token: 3-char values and digit-only values shorter than NUMERIC_TOKEN_MAX (PINs/OTPs/CVVs)
- *    — scrubbed only where they stand alone: the value must not touch a letter or digit, and a
+ *    are scrubbed only where they stand alone: the value must not touch a letter or digit, and a
  *    digit value must not be part of a dotted number ("CVV 123", "cvv=123", "is 123." redact;
  *    "12345", "@e123", "v1.123.0", "20260928" do not).
  * Encoded variants (XML entities, JSON escaping) of each secret are scrubbed too.
- * NOTE: redacting serialized JSON/XML as TEXT can still hit numeric values/attributes — for
+ * NOTE: redacting serialized JSON/XML as TEXT can still hit numeric values/attributes. For
  * structured artifacts use `redactStructuredText`.
  */
 export function makeRedactor(secrets: Iterable<string>): Redactor {
@@ -123,7 +123,7 @@ export function redactJsonValue(value: unknown, redact: Redactor): unknown {
   return walk(value);
 }
 
-/** `key`, or `key#2`, `key#3`… — the first spelling not already present in `obj`. */
+/** `key`, or `key#2`, `key#3`…: the first spelling not already present in `obj`. */
 export function uniqueKey(obj: Record<string, unknown>, key: string): string {
   if (!Object.prototype.hasOwnProperty.call(obj, key)) return key;
   let i = 2;
@@ -143,7 +143,7 @@ export function structuredKindOf(mime: string, name = ''): StructuredKind {
 
 /**
  * Redact a serialized artifact without corrupting its structure:
- *  - JSON: parse → redact string values/keys → re-stringify (indentation preserved); numeric
+ *  - JSON: parse > redact string values/keys > re-stringify (indentation preserved); numeric
  *    values are never rewritten, so `{"actions":123}` stays valid with a CVV "123" registered.
  *    Falls back to text redaction only when the content does not parse (e.g. NDJSON);
  *  - XML: only attribute values (minus geometry attributes) and text nodes;

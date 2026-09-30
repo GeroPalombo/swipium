@@ -32,10 +32,10 @@ export interface ValidateOptions {
   brittlePct?: number;
   brittleThreshold?: number;
   candidateOnly?: boolean;
-  /** Secret env-var names the suite uses — used to confirm they're never assigned a literal. */
+  /** Secret env-var names the suite uses. Used to confirm they're never assigned a literal. */
   secrets?: string[];
-  /** Registered secret VALUES (session.secrets). Any occurrence in any generated file — comments
-   *  included — is a SECRET_IN_GENERATED_OUTPUT error: the heuristics above cannot see a password
+  /** Registered secret VALUES (session.secrets). Any occurrence in any generated file (comments
+   *  included) is a SECRET_IN_GENERATED_OUTPUT error: the heuristics above cannot see a password
    *  typed into a field the UI did not flag as secure. */
   secretValues?: Iterable<string>;
   /** Selector/screen strings of the recording (secretGuard.structuralLiterals): a weak secret equal
@@ -43,7 +43,7 @@ export interface ValidateOptions {
   structural?: Iterable<string>;
 }
 
-// password = "literal" / token: 'literal' etc. — but NOT process.env / os.environ references.
+// password = "literal" / token: 'literal' etc., but NOT process.env / os.environ references.
 const SECRET_ASSIGN_RE = /(password|passwd|secret|token|api[_-]?key|apikey|bearer|credential|pwd)\s*[:=]\s*(["'])(?!\s*\2)([^"']{3,})\2/i;
 const ENV_REF_RE = /(process\.env|os\.environ|getenv|\$\{?env)/i;
 
@@ -62,7 +62,7 @@ function scanSecrets(files: GeneratedFile[], secrets: string[]): ValidationFindi
           code: 'INLINED_SECRET',
           severity: 'error',
           file: f.path,
-          message: `possible inlined secret at line ${i + 1}: ${m[1]} assigned a literal — read from the environment instead`,
+          message: `possible inlined secret at line ${i + 1}: ${m[1]} assigned a literal; read from the environment instead`,
         });
       }
       // Explicit: a known secret env-var name assigned a literal value.
@@ -190,7 +190,7 @@ export function validateGeneratedSuite(files: GeneratedFile[], opts: ValidateOpt
       code: 'SECRET_IN_GENERATED_OUTPUT',
       severity: 'error',
       file: l.path,
-      message: `registered secret value written in plaintext at line ${l.line} — must be an environment variable`,
+      message: `registered secret value written in plaintext at line ${l.line}; must be an environment variable`,
     })),
   ];
   findings.push(...secretFindings);
@@ -204,13 +204,13 @@ export function validateGeneratedSuite(files: GeneratedFile[], opts: ValidateOpt
     findings.push({
       code: 'BRITTLE_OVER_THRESHOLD',
       severity: 'error',
-      message: `brittle locators ${brittlePct}% exceed the ${brittleThreshold}% threshold — add durable locators or label the suite candidate-only`,
+      message: `brittle locators ${brittlePct}% exceed the ${brittleThreshold}% threshold; add durable locators or label the suite candidate-only`,
     });
   } else if (brittlePct > brittleThreshold && candidateOnly) {
     findings.push({
       code: 'BRITTLE_OVER_THRESHOLD',
       severity: 'warning',
-      message: `brittle locators ${brittlePct}% exceed the ${brittleThreshold}% threshold — suite is labeled candidate-only`,
+      message: `brittle locators ${brittlePct}% exceed the ${brittleThreshold}% threshold; suite is labeled candidate-only`,
     });
   }
 

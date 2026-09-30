@@ -22,9 +22,9 @@ export interface LocatorSuggestion {
   role: string;
   tier: LocatorTier;
   durability: number; // 0..100
-  locator: string | null; // recommended selector value (null → only coordinates)
+  locator: string | null; // recommended selector value (null = only coordinates)
   rationale: string;
-  needsTestId: boolean; // an interactive control without a durable id → recommend one
+  needsTestId: boolean; // an interactive control without a durable id > recommend one
   platform?: LocatorPlatform;
   locatorKind?: 'accessibility_identifier' | 'accessibility_label' | 'resource_id' | 'visible_text' | 'structure' | 'coordinate';
   suggestedTestId?: string;
@@ -103,7 +103,7 @@ export function suggestLocator(el: SnapshotElement, opts: { platform?: LocatorPl
         tier: 'accessibility',
         durability: TIER_DURABILITY.accessibility,
         locator: el.id,
-        rationale: 'accessibilityIdentifier — preferred durable iOS/XCUITest locator',
+        rationale: 'accessibilityIdentifier: preferred durable iOS/XCUITest locator',
         needsTestId: false,
       };
     }
@@ -115,7 +115,7 @@ export function suggestLocator(el: SnapshotElement, opts: { platform?: LocatorPl
         tier: 'accessibility',
         durability: 78,
         locator: el.label,
-        rationale: 'accessibility label/name — usable, but add an accessibilityIdentifier for CI-stable iOS flows',
+        rationale: 'accessibility label/name: usable, but add an accessibilityIdentifier for CI-stable iOS flows',
         needsTestId: el.clickable,
         suggestedTestId: el.clickable ? suggestedHandle(el, platform) : undefined,
       };
@@ -130,8 +130,8 @@ export function suggestLocator(el: SnapshotElement, opts: { platform?: LocatorPl
         durability: short ? 35 : 58,
         locator: el.text,
         rationale: short
-          ? 'visible value/text is short or numeric — brittle on iOS; add an accessibilityIdentifier'
-          : 'visible value/text — usable but copy/localization dependent; prefer accessibilityIdentifier',
+          ? 'visible value/text is short or numeric, brittle on iOS; add an accessibilityIdentifier'
+          : 'visible value/text: usable but copy/localization dependent; prefer accessibilityIdentifier',
         needsTestId: el.clickable,
         suggestedTestId: el.clickable ? suggestedHandle(el, platform) : undefined,
       };
@@ -145,7 +145,7 @@ export function suggestLocator(el: SnapshotElement, opts: { platform?: LocatorPl
         durability: TIER_DURABILITY.structure,
         locator: null,
         rationale:
-          'hittable control has no accessibilityIdentifier, label, or text — predicate/class-chain/coordinates only; add an accessibilityIdentifier',
+          'hittable control has no accessibilityIdentifier, label, or text. Predicate/class-chain/coordinates only; add an accessibilityIdentifier',
         needsTestId: true,
         suggestedTestId: suggestedHandle(el, platform),
       };
@@ -157,7 +157,7 @@ export function suggestLocator(el: SnapshotElement, opts: { platform?: LocatorPl
       tier: 'coordinate',
       durability: TIER_DURABILITY.coordinate,
       locator: null,
-      rationale: 'no durable iOS handle — visual/coordinate targeting only',
+      rationale: 'no durable iOS handle, visual/coordinate targeting only',
       needsTestId: el.clickable,
       suggestedTestId: el.clickable ? suggestedHandle(el, platform) : undefined,
     };
@@ -172,7 +172,7 @@ export function suggestLocator(el: SnapshotElement, opts: { platform?: LocatorPl
       tier: 'accessibility',
       durability: TIER_DURABILITY.accessibility,
       locator: el.label,
-      rationale: 'content-desc / accessibility label — durable and a11y-friendly',
+      rationale: 'content-desc / accessibility label: durable and a11y-friendly',
       needsTestId: false,
     };
   }
@@ -185,7 +185,7 @@ export function suggestLocator(el: SnapshotElement, opts: { platform?: LocatorPl
       tier: 'resource_id',
       durability: TIER_DURABILITY.resource_id,
       locator: el.id,
-      rationale: 'resource-id / testID — durable',
+      rationale: 'resource-id / testID: durable',
       needsTestId: false,
     };
   }
@@ -200,8 +200,8 @@ export function suggestLocator(el: SnapshotElement, opts: { platform?: LocatorPl
       durability: short ? 40 : TIER_DURABILITY.visible_text,
       locator: el.text,
       rationale: short
-        ? 'visible text, but very short/numeric — brittle; add a testID'
-        : 'visible text — usable but breaks if copy/localization changes',
+        ? 'visible text, but very short/numeric, brittle; add a testID'
+        : 'visible text: usable but breaks if copy/localization changes',
       needsTestId: el.clickable,
       suggestedTestId: el.clickable ? suggestedHandle(el, platform) : undefined,
     };
@@ -215,7 +215,7 @@ export function suggestLocator(el: SnapshotElement, opts: { platform?: LocatorPl
       tier: 'structure',
       durability: TIER_DURABILITY.structure,
       locator: null,
-      rationale: 'clickable but has no id/label/text — only structural/coordinate targeting; add a testID',
+      rationale: 'clickable but has no id/label/text. Only structural/coordinate targeting; add a testID',
       needsTestId: true,
       suggestedTestId: suggestedHandle(el, platform),
     };
@@ -228,7 +228,7 @@ export function suggestLocator(el: SnapshotElement, opts: { platform?: LocatorPl
     tier: 'coordinate',
     durability: TIER_DURABILITY.coordinate,
     locator: null,
-    rationale: 'no durable handle — coordinate/image match only',
+    rationale: 'no durable handle, coordinate/image match only',
     needsTestId: el.clickable,
     suggestedTestId: el.clickable ? suggestedHandle(el, platform) : undefined,
   };

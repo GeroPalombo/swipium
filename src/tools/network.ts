@@ -1,4 +1,4 @@
-// qa_network — safe offline/online testing without raw adb (Phase 2 CR2).
+// qa_network: safe offline/online testing without raw adb (Phase 2 CR2).
 // Uses `cmd connectivity airplane-mode` (API 30+). Records the original state on first
 // change so it can be restored; report + session-end restore use session.network.
 
@@ -30,7 +30,7 @@ export async function restoreNetwork(sessions: SessionStore, session: Session, d
   return `restored (airplane=${original})`;
 }
 
-/** Best-effort restore of EVERY session that changed the network — for server shutdown. */
+/** Best-effort restore of EVERY session that changed the network, for server shutdown. */
 export async function restoreAllNetwork(sessions: SessionStore): Promise<void> {
   const { DirectDriver } = await import('../drivers/DirectDriver.js');
   for (const s of sessions.list()) {
@@ -102,7 +102,7 @@ export function registerNetwork(server: McpServer, sessions: SessionStore): void
             changedBySwipium: !!session.network?.changed,
             restoreAvailable: !!session.network?.changed,
           },
-          `network=${airplane ? 'offline (airplane on)' : 'online'}${session.network?.changed ? ' (changed by Swipium — will restore)' : ''}`,
+          `network=${airplane ? 'offline (airplane on)' : 'online'}${session.network?.changed ? ' (changed by Swipium, will restore)' : ''}`,
         );
       }
 
@@ -114,7 +114,7 @@ export function registerNetwork(server: McpServer, sessions: SessionStore): void
         );
       }
 
-      // offline / online — consent-gated, records original on first change.
+      // offline / online: consent-gated, records original on first change.
       const wantAirplane = action === 'offline';
       const gate = consumeConsent(consentId, approve, { action: 'network_change', affects: { to: action } });
       if (!gate.approved) {
@@ -161,7 +161,7 @@ export function registerNetwork(server: McpServer, sessions: SessionStore): void
           nextSteps: ['Needs Android 11+ (`cmd connectivity airplane-mode`). Use a newer emulator image, or toggle network manually.'],
         });
       }
-      sessions.addEnvChange(session, `network → ${action} (airplane=${wantAirplane})`);
+      sessions.addEnvChange(session, `network > ${action} (airplane=${wantAirplane})`);
       await new Promise((r) => setTimeout(r, 1200)); // settle
       const now = await d.airplaneOn();
       sessions.recordMutation(session, {
@@ -175,7 +175,7 @@ export function registerNetwork(server: McpServer, sessions: SessionStore): void
       });
       return qaOk(
         { network: now ? 'offline' : 'online', previousStateRecorded: true, restoreAvailable: true },
-        `network → ${now ? 'offline' : 'online'}. Original recorded; restore on qa_report / qa_network restore.`,
+        `network > ${now ? 'offline' : 'online'}. Original recorded; restore on qa_report / qa_network restore.`,
       );
     },
   );

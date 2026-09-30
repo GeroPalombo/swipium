@@ -2,12 +2,12 @@
 //
 // The recorder (qa_act) is supposed to mark a value typed into a secure field as `secret` and
 // record a ${VAR} placeholder. But a registered secret (session.secrets) typed into a field the UI
-// does NOT flag as secure is recorded as a plain literal — and every generator downstream (flow YAML,
+// does NOT flag as secure is recorded as a plain literal, and every generator downstream (flow YAML,
 // POM/suite, Appium JS/TS/Python, test cases, test-suite.json) would then write it in plaintext.
 //
 // This module is the emit-time backstop every generator and the session persister go through:
 //   - secretSafeActions: rewrite recorded actions so any literal that EQUALS or CONTAINS a registered
-//     secret becomes a secret step (placeholder var, needs-human-data) — never the raw value;
+//     secret becomes a secret step (placeholder var, needs-human-data), never the raw value;
 //   - findSecretLeaks / assertNoSecretLeaks: scan generated text for registered secret values
 //     (raw + XML/JSON-encoded spellings) and FAIL generation loudly instead of writing a leak.
 
@@ -20,7 +20,7 @@ function secretList(secrets: Iterable<string> | undefined): string[] {
   return [...new Set([...secrets].filter((s) => typeof s === 'string' && s.length > 0))];
 }
 
-/** A "weak" (dictionary-like / short) secret — QA passwords such as "test", "admin", "demo",
+/** A "weak" (dictionary-like / short) secret: QA passwords such as "test", "admin", "demo",
  *  "password", "Login": letters only, or a short alphanumeric run. Substring-matching these would
  *  flag template text ("testID", "tests:") and structural identifiers (resource_id "password",
  *  screen "Login"), so they are matched as whole tokens / whole string literals only. Anything with
@@ -67,7 +67,7 @@ export interface InputBinding {
   secret: boolean;
 }
 
-/** The session's stored inputs as bindings (varName → raw value, secret flag from metadata). */
+/** The session's stored inputs as bindings (varName > raw value, secret flag from metadata). */
 export function inputBindings(session: {
   inputs?: Array<{ varName: string; secret: boolean }>;
   inputValues?: Map<string, string>;
@@ -81,7 +81,7 @@ export function inputBindings(session: {
   return out;
 }
 
-/** Recorded typed text that equals a stored session input value → that input's `${VAR}` placeholder
+/** Recorded typed text that equals a stored session input value > that input's `${VAR}` placeholder
  *  (secret inputs AND non-secret ones such as SWIPIUM_TEST_EMAIL). Returns undefined otherwise. */
 export function inputPlaceholderFor(text: string | undefined, inputs: InputBinding[] | undefined): InputBinding | undefined {
   if (!text || !inputs?.length || PLACEHOLDER_RE.test(text)) return undefined;
@@ -95,11 +95,11 @@ export function swipiumVarName(name: string): string {
 }
 
 /** ONE naming rule for secret placeholders across every generator (flow YAML, POM/suite, Appium).
- *  Every emitted name is SWIPIUM_-prefixed — the flow runner resolves env vars ONLY for SWIPIUM_*
+ *  Every emitted name is SWIPIUM_-prefixed. The flow runner resolves env vars ONLY for SWIPIUM_*
  *  names, so a generated flow replays from env in CI:
  *  reuse a meaningful ${VAR} already on the step (e.g. a stored input's SWIPIUM_TEST_PASSWORD; an
- *  unprefixed name gets the SWIPIUM_ prefix) — but rename a generic recorder placeholder (SECRET_N) —
- *  else name it from the field (password/otp/token/pin → SWIPIUM_TEST_*), else SWIPIUM_SECRET_N. */
+ *  unprefixed name gets the SWIPIUM_ prefix), but rename a generic recorder placeholder (SECRET_N);
+ *  else name it from the field (password/otp/token/pin > SWIPIUM_TEST_*), else SWIPIUM_SECRET_N. */
 export function secretVarName(a: { text?: string; selector?: string }, index: number): string {
   const existing = a.text?.match(/^\$\{([^}]+)\}$/);
   if (existing && !/^SECRET_\d+$/i.test(existing[1])) return swipiumVarName(existing[1]);
@@ -120,7 +120,7 @@ export interface SecretSafeResult {
 /**
  * Return a COPY of `actions` in which no registered secret value survives in recorded USER CONTENT:
  *  - a `type` step whose literal text equals a stored session input becomes that input's ${VAR}
- *    (secret input → secret step; non-secret input such as an email stays a data placeholder);
+ *    (secret input > secret step; non-secret input such as an email stays a data placeholder);
  *  - a `type` step whose literal text equals/contains a secret becomes a secret step (text dropped so
  *    the generators allocate an env-var placeholder; exportability needs-human-data);
  *  - user-content prose (url, assertion, warning, OCR text) containing a secret is redacted.
@@ -196,7 +196,7 @@ export function structuralLiterals(actions: RecordedAction[] | undefined): strin
 
 /** Redactor for GENERATED structured output (test-suite.json cases…): strong secrets are scrubbed
  *  as substrings everywhere (session-redactor rules); a weak secret only when a WHOLE string value
- *  equals it and that value is not a structural identifier of the recording (selector/screen) —
+ *  equals it and that value is not a structural identifier of the recording (selector/screen),
  *  never inside template prose or locators. */
 export function generatedOutputRedactor(secretsIn: Iterable<string> | undefined, structuralIn?: Iterable<string>): Redactor {
   const secrets = secretList(secretsIn);
@@ -231,7 +231,7 @@ function weakLiteralRe(s: string): RegExp {
 
 /** Find registered secret values in generated file contents, comments included.
  *  - strong secrets (symbols / long mixed values): raw or XML/JSON-encoded SUBSTRING, anywhere;
- *  - weak secrets (dictionary-like / short — isWeakSecret): only where the generated text carries
+ *  - weak secrets (dictionary-like / short, see isWeakSecret): only where the generated text carries
  *    the value as a whole string literal / scalar value (an emitted data literal), and not when that
  *    value is one of the recording's structural identifiers (a selector or screen name). Template
  *    text ("testID", "tests:", "tests/x.smoke.yaml") never matches. */
@@ -265,7 +265,7 @@ export class SecretLeakError extends Error {
     where: string,
   ) {
     super(
-      `${where}: refusing to write generated output — a registered secret value would be written in plaintext ` +
+      `${where}: refusing to write generated output: a registered secret value would be written in plaintext ` +
         `(${leaks
           .slice(0, 5)
           .map((l) => `${l.path}:${l.line}`)

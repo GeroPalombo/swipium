@@ -1,7 +1,7 @@
 // Tool result envelopes: every tool is self-diagnosing.
 //
 // Recoverable failures are returned as isError:true with a structured, actionable
-// payload — NOT thrown. Thrown/JSON-RPC errors are reserved for malformed calls or a
+// payload, NOT thrown. Thrown/JSON-RPC errors are reserved for malformed calls or a
 // broken server (the model can't act on those).
 //
 // Response modes: a session can ask for `compact | normal | verbose`
@@ -28,7 +28,7 @@ export function currentResponseMode(): ResponseMode {
   return modeStore.getStore() ?? DEFAULT_RESPONSE_MODE;
 }
 
-// NOTE: `type` alias, not `interface` — interfaces lack an implicit index signature and
+// NOTE: `type` alias, not `interface`: interfaces lack an implicit index signature and
 // are not assignable to the SDK's structuredContent ({ [x: string]: unknown }).
 export type QaErrorPayload = {
   ok: false;
@@ -44,7 +44,7 @@ export type QaErrorPayload = {
 
 type QaErrorInput = Omit<QaErrorPayload, 'ok' | 'failureCode'> & { failureCode?: string };
 
-/** Compact (unindented) JSON fence — the text-channel copy of the payload. Indentation roughly
+/** Compact (unindented) JSON fence: the text-channel copy of the payload. Indentation roughly
  * doubled its size for no reader benefit (structuredContent carries the full payload anyway). */
 function fence(obj: unknown): string {
   return '```json\n' + JSON.stringify(obj) + '\n```';
@@ -56,7 +56,7 @@ export const UNKNOWN_SESSION_NEXT_STEPS: readonly string[] = [
 ];
 
 /**
- * The one typed envelope for "that sessionId does not exist" — an invalid argument, so
+ * The one typed envelope for "that sessionId does not exist". It's an invalid argument, so
  * failureCode INVALID_ARGUMENT (never the UNKNOWN fallback) and retrySafe (nothing changed).
  * Sites with a genuinely different recovery (e.g. "omit sessionId to bootstrap") pass nextSteps.
  */
@@ -77,7 +77,7 @@ export function isInvalidArgumentError(e: unknown): e is Error {
   return (e as Error & { code?: unknown }).code === 'INVALID_ARGUMENT' || /^INVALID_ARGUMENT\b/.test(e.message);
 }
 
-/** Typed envelope for a thrown INVALID_ARGUMENT error — rejected before touching the device. */
+/** Typed envelope for a thrown INVALID_ARGUMENT error, rejected before touching the device. */
 export function invalidArgumentError(e: Error, nextSteps: string[], extra?: Record<string, unknown>): CallToolResult {
   return qaError(
     {
@@ -93,7 +93,7 @@ export function invalidArgumentError(e: Error, nextSteps: string[], extra?: Reco
 
 /** Options for the text rendering of a result (structuredContent is never affected). */
 export interface QaTextOptions {
-  /** Top-level payload keys already rendered in the human text (e.g. `elements`, as @eN lines) —
+  /** Top-level payload keys already rendered in the human text (e.g. `elements`, as @eN lines),
    * left out of the fenced JSON so the text channel doesn't carry them twice. */
   textOmit?: readonly string[];
 }
@@ -130,7 +130,7 @@ function uriLines(payload: Record<string, unknown>): string[] {
  * Compose the human text block for a result. compact = summary (+ any artifact URIs) only,
  * dropping the fenced-JSON duplicate that structuredContent already carries; normal/verbose
  * keep a compact fence for clients/humans reading the text channel (normal additionally leaves
- * out keys the summary already rendered — opts.textOmit; verbose keeps them).
+ * out keys the summary already rendered, via opts.textOmit; verbose keeps them).
  */
 function renderText(summary: string, payload: Record<string, unknown>, mode: ResponseMode, opts?: QaTextOptions): string {
   if (mode === 'compact') {
@@ -168,7 +168,7 @@ export function qaOk(payload: Record<string, unknown>, summary: string, opts?: Q
 }
 
 /** Append advisory notes (e.g. params ignored in the active mode) to a result without touching
- * its verdict — the pattern qa_generate established for mode/target-scoped parameters. */
+ * its verdict. Same pattern qa_generate established for mode/target-scoped parameters. */
 export function qaAnnotate(result: CallToolResult, notes: string[]): CallToolResult {
   if (!notes.length) return result;
   const content = [...(result.content ?? [])];
@@ -192,10 +192,10 @@ export function qaStop(reason: string, payload: Record<string, unknown>): CallTo
 
 /**
  * Typed envelope for work that was CANCELLED (the MCP request was aborted, or the job was
- * cancelled) — failureCode CANCELLED. Not a failure: it is never recorded as a tool error, a
+ * cancelled). failureCode CANCELLED. Not a failure: it is never recorded as a tool error, a
  * snapshot failure, a finding or a health verdict, and it never switches the session mode.
  */
-export function cancelledResult(what = 'Cancelled — the call was aborted before it finished', changedState = false): CallToolResult {
+export function cancelledResult(what = 'Cancelled: the call was aborted before it finished', changedState = false): CallToolResult {
   return qaError({
     what,
     changedState,

@@ -34,7 +34,7 @@ To try the CLI from source, run `npm run build` and then `node dist/index.js --h
 
 ## Architecture
 
-Swipium is a stdio MCP server (`src/index.ts` → `src/server.ts`). The CLI lives in `src/cli/` (`main.ts` parses arguments; `init`, `verify`, `scan`, `suite`, `report`, and `gc` each have a module). Because stdout carries JSON-RPC, server code logs only to stderr through `src/lib/logger.ts`.
+Swipium is a stdio MCP server (`src/index.ts` > `src/server.ts`). The CLI lives in `src/cli/` (`main.ts` parses arguments; `init`, `verify`, `scan`, `suite`, `report`, and `gc` each have a module). Because stdout carries JSON-RPC, server code logs only to stderr through `src/lib/logger.ts`.
 
 | Path | What lives there |
 | --- | --- |

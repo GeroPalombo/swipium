@@ -1,9 +1,9 @@
 // Tool health for qa_report (real-device smoke finding: a run with WDA 404s and UNKNOWN tool errors
 // reported "Tool status: PASS"). Two pure pieces:
-//   - toolErrorFromResult: classify a tool call result → a ToolErrorRecord to store on the session
+//   - toolErrorFromResult: classify a tool call result > a ToolErrorRecord to store on the session
 //     (consent refusals / missing test data are user decisions, not tool errors);
 //   - toolVerdictFor: the report's TOOL verdict from mcp_limitation notes + recorded tool errors.
-// Tool health never changes the APP verdict — a Swipium/driver error is not an app defect.
+// Tool health never changes the APP verdict. A Swipium/driver error is not an app defect.
 
 import { FAILURES } from '../oracle/failures.js';
 import type { SessionStore, TestNote, ToolErrorRecord } from '../session/store.js';
@@ -13,10 +13,10 @@ const NOT_TOOL_ERRORS = new Set(['unsafe_refused', 'missing_data']);
 
 /** Codes an agent hits while PROBING the UI (a selector that does not match yet, a stale @eN ref, an
  *  ambiguous match, a bad argument it then corrects). Recorded for visibility, but they never flip the
- *  TOOL status to DEGRADED on their own — they are not Swipium/driver malfunctions. */
+ *  TOOL status to DEGRADED on their own; they are not Swipium/driver malfunctions. */
 export const AGENT_PROBING_CODES = new Set(['ELEMENT_NOT_FOUND', 'STALE_REF', 'AMBIGUOUS_SELECTOR', 'INVALID_ARGUMENT']);
 
-/** An error result without a typed failureCode (qaError defaults it to UNKNOWN) — most are deliberate
+/** An error result without a typed failureCode (qaError defaults it to UNKNOWN). Most are deliberate
  *  refusals / guard messages. Counted in a separate `uncoded` bucket that does NOT degrade by itself. */
 export const UNCODED_CODES = new Set(['UNKNOWN', 'UNCODED']);
 
@@ -50,7 +50,7 @@ export function recordToolErrorFromResult(
 ): void {
   try {
     // A call whose request was aborted produced cancelled work, whatever error it surfaced
-    // (e.g. "uiautomator dump failed … AbortError" / "WDA … aborted") — never a tool error.
+    // (e.g. "uiautomator dump failed … AbortError" / "WDA … aborted"), never a tool error.
     if (signal?.aborted) return;
     const sessionId = (args as { sessionId?: unknown } | undefined)?.sessionId;
     if (typeof sessionId !== 'string') return;
@@ -68,11 +68,11 @@ export interface ToolVerdict {
   summary: string;
   /** Recorded tool errors in this session. */
   toolErrorCount: number;
-  /** Tool errors grouped by failure code (code → count), most frequent first. */
+  /** Tool errors grouped by failure code (code > count), most frequent first. */
   toolErrorsByCode: Record<string, number>;
   /** Errors that DO degrade the tool status (typed Swipium/driver failures). */
   degradingCount?: number;
-  /** Errors without a typed failureCode (UNKNOWN) — mostly deliberate refusals; never degrade alone. */
+  /** Errors without a typed failureCode (UNKNOWN): mostly deliberate refusals, never degrade alone. */
   uncodedCount?: number;
   /** Agent-probing errors (ELEMENT_NOT_FOUND, STALE_REF, AMBIGUOUS_SELECTOR, INVALID_ARGUMENT). */
   probingCount?: number;
@@ -80,12 +80,12 @@ export interface ToolVerdict {
 
 /**
  * TOOL verdict (never the app verdict):
- *  - BLOCKED  — a workflow was blocked/failed by a Swipium/MCP limitation (qa_note mcp_limitation);
- *  - DEGRADED — tool calls returned TYPED tool-side errors (WDA 404, driver failures…) — the run's
+ *  - BLOCKED: a workflow was blocked/failed by a Swipium/MCP limitation (qa_note mcp_limitation);
+ *  - DEGRADED: tool calls returned TYPED tool-side errors (WDA 404, driver failures…). The run's
  *    coverage may be incomplete, but these are tool-side, not app defects. Uncoded errors (no
- *    failureCode — mostly deliberate refusals) and agent-probing codes (ELEMENT_NOT_FOUND, STALE_REF,
+ *    failureCode, mostly deliberate refusals) and agent-probing codes (ELEMENT_NOT_FOUND, STALE_REF,
  *    AMBIGUOUS_SELECTOR, INVALID_ARGUMENT) are counted and reported but never degrade on their own;
- *  - PASS     — neither.
+ *  - PASS: neither.
  */
 export function toolVerdictFor(
   toolLimitationNotes: Array<Pick<TestNote, 'workflow' | 'reason'>>,
@@ -121,7 +121,7 @@ export function toolVerdictFor(
   if (degradingCount) {
     return {
       status: 'DEGRADED',
-      summary: `${errorText}. Tool-side errors, not app defects — coverage may be incomplete; see toolErrors.`,
+      summary: `${errorText}. Tool-side errors, not app defects. Coverage may be incomplete; see toolErrors.`,
       toolErrorCount: errors.length,
       toolErrorsByCode: byCode,
       ...breakdown,
@@ -132,7 +132,7 @@ export function toolVerdictFor(
       status: 'PASS',
       summary:
         `No Swipium/MCP limitations or tool-side failures recorded. ${errors.length} non-degrading error result(s) ` +
-        `(${codeText}: ${uncodedCount} uncoded refusal/guard message(s), ${probingCount} agent-probing miss(es)) — see toolErrors.`,
+        `(${codeText}: ${uncodedCount} uncoded refusal/guard message(s), ${probingCount} agent-probing miss(es)). See toolErrors.`,
       toolErrorCount: errors.length,
       toolErrorsByCode: byCode,
       ...breakdown,

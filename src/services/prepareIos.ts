@@ -1,4 +1,4 @@
-// iOS prepare service (hardening P0.3) — the full simulator first-run path: pick + boot a
+// iOS prepare service (hardening P0.3): the full simulator first-run path: pick + boot a
 // simulator, install a simulator .app, launch its bundle, verify foreground, and report whether
 // structured automation (WDA) is available or it is honestly visual-only. Refuses an .ipa on the
 // simulator with the correct explanation. Shared by qa_prepare_ios_target + qa_test_this execute.
@@ -67,7 +67,7 @@ export async function prepareIos(
     };
   }
 
-  // .ipa on the simulator is the classic mistake — refuse with the right explanation.
+  // .ipa on the simulator is the classic mistake. Refuse with the right explanation.
   if (args.app && /\.ipa$/i.test(args.app)) {
     return {
       ok: false,
@@ -87,7 +87,7 @@ export async function prepareIos(
     return {
       ok: false,
       failureCode: 'SIMULATOR_RUNTIME_MISSING',
-      error: 'No iOS simulator available — install a runtime / create one in Xcode.',
+      error: 'No iOS simulator available. Install a runtime or create one in Xcode.',
     };
 
   if (pick.state !== 'Booted') {
@@ -127,13 +127,13 @@ export async function prepareIos(
   if (args.app) {
     const appPath = isAbsolute(args.app) ? args.app : join(session.root, args.app);
     if (!existsSync(appPath)) return { ok: false, failureCode: 'IOS_SIMULATOR_APP_MISSING', error: `.app not found: ${appPath}` };
-    // A device-SDK (iphoneos) .app cannot run on the simulator — catch it before the opaque
+    // A device-SDK (iphoneos) .app cannot run on the simulator. Catch it before the opaque
     // simctl install error so the blocker is IOS_APP_WRONG_ARCH (build a simulator .app).
     if (appBuildDestination(appPath) === 'device') {
       return {
         ok: false,
         failureCode: 'IOS_APP_WRONG_ARCH',
-        error: `${appPath} is a device build (iphoneos) — the simulator needs a simulator-SDK .app (iphonesimulator). Real-device workflows are outside the public v1 scope.`,
+        error: `${appPath} is a device build (iphoneos). The simulator needs a simulator-SDK .app (iphonesimulator). Real-device workflows are outside the public v1 scope.`,
         udid: pick.udid,
         name: pick.name,
       };
@@ -224,12 +224,12 @@ export async function prepareIos(
   let wdaSessionId: string | undefined;
   let requiresAttach = false;
   // Same rule as qa_wda: a non-loopback WDA URL (e.g. ios.wda.url from the repository's
-  // .swipium/config.json) is never contacted automatically — screens and typed text would go to
+  // .swipium/config.json) is never contacted automatically: screens and typed text would go to
   // another machine. Only the user's SWIPIUM_ALLOW_REMOTE_WDA pre-approves it; otherwise the
   // consent path is an explicit `qa_wda attach { webDriverAgentUrl, allowNonLoopback:true }`.
   if (attach !== 'skip' && !isLoopbackWdaUrl(wdaUrl) && !remoteWdaAllowedByUser(wdaUrl)) {
     const why =
-      `WDA URL ${wdaUrl} is not loopback — refused to connect automatically (configured by the repository (.swipium/config.json) — unreviewed). ` +
+      `WDA URL ${wdaUrl} is not loopback, refused to connect automatically (set in the repository's .swipium/config.json, unreviewed). ` +
       `Attach it explicitly with qa_wda { action:"attach", webDriverAgentUrl, allowNonLoopback:true } (consent-gated), or set ${REMOTE_WDA_ENV}=<exact url> in the user environment.`;
     if (attach === 'required') {
       return { ok: false, failureCode: 'DESTRUCTIVE_REFUSED', error: why, udid: pick.udid, name: pick.name, bundleId, installed, launched };
@@ -295,7 +295,7 @@ export async function prepareIos(
         launched,
       };
     } else {
-      sessions.addWorkaround(session, 'WDA not reachable — iOS verification is visual-only (screenshots), not structured');
+      sessions.addWorkaround(session, 'WDA not reachable: iOS verification is visual-only (screenshots), not structured');
     }
   }
   session.mode = mode === 'structured' ? 'structured' : 'visual-fallback';

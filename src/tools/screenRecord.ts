@@ -1,4 +1,4 @@
-// qa_screen_record — capture a screen video on Android
+// qa_screen_record: capture a screen video on Android
 // (adb screenrecord) or the iOS Simulator (simctl io recordVideo). start spawns the recorder
 // (consent-gated, sensitive-screen warning); status reports whether one is active; stop finalizes
 // it gracefully (SIGINT so the mp4 isn't corrupted), saves an artifact, and cleans up. Active
@@ -65,7 +65,7 @@ export function registerScreenRecord(server: McpServer, sessions: SessionStore):
     {
       title: 'Record the screen',
       description:
-        'Record the screen to an mp4 artifact (Android, iOS Simulator). start (consent-gated — captures whatever is on screen; ' +
+        'Record the screen to an mp4 artifact (Android, iOS Simulator). start (consent-gated, captures whatever is on screen; ' +
         'avoid password/OTP screens), status, stop. save:"on_failure" + stop failed:false discards passing-run videos. Android ' +
         'auto-stops after ~3 min; one recording per session.',
       inputSchema: {
@@ -124,8 +124,8 @@ export function registerScreenRecord(server: McpServer, sessions: SessionStore):
           },
           r
             ? ended
-              ? `recording auto-stopped (${r.backend}, ${r.saveMode}, ~${seconds}s; Android time-limit reached) — qa_screen_record { action: "stop", failed:<bool> } to save the mp4.`
-              : `recording active (${r.backend}, ${r.saveMode}, ~${seconds}s) — qa_screen_record { action: "stop", failed:<bool> } to finalize.`
+              ? `recording auto-stopped (${r.backend}, ${r.saveMode}, ~${seconds}s; Android time-limit reached). Run qa_screen_record { action: "stop", failed:<bool> } to save the mp4.`
+              : `recording active (${r.backend}, ${r.saveMode}, ~${seconds}s). Run qa_screen_record { action: "stop", failed:<bool> } to finalize.`
             : 'no active recording.',
         );
       }
@@ -161,7 +161,7 @@ export function registerScreenRecord(server: McpServer, sessions: SessionStore):
             risk: 'medium',
             exactCommand: cmd,
             affects: { device: serial },
-            explain: 'Record the device screen to a video? It captures everything shown — do NOT record password/OTP/payment screens.',
+            explain: 'Record the device screen to a video? It captures everything shown, so do NOT record password/OTP/payment screens.',
           });
         }
         sessions.recordMutation(session, {
@@ -204,7 +204,7 @@ export function registerScreenRecord(server: McpServer, sessions: SessionStore):
         });
         return qaOk(
           { recording: true, backend, saveMode },
-          `recording started (${backend}, ${saveMode})${backend === 'direct' ? ' (auto-stops after ~3 min)' : ''} — call qa_screen_record { action: "stop", failed:<bool> } to finalize${saveMode === 'on_failure' ? ' and keep only on failure' : ' and save the video'}.`,
+          `recording started (${backend}, ${saveMode})${backend === 'direct' ? ' (auto-stops after ~3 min)' : ''}. Call qa_screen_record { action: "stop", failed:<bool> } to finalize${saveMode === 'on_failure' ? ' and keep only on failure' : ' and save the video'}.`,
         );
       }
 
@@ -305,7 +305,7 @@ export function registerScreenRecord(server: McpServer, sessions: SessionStore):
             backend: rec.backend,
             saveMode: rec.saveMode,
           },
-          `saved recording (${buf.length} bytes) → ${uri}`,
+          `saved recording (${buf.length} bytes) > ${uri}`,
         );
       } catch (e) {
         sessions.recordMutation(session, {

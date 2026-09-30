@@ -1,5 +1,5 @@
-// qa_prepare_ios_target (hardening P0.3) — one high-level iOS prepare: boot simulator → install
-// .app → launch bundle → verify → report WDA/visual mode. The cross-platform counterpart to
+// qa_prepare_ios_target (hardening P0.3): one high-level iOS prepare: boot simulator > install
+// .app > launch bundle > verify > report WDA/visual mode. The cross-platform counterpart to
 // qa_prepare_target's Android path, so qa_test_this can complete iOS first-runs end-to-end.
 
 import { z } from 'zod';
@@ -13,7 +13,7 @@ import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { prepareIos } from '../services/prepareIos.js';
 import type { Session, SessionStore } from '../session/store.js';
 
-/** A .app is a directory — hash a stable signature (Info.plist) for consent binding. */
+/** A .app is a directory, so hash a stable signature (Info.plist) for consent binding. */
 function appSignature(appPath: string): string {
   try {
     const plist = join(appPath, 'Info.plist');
@@ -56,7 +56,7 @@ export function registerPrepareIosTarget(server: McpServer, sessions: SessionSto
       const session = sessions.get(sessionId);
       if (!session) return unknownSessionError(sessionId);
 
-      // Installing app code is privileged → consent (mirrors qa_ios install).
+      // Installing app code is privileged, so consent (mirrors qa_ios install).
       let mutationConsent: { required: boolean; consentId?: string; approved: boolean; payloadHash?: string } | undefined;
       let installAffects: { appPath: string; sig: string; external: boolean } | undefined;
       if (app) {

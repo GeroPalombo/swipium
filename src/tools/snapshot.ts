@@ -1,4 +1,4 @@
-// qa_snapshot — the observation layer.
+// qa_snapshot: the observation layer.
 // Snapshot returns compact @eN refs + a snapshotQuality verdict (+ optional diff).
 
 import { z } from 'zod';
@@ -75,12 +75,12 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
         try {
           xml = await driver.dumpXml(inFallback ? VISUAL_FALLBACK_PROBE : undefined);
         } catch (e) {
-          // Cancelled (the MCP request was aborted): not a snapshot failure — no counter, no
+          // Cancelled (the MCP request was aborted): not a snapshot failure. No counter, no
           // mode switch, no tool error (the report's tool status is unaffected).
-          if (isAbortError(e)) return cancelledResult('Snapshot cancelled — the call was aborted before the UI tree was captured');
+          if (isAbortError(e)) return cancelledResult('Snapshot cancelled: the call was aborted before the UI tree was captured');
           if (inFallback) {
             return qaError({
-              what: 'Session is in visual-fallback mode — a structured UI tree is still unavailable on this screen.',
+              what: 'Session is in visual-fallback mode; a structured UI tree is still unavailable on this screen.',
               changedState: false,
               retrySafe: true,
               failureCode: 'VISUAL_ONLY_SCREEN',
@@ -98,7 +98,7 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
           if (failures >= session.budget.maxSnapshotFailures) {
             sessions.setMode(session, 'visual-fallback');
             return qaError({
-              what: `Could not produce a UI tree after ${failures} attempts${idle ? ' (never reached idle)' : ''} — likely a looping animation, dev overlay, web view, or canvas.`,
+              what: `Could not produce a UI tree after ${failures} attempts${idle ? ' (never reached idle)' : ''}, likely a looping animation, dev overlay, web view, or canvas.`,
               changedState: false,
               retrySafe: false,
               failureCode: 'VISUAL_ONLY_SCREEN',
@@ -110,7 +110,7 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
             });
           }
           return qaError({
-            what: `Snapshot (UI tree dump) failed (${failures}/${session.budget.maxSnapshotFailures})${idle ? ' — never reached idle' : ''}: ${msg}`,
+            what: `Snapshot (UI tree dump) failed (${failures}/${session.budget.maxSnapshotFailures})${idle ? ', never reached idle' : ''}: ${msg}`,
             changedState: false,
             retrySafe: true,
             failureCode: 'SNAPSHOT_FAILED',

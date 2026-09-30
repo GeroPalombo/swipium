@@ -1,4 +1,4 @@
-// Workflow-plan core (qa_resolve_target include:["plan"]) — PURE synthesis. Given what we detected about the
+// Workflow-plan core (qa_resolve_target include:["plan"]): PURE synthesis. Given what we detected about the
 // project + what the session declared (fixtures, observed auth, prepared appId), produce a
 // safe test plan: which workflows are READY, which are BLOCKED (and why + how to unblock),
 // and which are UNSAFE (and why). No device I/O lives here, so it is fully unit-testable;
@@ -86,21 +86,21 @@ export function buildPlan(i: PlanInput): Plan {
     return null;
   };
 
-  // launch_smoke — the cheapest always-valuable check.
+  // launch_smoke: the cheapest always-valuable check.
   {
     const g = gateEnv('launch_smoke', 'guardrail');
     if (g) blocked.push(g);
     else ready.push({ workflow: 'launch_smoke', budgetProfile: 'guardrail', requires: [] });
   }
 
-  // visual_smoke — screenshot/landmark check for visual-only (map/canvas) screens.
+  // visual_smoke: screenshot/landmark check for visual-only (map/canvas) screens.
   {
     const g = gateEnv('visual_smoke', 'login_smoke');
     if (g) blocked.push(g);
     else ready.push({ workflow: 'visual_smoke', budgetProfile: 'login_smoke', requires: [] });
   }
 
-  // login_smoke — needs a credential fixture on top of the env gate.
+  // login_smoke: needs a credential fixture on top of the env gate.
   {
     const g = gateEnv('login_smoke', 'login_smoke');
     if (g) blocked.push(g);
@@ -139,7 +139,7 @@ export function buildPlan(i: PlanInput): Plan {
     }
   }
 
-  // UNSAFE — destructive actions that Swipium will refuse by default.
+  // UNSAFE: destructive actions that Swipium will refuse by default.
   if (isDebugRN(i.framework)) {
     unsafe.push({
       workflow: 'fresh_start',
@@ -166,7 +166,7 @@ export function buildPlan(i: PlanInput): Plan {
   ];
 
   if (i.auth.authedAtStart === false || i.auth.loginScreenSeen) {
-    notes.push('A login screen was observed — authenticated workflows will need credentials.');
+    notes.push('A login screen was observed. Authenticated workflows will need credentials.');
   }
   for (const b of i.blockers) notes.push(b);
 

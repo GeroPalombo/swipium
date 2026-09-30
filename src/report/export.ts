@@ -1,9 +1,9 @@
 // Report 2.0 exporters. Turn the assembled report into formats a developer
 // can use without the agent transcript: an issue-ready Markdown doc and a CI-ready JUnit XML.
-// (a third-party-format exporter is deferred — out of scope here.)
+// (a third-party-format exporter is deferred and out of scope here.)
 //
-// Callers pass the report through redactReportData() FIRST (B9): every string field — steps,
-// nextStep, missingPrecondition, workflow names, … — is scrubbed with the session redactor before
+// Callers pass the report through redactReportData() FIRST (B9): every string field (steps,
+// nextStep, missingPrecondition, workflow names, …) is scrubbed with the session redactor before
 // any format escapes it, so XML/JSON/Markdown escaping can never hide a secret from redaction.
 
 import { createHash } from 'node:crypto';
@@ -44,7 +44,7 @@ export interface ReportFinding {
   evidence?: string;
   screen?: string;
   screenshotUri?: string;
-  /** Identical occurrences this (deduplicated) finding stands for — see report/findingsDedupe.ts. */
+  /** Identical occurrences this (deduplicated) finding stands for (see report/findingsDedupe.ts). */
   count?: number;
 }
 export interface ReportMutation {
@@ -102,7 +102,7 @@ export interface ReportData {
   environmentChanges: string[];
   ciMutations?: string[];
   mutationLedger?: ReportMutation[];
-  /** Session was rehydrated after a server restart with prior secret-bearing state —
+  /** Session was rehydrated after a server restart with prior secret-bearing state.
    * pre-restart secrets are no longer in the redaction set for artifacts written since. */
   redactionDegraded?: boolean;
   guardrailOverrides: string[];
@@ -154,7 +154,7 @@ export interface ReportData {
 /**
  * Deep-redact a report (B9): returns a copy where EVERY string value at any depth (and every string
  * object key) has been passed through the session redactor. Run it once on the assembled report,
- * before persisting it or rendering any export format — escaping (`&` → `&amp;`, `"` → `\"`) would
+ * before persisting it or rendering any export format. Escaping (`&` > `&amp;`, `"` > `\"`) would
  * otherwise turn a secret like `P@ss&w0rd"1` into text the redactor no longer matches.
  */
 export function redactReportData<T>(value: T, redact: Redactor): T {
@@ -371,19 +371,19 @@ function tableCell(s: string): string {
 }
 
 function compactValue(value: unknown, maxLength = 180): string {
-  if (value == null) return '—';
+  if (value == null) return '-';
   let raw: string;
   try {
     raw = typeof value === 'string' ? value : JSON.stringify(value);
   } catch {
     raw = String(value);
   }
-  if (!raw) return '—';
+  if (!raw) return '-';
   return raw.length > maxLength ? `${raw.slice(0, Math.max(0, maxLength - 1))}…` : raw;
 }
 
 function mutationTime(at: number | undefined): string {
-  return typeof at === 'number' && Number.isFinite(at) ? new Date(at).toISOString() : '—';
+  return typeof at === 'number' && Number.isFinite(at) ? new Date(at).toISOString() : '-';
 }
 
 function mutationConsentSummary(m: ReportMutation): string {
@@ -398,7 +398,7 @@ function mutationEvidenceSummary(m: ReportMutation): string {
     m.ledgerUri ? `[ledger](${m.ledgerUri})` : '',
     m.consent?.payloadHash ? `payload ${m.consent.payloadHash.slice(0, 12)}` : '',
   ].filter(Boolean);
-  return parts.length ? parts.join('; ') : '—';
+  return parts.length ? parts.join('; ') : '-';
 }
 
 export function inlinePrSummary(r: ReportData): string {
@@ -413,7 +413,7 @@ export function inlinePrSummary(r: ReportData): string {
     `Native health: ${r.nativeHealth}. App health: ${r.appHealth}.`,
   ];
   if (r.automationBackend) lines.push(`Backend: ${r.automationBackend.description}.`);
-  if (r.readiness?.length) lines.push(`Readiness: ${r.readiness.join(' → ')}.`);
+  if (r.readiness?.length) lines.push(`Readiness: ${r.readiness.join(' > ')}.`);
   if (r.automationReadiness) lines.push(`Automation readiness: ${r.automationReadiness.grade} (${r.automationReadiness.score}/100).`);
   lines.push(`Likely category: ${category}.`, `Evidence: ${evidenceSummary(r, problem)}.`, `Next action: ${r.executiveSummary.nextAction}`);
   return lines.join('\n');
@@ -422,7 +422,7 @@ export function inlinePrSummary(r: ReportData): string {
 export function toMarkdown(r: ReportData): string {
   const L: string[] = [];
   const evidenceTaxonomy = r.evidenceTaxonomy ?? evidenceTaxonomyForNotes(r.testOutcomes);
-  L.push(`# QA report — ${r.appId ?? 'app'}`);
+  L.push(`# QA report: ${r.appId ?? 'app'}`);
   L.push('');
   L.push('## PR summary', '');
   L.push('```text');
@@ -456,7 +456,7 @@ export function toMarkdown(r: ReportData): string {
   }
   if (r.readiness?.length) {
     L.push('', '## Capability readiness', '');
-    L.push(`- Labels: ${r.readiness.join(' → ')}.`);
+    L.push(`- Labels: ${r.readiness.join(' > ')}.`);
     L.push(`- Highest: ${r.readiness.at(-1)}.`);
   }
   if (r.wda) {
@@ -523,7 +523,7 @@ export function toMarkdown(r: ReportData): string {
         .filter(Boolean)
         .join('; ')
         .replace(/\|/g, '\\|');
-      L.push(`| ${n.workflow} | ${OUTCOME_MARK[n.outcome] ?? ''} ${n.outcome} | ${detail || '—'} |`);
+      L.push(`| ${n.workflow} | ${OUTCOME_MARK[n.outcome] ?? ''} ${n.outcome} | ${detail || '-'} |`);
     }
 
     L.push('', '## Evidence quality', '');
@@ -536,7 +536,7 @@ export function toMarkdown(r: ReportData): string {
     L.push('', '| Workflow | Evidence | Authority | Notes |');
     L.push('| --- | --- | --- | --- |');
     for (const ev of evidenceTaxonomy.assessments) {
-      L.push(`| ${tableCell(ev.workflow)} | ${ev.kind} | ${ev.authority} | ${ev.warning ? tableCell(ev.warning) : '—'} |`);
+      L.push(`| ${tableCell(ev.workflow)} | ${ev.kind} | ${ev.authority} | ${ev.warning ? tableCell(ev.warning) : '-'} |`);
     }
   }
 
@@ -554,7 +554,7 @@ export function toMarkdown(r: ReportData): string {
     L.push('| --- | --- | --- | --- | --- | --- |');
     for (const g of r.generatedValues) {
       L.push(
-        `| ${tableCell(g.fixture)} | ${tableCell(g.field)} | ${tableCell(g.generator)} | \`${tableCell(g.varName)}\` | ${g.secret ? '<redacted>' : tableCell(g.value)} | ${g.artifactUri ? `[artifact](${g.artifactUri})` : '—'} |`,
+        `| ${tableCell(g.fixture)} | ${tableCell(g.field)} | ${tableCell(g.generator)} | \`${tableCell(g.varName)}\` | ${g.secret ? '<redacted>' : tableCell(g.value)} | ${g.artifactUri ? `[artifact](${g.artifactUri})` : '-'} |`,
       );
     }
   }
@@ -567,7 +567,7 @@ export function toMarkdown(r: ReportData): string {
       const retry = f.retrySafe == null ? '' : ` retrySafe=${f.retrySafe}`;
       const next = f.nextStep ? ` Next: ${f.nextStep}` : '';
       L.push(
-        `- **[${f.severity}]**${code}${bucket}${retry} ${f.layer ?? '?'}/${f.kind}: ${f.detail}${f.count && f.count > 1 ? ` (×${f.count})` : ''}${f.evidence ? ` — _"${f.evidence}"_` : ''}${f.screenshotUri ? ` ([screenshot](${f.screenshotUri}))` : ''}${next}`,
+        `- **[${f.severity}]**${code}${bucket}${retry} ${f.layer ?? '?'}/${f.kind}: ${f.detail}${f.count && f.count > 1 ? ` (×${f.count})` : ''}${f.evidence ? `: _"${f.evidence}"_` : ''}${f.screenshotUri ? ` ([screenshot](${f.screenshotUri}))` : ''}${next}`,
       );
     }
   }
@@ -590,7 +590,7 @@ export function toMarkdown(r: ReportData): string {
     L.push('| --- | --- | --- | --- | --- | --- | --- | --- |');
     for (const m of r.mutationLedger) {
       const targetDetail =
-        [compactValue(m.target), m.detail ? compactValue(m.detail) : ''].filter((part) => part && part !== '—').join('; ') || '—';
+        [compactValue(m.target), m.detail ? compactValue(m.detail) : ''].filter((part) => part && part !== '-').join('; ') || '-';
       L.push(
         `| ${tableCell(mutationTime(m.at))} | ${tableCell(m.tool)} | ${tableCell(m.action)} | ${tableCell(m.risk)} | ${tableCell(m.status)} | ${tableCell(mutationConsentSummary(m))} | ${tableCell(mutationEvidenceSummary(m))} | ${tableCell(targetDetail)} |`,
       );
@@ -689,8 +689,8 @@ function junitTestcase(lines: string[], name: string, classname: string, body: s
   lines.push(`    </testcase>`);
 }
 
-/** The policy key reportPolicyVerdicts/applyPolicy use for a failing workflow / high finding —
- *  `${flow}: ${code}` — so exporters can tell which failures the release gate did NOT block. */
+/** The policy key reportPolicyVerdicts/applyPolicy use for a failing workflow / high finding
+ *  (`${flow}: ${code}`), so exporters can tell which failures the release gate did NOT block. */
 function workflowFailureCode(n: ReportNote): string {
   return n.steps?.find((s) => s.failureCode)?.failureCode ?? n.category ?? 'UNKNOWN';
 }
@@ -709,8 +709,8 @@ function nonBlockingFailures(policy?: PolicyDecision): Map<string, 'warned' | 's
   return out;
 }
 
-/** JUnit XML for CI test-report sinks. Two suites: recorded workflow outcomes (fail → <failure>;
- *  blocked/skipped/not_applicable → <skipped>) and findings (high → <failure>, medium/low pass with
+/** JUnit XML for CI test-report sinks. Two suites: recorded workflow outcomes (fail > <failure>;
+ *  blocked/skipped/not_applicable > <skipped>) and findings (high > <failure>, medium/low pass with
  *  the detail in system-out). Evidence URIs are listed in each testcase's system-out. When a
  *  release-gate PolicyDecision is provided, it is recorded as testsuite <properties> AND it shapes
  *  the verdicts (D5): a failure the policy only warns on or ignores (warnOn / ignoreKnown) is
@@ -763,7 +763,7 @@ export function toJUnit(r: ReportData, policy?: PolicyDecision): string {
     );
     for (const f of r.findings) {
       const name = `[${f.severity}] ${f.layer ?? '?'}/${f.kind}`;
-      const detail = `${f.detail}${f.evidence ? ` — "${f.evidence}"` : ''}${f.nextStep ? ` Next: ${f.nextStep}` : ''}`;
+      const detail = `${f.detail}${f.evidence ? `: "${f.evidence}"` : ''}${f.nextStep ? ` Next: ${f.nextStep}` : ''}`;
       const body: string[] = [];
       const systemOut: string[] = f.screenshotUri ? [f.screenshotUri] : [];
       const verdict = findingVerdict(f);
@@ -819,11 +819,11 @@ function stableHash(...parts: string[]): string {
     .slice(0, 16);
 }
 
-/** SARIF 2.1.0 for code-scanning sinks (GitHub `upload-sarif`). Findings → results with
- *  ruleId = failureCode/kind and level from severity (high→error, medium→warning, low→note); failed
+/** SARIF 2.1.0 for code-scanning sinks (GitHub `upload-sarif`). Findings > results with
+ *  ruleId = failureCode/kind and level from severity (high > error, medium > warning, low > note); failed
  *  workflows are results too. Per GitHub's SARIF requirements
  *  (https://docs.github.com/en/code-security/code-scanning/integrating-with-code-scanning/sarif-support-for-code-scanning):
- *   - every result has locations[0] → a REAL repo-relative file (`uriBaseId: %SRCROOT%`, full
+ *   - every result has locations[0] > a REAL repo-relative file (`uriBaseId: %SRCROOT%`, full
  *     region at line 1): the app-map source of the screen/workflow when known, else the project
  *     manifest (`options.sources`, built by resolveSarifSources). Results without one are dropped
  *     by code scanning ("at least one location is required").
@@ -864,7 +864,7 @@ export function toSarif(r: ReportData, policy?: PolicyDecision, options: SarifOp
     return {
       ruleId,
       level: sarifLevel(f.severity),
-      message: { text: `${f.detail}${f.evidence ? ` — "${f.evidence}"` : ''}${f.nextStep ? ` Next: ${f.nextStep}` : ''}` },
+      message: { text: `${f.detail}${f.evidence ? `: "${f.evidence}"` : ''}${f.nextStep ? ` Next: ${f.nextStep}` : ''}` },
       locations: [anchor(file)],
       partialFingerprints: fingerprints(ruleId, f.kind, f.screen ?? '', f.detail),
       ...evidenceLocations(f.screenshotUri ? [f.screenshotUri] : []),
@@ -972,11 +972,11 @@ export const GITHUB_SUMMARY_MAX_BYTES = 900 * 1024;
  *  GITHUB_SUMMARY_MAX_BYTES with a truncation note. */
 export function toGithubSummary(r: ReportData, policy?: PolicyDecision): string {
   const L: string[] = [];
-  L.push(`## Swipium QA — ${RISK_BADGE[r.executiveSummary.risk] ?? mdText(r.executiveSummary.risk.toUpperCase())}`);
+  L.push(`## Swipium QA: ${RISK_BADGE[r.executiveSummary.risk] ?? mdText(r.executiveSummary.risk.toUpperCase())}`);
   L.push('');
-  L.push(`App ${mdCode(r.appId ?? 'unknown')} on ${mdCode(r.device ?? 'device')} — session ${mdCode(r.sessionId)}.`);
+  L.push(`App ${mdCode(r.appId ?? 'unknown')} on ${mdCode(r.device ?? 'device')}, session ${mdCode(r.sessionId)}.`);
   L.push('');
-  if (policy) L.push(`**Release gate (policy):** ${policy.block ? '❌ FAIL' : '✅ PASS'} — ${mdText(policy.reason)}`, '');
+  if (policy) L.push(`**Release gate (policy):** ${policy.block ? '❌ FAIL' : '✅ PASS'}: ${mdText(policy.reason)}`, '');
   L.push(`**Next action:** ${mdText(r.executiveSummary.nextAction)}`);
   L.push('');
   const sevCount = (sev: string) => r.findings.filter((f) => f.severity === sev).length;
@@ -991,7 +991,7 @@ export function toGithubSummary(r: ReportData, policy?: PolicyDecision): string 
     const bySeverity = { high: 0, medium: 1, low: 2 } as Record<string, number>;
     const top = [...r.findings].sort((a, b) => (bySeverity[a.severity] ?? 3) - (bySeverity[b.severity] ?? 3)).slice(0, 10);
     for (const f of top) {
-      const evidence = f.screenshotUri ? `[screenshot](${f.screenshotUri})` : '—';
+      const evidence = f.screenshotUri ? `[screenshot](${f.screenshotUri})` : '-';
       const times = f.count && f.count > 1 ? ` (×${f.count})` : '';
       L.push(
         `| ${summaryCell(f.severity)} | ${tableCell(mdCode(f.failureCode ?? f.kind))} | ${summaryCell(f.detail)}${times} | ${evidence} |`,
@@ -1002,8 +1002,8 @@ export function toGithubSummary(r: ReportData, policy?: PolicyDecision): string 
   if (problems.length) {
     L.push('', '### Failed / blocked workflows', '', '| Workflow | Outcome | Reason | Evidence |', '| --- | --- | --- | --- |');
     for (const n of problems) {
-      const reason = [n.category, n.reason, n.missingPrecondition].filter(Boolean).join(': ') || '—';
-      const evidence = (n.artifactUris ?? []).map((uri, i) => `[${i + 1}](${uri})`).join(' ') || '—';
+      const reason = [n.category, n.reason, n.missingPrecondition].filter(Boolean).join(': ') || '-';
+      const evidence = (n.artifactUris ?? []).map((uri, i) => `[${i + 1}](${uri})`).join(' ') || '-';
       L.push(`| ${summaryCell(n.workflow)} | ${OUTCOME_MARK[n.outcome] ?? ''} ${n.outcome} | ${summaryCell(reason)} | ${evidence} |`);
     }
   }

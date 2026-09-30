@@ -63,13 +63,13 @@ export function auditReleaseImpact(checks: MobileAuditCheckResult[], hasBlocking
 /** Map a finished check to a one-line markdown row. */
 export function checkLine(c: MobileAuditCheckResult): string {
   const tag = c.issueId ? ` [${c.issueId}]` : '';
-  return `- ${c.status.toUpperCase()} — ${c.title}${c.reason ? `: ${c.reason}` : ''}${tag}`;
+  return `- ${c.status.toUpperCase()}: ${c.title}${c.reason ? `: ${c.reason}` : ''}${tag}`;
 }
 
 /** Render the audit run as a compact markdown block for the report / tool output. */
 export function auditRunToMarkdown(run: MobileAuditRunResult): string {
   const lines = [
-    `## Mobile Audit — ${run.profile}`,
+    `## Mobile Audit: ${run.profile}`,
     '',
     `State: **${run.state}** · Release impact: **${run.releaseImpact.toUpperCase()}**`,
     '',

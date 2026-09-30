@@ -6,28 +6,28 @@
 // Spec defaults are the pessimistic ones (readOnlyHint false, destructiveHint true,
 // idempotentHint false, openWorldHint true), so every entry is explicit:
 //
-//   readOnlyHint    true  — the tool does not change the device/simulator, the app, the project
+//   readOnlyHint    true:   the tool does not change the device/simulator, the app, the project
 //                           tree, or durable project memory (app map, issue ledger, test suite).
 //                           In-process session bookkeeping (counters, the last UI snapshot, health
 //                           findings fed to qa_report) is Swipium's own scratch state, not the
 //                           environment, and does not disqualify a tool.
-//   destructiveHint true  — the tool has an action whose PURPOSE is to delete, reset, or overwrite
+//   destructiveHint true:   the tool has an action whose PURPOSE is to delete, reset, or overwrite
 //                           user-visible state that is not Swipium-generated output:
 //                             qa_app_control   clear_data / fresh_start wipe app data (pm clear)
 //                             qa_ios           erase wipes the simulator; privacy_reset revokes grants
 //                             qa_suite_update  mergeMode replace_generated / deprecations rewrite curated cases
 //                             qa_app_map_update overwrites existing test-case/suite entries + coverage overrides
-//                   false — everything else that mutates: it installs/launches/drives the app,
+//                   false:  everything else that mutates: it installs/launches/drives the app,
 //                           writes evidence, or (re)generates Swipium-owned output under .swipium/
-//                           (flows, page objects, baselines, exports — same name = intentional
+//                           (flows, page objects, baselines, exports; same name = intentional
 //                           regeneration). qa_issue_log is an append-only event log (suppress/fix
 //                           are appended events, reversible via unsuppress / reopen). Destructive
 //                           steps inside qa_explore / qa_mobile_audit / qa_act-driven app flows are
 //                           separately consent- or flag-gated by Swipium itself.
-//   idempotentHint  true  — repeating the same call leaves the environment as the first did
+//   idempotentHint  true:   repeating the same call leaves the environment as the first did
 //                           (set orientation/location/network to X; cancel a job; recompile the
 //                           same suite to the same files).
-//   openWorldHint   false — everywhere: Swipium only talks to local simulators, local toolchains,
+//   openWorldHint   false:  everywhere. Swipium only talks to local simulators, local toolchains,
 //                           and the local project (a non-loopback WDA URL is consent-gated).
 
 import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';

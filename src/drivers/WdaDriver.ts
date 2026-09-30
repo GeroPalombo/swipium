@@ -78,9 +78,9 @@ function errorSummary(e: unknown): string {
     .slice(0, 300);
 }
 
-/** PURE: where iOS "back" is on this screen — the center of the navigation bar's back button in a
+/** PURE: where iOS "back" is on this screen: the center of the navigation bar's back button in a
  * (normalized) WDA source, or null. The back button is the FIRST XCUIElementTypeButton inside the
- * first XCUIElementTypeNavigationBar, and only when it sits in the bar's LEFT half — a root screen's
+ * first XCUIElementTypeNavigationBar, and only when it sits in the bar's LEFT half. A root screen's
  * bar can hold only trailing buttons ("Edit", "+"), which are not back. */
 export function iosBackButtonPoint(normalizedXml: string): { x: number; y: number } | null {
   const nodes = parseSnapshot(normalizedXml).allNodes;
@@ -104,7 +104,7 @@ export function iosBackButtonPoint(normalizedXml: string): { x: number; y: numbe
 
 /** Thrown (message prefix) when iOS has no way to go "back" on the current screen. */
 export const IOS_BACK_UNSUPPORTED =
-  'BACKEND_UNSUPPORTED: iOS has no system back key — no navigation-bar back button was found and the screen size needed for an edge-swipe back gesture is unknown.';
+  'BACKEND_UNSUPPORTED: iOS has no system back key. No navigation-bar back button was found and the screen size needed for an edge-swipe back gesture is unknown.';
 
 export class WdaDriver implements Driver {
   readonly kind = 'wda' as const;
@@ -147,7 +147,7 @@ export class WdaDriver implements Driver {
     }
   }
 
-  /** Last normalized page source from dumpXml() — cleared by every state-changing call, so while
+  /** Last normalized page source from dumpXml(). It's cleared by every state-changing call, so while
    * set it IS the current screen (as of `at`). Lets `press back` skip a fresh /source. */
   private lastSource?: { sid?: string; xml: string; at: number; epoch: number };
   /** Focused element found by clearFocusedText(), reused by the next inputText(). */
@@ -184,7 +184,7 @@ export class WdaDriver implements Driver {
 
   /** Run a session-scoped WDA operation with the bound signal + per-endpoint timeouts. On
    * "invalid session id" (WDA restarted / session reaped) the cached session is dropped and
-   * the operation retried ONCE on a fresh session — the failed request never acted. The fresh
+   * the operation retried ONCE on a fresh session; the failed request never acted. The fresh
    * session is created with forceAppLaunch:false + shouldTerminateApp:false (reuseRunningApp) so
    * WDA does NOT terminate + relaunch the app under test (WebDriverAgent FBSessionCommands: when
    * `bundleId` is passed, `forceAppLaunch` defaults to YES and a running app is relaunched; with
@@ -339,7 +339,7 @@ export class WdaDriver implements Driver {
         await dismissWdaKeyboard(this.baseUrl, sid);
       } catch (e) {
         if (isInvalidWdaSession(e)) throw e; // let withSession recover the session
-        // WDA 400 "Did not know how to dismiss the keyboard" — the app offers no generic way
+        // WDA 400 "Did not know how to dismiss the keyboard": the app offers no generic way
         // (no Done/Return-dismiss). Report "could not hide" instead of an untyped error.
         return false;
       }
@@ -380,7 +380,7 @@ export class WdaDriver implements Driver {
     return this.withSession((sid) => this.timed('screenshot', () => wdaScreenshot(this.baseUrl, sid)));
   }
   async dumpXml(opts: DumpOptions = {}): Promise<string> {
-    // opts.timeoutMs bounds the /source request (default 30 s) — the settle loop passes its
+    // opts.timeoutMs bounds the /source request (default 30 s). The settle loop passes its
     // remaining deadline. Retries are the caller's loop; WDA itself is not retried here.
     let sid: string | undefined;
     const xml = normalizeWdaSource(
@@ -493,7 +493,7 @@ export class WdaDriver implements Driver {
     await this.inputText('\n');
   }
 
-  /** Last `back` strategy used ('nav_button' | 'edge_swipe') — surfaced by qa_act. */
+  /** Last `back` strategy used ('nav_button' | 'edge_swipe'), surfaced by qa_act. */
   lastBackVia?: 'nav_button' | 'edge_swipe';
   private async backIn(sid: string, cachedXml?: string): Promise<void> {
     // The latest post-settle source (nothing acted since) is the current screen: try its back
@@ -575,7 +575,7 @@ export class WdaDriver implements Driver {
         size = await wdaWindowSize(this.baseUrl, sid);
       } catch (e) {
         if (isInvalidWdaSession(e)) throw e;
-        // older WDA builds lack /window/size — fall back to the page-source root bounds
+        // older WDA builds lack /window/size, so fall back to the page-source root bounds
         const xml = normalizeWdaSource(await this.timed('source', () => wdaSource(this.baseUrl, sid)));
         const m = xml.match(/bounds="\[0,0\]\[(\d+),(\d+)\]"/);
         size = m ? { width: Number(m[1]), height: Number(m[2]) } : null;
@@ -628,7 +628,7 @@ export class WdaDriver implements Driver {
     });
   }
 
-  // Real secure-field signal for native-selector typing — resolve the element and
+  // Real secure-field signal for native-selector typing: resolve the element and
   // read its `type` attribute (XCUIElementTypeSecureTextField), accepting a boolean `secure`
   // attribute where a WDA build exposes one instead.
   async isSecureBySelector(using: NativeSelectorStrategy, value: string): Promise<boolean> {
@@ -639,7 +639,7 @@ export class WdaDriver implements Driver {
     try {
       if (/SecureTextField/i.test(await wdaElementAttribute(this.baseUrl, sid, el.elementId, 'type'))) return true;
     } catch {
-      // some builds don't serve /attribute/type — fall through to the `secure` attribute
+      // some builds don't serve /attribute/type, so fall through to the `secure` attribute
     }
     return /^(true|1)$/i.test(await wdaElementAttribute(this.baseUrl, sid, el.elementId, 'secure').catch(() => ''));
   }

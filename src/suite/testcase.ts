@@ -1,4 +1,4 @@
-// Test-case documentation — turn a generated POM suite + the session's observed
+// Test-case documentation: turn a generated POM suite + the session's observed
 // state into an industry-style test case catalog (TC-xxx) with preconditions, steps, expected
 // result, automation status, known blockers, and last-run evidence. PURE; callers serialize.
 
@@ -18,12 +18,12 @@ export interface TestCase {
   fixtures: string[];
   steps: string[];
   expected: string[];
-  /** What the run actually observed for this flow (Deliverable 4) — never conflated with `expected`. */
+  /** What the run actually observed for this flow (Deliverable 4). Never conflated with `expected`. */
   actualResult: string[];
   cleanup: string[];
   risks: string[];
   automation: { status: 'automated' | 'partial' | 'manual'; test?: string; pageObjects: string[] };
-  /** Replay proof state for this case's suite (Deliverable 4) — honest default `not_replayed`. */
+  /** Replay proof state for this case's suite (Deliverable 4). Honest default `not_replayed`. */
   replayStatus: 'not_replayed' | 'dry_run' | 'same_session' | 'fresh_state' | 'failed' | 'blocked';
   knownBlockers: string[];
   evidence: string[];
@@ -72,12 +72,12 @@ export function generateTestCases(
   const notes = opts.notes ?? [];
   const replayStatus = opts.replayStatus ?? 'not_replayed';
 
-  // Automation status from the locator audit: any brittle locator → partial, else automated.
+  // Automation status from the locator audit: any brittle locator > partial, else automated.
   const status: TestCase['automation']['status'] = pom.audit.brittle > 0 ? 'partial' : 'automated';
 
   const knownBlockers = notes
     .filter((n) => n.outcome === 'blocked' || n.category === 'missing_test_data')
-    .map((n) => `${n.workflow}: ${n.reason ?? n.missingPrecondition ?? 'blocked'}${n.recommendedSetup ? ` — ${n.recommendedSetup}` : ''}`);
+    .map((n) => `${n.workflow}: ${n.reason ?? n.missingPrecondition ?? 'blocked'}${n.recommendedSetup ? `: ${n.recommendedSetup}` : ''}`);
   const evidence = notes.flatMap((n) => n.artifactUris ?? []);
   const verifiedVisualOnly = notes.some((n) => n.method === 'visual' || n.verifiedVisually);
 
@@ -88,8 +88,8 @@ export function generateTestCases(
   // reviewer/QA can compare intent vs. outcome. When the flow was only recorded (not executed as a
   // discrete test), say so honestly rather than implying a pass.
   const actualResult = notes.length
-    ? notes.map((n) => `${n.workflow}: ${n.outcome}${n.reason ? ` — ${n.reason}` : ''}`)
-    : ['Not executed as a discrete test in this run — generated from recorded actions; replay to capture an actual result.'];
+    ? notes.map((n) => `${n.workflow}: ${n.outcome}${n.reason ? `: ${n.reason}` : ''}`)
+    : ['Not executed as a discrete test in this run. Generated from recorded actions; replay to capture an actual result.'];
 
   const tc: TestCase = {
     id: `TC-${(opts.appId ?? 'APP').split('.').pop()!.slice(0, 6).toUpperCase()}-001`,
@@ -104,8 +104,8 @@ export function generateTestCases(
     actualResult,
     cleanup: ['return to home/initial screen', ...(verifiedVisualOnly ? [] : [])],
     risks: [
-      ...(pom.audit.brittle > 0 ? [`${pom.audit.brittle} brittle locator(s) — flow may break on UI changes (see locator audit)`] : []),
-      ...(verifiedVisualOnly ? ['some verification was visual-only — weaker than a structured assertion'] : []),
+      ...(pom.audit.brittle > 0 ? [`${pom.audit.brittle} brittle locator(s): flow may break on UI changes (see locator audit)`] : []),
+      ...(verifiedVisualOnly ? ['some verification was visual-only, which is weaker than a structured assertion'] : []),
       ...(pom.variables.length ? [`requires test data: ${pom.variables.join(', ')}`] : []),
     ],
     automation: {

@@ -9,12 +9,12 @@ export type SwipeDirection = 'up' | 'down' | 'left' | 'right';
 export type SwipeArea = 'center' | 'top' | 'bottom' | 'left' | 'right';
 export type SwipeVec = [number, number, number, number];
 
-/** ~8% edge inset used by qa_act gestures — stays clear of the iOS system-gesture zones
+/** ~8% edge inset used by qa_act gestures. Stays clear of the iOS system-gesture zones
  * (home indicator, notification/control-center edges). Flow replay keeps inset 0 so
  * existing recorded flows keep their historical [1, size-1] clamp. */
 export const GESTURE_EDGE_INSET = 0.08;
 
-/** Legacy fixed-coordinate vectors — used ONLY when screenSize() is unknown. */
+/** Legacy fixed-coordinate vectors, used ONLY when screenSize() is unknown. */
 export const FALLBACK_SWIPE: Record<SwipeDirection, SwipeVec> = {
   up: [540, 1500, 540, 600],
   down: [540, 600, 540, 1500],
@@ -67,8 +67,8 @@ export function swipeVector(
 }
 
 /** Swipe starting at an explicit point (a resolved qa_act target). The start is used
- * VERBATIM — it is a real element the caller asked to swipe from, and 0 is a legitimate
- * coordinate — while the derived end point is clamped on-screen. */
+ * VERBATIM (it is a real element the caller asked to swipe from, and 0 is a legitimate
+ * coordinate), while the derived end point is clamped on-screen. */
 export function swipeFromPoint(
   size: { width: number; height: number } | null,
   from: { x: number; y: number },
@@ -90,7 +90,7 @@ export function swipeFromPoint(
 
 export type GestureRect = [number, number, number, number];
 
-/** Fraction of a scrollable container kept clear on each side when a scroll is anchored in it —
+/** Fraction of a scrollable container kept clear on each side when a scroll is anchored in it.
  * keeps the finger off sticky headers/footers that sit flush with the container's edges. */
 export const SCROLL_CONTAINER_INSET = 0.1;
 
@@ -100,7 +100,7 @@ const MIN_SCROLL_CONTAINER = 48;
 /** PURE: the visible rect of the LARGEST scrollable node, or null when there is none worth using.
  * Android marks containers `scrollable="true"`; the WDA source normalizer maps
  * ScrollView/Table/CollectionView to the same attribute. A clipped Android node can report
- * inverted bounds (e.g. `[210,315][750,124]` — its visible area is empty): such nodes are
+ * inverted bounds (e.g. `[210,315][750,124]`, its visible area is empty): such nodes are
  * ignored, and every rect is clipped to the screen when the size is known. */
 export function largestScrollableRect(
   nodes: ReadonlyArray<{ scrollable: boolean; bounds: readonly [number, number, number, number] }> | undefined,
@@ -117,7 +117,7 @@ export function largestScrollableRect(
       x2 = Math.min(size.width, x2);
       y2 = Math.min(size.height, y2);
     }
-    // inverted / collapsed after clipping → not visible, can't be a gesture anchor
+    // inverted / collapsed after clipping > not visible, can't be a gesture anchor
     if (x2 - x1 < MIN_SCROLL_CONTAINER || y2 - y1 < MIN_SCROLL_CONTAINER) continue;
     const area = (x2 - x1) * (y2 - y1);
     if (area > bestArea) {
@@ -131,7 +131,7 @@ export function largestScrollableRect(
 /** Swipe vector anchored INSIDE a scrollable container: centered on the container, travel =
  * `distance` × the container's extent on the swipe axis, both endpoints kept `containerInset`
  * inside the container AND (when possible) `screenInset` inside the screen. A swipe that starts
- * on a sticky app bar above the list moves nothing — this is why the container matters. */
+ * on a sticky app bar above the list moves nothing. That's why the container matters. */
 export function swipeInRect(
   rect: GestureRect,
   dir: SwipeDirection,

@@ -8,7 +8,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 const scope = new AsyncLocalStorage<AbortSignal | undefined>();
 
-/** Run `fn` with `signal` as the current cancellation signal (replacing any outer one — a job's
+/** Run `fn` with `signal` as the current cancellation signal (replacing any outer one: a job's
  *  signal never leaks into an interactive call made from its context, and vice versa). */
 export function runWithSignal<T>(signal: AbortSignal | undefined, fn: () => T): T {
   return scope.run(signal, fn);
@@ -22,7 +22,7 @@ export function currentSignal(): AbortSignal | undefined {
 /**
  * Is `e` the result of a CANCELLATION rather than a real failure? True when the error (or any
  * error in its `cause` chain) is an AbortError / has code ABORT_ERR, or when the current call's
- * cancellation signal (abortScope) has fired — drivers wrap aborted adb/WDA calls in their own
+ * cancellation signal (abortScope) has fired. Drivers wrap aborted adb/WDA calls in their own
  * messages ("uiautomator dump failed … AbortError", "WDA GET /source aborted (cancelled)"), so the
  * signal is the authoritative check.
  *

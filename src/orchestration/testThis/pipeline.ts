@@ -1,7 +1,7 @@
-// qa_test_this execute pipeline — the background job that does the heavy device work:
-// A. obtain an installable artifact (build from source / .aab → APK) → B. prepare
-// (boot/install/launch) → C. smoke (+ first-run autonomy, optional guided exploration) →
-// D. optional suite generation + durable app-map update → E. terminal state (./terminal.js
+// qa_test_this execute pipeline: the background job that does the heavy device work:
+// A. obtain an installable artifact (build from source / .aab > APK) > B. prepare
+// (boot/install/launch) > C. smoke (+ first-run autonomy, optional guided exploration) >
+// D. optional suite generation + durable app-map update > E. terminal state (./terminal.js
 // generates the report and lands the uniform envelope on the job result).
 
 import { buildPlan, type BuildPlatform } from '../../build/plan.js';
@@ -79,7 +79,7 @@ const SUITE_MIME_BY_EXT: Record<string, string> = {
  * bare `file://` paths into the job artifacts advertised an unfetchable deliverable. Each written
  * file is copied into the session's artifact store and its swipium:// URI pushed into `artifacts`;
  * the on-disk location stays visible in the artifact label (repo-relative path) and in the job
- * result's `suite.written`. Names are prefixed with their .swipium subdir (pages/login.yaml →
+ * result's `suite.written`. Names are prefixed with their .swipium subdir (pages/login.yaml >
  * pages-login.yaml) so same-named files from different subdirs cannot collide.
  */
 export function registerSuiteArtifacts(sessions: SessionStore, session: Session, written: string[], artifacts: string[]): string[] {
@@ -113,7 +113,7 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
   const firstRunPatches: AppMapPatch[] = []; // first-run classifications folded into the durable map (§D)
   // Suite outputs (set in the terminal section) are embedded in the report, not just the job result.
   let suiteForReport: SuiteGenerationResult | undefined;
-  // Every terminal state — completed OR blocked — generates a report artifact (Milestone B).
+  // Every terminal state (completed OR blocked) generates a report artifact (Milestone B).
   const finish = createFinisher({ sessions, session, job, a, attempted, artifacts, getSuiteForReport: () => suiteForReport, upd });
 
   try {
@@ -157,8 +157,8 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
       else appPath = res.artifact.path;
       appId = res.artifact.appId ?? appId;
     } else if (a.isAab && a.art.best) {
-      const prog = startProgress(sessions, session, job, 'converting_aab', { statusText: 'Converting .aab → universal APK (bundletool).' });
-      attempted.push('aab → apk conversion');
+      const prog = startProgress(sessions, session, job, 'converting_aab', { statusText: 'Converting .aab > universal APK (bundletool).' });
+      attempted.push('aab > apk conversion');
       const conv = await convertAabToApk(a.art.best.path, session.root, { signal });
       if (signal?.aborted) return;
       if (!conv.ok) {
@@ -170,7 +170,7 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
       }
       prog.done('Universal APK ready.');
       apkPath = conv.apkPath;
-      sessions.addWorkaround(session, 'converted .aab → universal .apk for install');
+      sessions.addWorkaround(session, 'converted .aab > universal .apk for install');
     }
 
     // ---- B. prepare (boot/install/launch) ----
@@ -186,7 +186,7 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
       attempted.push('prepare android (boot/install/launch)');
       // No unchecked cast: a session left on an iOS (WDA/simctl) driver gets a fresh adb driver.
       const driver = session.driver instanceof DirectDriver ? session.driver : new DirectDriver();
-      // The job's signal is scoped by execute.ts (runWithSignal) — adb calls inherit it.
+      // The job's signal is scoped by execute.ts (runWithSignal), so adb calls inherit it.
       const res = await prepareAndroid(
         sessions,
         session,
@@ -232,9 +232,9 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
     const driver = session.driver;
     if (!driver) return await finish('blocked', 'NO_DEVICE', '❌ No driver bound after prepare.');
     const smoke = await runSmoke(sessions, session, driver, { variables: sessions.inputVariables(session) });
-    sessions.milestone(session, 'smoke_completed'); // persisted flag — qa_status must not re-recommend qa_smoke
+    sessions.milestone(session, 'smoke_completed'); // persisted flag: qa_status must not re-recommend qa_smoke
     for (const art of session.artifacts) if (!artifacts.includes(art.uri)) artifacts.push(art.uri);
-    smokeProg.done(`smoke done — flows ${smoke.flowsPassed}/${smoke.flowsTotal}.`);
+    smokeProg.done(`smoke done: flows ${smoke.flowsPassed}/${smoke.flowsTotal}.`);
 
     let pendingQuestion: NeedsInputPayload | undefined;
     // ---- C1.5 first-run autonomy: when the app appears gated AND the environment
@@ -279,8 +279,8 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
           );
           for (const u of fr.evidenceUris) if (!artifacts.includes(u)) artifacts.push(u);
           firstRunPatches.push(...fr.mapUpdates); // folded into the durable app map in §D
-          sessions.addWorkaround(session, `first-run: ${fr.pathTaken} path → ${fr.accountOutcome} (${fr.environment.environment} env)`);
-          frProg.done(`first-run ${fr.state} — account ${fr.accountOutcome}`);
+          sessions.addWorkaround(session, `first-run: ${fr.pathTaken} path > ${fr.accountOutcome} (${fr.environment.environment} env)`);
+          frProg.done(`first-run ${fr.state}, account ${fr.accountOutcome}`);
           if (fr.needsInput && !isLoginDeclined(session)) pendingQuestion = firstRunQuestion(fr.needsInput, session.id, attempted);
         }
       } catch (e) {
@@ -289,7 +289,7 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
     }
 
     // A first-run question the caller asked to stop on (stopOnNeedsInput / goal:test_login) ends the
-    // job in needs_input — the ONE question + resume call ride on the result (report still generated).
+    // job in needs_input. The ONE question + resume call ride on the result (report still generated).
     if (pendingQuestion && a.stopOnNeedsInput) {
       return await finish(
         'needs_input',
@@ -353,7 +353,7 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
       }
     }
 
-    // ---- D. optional suite generation (Milestone C — really writes + compiles, or honest skip) ----
+    // ---- D. optional suite generation (Milestone C: really writes + compiles, or honest skip) ----
     let suite: SuiteGenerationResult | undefined;
     if (a.generateSuite) {
       const suiteProg = startProgress(sessions, session, job, 'suite_generating', {
@@ -362,23 +362,23 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
       attempted.push('generate suite');
       suite = generateAndCompileSuite(sessions, session, { save: true, compile: true });
       if (suite.skipped) {
-        suiteProg.done(`suite skipped — ${suite.skippedReason}`);
+        suiteProg.done(`suite skipped: ${suite.skippedReason}`);
       } else {
         registerSuiteArtifacts(sessions, session, suite.written, artifacts);
         sessions.addWorkaround(session, `generated a POM suite (${suite.compiledFlows.filter((c) => c.ok).length} runnable flow(s))`);
-        suiteProg.done(`suite ready — runnable=${suite.suiteRunnable}`);
+        suiteProg.done(`suite ready: runnable=${suite.suiteRunnable}`);
       }
       suiteForReport = suite; // embed suite outputs in the report artifact (item 3)
     }
 
-    // ---- D2. App Knowledge Map — update the durable map after runtime execution.
+    // ---- D2. App Knowledge Map: update the durable map after runtime execution.
     // Best-effort: a map failure must never turn a passing run into a blocked one.
     let appMap: { appMapUri?: string; appMapSummary?: Record<string, unknown>; mapCoverageDelta?: Record<string, number> } | undefined;
     try {
       const { buildAppMap, summarizeMap, quickCoverage } = await import('../../appMap/build.js');
       const at = new Date().toISOString();
       const before = quickCoverage(session.root, at);
-      // If guided exploration ran, merge its screen graph too (links runtime → static screens).
+      // If guided exploration ran, merge its screen graph too (links runtime > static screens).
       let exploreGraph: import('../../explore/graph.js').SerializedGraph | null = null;
       if (session.exploration?.graphUri) {
         const found = sessions.findArtifact(session.exploration.graphUri);
@@ -390,7 +390,7 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
           }
         }
       }
-      // Static topology was already built/refreshed pre-launch (Fix 1) — merge runtime on top. With no
+      // Static topology was already built/refreshed pre-launch (Fix 1), so merge runtime on top. With no
       // existing map (pre-launch failed) runtime_merge still rescans static (doRescan when !existed).
       const built = buildAppMap(session.root, {
         mode: 'runtime_merge',

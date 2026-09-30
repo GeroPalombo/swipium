@@ -1,4 +1,4 @@
-// SWIPIUM Issue Log — high-level service + query layer.
+// SWIPIUM Issue Log: high-level service + query layer.
 //
 // This is the single entry point callers (health oracle, reports, explore, mobile audit, tools)
 // use to record observations and mutate lifecycle. It ties together fingerprinting, classification,
@@ -88,7 +88,7 @@ function notFound(key: { issueId?: string; fingerprint?: string }): LedgerMutati
 }
 
 /**
- * Record one observation: fingerprint → classify → decide lifecycle → append event(s) → update
+ * Record one observation: fingerprint > classify > decide lifecycle > append event(s) > update
  * index. Reopens a fixed issue (with recurrence message) when its fingerprint is seen again.
  * The whole read-modify-write runs under the cross-process ledger lock.
  */
@@ -208,7 +208,7 @@ export function markFixed(
         : {
             ok: false,
             code: 'ISSUE_STATE_INVALID',
-            reason: `Issue ${existing.issueId} is "${existing.state}" — only an active issue (${FIXABLE_STATES.join('/')}) can be marked fixed`,
+            reason: `Issue ${existing.issueId} is "${existing.state}"; only an active issue (${FIXABLE_STATES.join('/')}) can be marked fixed`,
           },
   );
 }
@@ -329,7 +329,7 @@ export function verifyFixed(
       return {
         ok: false,
         code: 'ISSUE_STATE_INVALID',
-        reason: `Issue ${existing.issueId} is "${existing.state}", not "fixed" — only a fixed issue can be verified`,
+        reason: `Issue ${existing.issueId} is "${existing.state}", not "fixed"; only a fixed issue can be verified`,
       };
     const hasEvidence = Boolean(opts.reportUri || opts.testCaseId || opts.auditCheckId || (opts.evidenceUris && opts.evidenceUris.length));
     if (!hasEvidence)

@@ -1,4 +1,4 @@
-// Build execution service (hardening P0.1) — runs a build plan's prerequisite + build steps,
+// Build execution service (hardening P0.1): runs a build plan's prerequisite + build steps,
 // captures a combined log artifact, and re-resolves the produced artifact. Extracted from the
 // Build worker used by qa_test_this execute mode. Returns a structured
 // result (build failures are typed environment/build blockers, never app QA failures).
@@ -82,7 +82,7 @@ export async function executeBuild(
           owner: a.owner,
           fix: a.fix,
           signal: a.signal,
-          error: `${a.reason} — ${step.label} exited ${r.code}${r.timedOut ? ' (timed out)' : ''}`,
+          error: `${a.reason}: ${step.label} exited ${r.code}${r.timedOut ? ' (timed out)' : ''}`,
         };
       }
     }

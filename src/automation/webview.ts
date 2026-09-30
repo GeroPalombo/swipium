@@ -1,4 +1,4 @@
-// Automation Kernel V2 — Workstream 7 (Stage 1): Hybrid / WebView awareness. Pure detection of
+// Automation Kernel V2, Workstream 7 (Stage 1): Hybrid / WebView awareness. Pure detection of
 // probable WebView / canvas / map surfaces from UI-tree element classes, plus the diagnostics that
 // tell a developer whether structured automation is possible or whether Appium context support (or a
 // native accessibility id) is required. Stage 1 is detection + read-only Appium context inventory; it
@@ -45,7 +45,7 @@ function classify(value: string): HybridSurfaceKind | null {
 export interface DetectHybridOptions {
   /** Appium contexts reported by a live session (e.g. ['NATIVE_APP', 'WEBVIEW_com.x']). */
   contexts?: string[];
-  /** Backend capabilities — used to decide whether Appium context switching is even possible. */
+  /** Backend capabilities. Used to decide whether Appium context switching is even possible. */
   caps?: BackendCapabilities;
   /** How often steps fell back to visual-only on this screen (a soft hybrid signal). */
   visualFallbackRatio?: number;
@@ -118,7 +118,7 @@ export interface AppiumContextInventory {
   webviewContexts: string[];
 }
 
-/** Read-only Appium context inventory (Stage 2 deliverable — no arbitrary JS execution). */
+/** Read-only Appium context inventory (Stage 2 deliverable, no arbitrary JS execution). */
 export function summarizeAppiumContexts(contexts: string[], current?: string | null): AppiumContextInventory {
   const webviewContexts = contexts.filter((c) => !/^native_app$/i.test(c));
   return { current: current ?? null, available: [...contexts], webviewContexts };

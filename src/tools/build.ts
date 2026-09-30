@@ -19,7 +19,7 @@ import { executeBuild } from '../services/build.js';
 import type { Session, SessionStore, JobRecord } from '../session/store.js';
 import { runWithSignal } from '../lib/abortScope.js';
 
-const DEFAULT_BUILD_TIMEOUT_MS = 20 * 60_000; // 20 min — native builds are slow
+const DEFAULT_BUILD_TIMEOUT_MS = 20 * 60_000; // 20 min, native builds are slow
 
 async function rootFrom(
   server: McpServer,
@@ -60,7 +60,7 @@ export function registerBuild(server: McpServer, sessions: SessionStore): void {
         'Build the app from source, or just propose how. mode:"plan" (default, side-effect free): exact prerequisite + build commands, ' +
         'cwd, expected artifact globs, toolchain status per framework (Expo/RN/native/Flutter). mode:"run" (consent-gated job, needs ' +
         'sessionId): runs them, stores a build log artifact, and re-resolves the produced artifact; failures are typed ' +
-        '(GRADLE_FAILED, XCODEBUILD_FAILED, FLUTTER_BUILD_FAILED, BUILD_TIMED_OUT, DEPENDENCY_INSTALL_REQUIRED, …) — a build failure is ' +
+        '(GRADLE_FAILED, XCODEBUILD_FAILED, FLUTTER_BUILD_FAILED, BUILD_TIMED_OUT, DEPENDENCY_INSTALL_REQUIRED, ...). A build failure is ' +
         'not a test failure.',
       inputSchema: {
         mode: z.enum(['plan', 'run']).optional(),
@@ -77,7 +77,7 @@ export function registerBuild(server: McpServer, sessions: SessionStore): void {
       const effectiveMode = mode ?? 'plan';
       const notes: string[] = [];
 
-      // ---- mode:"plan" — read-only proposal (merged twin, 1.5.0). ----
+      // ---- mode:"plan": read-only proposal (merged twin, 1.5.0). ----
       if (effectiveMode === 'plan') {
         const ignored = [
           timeoutMs !== undefined && 'timeoutMs',
@@ -85,7 +85,7 @@ export function registerBuild(server: McpServer, sessions: SessionStore): void {
           approve !== undefined && 'approve',
         ].filter((x): x is string => !!x);
         if (ignored.length)
-          notes.push(`ignored parameter(s) not applicable to mode:"plan": ${ignored.join(', ')} — re-run with mode:"run" to build`);
+          notes.push(`ignored parameter(s) not applicable to mode:"plan": ${ignored.join(', ')}; re-run with mode:"run" to build`);
         const root = await rootFrom(server, sessions, sessionId, projectRoot);
         if (typeof root !== 'string') return qaAnnotate(root.error, notes);
         const plan = await buildPlan({ projectRoot: root, platform: platform as BuildPlatform, variant });
@@ -98,9 +98,9 @@ export function registerBuild(server: McpServer, sessions: SessionStore): void {
         return qaAnnotate(qaOk({ plan }, `${planSummary(plan)}\nExecute with qa_build { mode:"run" }.`), notes);
       }
 
-      // ---- mode:"run" — consent-gated build job (formerly the bare qa_build). ----
+      // ---- mode:"run": consent-gated build job (formerly the bare qa_build). ----
       if (projectRoot !== undefined)
-        notes.push('ignored parameter not applicable to mode:"run": projectRoot — mode:"run" builds the session\'s project root');
+        notes.push('ignored parameter not applicable to mode:"run": projectRoot (mode:"run" builds the session\'s project root)');
       if (!sessionId) {
         return qaAnnotate(
           qaError({

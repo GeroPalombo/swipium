@@ -3,7 +3,7 @@
 // server instances are common (multiple MCP clients), and an unlocked read-modify-write lets them
 // clobber each other's entries. The lock is a DIRECTORY (mkdir is atomic on POSIX and Windows):
 // whoever creates it holds it. Each acquisition writes an OWNER file (`<lockPath>/owner` =
-// `pid:token`, created exclusively) so release can verify the lock is still ours — a holder that
+// `pid:token`, created exclusively) so release can verify the lock is still ours. A holder that
 // stalled past the stale threshold and was taken over must NOT delete the new owner's lock.
 //
 // Stale takeover (holder crashed mid-write) is CLAIM-then-MOVE (H8, review round 2):
@@ -18,8 +18,8 @@
 // Residual race: between verify and move the path can only change if the presumed-dead holder
 // wakes up and releases, and a new holder re-creates the lock, inside that window. The post-move
 // claim check catches it: the moved lock is renamed back. If that restore fails because yet
-// another contender already created the path, the taker does NOT proceed (takeover failed → it
-// goes back to waiting) and does NOT delete the moved lock — it stays as a tombstone (never
+// another contender already created the path, the taker does NOT proceed (takeover failed > it
+// goes back to waiting) and does NOT delete the moved lock. It stays as a tombstone (never
 // treated as safe to rm while it may belong to a live holder) and is swept once older than the
 // stale threshold; the displaced holder is warned at release and removes its own tombstone.
 // Orphaned tombstones / claims (a taker crashed mid-takeover) are swept / expired as stale.
@@ -27,7 +27,7 @@
 // Two variants:
 //  - withFileLock (sync): for the tiny synchronous JSON rewrites (registry/processes/app-map
 //    save). Waits are short synchronous sleeps (Atomics.wait, 25 ms slices, ≤ MAX_WAIT_MS total),
-//    so the critical section MUST be short — a sync fn cannot be heartbeated (no timer can fire
+//    so the critical section MUST be short: a sync fn cannot be heartbeated (no timer can fire
 //    while it runs). Slow work (e.g. the app-map static scan) belongs OUTSIDE the lock.
 //  - withFileLockAsync: for async critical sections. Waits yield to the event loop and a heartbeat
 //    refreshes the lock's mtime every staleMs/3 so a long holder is never judged stale.
@@ -43,7 +43,7 @@ const MAX_WAIT_MS = 2_000;
 const RETRY_SLEEP_MS = 25;
 /** 'retry' (lock vanished / stale takeover attempted) loops without sleeping at most this many
  *  times in a row; after that it sleeps like 'busy'. A takeover that can never succeed (EACCES on
- *  the claim, rename failure, a fresh claim from a crashed taker) must not busy-spin — it would
+ *  the claim, rename failure, a fresh claim from a crashed taker) must not busy-spin, since it would
  *  block the event loop forever (the deadline is checked on EVERY iteration too). */
 const MAX_IMMEDIATE_RETRIES = 3;
 const OWNER_FILE = 'owner';
@@ -75,7 +75,7 @@ function currentOwner(lockPath: string): string | null {
   }
 }
 
-/** What a waiter saw when it judged a lock stale — the takeover verifies the lock it moved is
+/** What a waiter saw when it judged a lock stale. The takeover verifies the lock it moved is
  *  still exactly this one (a racing waiter may have replaced it with a fresh lock meanwhile). */
 export interface StaleObservation {
   owner: string | null;
@@ -113,7 +113,7 @@ function expireStaleClaim(lockPath: string, staleMs: number): void {
   }
 }
 
-/** Take over a lock judged stale (claim → verify → move; see the header). Returns true when the
+/** Take over a lock judged stale (claim > verify > move; see the header). Returns true when the
  *  stale lock was removed (the caller should retry mkdir), false when the takeover failed and the
  *  caller must go back to waiting: the lock was already gone, another taker holds the claim, a
  *  racing waiter replaced it with a fresh lock (left untouched), or the moved lock turned out not
@@ -195,7 +195,7 @@ export function sweepLockTombstones(lockPath: string, staleMs: number = STALE_LO
       }
     }
   } catch {
-    /* parent missing/unreadable — nothing to sweep */
+    /* parent missing/unreadable, nothing to sweep */
   }
   return removed;
 }
@@ -212,16 +212,16 @@ function tryAcquire(lockPath: string, token: string, staleMs: number): AttemptRe
     try {
       observed = { owner: currentOwner(lockPath), mtimeMs: statSync(lockPath).mtimeMs };
     } catch {
-      return 'retry'; // lock released between attempts — retry immediately
+      return 'retry'; // lock released between attempts, retry immediately
     }
     if (Date.now() - observed.mtimeMs > staleMs) {
-      // stale — the holder crashed or stalled; take over atomically, then retry mkdir
+      // stale: the holder crashed or stalled; take over atomically, then retry mkdir
       takeOverStaleLock(lockPath, observed, staleMs);
       return 'retry';
     }
     return 'busy';
   }
-  // We created the dir — record ownership EXCLUSIVELY ('wx'): if an owner file already exists the
+  // We created the dir. Record ownership EXCLUSIVELY ('wx'): if an owner file already exists the
   // directory is not really ours (a takeover restore swapped a live lock into this path).
   try {
     writeFileSync(join(lockPath, OWNER_FILE), token, { flag: 'wx' });
@@ -238,7 +238,7 @@ function tryAcquire(lockPath: string, token: string, staleMs: number): AttemptRe
 
 function release(lockPath: string, token: string): void {
   // Verify-then-release: only remove the lock while the owner file still holds OUR token. If fn()
-  // stalled past the stale threshold another process legitimately took the lock over — deleting it
+  // stalled past the stale threshold another process legitimately took the lock over, and deleting it
   // here would let a THIRD process acquire while the new owner still runs.
   if (currentOwner(lockPath) === token) {
     try {
@@ -249,7 +249,7 @@ function release(lockPath: string, token: string): void {
   } else {
     log(
       'warn',
-      'file lock was taken over while held — this holder stalled past the stale threshold (or was displaced by a takeover race) and its work may have raced the new holder',
+      'file lock was taken over while held: this holder stalled past the stale threshold (or was displaced by a takeover race) and its work may have raced the new holder',
       { lockPath },
     );
     removeOwnTombstones(lockPath, token);
@@ -257,7 +257,7 @@ function release(lockPath: string, token: string): void {
 }
 
 /** A displaced holder's lock may survive as a tombstone (see takeOverStaleLock): remove the ones
- *  carrying OUR token — they are ours, so this can never touch another holder's lock. */
+ *  carrying OUR token. They are ours, so this can never touch another holder's lock. */
 function removeOwnTombstones(lockPath: string, token: string): void {
   try {
     const dir = dirname(lockPath);
@@ -279,7 +279,7 @@ function newToken(): string {
 }
 
 function timeoutError(lockPath: string): Error {
-  log('error', 'file lock wait timed out — refusing unlocked registry mutation', { lockPath });
+  log('error', 'file lock wait timed out, refusing unlocked registry mutation', { lockPath });
   return new Error(`Timed out waiting for file lock ${lockPath}`);
 }
 
@@ -323,13 +323,13 @@ export async function withFileLockAsync<T>(lockPath: string, fn: () => Promise<T
   }
   const heartbeat = setInterval(
     () => {
-      // Only refresh a lock that is still ours — never keep a thief's lock alive on its behalf.
+      // Only refresh a lock that is still ours. Never keep a thief's lock alive on its behalf.
       if (currentOwner(lockPath) !== token) return;
       try {
         const now = new Date();
         utimesSync(lockPath, now, now);
       } catch {
-        /* lock vanished — release will log */
+        /* lock vanished; release will log */
       }
     },
     Math.max(10, Math.floor(staleMs / 3)),
@@ -380,8 +380,8 @@ export function writeFileAtomicSync(path: string, data: string | Buffer): void {
   }
 }
 
-/** Delete `<baseName>.*.tmp` siblings older than maxAgeMs — residue of a writer that crashed
- *  between write and rename. Young tmp files may belong to a live writer and are kept. */
+/** Delete `<baseName>.*.tmp` siblings older than maxAgeMs (residue of a writer that crashed
+ *  between write and rename). Young tmp files may belong to a live writer and are kept. */
 export function cleanupOrphanTmpFiles(dir: string, baseName: string, maxAgeMs: number = 10 * 60_000): number {
   let removed = 0;
   try {
@@ -398,7 +398,7 @@ export function cleanupOrphanTmpFiles(dir: string, baseName: string, maxAgeMs: n
       }
     }
   } catch {
-    /* dir missing — nothing to clean */
+    /* dir missing, nothing to clean */
   }
   return removed;
 }

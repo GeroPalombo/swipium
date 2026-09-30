@@ -104,7 +104,7 @@ describe('remote WDA from repository config', () => {
     const sessionId = await newSession();
     const res = sc(await client.callTool({ name: 'qa_wda', arguments: { sessionId, action: 'attach', allowNonLoopback: true } }));
     expect(res.requiresConsent).toBe(true);
-    expect(String(res.explain)).toMatch(/configured by the repository \(\.swipium\/config\.json\) — unreviewed/);
+    expect(String(res.explain)).toMatch(/configured by the repository \(\.swipium\/config\.json\), unreviewed/);
     expect(probes).toEqual([]);
   });
 

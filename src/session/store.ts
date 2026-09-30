@@ -2,9 +2,9 @@
 // Live, non-serializable bits (driver, lastSnapshot, abort controllers) stay in memory;
 // a serializable subset is written to <sessionDir>/state.json on mutation (debounced;
 // synchronous for the mutation ledger + session creation + shutdown flush), and a small
-// registry under ~/.swipium/registry.json — lock-guarded, lazily loaded on first access —
+// registry under ~/.swipium/registry.json (lock-guarded, lazily loaded on first access)
 // lets a fresh server instance reload prior sessions so artifacts/reports/job-status survive
-// a server restart. (A restart does NOT resurrect a running child process — such jobs are
+// a server restart. (A restart does NOT resurrect a running child process: such jobs are
 // marked failed on reload, and orphaned Metro pids are verified via `ps` and reaped.)
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -33,7 +33,7 @@ import { approvalMechanismFor, type ApprovalMechanism } from '../consent/consent
 
 export type JobStatus = 'running' | 'done' | 'failed' | 'cancelled';
 
-// Progress model (hardening P1.1) — a consistent shape for long ops (build, boot, WDA, Metro,
+// Progress model (hardening P1.1): a consistent shape for long ops (build, boot, WDA, Metro,
 // AAB conversion, suite run, exploration) so an agent can relay status without reading raw logs.
 export interface ProgressModel {
   phase: string; // e.g. 'building_android' | 'booting_emulator' | 'converting_aab'
@@ -71,7 +71,7 @@ export interface ArtifactRecord {
    * redactor ('applied'); binary artifacts (screenshots/recordings) CANNOT be redacted and are
    * tagged 'not-applied' so consumers know pixels may contain visible sensitive content.
    * 'partial': text was redacted but some registered secrets were too short (< 3 chars) to be
-   * matched safely and were NOT scrubbed — see `redactionNote`. */
+   * matched safely and were NOT scrubbed (see `redactionNote`). */
   redaction?: 'applied' | 'partial' | 'not-applied';
   redactionNote?: string;
 }
@@ -88,7 +88,7 @@ export interface MutationRecord {
     consentId?: string;
     approved: boolean;
     payloadHash?: string;
-    /** THREAT_MODEL: HOW the approval happened — a real out-of-band user prompt (MCP
+    /** THREAT_MODEL: HOW the approval happened: a real out-of-band user prompt (MCP
      * elicitation) vs. the client asserting approval by re-calling with the consentId. */
     approvalMechanism?: ApprovalMechanism;
   };
@@ -109,7 +109,7 @@ export interface FindingRecord {
   failureCode?: string; // typed failure class; else derived from kind in qa_report
 }
 
-// Phase 2.2: a structured test outcome the agent records via qa_note — distinguishes a real
+// Phase 2.2: a structured test outcome the agent records via qa_note. It distinguishes a real
 // app bug from a blocked precondition / missing test data / intentional skip / refused action,
 // so reports stop mislabeling "no saved flight to delete" as a failure.
 export type TestOutcome = 'pass' | 'fail' | 'blocked' | 'skipped' | 'not_applicable';
@@ -182,7 +182,7 @@ export interface RecordedAction {
 }
 
 /** A Swipium tool call that returned an error for this session (WDA 404, UNKNOWN, driver failure…).
- *  qa_report derives its TOOL status from these — so a run full of tool errors is never "Tool
+ *  qa_report derives its TOOL status from these, so a run full of tool errors is never "Tool
  *  status: PASS". Tool health only: these never change the APP verdict. */
 export interface ToolErrorRecord {
   at: number;
@@ -215,13 +215,13 @@ export interface Fixture {
   description?: string;
   requiredState?: string;
   recommendedSetup?: string;
-  testAccount?: string; // a label only — never a secret
+  testAccount?: string; // a label only, never a secret
   apkPath?: string;
   value?: string; // non-secret safe test input (e.g. a flight number/search term) for exploration text entry
   disposable?: boolean; // true when the fixture/account/data can be safely destroyed during QA
   environment?: 'test' | 'staging' | 'production' | string;
   fields?: Record<string, { value?: string; var?: string; secret?: boolean; generator?: string; role?: string; inputType?: string }>;
-  seed?: FixtureSeed; // Phase 9 — how to create this precondition (consent-gated)
+  seed?: FixtureSeed; // Phase 9: how to create this precondition (consent-gated)
 }
 
 // Phase 2.2 P1.5: observed auth state across the run (no credentials stored here).
@@ -241,7 +241,7 @@ export const BUDGET_PROFILES: Record<string, number> = {
   install_smoke: 20, // install/boot/rebuild involved
 };
 
-// Secure input metadata (hardening P0.5). Never carries the value — only that one was provided,
+// Secure input metadata (hardening P0.5). Never carries the value, only that one was provided,
 // which flow variable it fills, whether it is secret, and where it came from.
 export interface InputMeta {
   varName: string; // e.g. SWIPIUM_TEST_PASSWORD
@@ -299,7 +299,7 @@ export function serializeSecretSafe(
   const redact: Redactor = makeRedactor(s.secrets);
   const r = (v?: string) => (v ? (redact(v) ?? v) : v);
   // Structured records (job results, mutation targets, fixtures): strong secrets scrubbed anywhere,
-  // weak (dictionary-like) ones only as a whole value — package ids / selectors stay intact.
+  // weak (dictionary-like) ones only as a whole value, so package ids / selectors stay intact.
   const structured = generatedOutputRedactor(s.secrets);
   return {
     recordedActions: secretSafeActions(s.recordedActions, s.secrets).actions,
@@ -375,16 +375,16 @@ export interface Session {
   metroPid?: number; // PID of a Metro dev server we started.
   network?: { changed: boolean; originalAirplane: boolean }; // for auto-restore + report
   envChanges: string[]; // human log of env/lifecycle changes (network, clear_data, force_stop…) for qa_report
-  /** App directory the user explicitly chose (monorepo_target resume / explicit projectRoot) —
+  /** App directory the user explicitly chose (monorepo_target resume / explicit projectRoot).
    *  qa_test_this must not re-ask the monorepo question for this root. */
   chosenTarget?: string;
   /** The ORIGINAL qa_test_this arguments of this session's last run (goal, goalText, flags), so a
    *  resume / re-run can replay the user's intent. Persisted (secret values redacted) + rehydrated. */
   lastTestThisArgs?: TestThisArgsRecord;
-  workarounds: string[]; // resourcefulness trail: safe fallbacks Swipium tried (visual fallback, build-from-source, pre-login) — surfaced in qa_report
-  exploration?: ExplorationRecord; // last guided-exploration result (Phase 3.3) — surfaced in qa_report
+  workarounds: string[]; // resourcefulness trail: safe fallbacks Swipium tried (visual fallback, build-from-source, pre-login), surfaced in qa_report
+  exploration?: ExplorationRecord; // last guided-exploration result (Phase 3.3), surfaced in qa_report
   mode: SessionMode; // structured (uiautomator) vs visual-fallback (screenshots)
-  responseMode: ResponseMode; // compact | normal | verbose — shrinks the text channel
+  responseMode: ResponseMode; // compact | normal | verbose; shrinks the text channel
   sensitive: boolean; // When true, refuse screenshots/video/logcat (no pixels/logs leave the device)
   budget: Budget;
   counters: Counters;
@@ -392,17 +392,17 @@ export interface Session {
   jobs: Map<string, JobRecord>;
   artifacts: ArtifactRecord[];
   findings: FindingRecord[];
-  notes: TestNote[]; // structured test outcomes (qa_note) — Phase 2.2
+  notes: TestNote[]; // structured test outcomes (qa_note), Phase 2.2
   mutations: MutationRecord[]; // central mutation ledger for consent-bound side effects
   recordedActions: RecordedAction[]; // action IR for qa_generate target:"flow"
-  toolErrors?: ToolErrorRecord[]; // tool calls that returned an error (bounded) — qa_report tool status
-  fixtures: Fixture[]; // declared preconditions — Phase 2.2 P1.4
-  auth: AuthState; // observed auth state — Phase 2.2 P1.5
-  milestones: Record<string, number>; // phase timing markers — Phase 2.2 P1.6
+  toolErrors?: ToolErrorRecord[]; // tool calls that returned an error (bounded), for qa_report tool status
+  fixtures: Fixture[]; // declared preconditions, Phase 2.2 P1.4
+  auth: AuthState; // observed auth state, Phase 2.2 P1.5
+  milestones: Record<string, number>; // phase timing markers, Phase 2.2 P1.6
   budgetProfile?: string; // chosen budget class, if any
-  secrets: Set<string>; // values typed into secure fields → redacted everywhere (not persisted)
+  secrets: Set<string>; // values typed into secure fields > redacted everywhere (not persisted)
   // True on rehydrated sessions whose persisted state shows prior secret-bearing
-  // activity — secrets are (deliberately) never persisted, so after a restart the redaction
+  // activity. Secrets are (deliberately) never persisted, so after a restart the redaction
   // set is empty and NEW artifacts are no longer scrubbed. Disclosed in qa_report; recomputed
   // on every reload, never written to state.json.
   redactionDegraded?: boolean;
@@ -422,7 +422,7 @@ export interface Session {
    *  is set (a brief WDA outage must not permanently downgrade the session), and getDriver retries
    *  WDA on later calls (session/attach.ts). */
   transportFallback?: { wanted: 'wda'; wdaUrl: string; since: number; lastProbeAt: number };
-  inputValues: Map<string, string>; // varName → raw value (for the flow runner); never serialized
+  inputValues: Map<string, string>; // varName > raw value (for the flow runner); never serialized
   driver?: Driver;
   lastSnapshot?: LastSnapshot;
   aborts: Map<string, AbortController>;
@@ -561,7 +561,7 @@ export class SessionStore {
     this.registryLoaded = true;
     this.loadRegistry();
     // Retention (session/retention.ts): one non-blocking background prune of old ~/.swipium/runs
-    // session dirs per process — never a registered or live session. SWIPIUM_RETENTION_DAYS=off disables.
+    // session dirs per process, never a registered or live session. SWIPIUM_RETENTION_DAYS=off disables.
     scheduleStartupPrune(() => [...this.sessions.values()].map((x) => x.dir));
   }
 
@@ -659,7 +659,7 @@ export class SessionStore {
   private writeState(s: Session): void {
     try {
       const safe = serializeSecretSafe(s); // registered secret values never reach state.json
-      // Keep the plain transport fields in sync with the live driver (duck-typed: no driver import) —
+      // Keep the plain transport fields in sync with the live driver (duck-typed: no driver import),
       // except while the live driver is a fallback for an unreachable WDA: the persisted 'wda'
       // transport stays authoritative so a later restart retries it.
       if (s.driver && !(s.transportFallback && s.driver.kind === 'simulator')) {
@@ -701,7 +701,7 @@ export class SessionStore {
         auth: s.auth,
         milestones: s.milestones,
         budgetProfile: s.budgetProfile,
-        inputs: s.inputs, // METADATA only — never the values
+        inputs: s.inputs, // METADATA only, never the values
         generatedValues: serializeGeneratedValues(s.generatedValues), // secret raw values redacted before disk
         exploration: s.exploration,
       };
@@ -711,7 +711,7 @@ export class SessionStore {
       restrictFile(target); // owner-only: state.json carries run history / paths
     } catch (e) {
       // A silent failure here means session state (jobs/artifacts/findings) is lost on restart.
-      log('error', 'failed to persist session state.json — this session will not survive a server restart', {
+      log('error', 'failed to persist session state.json; this session will not survive a server restart', {
         sessionId: s.id,
         dir: s.dir,
         err: String(e),
@@ -738,7 +738,7 @@ export class SessionStore {
   }
   /**
    * A structured UI dump just succeeded on this session: visual-fallback is per-screen, never
-   * permanent — switch back to 'structured' and restart the consecutive-failure count. Returns
+   * permanent. Switch back to 'structured' and restart the consecutive-failure count. Returns
    * true when the session was in visual-fallback (the caller may tell the agent it recovered).
    */
   noteStructuredDump(s: Session): boolean {
@@ -762,14 +762,14 @@ export class SessionStore {
     if (c.actions >= b.maxActions) return `action budget reached (${c.actions}/${b.maxActions})`;
     if (c.screenshots >= b.maxScreenshots) return `screenshot budget reached (${c.screenshots}/${b.maxScreenshots})`;
     if (c.noChangeActions >= b.maxNoChangeActions)
-      return `repeated no-change actions (${c.noChangeActions}/${b.maxNoChangeActions}) — likely wrong coords / disabled element / auth wall`;
+      return `repeated no-change actions (${c.noChangeActions}/${b.maxNoChangeActions}): likely wrong coords / disabled element / auth wall`;
     return null;
   }
   updateJob(s: Session, job: JobRecord, patch: Partial<JobRecord>): void {
     Object.assign(job, patch);
     this.persist(s);
   }
-  /** Apply a patch ONLY while the job is still running — so a cancelled (or otherwise
+  /** Apply a patch ONLY while the job is still running, so a cancelled (or otherwise
    *  terminal) job is never overwritten back to done/failed by a racing worker. */
   updateJobIfRunning(s: Session, job: JobRecord, patch: Partial<JobRecord>): boolean {
     const cur = s.jobs.get(job.jobId);
@@ -819,7 +819,7 @@ export class SessionStore {
     const rec: MutationRecord = { id: randomUUID().slice(0, 8), at: Date.now(), ...mutation, ...(consent ? { consent } : {}) };
     s.mutations.push(rec);
     if (s.mutations.length > 500) s.mutations.splice(0, s.mutations.length - 500);
-    this.persistNow(s); // the mutation ledger is an audit trail — never leave it debounce-only
+    this.persistNow(s); // the mutation ledger is an audit trail; never leave it debounce-only
     return rec;
   }
   /** Record a tool call that returned an error for this session (bounded to the last 200). */
@@ -866,7 +866,7 @@ export class SessionStore {
   }
   /** Store a user-provided input (hardening P0.5). The VALUE stays in-memory only; secrets are
    *  added to the redaction set. Persists metadata so reports can say it was provided.
-   *  Secrets of 3+ characters are redacted (short ones as whole tokens); 1–2 character values are
+   *  Secrets of 3+ characters are redacted (short ones as whole tokens); 1-2 character values are
    *  not matched and are reported as partial redaction (src/lib/redact.ts). */
   setInput(s: Session, varName: string, value: string, secret: boolean, source: string): void {
     s.inputValues.set(varName, value);
@@ -881,7 +881,7 @@ export class SessionStore {
     }
     this.persist(s);
   }
-  /** Variable map (varName → value) for the flow runner. In-memory values only. */
+  /** Variable map (varName > value) for the flow runner. In-memory values only. */
   inputVariables(s: Session): Record<string, string> {
     return Object.fromEntries(s.inputValues);
   }
@@ -900,7 +900,7 @@ export class SessionStore {
     this.persist(s);
   }
   saveArtifact(s: Session, kind: string, name: string, data: Buffer | string, mime: string, label?: string): string {
-    // B5: never trust kind/name as path components — sanitize, then verify containment.
+    // B5: never trust kind/name as path components. Sanitize, then verify containment.
     kind = safeArtifactName(kind);
     name = safeArtifactName(name);
     const sub = join(s.dir, artifactDirectoryName(kind));
@@ -919,7 +919,7 @@ export class SessionStore {
     writeFileSync(path, storedData, { mode: PRIVATE_FILE_MODE });
     restrictFile(path); // an overwritten artifact keeps its old mode otherwise
     const uri = `swipium://session/${encodeUriSegment(s.id)}/${encodeUriSegment(kind)}/${encodeUriSegment(name)}`;
-    // Binary artifacts (screenshots/recordings) cannot be redacted — tag them explicitly so
+    // Binary artifacts (screenshots/recordings) cannot be redacted, so tag them explicitly so
     // consumers (qa_get_artifact, reports) know pixels may show sensitive on-screen content.
     s.artifacts.push({
       uri,
@@ -954,7 +954,7 @@ export class SessionStore {
     return undefined;
   }
   /** Project roots this server process is actively working on: roots of sessions created here
-   * or touched by a tool call (get) since start — NOT every prior session reloaded from the
+   * or touched by a tool call (get) since start, NOT every prior session reloaded from the
    * machine-wide registry. Used to scope resources/list to the current project(s). */
   activeRoots(): string[] {
     this.ensureRegistryLoaded();
@@ -966,7 +966,7 @@ export class SessionStore {
     return [...roots];
   }
 
-  // ---- persistence reload (lazy — triggered by the first get/list/find/create) ----
+  // ---- persistence reload (lazy, triggered by the first get/list/find/create) ----
   private loadRegistry(): void {
     try {
       if (!existsSync(REGISTRY)) return;
@@ -987,17 +987,17 @@ export class SessionStore {
           }
           // Orphaned-process handling: a prior server persisted its Metro pid. If no live
           // server instance owns that pid, reclaimPid (processRegistry) reaps it ONLY when the
-          // registry's recorded fingerprint (start time + full command) still matches — a
+          // registry's recorded fingerprint (start time + full command) still matches. A
           // recycled or unverifiable pid is never signalled, and a process group is signalled
           // only when Swipium spawned the child as a group leader. Either way the reloaded
-          // session drops the pid — it is not ours to manage (or stop) anymore.
+          // session drops the pid: it is not ours to manage (or stop) anymore.
           if (typeof st.metroPid === 'number' && st.metroPid > 0) {
             if (!pidOwnedByLiveServer(st.metroPid)) {
               const outcome = reclaimPid(st.metroPid, 'metro');
               if (outcome === 'killed')
                 log('warn', 'reaped orphaned Metro bundler from a previous server run', { pid: st.metroPid, sessionId: st.id });
             }
-            st.metroPid = undefined; // reaped, gone, recycled, or another live server's — never ours
+            st.metroPid = undefined; // reaped, gone, recycled, or another live server's; never ours
           }
           // Raw secret values never touch disk, so a rehydrated session cannot rebuild
           // its redaction set. If the persisted state shows prior secret-bearing activity
@@ -1040,7 +1040,7 @@ export class SessionStore {
             driverKind: typeof st.driverKind === 'string' ? st.driverKind : undefined,
             wdaUrl: typeof st.wdaUrl === 'string' ? st.wdaUrl : undefined,
             // Live fixture values come from the project's fixtures.json (+ SWIPIUM_* env at use),
-            // never from state.json — which only holds value-less metadata.
+            // never from state.json, which only holds value-less metadata.
             fixtures: rehydrateFixtures(st.root, st.fixtures),
             auth: st.auth ?? {},
             milestones: st.milestones ?? { session_start: st.createdAt },
@@ -1055,12 +1055,12 @@ export class SessionStore {
           };
           this.sessions.set(s.id, s);
         } catch (e) {
-          // Skip a corrupt session, but say so — otherwise prior artifacts/reports vanish silently.
+          // Skip a corrupt session, but say so, otherwise prior artifacts/reports vanish silently.
           log('warn', 'skipping corrupt prior session state.json on reload', { dir, err: String(e) });
         }
       }
     } catch (e) {
-      log('warn', 'session registry unreadable — prior sessions will not be reloaded', { registry: REGISTRY, err: String(e) });
+      log('warn', 'session registry unreadable, prior sessions will not be reloaded', { registry: REGISTRY, err: String(e) });
     }
   }
   /** Append this session to the shared ~/.swipium/registry.json. Guarded by an advisory
@@ -1076,7 +1076,7 @@ export class SessionStore {
             const parsed: unknown = JSON.parse(readFileSync(REGISTRY, 'utf8'));
             if (Array.isArray(parsed)) reg = parsed;
           } catch (e) {
-            log('warn', 'registry.json corrupt — rebuilding it (prior sessions may need re-registration)', {
+            log('warn', 'registry.json corrupt, rebuilding it (prior sessions may need re-registration)', {
               registry: REGISTRY,
               err: String(e),
             });
@@ -1086,7 +1086,7 @@ export class SessionStore {
         writeFileAtomicSync(REGISTRY, JSON.stringify(reg.slice(-200), null, 2)); // atomic on the same filesystem
       });
     } catch (e) {
-      log('error', 'failed to append session to registry — it will not be reloadable after a restart', { id, dir, err: String(e) });
+      log('error', 'failed to append session to registry; it will not be reloadable after a restart', { id, dir, err: String(e) });
     }
   }
 }

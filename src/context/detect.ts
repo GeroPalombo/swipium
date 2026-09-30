@@ -8,7 +8,7 @@ import { resolveArtifact } from '../artifacts/resolve.js';
 import { simctlAvailable, listSimulators } from '../lib/simctl.js';
 
 /** Booted + available (shut down) iOS simulators. Tolerates absence: non-macOS hosts, no Xcode
- *  command-line tools, or a failing simctl all yield empty lists — never an error. */
+ *  command-line tools, or a failing simctl all yield empty lists, never an error. */
 export async function detectIosSimulators(): Promise<{
   iosBooted: DetectedContext['devices']['iosBooted'];
   iosAvailable: DetectedContext['devices']['iosAvailable'];
@@ -175,15 +175,15 @@ export async function detectContext(projectRoot: string): Promise<DetectedContex
 
   const blockers: string[] = [];
   if (framework === 'unknown')
-    blockers.push('Could not identify a mobile project here — pass an explicit projectRoot, or this is not a supported framework.');
-  if (monorepo) blockers.push('Monorepo detected — specify which app target to use (avoids guessing).');
+    blockers.push('Could not identify a mobile project here. Pass an explicit projectRoot, or this is not a supported framework.');
+  if (monorepo) blockers.push('Monorepo detected. Specify which app target to use (avoids guessing).');
   // adb is only a blocker when Android is the only way forward (an iOS project, or any project
   // with a usable iOS simulator, can still be tested without it).
-  if (!toolchain.adb && framework !== 'native-ios' && !iosUsable) blockers.push('adb not found — install Android platform-tools.');
+  if (!toolchain.adb && framework !== 'native-ios' && !iosUsable) blockers.push('adb not found. Install Android platform-tools.');
   if (framework === 'native-android' && artifacts.apks.length === 0) {
-    blockers.push('No prebuilt Android APK found — drop an APK under apps/android, build Gradle output, or pass apk=.');
+    blockers.push('No prebuilt Android APK found. Drop an APK under apps/android, build Gradle output, or pass apk=.');
   } else if (framework === 'native-ios' && artifacts.ipas.length === 0 && artifacts.appBundles.length === 0) {
-    blockers.push('No prebuilt iOS app artifact found — build a simulator .app or provide an .ipa for a real device lane.');
+    blockers.push('No prebuilt iOS app artifact found. Build a simulator .app or provide an .ipa for a real device lane.');
   } else if (
     framework !== 'native-android' &&
     framework !== 'native-ios' &&
@@ -191,13 +191,13 @@ export async function detectContext(projectRoot: string): Promise<DetectedContex
     artifacts.ipas.length === 0 &&
     artifacts.appBundles.length === 0
   ) {
-    blockers.push('No prebuilt app artifact found — build an APK for Android or a simulator .app for iOS, then run swipium scan again.');
+    blockers.push('No prebuilt app artifact found. Build an APK for Android or a simulator .app for iOS, then run swipium scan again.');
   }
   if (!hasAnyDevice(devices))
     blockers.push(
       framework === 'native-ios'
-        ? 'No iOS simulator booted or available — create one in Xcode (Settings → Platforms).'
-        : 'No online device, no AVD, and no iOS simulator — create an AVD (see qa_doctor) or an iOS simulator.',
+        ? 'No iOS simulator booted or available. Create one in Xcode (Settings > Platforms).'
+        : 'No online device, no AVD, and no iOS simulator. Create an AVD (see qa_doctor) or an iOS simulator.',
     );
 
   return {

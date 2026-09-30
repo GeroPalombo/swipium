@@ -1,6 +1,6 @@
-// Screen/Page Object Model generation — turn a linear action recording into a
+// Screen/Page Object Model generation: turn a linear action recording into a
 // MAINTAINABLE suite where selectors live in page objects and tests reference them by name,
-// instead of duplicating raw selectors. PURE: no filesystem, no device — callers serialize the
+// instead of duplicating raw selectors. PURE: no filesystem, no device. Callers serialize the
 // returned files. Also produces a locator audit (durable vs brittle) with app-code remediation,
 // because durable automation is the point (§2.4 / §6 locator policy).
 
@@ -36,7 +36,7 @@ export interface PomTestStep {
   page: string;
   element?: string;
   /** `visualCheck` = a qa_visual mode:"assert" judgement (free-form prose verified by eye). It is a
-   *  MANUAL checkpoint in generated code — never a text assertion (the prose is not on-screen text). */
+   *  MANUAL checkpoint in generated code, never a text assertion (the prose is not on-screen text). */
   action: 'tap' | 'inputText' | 'press' | 'swipe' | 'scrollTo' | 'openUrl' | 'assertVisible' | 'visualCheck';
   text?: string;
   secret?: boolean;
@@ -114,7 +114,7 @@ function camel(s: string): string {
 /** Page name from a foreground-owner string: strip android package, take a readable segment. */
 function pageNameFromScreen(screen: string | undefined, index: number): string {
   if (!screen) return `Screen${index + 1}Page`;
-  // android: com.app/.LoginActivity → LoginActivity → LoginPage
+  // android: com.app/.LoginActivity > LoginActivity > LoginPage
   const activity = screen.includes('/') ? screen.split('/').pop()! : screen.split('.').pop()!;
   const base = activity.replace(/Activity$|ViewController$|Screen$/i, '');
   return `${pascal(base || activity)}Page`;
@@ -122,16 +122,16 @@ function pageNameFromScreen(screen: string | undefined, index: number): string {
 
 function remediationFor(el: { selectorKind: string; selector?: string; screen?: string }): string | undefined {
   if (el.selectorKind === 'coords') {
-    return `add a testID (RN) / accessibilityIdentifier (iOS) / android:contentDescription / Flutter Key + Semantics(identifier:) to the tapped element${el.screen ? ` on ${el.screen}` : ''} — it has no durable locator`;
+    return `add a testID (RN) / accessibilityIdentifier (iOS) / android:contentDescription / Flutter Key + Semantics(identifier:) to the tapped element${el.screen ? ` on ${el.screen}` : ''}. It has no durable locator`;
   }
   if (el.selectorKind === 'text') {
-    return `text selector "${el.selector}" is locale/copy-fragile — add an accessibilityIdentifier/testID (or a Flutter Key/Semantics label) for CI-stable replay`;
+    return `text selector "${el.selector}" is locale/copy-fragile. Add an accessibilityIdentifier/testID (or a Flutter Key/Semantics label) for CI-stable replay`;
   }
   if (el.selectorKind === 'name') {
-    return `iOS name selector "${el.selector}" can drift with labels/localization — add an accessibilityIdentifier for CI-stable replay`;
+    return `iOS name selector "${el.selector}" can drift with labels/localization. Add an accessibilityIdentifier for CI-stable replay`;
   }
   if (el.selectorKind === 'predicate' || el.selectorKind === 'class_chain') {
-    return `iOS ${el.selectorKind} selector "${el.selector}" is a fallback locator — prefer accessibilityIdentifier and avoid XPath-style hierarchy dependence`;
+    return `iOS ${el.selectorKind} selector "${el.selector}" is a fallback locator. Prefer accessibilityIdentifier and avoid XPath-style hierarchy dependence`;
   }
   return undefined;
 }
@@ -158,14 +158,14 @@ export function generatePom(
     appId?: string;
     budgetProfile?: string;
     screenLabels?: Record<string, string>;
-    /** Registered session secrets — any recorded literal equal to/containing one becomes a ${VAR}. */
+    /** Registered session secrets. Any recorded literal equal to/containing one becomes a ${VAR}. */
     secrets?: Iterable<string>;
     /** Stored session inputs (secretGuard.inputBindings): typed text equal to one becomes its ${VAR}. */
     inputs?: InputBinding[];
   },
 ): PomResult {
   // Defense in depth: a registered secret typed into a field the UI did not flag as secure was
-  // recorded as a literal — rewrite it as a secret step before anything is emitted.
+  // recorded as a literal. Rewrite it as a secret step before anything is emitted.
   actions = secretSafeActions(actions, opts.secrets, opts.inputs).actions;
   // 1. segment into pages by recorded screen identity. This keeps signup, onboarding, paywall,
   // and home actions in separate page objects even when the foreground owner is the same app.
@@ -207,7 +207,7 @@ export function generatePom(
   let secretCount = 0;
 
   const ensureElement = (page: PomPage, a: RecordedAction): string | undefined => {
-    // Coordinate-only actions have no nameable element — keep as inline coords in the step.
+    // Coordinate-only actions have no nameable element, so keep as inline coords in the step.
     if (!a.selector || a.selectorKind === 'coords') return undefined;
     const baseName = camel(a.selector);
     let name = baseName || 'el';
@@ -253,7 +253,7 @@ export function generatePom(
         const element = ensureElement(page, a);
         let text = a.text ?? '';
         if (a.secret) {
-          // Secret values become ${SWIPIUM_TEST_*} variables — never the raw value (P0.5).
+          // Secret values become ${SWIPIUM_TEST_*} variables, never the raw value (P0.5).
           const v = secretVarName(a, ++secretCount);
           text = `\${${v}}`;
           variables.push(v);
@@ -274,7 +274,7 @@ export function generatePom(
         // A recorded scroll's direction is the CONTENT direction (scroll down = reveal content below).
         const element = ensureElement(page, a);
         if (element) steps.push({ page: page.name, element, action: 'scrollTo', direction: a.direction ?? 'down' });
-        // No target: replay as the swipe qa_act performed — scroll down = FINGER swipes up (act.ts).
+        // No target: replay as the swipe qa_act performed: scroll down = FINGER swipes up (act.ts).
         else steps.push({ page: page.name, action: 'swipe', direction: SCROLL_FINGER[a.direction ?? 'down'] ?? 'up' });
         break;
       }
@@ -282,7 +282,7 @@ export function generatePom(
         steps.push({ page: page.name, action: 'openUrl', url: a.url ?? '' });
         break;
       case 'assert_visual':
-        // Free-form visual judgement ("Settings home shows General row") — NOT on-screen text, so it
+        // Free-form visual judgement ("Settings home shows General row") is NOT on-screen text, so it
         // must never become assertTextVisible(...). Kept as a clearly-marked manual visual checkpoint.
         steps.push({ page: page.name, action: 'visualCheck', text: a.assertion ?? a.selector ?? 'visual checkpoint' });
         break;
@@ -342,7 +342,7 @@ export function generatePom(
     const pageObj = { name: p.name, platforms: ['android', 'ios'], screen: p.screen ?? undefined, elements: elementsYaml };
     files.push({
       path: `pages/${kebab(p.name)}.page.yaml`,
-      content: `# Swipium page object — review before committing.\n${stringify(pageObj)}`,
+      content: `# Swipium page object. Review before committing.\n${stringify(pageObj)}`,
     });
   }
 
@@ -352,8 +352,8 @@ export function generatePom(
   testObj.uses = pages.map((p) => `pages/${kebab(p.name)}.page.yaml`);
   testObj.steps = steps.map(serializeStep);
   const testHeader = [
-    '# Swipium test (POM) — selectors live in page objects; this test references them by name.',
-    ...(variables.length ? [`# variables — provide via qa_flow_run { variables }: ${variables.join(', ')}`] : []),
+    '# Swipium test (POM). Selectors live in page objects; this test references them by name.',
+    ...(variables.length ? [`# variables (provide via qa_flow_run { variables }): ${variables.join(', ')}`] : []),
     `# locator durability: ${durable} durable / ${semi} semi / ${brittle} brittle (${audit.brittlePct}% brittle)`,
   ].join('\n');
   files.push({ path: `tests/${kebab(opts.name)}.smoke.yaml`, content: `${testHeader}\n${stringify(testObj)}` });
@@ -388,7 +388,7 @@ function serializeStep(s: PomTestStep): Record<string, unknown> {
   }
 }
 
-/** Content scroll direction → the finger swipe qa_act performs for it (mirrors tools/act.ts). */
+/** Content scroll direction > the finger swipe qa_act performs for it (mirrors tools/act.ts). */
 const SCROLL_FINGER: Record<string, string> = { down: 'up', up: 'down', left: 'left', right: 'right' };
 
 function kebab(s: string): string {

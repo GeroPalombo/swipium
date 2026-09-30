@@ -1,4 +1,4 @@
-// Automation Kernel V2 — shared types (Developer 3 lane). A backend-neutral automation model that
+// Automation Kernel V2 shared types (Developer 3 lane). A backend-neutral automation model that
 // lets a Flow V2 file be compiled into a deterministic, capability-checked plan *before* a device
 // is touched. Everything here is pure data: no I/O, no driver calls. The runner, the planning
 // tools, Maestro interop, and the Appium audit all share these types so "the same flow means the
@@ -59,7 +59,7 @@ export interface GestureIR {
   /** 0..1, slow..fast. */
   speed?: number;
   durationMs?: number;
-  /** 0..100 — how much of the target must be on screen to count as visible (Maestro parity). */
+  /** 0..100: how much of the target must be on screen to count as visible (Maestro parity). */
   visibilityPercentage?: number;
   centerElement?: boolean;
 }
@@ -93,9 +93,9 @@ export interface ActionIR {
   text?: string;
   gesture?: GestureIR;
   timeoutMs?: number;
-  /** Maestro `retryTapIfNoChange` parity — explicit, never a hidden retry loop. */
+  /** Maestro `retryTapIfNoChange` parity. Explicit, never a hidden retry loop. */
   retryIfNoChange?: boolean;
-  /** Bounded repeat count (Maestro `repeat`) — only for deterministic, non-mutating actions. */
+  /** Bounded repeat count (Maestro `repeat`), only for deterministic, non-mutating actions. */
   repeat?: number;
   /** Source idle classification for waitForIdle steps. */
   idleSource?: WaitSource;

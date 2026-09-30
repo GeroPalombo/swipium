@@ -1,8 +1,8 @@
-// `swipium gc [--dry-run] [--days N] [--keep N]` — reclaim disk from old ~/.swipium/runs session dirs
-// (same rule as the automatic startup prune — src/session/retention.ts) and compact
+// `swipium gc [--dry-run] [--days N] [--keep N]`: reclaim disk from old ~/.swipium/runs session dirs
+// (same rule as the automatic startup prune in src/session/retention.ts) and compact
 // ~/.swipium/projects.json (drop entries whose project root no longer exists, cap to 200).
 //
-// CLI path, not the MCP server — writing to stdout is fine here.
+// CLI path, not the MCP server, so writing to stdout is fine here.
 
 import { pruneSessionRuns, retentionDaysFromEnv, retentionKeepFromEnv, DEFAULT_RETENTION_DAYS } from '../session/retention.js';
 import { compactProjectRegistry } from '../appMap/projectRegistry.js';
@@ -71,7 +71,7 @@ export async function runGc(argv: string[], out: (s: string) => void = (s) => vo
     `swipium gc${args.dryRun ? ' (dry run)' : ''}: scanned ${r.scanned} session dir(s) under ${r.runsDir}\n` +
       `  ${verb} ${r.deleted.length} session dir(s) older than ${r.days} day(s) (not registered; newest ${r.keepPerProject} per project kept)\n` +
       `  ${args.dryRun ? 'reclaimable' : 'reclaimed'}: ${formatBytes(r.bytesReclaimed)}\n` +
-      `  projects.json: ${projects.before} → ${projects.after} entr${projects.after === 1 ? 'y' : 'ies'}` +
+      `  projects.json: ${projects.before} > ${projects.after} entr${projects.after === 1 ? 'y' : 'ies'}` +
       `${projects.removed ? ` (${projects.removed} stale ${args.dryRun ? 'would be ' : ''}removed)` : ''}\n` +
       (r.skipped ? `  prune skipped: ${r.skipped}\n` : '') +
       (r.errors ? `  ${r.errors} entr${r.errors === 1 ? 'y' : 'ies'} could not be processed (see logs)\n` : ''),

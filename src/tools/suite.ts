@@ -1,7 +1,7 @@
 // Per-run suite generation cores + qa_flow_compile.
 //
 // These turn the actions recorded during a session (qa_act) into a MAINTAINABLE POM suite under
-// .swipium/ — page objects (selectors), tests (reference elements by name), a suite, a test-case
+// .swipium/: page objects (selectors), tests (reference elements by name), a suite, a test-case
 // catalog, and a locator audit. The generation entry points (page objects, full suite, test-case
 // catalog) are exposed through qa_generate (src/tools/generate.ts); this file registers only
 // qa_flow_compile, which compiles a generated POM suite into runnable Flow V2 for qa_flow_run.
@@ -78,7 +78,7 @@ function appIdOf(session: Session): string | undefined {
   return session.appId ?? (loadProjectConfig(session.root)?.appId as string | undefined) ?? undefined;
 }
 
-/** Map the replay outcome to the test-case catalog's replay status (Deliverable 4 — honest plumbing). */
+/** Map the replay outcome to the test-case catalog's replay status (Deliverable 4, honest plumbing). */
 function catalogReplayStatus(
   mode: string,
   results: Array<{ status: string }>,
@@ -100,7 +100,7 @@ function suiteDir(session: Session): string {
 
 /** Write generated files under .swipium/, returning absolute paths written. */
 function writeFiles(session: Session, files: GeneratedFile[]): string[] {
-  assertNoSecretLeaks(files, session.secrets, 'suite generation', { structural: structuralLiterals(session.recordedActions) }); // backstop — never write a secret
+  assertNoSecretLeaks(files, session.secrets, 'suite generation', { structural: structuralLiterals(session.recordedActions) }); // backstop: never write a secret
   const base = suiteDir(session);
   const written: string[] = [];
   for (const f of files) {
@@ -149,7 +149,7 @@ function pomFor(session: Session, name?: string): { pom: PomResult; flowName: st
     appId,
     budgetProfile: session.budgetProfile,
     secrets: session.secrets,
-    inputs: inputBindings(session), // typed text equal to a stored input → its ${SWIPIUM_TEST_*} placeholder
+    inputs: inputBindings(session), // typed text equal to a stored input maps to its ${SWIPIUM_TEST_*} placeholder
   });
   return { pom, flowName };
 }
@@ -162,7 +162,7 @@ export interface PomGenerateArgs {
   save?: boolean;
 }
 
-/** Core handler for qa_generate target:"pom" — page objects + locator audit from recorded actions. */
+/** Core handler for qa_generate target:"pom": page objects + locator audit from recorded actions. */
 export async function runPomGenerate(sessions: SessionStore, { sessionId, name, save }: PomGenerateArgs): Promise<CallToolResult> {
   const session = sessions.get(sessionId);
   if (!session) return unknownSessionError(sessionId);
@@ -177,7 +177,7 @@ export async function runPomGenerate(sessions: SessionStore, { sessionId, name, 
   const summary =
     `Generated ${pom.pages.length} page object(s): ${pom.pages.map((p) => p.name).join(', ')}\n` +
     `locator audit: ${pom.audit.durable} durable / ${pom.audit.semi} semi / ${pom.audit.brittle} brittle (${pom.audit.brittlePct}% brittle)` +
-    (save ? `\nsaved ${written.length} files under .swipium/` : `\n(not saved — pass save:true)`);
+    (save ? `\nsaved ${written.length} files under .swipium/` : `\n(not saved; pass save:true)`);
   return qaOk({ pages: pom.pages, audit: pom.audit, files: pageFiles, written }, summary);
 }
 
@@ -195,7 +195,7 @@ export interface SuiteGenerateArgs {
 }
 
 /**
- * Core handler for qa_generate target:"suite" — the full per-run .swipium/ suite from recorded
+ * Core handler for qa_generate target:"suite": the full per-run .swipium/ suite from recorded
  * actions: pages + tests + suite + test cases + locator audit, plus compile and replay gates.
  */
 export async function runSuiteGenerate(
@@ -478,12 +478,12 @@ export async function runSuiteGenerate(
     `✅ Suite "${res.name}" generated (${res.pages?.length ?? 0} pages, ${res.testCases?.length ?? 0} test case, suite + audit).\n` +
     `durability: ${audit.durable} durable / ${audit.semi} semi / ${audit.brittle} brittle (${audit.brittlePct}% brittle)` +
     (res.variables?.length ? `\nvariables: ${res.variables.join(', ')}` : '') +
-    (audit.brittle ? `\n⚠ ${audit.brittle} brittle locator(s) — see locators/locator-audit.json for app-code fixes.` : '') +
-    (written.length ? `\nwrote ${written.length} files under ${suiteDir(session)}` : `\n(preview — pass save:true to write)`) +
+    (audit.brittle ? `\n⚠ ${audit.brittle} brittle locator(s), see locators/locator-audit.json for app-code fixes.` : '') +
+    (written.length ? `\nwrote ${written.length} files under ${suiteDir(session)}` : `\n(preview; pass save:true to write)`) +
     (res.compiledFlows.length
-      ? `\ncompiled ${ranOk}/${res.compiledFlows.length} runnable flow(s) → run: swipium suite run (or qa_flow_run).`
+      ? `\ncompiled ${ranOk}/${res.compiledFlows.length} runnable flow(s) > run: swipium suite run (or qa_flow_run).`
       : `\nNext: qa_flow_compile to produce runnable Flow V2.`) +
-    `\nreplay gate (${replayMode}): ${replayPassed ? 'passed' : replayResults.length ? 'not proven' : 'not run'}; readiness=${readiness}; labels=${readinessLabels.join(' → ')}` +
+    `\nreplay gate (${replayMode}): ${replayPassed ? 'passed' : replayResults.length ? 'not proven' : 'not run'}; readiness=${readiness}; labels=${readinessLabels.join(' > ')}` +
     (ciReady
       ? '\nci_ready: compiled + fresh-state replay + state evidence proved'
       : replayMode === 'fresh_state'
@@ -524,7 +524,7 @@ export interface TestcaseGenerateArgs {
   save?: boolean;
 }
 
-/** Core handler for qa_generate target:"testcases" — industry-style test case catalog from recorded actions. */
+/** Core handler for qa_generate target:"testcases": industry-style test case catalog from recorded actions. */
 export async function runTestcaseGenerate(
   sessions: SessionStore,
   { sessionId, name, format, save }: TestcaseGenerateArgs,
@@ -566,7 +566,7 @@ export function registerSuite(server: McpServer, sessions: SessionStore): void {
       description:
         'Compile an existing POM suite on disk (.swipium/suites/<suite>.yaml, e.g. committed or hand-edited) into runnable Flow V2 ' +
         'for qa_flow_run: resolves page-object refs to selectors, carries variables, writes .swipium/flows/<slug>.yaml (+ a copy ' +
-        'under .swipium/compiled/), and validates each flow. Needs no session or recorded actions — qa_generate target:"suite" ' +
+        'under .swipium/compiled/), and validates each flow. Needs no session or recorded actions; qa_generate target:"suite" ' +
         'already compiles the suite it generates from a run.',
       inputSchema: {
         sessionId: z.string().optional(),
@@ -618,7 +618,7 @@ export function registerSuite(server: McpServer, sessions: SessionStore): void {
         compiled
           .map(
             (c) =>
-              `  ${c.ok ? '✓' : '✗'} ${c.name}${c.ok ? ` → flows/${c.slug}.yaml (run: qa_flow_run flow:"${c.slug}")` : `: ${c.errors.join('; ')}`}`,
+              `  ${c.ok ? '✓' : '✗'} ${c.name}${c.ok ? ` > flows/${c.slug}.yaml (run: qa_flow_run flow:"${c.slug}")` : `: ${c.errors.join('; ')}`}`,
           )
           .join('\n');
       return qaOk({ suite: result.suite, flows: compiled, okCount }, summary);

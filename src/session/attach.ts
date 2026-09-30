@@ -20,7 +20,7 @@ import { qaError } from '../lib/result.js';
 /** What `getprop` says about an online adb device (H6). */
 export interface AndroidDeviceProbe {
   serial: string;
-  /** Could the device properties be read at all (offline/unauthorized → false)? */
+  /** Could the device properties be read at all (offline/unauthorized > false)? */
   propsRead: boolean;
   emulator: boolean;
   /** sys.boot_completed == 1 */
@@ -47,7 +47,7 @@ export function classifyAndroidProps(serial: string, props: Record<string, strin
   return { emulator, booted: props['sys.boot_completed'] === '1' };
 }
 
-/** One `getprop` call → emulator + boot state. */
+/** One `getprop` call > emulator + boot state. */
 export async function probeAndroidDevice(serial: string): Promise<AndroidDeviceProbe> {
   try {
     const r = await run('adb', ['-s', serial, 'shell', 'getprop'], { timeoutMs: 8000 });
@@ -61,7 +61,7 @@ export async function probeAndroidDevice(serial: string): Promise<AndroidDeviceP
   }
 }
 
-/** Split online serials by policy — callers of planTarget pass `emulators` as
+/** Split online serials by policy. Callers of planTarget pass `emulators` as
  * TargetInputs.android.emulators so non-`emulator-N` emulators are not refused as physical. */
 export async function classifyAndroidSerials(
   serials: string[],
@@ -109,7 +109,7 @@ export function attachBlocker(p: AndroidDeviceProbe): AttachBlocked | null {
   if (!p.propsRead) {
     return {
       failureCode: 'DEVICE_NOT_READY',
-      detail: `Could not read device properties from ${p.serial} (offline, unauthorized, or still starting) — wait for it to come online, then retry.`,
+      detail: `Could not read device properties from ${p.serial} (offline, unauthorized, or still starting). Wait for it to come online, then retry.`,
     };
   }
   if (!p.emulator) {
@@ -121,7 +121,7 @@ export function attachBlocker(p: AndroidDeviceProbe): AttachBlocked | null {
   if (!p.booted) {
     return {
       failureCode: 'DEVICE_NOT_READY',
-      detail: `Emulator ${p.serial} is still booting (sys.boot_completed != 1) — wait for boot to finish, then retry.`,
+      detail: `Emulator ${p.serial} is still booting (sys.boot_completed != 1). Wait for boot to finish, then retry.`,
     };
   }
   return null;
@@ -136,7 +136,7 @@ export interface DeviceResolution {
 }
 
 /** TEST SEAM (P1 §6). When set, getDriver() binds the driver this factory returns instead of
- * discovering a real device — so handler-level tests can drive tools with a fake driver and no
+ * discovering a real device, so handler-level tests can drive tools with a fake driver and no
  * adb. Never set in production code paths; a no-op unless a test installs it. */
 let testDriverFactory: ((session: Session) => Driver | undefined) | undefined;
 export function setDriverFactoryForTests(factory?: (session: Session) => Driver | undefined): void {
@@ -176,11 +176,11 @@ export async function getDriver(session: Session): Promise<{
   needSelection?: boolean;
   /** Set when a device is online but may not be bound (physical device / still booting). */
   blocked?: AttachBlocked;
-  /** Human-readable transport note (e.g. WDA unreachable → simctl fallback; WDA restored). */
+  /** Human-readable transport note (e.g. WDA unreachable > simctl fallback; WDA restored). */
   note?: string;
 }> {
   if (session.driver) {
-    // A rehydrated WDA session running on the simctl fallback retries WDA (throttled) — a brief
+    // A rehydrated WDA session running on the simctl fallback retries WDA (throttled). A brief
     // outage during rehydrate must not leave the session downgraded for its whole life.
     if (session.transportFallback && session.driver.kind !== 'simulator') session.transportFallback = undefined; // re-attached explicitly
     if (session.transportFallback) {
@@ -190,7 +190,7 @@ export async function getDriver(session: Session): Promise<{
     return { driver: session.driver, rehydrated: false };
   }
   if (testDriverFactory) {
-    // Tests own device resolution entirely — never fall through to real adb discovery.
+    // Tests own device resolution entirely. Never fall through to real adb discovery.
     const driver = testDriverFactory(session);
     if (!driver) return { driver: undefined, rehydrated: false, needSelection: false };
     session.driver = driver;
@@ -215,7 +215,7 @@ export async function getDriver(session: Session): Promise<{
       needSelection: false,
       blocked: {
         failureCode: 'DEVICE_NOT_READY',
-        detail: `This session's device ${session.device} is not online — it was NOT re-bound to ${res.effective} (a different device).`,
+        detail: `This session's device ${session.device} is not online. It was NOT re-bound to ${res.effective} (a different device).`,
         nextSteps: [
           `Bring ${session.device} back online, or switch deliberately with qa_prepare_target device="${res.effective}" (or start a new session).`,
         ],
@@ -223,8 +223,8 @@ export async function getDriver(session: Session): Promise<{
     };
   }
   if (res.effective) {
-    // H6: never auto-bind a physical phone or a still-booting emulator — same policy as
-    // planTarget, enforced here too because this path bypasses the target planner.
+    // H6: never auto-bind a physical phone or a still-booting emulator (same policy as
+    // planTarget, enforced here too because this path bypasses the target planner).
     const blocked = attachBlocker(await probeAndroidDevice(res.effective));
     if (blocked) return { driver: undefined, rehydrated: false, needSelection: false, blocked };
     bindDevice(session, res.effective);
@@ -271,7 +271,7 @@ function lastWdaUrlFor(session: Session, udid: string): string | undefined {
 
 /** Re-bind a rehydrated iOS session to ITS simulator: WDA (structured) when the session had
  * attached WDA and that endpoint is reachable again, else SimctlDriver (visual/lifecycle). A
- * simulator that is not booted is a typed DEVICE_NOT_READY — never a fallback to another device. */
+ * simulator that is not booted is a typed DEVICE_NOT_READY, never a fallback to another device. */
 async function rebindIosSimulator(
   session: Session,
   udid: string,
@@ -286,8 +286,8 @@ async function rebindIosSimulator(
       blocked: {
         failureCode: 'DEVICE_NOT_READY',
         detail: sim
-          ? `iOS simulator ${sim.name} (${udid}) is not booted (state: ${sim.state}) — this session stays bound to it; nothing else was attached.`
-          : `iOS simulator ${udid} was not found among available simulators — this session stays bound to it; nothing else was attached.`,
+          ? `iOS simulator ${sim.name} (${udid}) is not booted (state: ${sim.state}). This session stays bound to it; nothing else was attached.`
+          : `iOS simulator ${udid} was not found among available simulators. This session stays bound to it; nothing else was attached.`,
         nextSteps: [`Boot it with qa_ios action:"boot" device:"${udid}" (or qa_prepare_ios_target), then retry.`],
       },
     };
@@ -322,7 +322,7 @@ async function rebindIosSimulator(
   return { driver, rehydrated: true, ...(note ? { note } : {}) };
 }
 
-// reuseRunningApp → forceAppLaunch:false + shouldTerminateApp:false: a rehydrate must never
+// reuseRunningApp > forceAppLaunch:false + shouldTerminateApp:false: a rehydrate must never
 // terminate + relaunch the app under test (see createWdaSession).
 function wdaDriverFor(session: Session, wdaUrl: string, udid: string): Driver {
   const cfg = loadWdaConfig(session.root);
@@ -339,11 +339,11 @@ function wdaDriverFor(session: Session, wdaUrl: string, udid: string): Driver {
 export const WDA_RETRY_INTERVAL_MS = 10_000;
 
 const wdaFallbackNote = (wdaUrl: string): string =>
-  `WDA at ${wdaUrl} was unreachable when this iOS session was re-attached — running on the simctl fallback ` +
+  `WDA at ${wdaUrl} was unreachable when this iOS session was re-attached; running on the simctl fallback ` +
   `(visual/lifecycle only; no structured snapshot). The session stays a WDA session and WDA is retried ` +
   `automatically; or re-attach with qa_wda.`;
 
-export const WDA_RESTORED_NOTE = 'WDA is reachable again — this session is back on its WDA transport (previous @eN refs are invalid).';
+export const WDA_RESTORED_NOTE = 'WDA is reachable again. This session is back on its WDA transport (previous @eN refs are invalid).';
 
 /** Re-probe the persisted WDA endpoint of a fallback session (throttled); rebind on success. */
 async function retryWdaTransport(session: Session): Promise<Driver | undefined> {
@@ -367,12 +367,12 @@ export function rehydrateNote(session?: Pick<Session, 'device' | 'driver'>): str
   const driver = session?.driver;
   const ios = driver instanceof SimctlDriver || driver instanceof WdaDriver || isSimulatorUdid(session?.device);
   return (
-    'Note: reattached the device transport after a restart — the app may not be in the ' +
+    'Note: reattached the device transport after a restart. The app may not be in the ' +
     `foreground (relaunch with ${ios ? 'qa_prepare_ios_target' : 'qa_prepare_target'}) and previous @eN refs are invalid (re-run qa_snapshot).`
   );
 }
 
 /** Platform-neutral form for callers without the session at hand (prefer rehydrateNote(session)). */
 export const REHYDRATE_NOTE =
-  'Note: reattached the device transport after a restart — the app may not be in the ' +
+  'Note: reattached the device transport after a restart. The app may not be in the ' +
   'foreground (relaunch with qa_prepare_target on Android, qa_prepare_ios_target on iOS) and previous @eN refs are invalid (re-run qa_snapshot).';

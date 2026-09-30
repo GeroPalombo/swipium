@@ -1,4 +1,4 @@
-// Suite linting (`swipium suite lint`) — flag page objects whose locators are
+// Suite linting (`swipium suite lint`): flag page objects whose locators are
 // brittle (coordinate-only), copy/locale-fragile (text), or dynamic-looking. Reads the generated
 // .swipium/pages/*.page.yaml; shared by the suite CLI.
 
@@ -49,7 +49,7 @@ export function lintSuitePages(root: string): SuiteLintResult {
           element: name,
           severity: 'error',
           code: readinessCode ?? 'COORDINATE_ONLY',
-          message: (el.remediation as string) ?? 'no durable locator (coordinate-only) — add a testID/accessibilityIdentifier',
+          message: (el.remediation as string) ?? 'no durable locator (coordinate-only). Add a testID/accessibilityIdentifier',
         });
       } else if (durability === 'semi' || el.text) {
         const code =
@@ -59,8 +59,7 @@ export function lintSuitePages(root: string): SuiteLintResult {
           element: name,
           severity: 'warning',
           code,
-          message:
-            (el.remediation as string) ?? 'text/locale-fragile selector — add an accessibilityIdentifier/testID for CI-stable replay',
+          message: (el.remediation as string) ?? 'text/locale-fragile selector. Add an accessibilityIdentifier/testID for CI-stable replay',
         });
       }
       if (typeof el.text === 'string' && /\d{3,}|[0-9a-f]{8,}/i.test(el.text)) {
@@ -69,7 +68,7 @@ export function lintSuitePages(root: string): SuiteLintResult {
           element: name,
           severity: 'warning',
           code: 'DYNAMIC_TEXT_LOCATOR',
-          message: `selector "${el.text}" looks dynamic (contains digits/ids) — prefer a stable identifier`,
+          message: `selector "${el.text}" looks dynamic (contains digits/ids). Prefer a stable identifier`,
         });
       }
     }

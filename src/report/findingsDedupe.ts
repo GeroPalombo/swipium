@@ -1,6 +1,6 @@
 // Report finding de-duplication (real-device smoke finding: one report listed the SAME
-// WRONG_FOREGROUND finding 24 times). Identical findings — same failure code/kind, severity, layer,
-// screen/foreground and message — collapse into ONE entry carrying `count` + first/last timestamps
+// WRONG_FOREGROUND finding 24 times). Identical findings (same failure code/kind, severity, layer,
+// screen/foreground and message) collapse into ONE entry carrying `count` + first/last timestamps
 // and every distinct evidence screenshot. Order follows first occurrence. Pure.
 
 export interface DedupableFinding {

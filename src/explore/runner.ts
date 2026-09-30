@@ -1,8 +1,8 @@
 // Guided exploration runner (Phase 3.3 Milestones D/E/G). Bounded, safe-by-default screen crawl:
-// observe → signature → rank safe candidates → act → health-check → record edge, until a budget is
+// observe > signature > rank safe candidates > act > health-check > record edge, until a budget is
 // reached. Visual-only screens (poor UI tree) are verified with a screenshot + visual assertion
 // instead of blind coordinate crawling. Honest: unsafe actions are skipped with a note; an auth
-// wall with no credentials returns NeedsInput. Drives only the Driver interface — no MCP-over-MCP.
+// wall with no credentials returns NeedsInput. Drives only the Driver interface, no MCP-over-MCP.
 
 import { parseSnapshot } from '../snapshot/parse.js';
 import { settle } from '../snapshot/settle.js';
@@ -57,12 +57,12 @@ export interface ExploreOptions {
   stopOnAuth?: boolean;
   generateSuite?: boolean;
   /** Allow built-in safe generators to fill fields when the environment is a
-   *  disposable test/staging one (off by default — exploration never invents values otherwise). */
+   *  disposable test/staging one (off by default: exploration never invents values otherwise). */
   allowGeneratedData?: boolean;
   testDataPolicyPath?: string;
   /** The controlled mobile-audit account-cycle workflow. When enabled on a
    *  disposable generated account, LOGOUT (and only logout) is permitted as an expected step;
-   *  delete/pay/send stay refused. Off by default — broad exploration keeps logout destructive. */
+   *  delete/pay/send stay refused. Off by default, so broad exploration keeps logout destructive. */
   accountCycle?: { enabled: boolean; disposableAccount: boolean };
 }
 
@@ -113,8 +113,8 @@ function hasCredentials(session: Session): boolean {
 
 /**
  * Find a safe value to type into a field. Priority (the input planner):
- * secure inputs → declared fixtures → built-in safe generator (ONLY when `gen.allowed`, i.e. the
- * environment is a disposable test/staging one) → otherwise undefined (the runner skips honestly).
+ * secure inputs > declared fixtures > built-in safe generator (ONLY when `gen.allowed`, i.e. the
+ * environment is a disposable test/staging one) > otherwise undefined (the runner skips honestly).
  * Default behavior is unchanged: with no generation context, values are never invented.
  */
 type FieldValue = ResolvedFixtureValue | { value: string; varName: string; secret: boolean; source: 'secure_input' };
@@ -159,7 +159,7 @@ function valueForField(
   }
   const resolved = resolveFixtureValue(session, label, locatorValue, { role });
   if (resolved) return resolved;
-  // Built-in safe generator — only when generation is explicitly allowed for this environment.
+  // Built-in safe generator, only when generation is explicitly allowed for this environment.
   if (gen?.allowed) {
     const field = fieldKindFromHints(label, locatorValue, undefined, secure);
     const g = generateFieldValue(field, gen.policy);
@@ -187,7 +187,7 @@ function strategyToKind(strategy: string): RecordedAction['selectorKind'] {
     case 'accessibility':
       return 'accessibility_id';
     case 'id':
-      return 'resource_id'; // Android resource-id → durable id= selector (not a text match)
+      return 'resource_id'; // Android resource-id > durable id= selector (not a text match)
     case 'text':
       return 'text';
     default:
@@ -274,7 +274,7 @@ export async function runExplore(
     promotedSuiteCandidates: 0,
     testabilityBlockers: [],
   };
-  const exploredPerScreen = new Map<string, Set<string>>(); // nodeId → explored signatureKeys
+  const exploredPerScreen = new Map<string, Set<string>>(); // nodeId > explored signatureKeys
   const skippedNotedScreens = new Set<string>();
   const testabilityNotedScreens = new Set<string>();
   const destructiveCandidates = new Map<string, DestructiveCandidateSummary>();
@@ -286,7 +286,7 @@ export async function runExplore(
   const note = (n: Parameters<SessionStore['addNote']>[1] extends infer T ? Omit<NonNullable<T>, 'at'> : never) =>
     sessions.addNote(session, { at: Date.now(), ...(n as object) } as Parameters<SessionStore['addNote']>[1]);
 
-  /** Observe the current screen → a graph node (structured or visual-only). */
+  /** Observe the current screen as a graph node (structured or visual-only). */
   const observe = async (): Promise<{
     node: ScreenNode;
     isNew: boolean;
@@ -307,7 +307,7 @@ export async function runExplore(
     } catch (e) {
       // Cancelled job: an aborted dump is not a visual-only screen, a finding or a blocker.
       if (isAbortError(e, signal)) throw new CancelledError('exploration cancelled');
-      /* snapshot failed → treated as visual-only below */
+      /* snapshot failed, so treated as visual-only below */
     }
     if (signal?.aborted) throw new CancelledError('exploration cancelled');
     const health = await checkHealth(driver, session.appId, xml || undefined);
@@ -333,7 +333,7 @@ export async function runExplore(
       }
     }
 
-    // Visual-only (Milestone E): no usable structured elements (canvas/map/webview/empty) → visual
+    // Visual-only (Milestone E): no usable structured elements (canvas/map/webview/empty) means visual
     // node + assertion, no blind coordinate crawl. A low automation-readiness verdict on a screen
     // that DOES expose identified elements is still structured (we can act on it).
     const visual = elements.length === 0 || webviewDominance > 0.5;
@@ -386,7 +386,7 @@ export async function runExplore(
         workflow: 'guided_exploration',
         outcome: 'pass',
         category: undefined,
-        reason: `visual-only screen "${foreground}" — verified by screenshot`,
+        reason: `visual-only screen "${foreground}", verified by screenshot`,
         verifiedVisually: true,
         method: 'visual',
         artifactUris: screenshotUri ? [screenshotUri] : undefined,
@@ -397,7 +397,7 @@ export async function runExplore(
 
   const allowedCandidate = (candidate: RankedCandidate, node: ScreenNode): boolean => {
     if (candidate.risk !== 'destructive') return allowedUnder(candidate.risk, safeMode);
-    // Controlled account-cycle exception: logout — and only logout — is an expected step
+    // Controlled account-cycle exception: logout (and only logout) is an expected step
     // on a disposable generated account inside the mobile-audit account-cycle workflow.
     if (
       opts.accountCycle?.enabled &&
@@ -432,7 +432,7 @@ export async function runExplore(
 
   // ---- main loop ----
   let stoppedReason = 'exploration complete';
-  // A cancelled job unwinds via CancelledError (thrown by observe) — never recorded as a finding,
+  // A cancelled job unwinds via CancelledError (thrown by observe). It's never recorded as a finding,
   // blocker or visual-only screen; the partial graph is still finalized below.
   try {
     while (true) {
@@ -481,7 +481,7 @@ export async function runExplore(
         graph.setBlockedPreconditions([...new Set(tasks.flatMap((t) => t.preconditions))]);
       }
 
-      // App error → record + stop this path (do not hide bugs; do not keep crawling a broken screen).
+      // App error: record + stop this path (do not hide bugs; do not keep crawling a broken screen).
       if (obs.node.health.app === 'error') {
         note({
           workflow: 'guided_exploration',
@@ -531,15 +531,15 @@ export async function runExplore(
             destructiveCandidates: [...destructiveCandidates.values()],
           };
         }
-        // stopOnAuth:false → record blocked and stop crawling further (only public screens were reachable).
-        stoppedReason = 'auth required — recorded blocked, no credentials to proceed';
+        // stopOnAuth:false: record blocked and stop crawling further (only public screens were reachable).
+        stoppedReason = 'auth required: recorded blocked, no credentials to proceed';
         break;
       }
 
       const explored = exploredPerScreen.get(obs.node.id) ?? new Set<string>();
       exploredPerScreen.set(obs.node.id, explored);
 
-      // Visual-only screens: no safe structured target → step back to keep the graph connected.
+      // Visual-only screens: no safe structured target, so step back to keep the graph connected.
       const pick = obs.candidates.find((c) => !explored.has(c.signatureKey) && allowedCandidate(c, obs.node));
       const blockedCandidates = obs.candidates.filter((c) => !allowedCandidate(c, obs.node));
       if (blockedCandidates.length && !skippedNotedScreens.has(obs.node.id)) {

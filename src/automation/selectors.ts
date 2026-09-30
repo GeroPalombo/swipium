@@ -1,4 +1,4 @@
-// Automation Kernel V2 — Workstream 2: Selector IR V2. One normalized selector model shared by
+// Automation Kernel V2, Workstream 2: Selector IR V2. One normalized selector model shared by
 // Flow V2, the Appium audit, and flow repair. Parses the existing Swipium selector string
 // grammar, normalizes Android resource ids, scores risk/portability, preserves provenance, and
 // refuses unsupported strategies per backend. NEVER generates XPath. (Maestro interop left the
@@ -52,7 +52,7 @@ function riskFor(strategy: SelectorStrategy, value: string, hints?: SelectorHint
  * Parse one Swipium selector string into Selector IR. Recognizes the existing grammar:
  *   `id=foo`, `id/foo`, `com.example:id/foo`, `accessibility id=foo`, `name=foo`,
  *   `predicate string=...`, `class chain=...`, and bare text.
- * OCR / image selectors come from dedicated flow steps, not this string grammar — see selectorForVisual().
+ * OCR / image selectors come from dedicated flow steps, not this string grammar. See selectorForVisual().
  */
 export function parseSelector(
   raw: string,
@@ -100,7 +100,7 @@ export function selectorForVisual(
   };
 }
 
-/** A coordinate selector (tapAt) — always last-resort, non-portable, high risk. */
+/** A coordinate selector (tapAt). Always last-resort, non-portable, high risk. */
 export function selectorForCoordinate(value: string, source: SelectorSource = 'flow'): SelectorIR {
   return { strategy: 'coordinate', value, platform: 'cross_platform', source, risk: 'high', portable: false };
 }
@@ -153,7 +153,7 @@ export function checkSelectorCiRisk(ir: SelectorIR): SelectorCiRisk {
   return { risk: ir.risk };
 }
 
-/** A selector match candidate from a parsed snapshot — just enough to detect ambiguity. */
+/** A selector match candidate from a parsed snapshot, just enough to detect ambiguity. */
 export interface SelectorMatchCandidate {
   resourceId?: string;
   accessibilityId?: string;
@@ -212,7 +212,7 @@ export interface AppiumLocator {
 }
 
 /**
- * Export a Selector IR to an Appium native locator strategy. NEVER returns XPath — visual/coordinate
+ * Export a Selector IR to an Appium native locator strategy. NEVER returns XPath: visual/coordinate
  * strategies have no Appium native locator and return null (the caller must mark them manual_review).
  */
 export function selectorToAppium(ir: SelectorIR): AppiumLocator | null {

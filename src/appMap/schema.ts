@@ -1,4 +1,4 @@
-// AppKnowledgeMap — the durable, project-level business-context layer Swipium
+// AppKnowledgeMap: the durable, project-level business-context layer Swipium
 // reads before acting and writes back to after observing. It MERGES static code analysis, app
 // config, runtime exploration, feature hypotheses, automation artifacts, tickets, and test cases
 // into one schema-versioned document persisted at `.swipium/app-map.json`.

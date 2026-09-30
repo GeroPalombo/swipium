@@ -1,10 +1,10 @@
 // Durable qa_test_this intent per session: the goal/flags a user asked for, so a resume
-// (qa_continue_from_blocker → qa_test_this) replays them instead of silently falling back to the
+// (qa_continue_from_blocker > qa_test_this) replays them instead of silently falling back to the
 // default goal, plus the "login declined" choice from a credentials question.
 //
 // Storage, in lookup order (tolerant of each being absent):
-//   1. `session.lastTestThisArgs` ({goal, goalText, flags}) — persisted + rehydrated by the store;
-//   2. a module-level map keyed by sessionId (same server process) — fallback when the field is absent.
+//   1. `session.lastTestThisArgs` ({goal, goalText, flags}), persisted + rehydrated by the store;
+//   2. a module-level map keyed by sessionId (same server process), the fallback when the field is absent.
 // The login-declined flag rides on the generic persisted `milestones` record.
 
 import type { Session, SessionStore } from '../../session/store.js';
@@ -61,7 +61,7 @@ export function recallTestThisIntent(session: Pick<Session, 'id' | 'dir'>): Test
 
 const LOGIN_DECLINED = 'login_declined';
 
-/** Record that the user chose "test pre-login only" — login is out of scope for this session. */
+/** Record that the user chose "test pre-login only": login is out of scope for this session. */
 export function markLoginDeclined(sessions: SessionStore, session: Session): void {
   sessions.milestone(session, LOGIN_DECLINED);
 }
@@ -70,7 +70,7 @@ export function isLoginDeclined(session: Pick<Session, 'milestones'>): boolean {
   return session.milestones?.[LOGIN_DECLINED] != null;
 }
 
-/** Login credentials usable RIGHT NOW: metadata alone is not enough — raw values live only in
+/** Login credentials usable RIGHT NOW: metadata alone is not enough. Raw values live only in
  *  memory and are gone after a server restart, so the question must be asked again. */
 export function hasUsableCredentials(session: Pick<Session, 'inputs' | 'inputValues'>): boolean {
   return session.inputs.some((i) => /EMAIL|PASSWORD/.test(i.varName) && session.inputValues.has(i.varName));

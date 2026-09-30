@@ -13,9 +13,9 @@
 //    per kind: for WDA / recordings / emulators the program is compared by BASENAME and the
 //    argument tail exactly (Xcode's /usr/bin/xcodebuild and xcrun shims re-exec the real tool
 //    under the same pid + start time, so `xcodebuild -project …` later reads
-//    `/Applications/Xcode.app/…/usr/bin/xcodebuild -project …`); for Metro — spawned via `npx`, which
-//    npm retitles right after spawn (`node …/npx react-native start` → `npm exec react-native
-//    start`) — the launcher-stripped program+args tail must match. A PID recycled by the OS to
+//    `/Applications/Xcode.app/…/usr/bin/xcodebuild -project …`); for Metro (spawned via `npx`, which
+//    npm retitles right after spawn: `node …/npx react-native start` > `npm exec react-native
+//    start`) the launcher-stripped program+args tail must match. A PID recycled by the OS to
 //    an unrelated process (another node, the adb server, the user's own xcodebuild/Appium WDA) is
 //    never killed or adopted. Entries without a fingerprint (written by an older build, or when
 //    `ps` was unavailable) are unverifiable and are dropped without signalling.
@@ -23,10 +23,10 @@
 //    (spawned detached: pgid == pid at registration); otherwise only the pid itself is signalled.
 //  - The owning server's start time is recorded too, so a recycled server pid (any node process)
 //    is not mistaken for a live concurrent server.
-//  - Emulators are ADOPTED, not killed — an orphaned emulator stays booted and remains
+//  - Emulators are ADOPTED, not killed: an orphaned emulator stays booted and remains
 //    usable via adb for the next run.
 //  - Managed WDA (xcodebuild test-without-building) is deliberately NOT stopped on a graceful
-//    shutdown either (only Metro and screen recorders are — see startServer), so the next server
+//    shutdown either (only Metro and screen recorders are; see startServer), so the next server
 //    can resume the iOS session on the same WDA. At startup an orphaned WDA entry is ADOPTED when
 //    it is younger than WDA_ADOPT_MAX_AGE_MS (12 h) AND its recorded endpoint answers GET /status
 //    ready; adoption keeps the entry and re-owns it (serverPid = this server), so `qa_wda stop`
@@ -57,7 +57,7 @@ export interface ManagedProcessEntry {
   command?: string;
   /** True only when the child led its own process group at registration (spawned detached). */
   groupLeader?: boolean;
-  /** Owning server's `ps -o lstart=` at registration — a recycled server pid won't match it. */
+  /** Owning server's `ps -o lstart=` at registration; a recycled server pid won't match it. */
   serverStart?: string;
 }
 
@@ -120,7 +120,7 @@ function readEntries(): ManagedProcessEntry[] {
     if (!Array.isArray(parsed)) return [];
     return parsed.filter((e): e is ManagedProcessEntry => typeof (e as ManagedProcessEntry)?.pid === 'number');
   } catch (e) {
-    log('warn', 'managed-process registry unreadable — starting fresh', { file: PROCESSES_FILE, err: String(e) });
+    log('warn', 'managed-process registry unreadable, starting fresh', { file: PROCESSES_FILE, err: String(e) });
     return [];
   }
 }
@@ -134,7 +134,7 @@ function mutateEntries(fn: (entries: ManagedProcessEntry[]) => ManagedProcessEnt
     mkdirSync(REGISTRY_DIR, { recursive: true });
     withFileLock(PROCESSES_LOCK, () => writeEntries(fn(readEntries())));
   } catch (e) {
-    log('error', 'failed to update managed-process registry — a crash may leave this child unreaped', {
+    log('error', 'failed to update managed-process registry; a crash may leave this child unreaped', {
       file: PROCESSES_FILE,
       err: String(e),
     });
@@ -175,7 +175,7 @@ export function registerManagedProcess(
 }
 
 /** A managed WDA this server adopted at startup (or started itself) for `sessionId`, per the
- *  registry — lets `qa_wda stop` stop a WDA started by a previous server run. */
+ *  registry. Lets `qa_wda stop` stop a WDA started by a previous server run. */
 export function registeredWdaForSession(sessionId: string): ManagedProcessEntry | undefined {
   return readEntries()
     .filter((e) => e.kind === 'wda' && e.sessionId === sessionId && e.serverPid === process.pid)
@@ -207,7 +207,7 @@ function killTree(pid: number, group: boolean): boolean {
       process.kill(-pid, 'SIGTERM');
       return true;
     } catch {
-      /* group already gone — fall back to the pid itself */
+      /* group already gone; fall back to the pid itself */
     }
   }
   try {
@@ -222,8 +222,8 @@ const REAL_OPS: ProcessOps = { pidAlive, psCommand, psStartTime, psPgid, killTre
 
 /** True when `serverPid` is a live process that IS the server that registered the entry: its
  *  start time must equal the recorded one (any node process could have recycled the pid). Legacy
- *  entries without a recorded server start fall back to the old node/swipium command check —
- *  that errs toward "alive" (never touch), which is the safe direction. */
+ *  entries without a recorded server start fall back to the old node/swipium command check.
+ *  That errs toward "alive" (never touch), which is the safe direction. */
 function serverStillAlive(entry: Pick<ManagedProcessEntry, 'serverPid' | 'serverStart'>, ops: ProcessOps = REAL_OPS): boolean {
   const { serverPid } = entry;
   if (serverPid === process.pid) return false; // our pid at startup = a recycled dead server's
@@ -260,7 +260,7 @@ const KIND_PROGRAM_RE: Partial<Record<ManagedProcessKind, RegExp>> = {
   emulator: /^(?:emulator|qemu-system-[\w.-]+)$/i,
 };
 
-/** Launchers that exec the real program under the same pid (`xcrun simctl …` → `…/simctl …`). */
+/** Launchers that exec the real program under the same pid (`xcrun simctl …` > `…/simctl …`). */
 const EXEC_LAUNCHER = /^(?:xcrun|env)$/i;
 
 /** A command line reduced to `<program basename> <args…>`, anchored at the first token whose
@@ -269,7 +269,7 @@ const EXEC_LAUNCHER = /^(?:xcrun|env)$/i;
  *  `/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -project …` for a child spawned
  *  as `xcodebuild -project …`. Everything before the program must be either a launcher
  *  (xcrun/env) or the space-split pieces of the program's own absolute path (`/Applications/Xcode
- *  16.app/…/xcodebuild`) — never flags or another program. Null when no such anchor exists.
+ *  16.app/…/xcodebuild`), never flags or another program. Null when no such anchor exists.
  *  Exported for tests. */
 export function programTail(cmd: string, program: RegExp): string | null {
   const tokens = cmd.trim().split(/\s+/);
@@ -305,7 +305,7 @@ function commandMatches(kind: ManagedProcessKind, recorded: string, live: string
   if (!KIND_COMMAND_RE[kind].test(live)) return false;
   if (live === recorded) return true;
   if (kind === 'metro') {
-    // Metro is launched via `npx`, which npm retitles shortly after spawn — compare what runs.
+    // Metro is launched via `npx`, which npm retitles shortly after spawn. Compare what runs.
     const tail = commandTail(live);
     return tail !== '' && tail === commandTail(recorded);
   }
@@ -326,7 +326,7 @@ function commandMatches(kind: ManagedProcessKind, recorded: string, live: string
 /** Does the live `pid` still carry the fingerprint recorded at spawn? Start time is the hard
  *  requirement (exact); the command is compared per kind (see commandMatches). */
 function fingerprintMatches(entry: ManagedProcessEntry, ops: ProcessOps): boolean {
-  if (!entry.procStart || !entry.command) return false; // unverifiable → never signal/adopt
+  if (!entry.procStart || !entry.command) return false; // unverifiable > never signal/adopt
   const start = norm(ops.psStartTime(entry.pid));
   if (!start || start !== entry.procStart) return false;
   const cmd = norm(ops.psCommand(entry.pid));
@@ -334,7 +334,7 @@ function fingerprintMatches(entry: ManagedProcessEntry, ops: ProcessOps): boolea
 }
 
 /** Verify that `pid` is still the child we registered (exact start time + per-kind command, per
- *  the registry entry — or `entry` when given), then kill or adopt it. A pid with no verifiable
+ *  the registry entry, or `entry` when given), then kill or adopt it. A pid with no verifiable
  *  registry fingerprint, or whose fingerprint differs, is reported 'recycled' and never signalled.
  *  Only a child Swipium spawned as a group leader has its process group signalled. */
 export function reclaimPid(
@@ -345,7 +345,7 @@ export function reclaimPid(
 ): ReclaimOutcome {
   if (!ops.pidAlive(pid)) return 'gone';
   if (!entry || entry.pid !== pid || !fingerprintMatches(entry, ops)) return 'recycled';
-  if (kind === 'emulator') return 'adopted'; // still a real emulator — leave it booted (usable via adb)
+  if (kind === 'emulator') return 'adopted'; // still a real emulator; leave it booted (usable via adb)
   return ops.killTree(pid, entry.groupLeader === true) ? 'killed' : 'gone';
 }
 
@@ -376,7 +376,7 @@ async function adoptableWdaPids(entries: ManagedProcessEntry[], opts: Required<R
   return new Set(candidates.filter((_, i) => healthy[i]).map((e) => e.pid));
 }
 
-/** Startup sweep (called once from startServer): reap children whose owning server died —
+/** Startup sweep (called once from startServer): reap children whose owning server died,
  *  except a young, healthy managed WDA, which is adopted (see the header comment). */
 export async function reapOrphanedProcesses(options: ReapOptions = {}): Promise<void> {
   const opts: Required<ReapOptions> = {
@@ -389,7 +389,7 @@ export async function reapOrphanedProcesses(options: ReapOptions = {}): Promise<
     const keep: ManagedProcessEntry[] = [];
     for (const e of entries) {
       if (serverStillAlive(e, opts.ops)) {
-        keep.push(e); // a live concurrent server owns it — not ours to touch
+        keep.push(e); // a live concurrent server owns it, not ours to touch
         continue;
       }
       if (e.kind === 'wda' && adoptable.has(e.pid)) {
@@ -408,7 +408,7 @@ export async function reapOrphanedProcesses(options: ReapOptions = {}): Promise<
       } else if (outcome === 'adopted') {
         log('info', 'adopted orphaned emulator (left booted; reachable via adb)', { pid: e.pid, sessionId: e.sessionId });
       } else if (outcome === 'recycled') {
-        log('info', 'dropped orphan entry: PID recycled or fingerprint unverifiable — not signalled', { pid: e.pid, kind: e.kind });
+        log('info', 'dropped orphan entry: PID recycled or fingerprint unverifiable, not signalled', { pid: e.pid, kind: e.kind });
       }
       // In every other non-live-owner case the entry is dropped: it has been handled.
     }
@@ -480,7 +480,7 @@ export function isManagedWdaCommand(command: string, sig: ManagedWdaSignature): 
   );
 }
 
-/** Pids of live managed-WDA xcodebuild processes matching `sig` — used by `qa_wda stop` when the
+/** Pids of live managed-WDA xcodebuild processes matching `sig`. Used by `qa_wda stop` when the
  *  registry entry for a WDA this session started was lost. The process LISTENing on the managed
  *  port is checked first; on a simulator that listener is usually the XCTest runner (not
  *  xcodebuild), so every process is then scanned for the exact managed-WDA signature. Only
@@ -501,7 +501,7 @@ export function findManagedWdaProcesses(sig: ManagedWdaSignature, ops: WdaScanOp
   return [...found];
 }
 
-/** SIGTERM a managed WDA found by signature (its process group when it leads one — `qa_wda
+/** SIGTERM a managed WDA found by signature (its process group when it leads one; `qa_wda
  *  start` spawns it detached). Exported so qa_wda can share the real kill primitive. */
 export function killManagedWda(pid: number, ops: Pick<ProcessOps, 'psPgid' | 'killTree'> = REAL_OPS): boolean {
   return ops.killTree(pid, ops.psPgid(pid) === pid);

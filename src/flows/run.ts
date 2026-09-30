@@ -50,7 +50,7 @@ export interface FlowStepResult {
   screenshotUri?: string;
   /** clearOverlay only: true = nothing dismissible was detected, so nothing was done (not a
    *  failure); false = an overlay was detected but could NOT be dismissed (e.g. iOS without a
-   *  native alert API) — the step does not claim success. */
+   *  native alert API). The step does not claim success. */
   nothingCleared?: boolean;
 }
 
@@ -299,17 +299,17 @@ export function detectBackDismissibleOverlay(
 }
 
 export function classifyFlowDriverError(error: unknown, fallback: FailureCode = 'UNKNOWN'): FailureCode {
-  // Cancelled work (the call/job was aborted) is CANCELLED — never WDA_UNREACHABLE / SNAPSHOT_FAILED
+  // Cancelled work (the call/job was aborted) is CANCELLED, never WDA_UNREACHABLE / SNAPSHOT_FAILED
   // because the aborted request's message says "aborted" or "dump failed".
   if (isAbortError(error)) return 'CANCELLED';
   const msg = String((error as Error)?.message ?? error);
   // A crashing OCR/mask provider (tapOcrText/assertOcrText) is typed, not UNKNOWN.
   if ((error as { code?: unknown } | null)?.code === 'OCR_PROVIDER_FAILED') return 'OCR_PROVIDER_FAILED';
   // Driver-side argument validation (e.g. a malformed app id from assertAndroidAppId) carries
-  // code INVALID_ARGUMENT and/or an `INVALID_ARGUMENT:` message prefix — a caller error, not UNKNOWN.
+  // code INVALID_ARGUMENT and/or an `INVALID_ARGUMENT:` message prefix. That's a caller error, not UNKNOWN.
   if ((error as { code?: unknown } | null)?.code === 'INVALID_ARGUMENT' || /^(?:Error:\s*)?INVALID_ARGUMENT\b/.test(msg))
     return 'INVALID_ARGUMENT';
-  // Drivers self-classify undeliverable text (DirectDriver/WdaDriver prefix the code) — match
+  // Drivers self-classify undeliverable text (DirectDriver/WdaDriver prefix the code), so match
   // first so the free-form detail after the prefix can't hit a broader pattern below.
   if (/TEXT_INPUT_UNSUPPORTED/.test(msg)) return 'TEXT_INPUT_UNSUPPORTED';
   if (/not hittable|not hit.?point|not visible.*hittable|is not enabled|element.*obscured|other element.*would receive/i.test(msg))
@@ -352,7 +352,7 @@ export async function runFlow(
   const steps: FlowStepResult[] = [];
   const appId = flow.appId ?? session.appId;
   const timeoutMs = 8000;
-  // Ensure session.driver is the driver we're running with — core helpers (resolveTarget) read it.
+  // Ensure session.driver is the driver we're running with. Core helpers (resolveTarget) read it.
   session.driver = d;
   // Re-read per gesture: a rotation mid-flow swaps the axes (the WDA driver caches per
   // orientation, so this is cheap there). Keeps the first read as the fallback.
@@ -377,7 +377,7 @@ export async function runFlow(
   const shown = (value: string): string => makeRedactor(session.secrets)(value) ?? value;
   const outsideRoot = (p: string): StepOutcome => ({
     ok: false,
-    detail: `path "${p}" resolves outside the project root — image templates and baselines must live under the project root`,
+    detail: `path "${p}" resolves outside the project root. Image templates and baselines must live under the project root`,
     failureCode: 'UNSAFE_ACTION_REFUSED',
   });
 
@@ -621,13 +621,13 @@ export async function runFlow(
       }
       case 'assertVisual': {
         // human-readable visual checkpoint: capture evidence + record a visual note; passes.
-        // Sensitive mode never persists screenshots — record an honest skipped checkpoint instead.
+        // Sensitive mode never persists screenshots, so record an honest skipped checkpoint instead.
         if (session.sensitive) {
           sessions.addNote(session, {
             at: Date.now(),
             workflow: `${flow.name}:visual`,
             outcome: 'skipped',
-            reason: `${step.description} — not captured: sensitive mode disables screenshots`,
+            reason: `${step.description}: not captured, sensitive mode disables screenshots`,
             method: 'visual',
           });
           return { ok: true, detail: 'sensitive mode: visual checkpoint screenshot not captured' };
@@ -781,7 +781,7 @@ export async function runFlow(
         return { ok: true };
       }
       case 'clearOverlay': {
-        // Best-effort cleanup (always ok) — but BACK only when something is there to dismiss:
+        // Best-effort cleanup (always ok), but BACK only when something is there to dismiss:
         // with nothing open, BACK navigates away / exits the app (H7).
         if (await d.imeShown().catch(() => false)) {
           if (d.hideKeyboard) await d.hideKeyboard().catch(() => false);
@@ -796,7 +796,7 @@ export async function runFlow(
           return {
             ok: true,
             nothingCleared: true,
-            detail: 'nothing to clear (no keyboard, dialog, sheet or permission prompt detected) — BACK not pressed',
+            detail: 'nothing to clear (no keyboard, dialog, sheet or permission prompt detected), BACK not pressed',
           };
         }
         // iOS has no BACK for alerts/sheets: WDA "back" taps the nav bar / edge-swipes, which
@@ -807,7 +807,7 @@ export async function runFlow(
             return {
               ok: true,
               nothingCleared: false,
-              detail: `${dismissible} detected but NOT dismissed — this iOS backend has no native alert API (BACK is not used on iOS); dismiss it with an explicit tap step`,
+              detail: `${dismissible} detected but NOT dismissed. This iOS backend has no native alert API (BACK is not used on iOS); dismiss it with an explicit tap step`,
             };
           }
           try {
@@ -816,7 +816,7 @@ export async function runFlow(
             return {
               ok: true,
               nothingCleared: false,
-              detail: `${dismissible} detected but NOT dismissed — native alert dismiss failed: ${String((e as Error)?.message ?? e)}`,
+              detail: `${dismissible} detected but NOT dismissed: native alert dismiss failed: ${String((e as Error)?.message ?? e)}`,
             };
           }
           await settle(d, { timeoutMs });
@@ -827,7 +827,7 @@ export async function runFlow(
             return {
               ok: true,
               nothingCleared: false,
-              detail: `${dismissible} still present after native alert dismiss — dismiss it with an explicit tap step`,
+              detail: `${dismissible} still present after native alert dismiss. Dismiss it with an explicit tap step`,
             };
           return { ok: true, detail: `dismissed ${dismissible} with the native alert API` };
         }
@@ -939,7 +939,7 @@ export async function runFlow(
       } catch (e) {
         outcome = { ok: false, detail: String(e), failureCode: classifyFlowDriverError(e) };
       }
-      // H2: step detail can carry driver errors (argv/stderr) — scrub session secrets, which
+      // H2: step detail can carry driver errors (argv/stderr), so scrub session secrets, which
       // include every value typed into a secret step/variable before it ran.
       if (outcome.detail) outcome = { ...outcome, detail: shown(outcome.detail) };
       const rec: FlowStepResult = {
@@ -983,7 +983,7 @@ export async function runFlow(
     return -1;
   };
 
-  // setup → main → teardown (teardown ALWAYS runs, even after a failure).
+  // setup > main > teardown (teardown ALWAYS runs, even after a failure).
   let nextBase = 0;
   const setupFail = await runPhase(flow.setup, 'setup', nextBase, true);
   nextBase += flow.setup.length;

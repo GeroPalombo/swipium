@@ -1,6 +1,6 @@
 // Project-root confinement for paths that flow files (possibly from an untrusted cloned repo)
 // or agents hand to the flow runner / repair tool: image templates, visual baselines and flow
-// YAML files to patch. A path must resolve — after following symlinks — inside the project root.
+// YAML files to patch. A path must resolve (after following symlinks) inside the project root.
 
 import { existsSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
@@ -11,7 +11,7 @@ export class PathOutsideRootError extends Error {
     readonly requested: string,
     readonly root: string,
   ) {
-    super(`path "${requested}" resolves outside the project root (${root}) — flow files may only reference files under the project root`);
+    super(`path "${requested}" resolves outside the project root (${root}). Flow files may only reference files under the project root`);
     this.name = 'PathOutsideRootError';
   }
 }

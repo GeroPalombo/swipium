@@ -68,7 +68,7 @@ Items tagged **You** need an action from you. Items tagged **Automatic** happen 
 
 ### Changed
 
-- Project root resolution: explicit `projectRoot` → MCP roots → `SWIPIUM_PROJECT_ROOT` → `CLAUDE_PROJECT_DIR` → the server's working directory, which is used only when it is not `/` or `$HOME` and contains a project marker (`package.json`, `app.json`, `pubspec.yaml`, Gradle or Xcode files, `Podfile`, `android/`, `ios/`). Results report where the root came from (`rootSource`). An unresolved root fails with `PROJECT_ROOT_UNRESOLVED`. `qa_flow_check` and `qa_flow_run mode:"plan"` resolve the root the same way. See [docs/concepts.md](docs/concepts.md#project-root).
+- Project root resolution: explicit `projectRoot` > MCP roots > `SWIPIUM_PROJECT_ROOT` > `CLAUDE_PROJECT_DIR` > the server's working directory, which is used only when it is not `/` or `$HOME` and contains a project marker (`package.json`, `app.json`, `pubspec.yaml`, Gradle or Xcode files, `Podfile`, `android/`, `ios/`). Results report where the root came from (`rootSource`). An unresolved root fails with `PROJECT_ROOT_UNRESOLVED`. `qa_flow_check` and `qa_flow_run mode:"plan"` resolve the root the same way. See [docs/concepts.md](docs/concepts.md#project-root).
 - **`qa_status`** without `sessionId` returns first-call orientation instead of an error. With a session, it follows the last job: after a finished run it recommends that run's next action (read the report, explain the blocker, answer the question) instead of `qa_smoke` again, and it stops repeating advice that was already followed.
 - **`qa_test_this`:**
   - It never installs on a physical phone. With a phone connected it waits for the emulator it planned to boot; when a phone is the only option it returns `PHYSICAL_DEVICE_UNSUPPORTED`.

@@ -1,7 +1,7 @@
 // Minimal zero-dependency PNG decode. Device screenshots come from
 // `screencap -p` as non-interlaced 8-bit truecolor(+alpha) PNGs, so we support exactly that
 // (color types 2 and 6, bit depth 8, interlace 0) and error clearly on anything else. Uses
-// Node's built-in zlib — no image library, no third-party code.
+// Node's built-in zlib. No image library, no third-party code.
 
 import { inflateSync } from 'node:zlib';
 

@@ -1,14 +1,14 @@
 // "Automate my app". Generates a runnable JS/TS or Python Appium POM suite from a
 // session's recorded actions, adapting to the project's language/platform/test stack.
 //
-//   runAutomationPlan      — read-only core for qa_generate target:"appium" mode:"plan":
+//   runAutomationPlan:     read-only core for qa_generate target:"appium" mode:"plan":
 //                            project profile + generation plan + blockers.
-//   runAutomationGenerate  — core for qa_generate target:"appium": emit + write the JS/Python
+//   runAutomationGenerate: core for qa_generate target:"appium": emit + write the JS/Python
 //                            suite (+ README, optional CI), validate.
 //
 // The canonical Swipium YAML/POM remains the intermediate model (non-goal: don't replace it). JS/Python
 // are emitted on top so they can't drift. Project-file mutation (integrateIntoProject) is consent-gated.
-// Both cores are registered through qa_generate (src/tools/generate.ts) — this module registers no tool.
+// Both cores are registered through qa_generate (src/tools/generate.ts). This module registers no tool.
 
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -39,7 +39,7 @@ import type { Session, SessionStore } from '../session/store.js';
 type AutomationLanguage = 'auto' | 'javascript' | 'typescript' | 'python';
 type AutomationPlatform = 'auto' | 'android' | 'ios' | 'both';
 
-/** Merge a prebuilt appMapUri into a tool result's structured content (Fix 6 — a bootstrap blocker
+/** Merge a prebuilt appMapUri into a tool result's structured content (Fix 6: a bootstrap blocker
  *  still built the static map, so the URI must survive on the returned blocker/consent result). */
 function withAppMapUri(result: CallToolResult, appMapUri?: string): CallToolResult {
   if (!appMapUri) return result;
@@ -78,9 +78,9 @@ export interface AutomationPlanArgs {
 /**
  * Core handler for qa_generate target:"appium" mode:"plan". Read-only: inspect the project
  * (language, platform support, existing test stack) and build a plan for an "Automate my app"
- * Appium POM suite — selected automation language, backends, coverage, files planned, blockers.
+ * Appium POM suite: selected automation language, backends, coverage, files planned, blockers.
  */
-/** A recorded step the generators cannot express as real code — fail generation with the reason
+/** A recorded step the generators cannot express as real code. Fail generation with the reason
  *  instead of writing a suite that silently skips the step (§4). */
 function unemittable(e: UnemittableStepError, extra: Record<string, unknown> = {}): CallToolResult {
   return qaError(
@@ -123,7 +123,7 @@ export async function runAutomationPlan(
 
   const backendNote =
     backend && backend !== 'auto' && backend !== 'appium'
-      ? `\nNote: backend=${backend} requested — Appium code is generated as an ADDITIONAL layer; existing ${backend} flows are kept.`
+      ? `\nNote: backend=${backend} requested; Appium code is generated as an ADDITIONAL layer; existing ${backend} flows are kept.`
       : '';
   const featureNote = feature ? ` (feature focus: ${feature})` : '';
   const summary =
@@ -187,7 +187,7 @@ export async function runAutomationGenerate(
   if (sessionId && !session)
     return unknownSessionError(sessionId, ['Call qa_start_session first, or omit sessionId to bootstrap from projectRoot.']);
 
-  // Fix 6 — one-call "Automate my app": when no session/actions exist, build the static app map
+  // Fix 6: one-call "Automate my app": when no session/actions exist, build the static app map
   // (so it always exists) and bootstrap a device (consent-gated) + record actions via exploration.
   const wantBootstrap = bootstrap !== false && (bootstrap === true || bootstrap === 'auto' || !sessionId);
   let appMapUri: string | undefined;
@@ -224,7 +224,7 @@ export async function runAutomationGenerate(
         consentId,
         approve,
       });
-      // Honest target blocker / consent request — but the static app map WAS still built, so the
+      // Honest target blocker / consent request. But the static app map WAS still built, so the
       // caller can read it even though no device/artifact is available (Fix 6 acceptance).
       if (!boot.ok) return withAppMapUri(boot.result, appMapUri);
       session = boot.session;
@@ -289,7 +289,7 @@ export async function runAutomationGenerate(
     secretValues: session.secrets,
     structural: structuralLiterals(session.recordedActions),
   });
-  // Defense in depth: a registered secret value in ANY generated file fails generation loudly —
+  // Defense in depth: a registered secret value in ANY generated file fails generation loudly,
   // nothing is written (neither the suite nor the test-suite.json merge).
   const leakFindings = validation.findings.filter((f) => f.code === 'SECRET_IN_GENERATED_OUTPUT');
   if (leakFindings.length) {
@@ -345,7 +345,7 @@ export async function runAutomationGenerate(
     written = writeAutomationFiles(session.root, assembled.outputDir, assembled.files);
   }
 
-  // Fix 7 — link the generated suite back into the durable app map + persistent suite, so future
+  // Fix 7: link the generated suite back into the durable app map + persistent suite, so future
   // feature/ticket decisions know which flows are automated. Best-effort (warnings, never fatal).
   let suiteDelta: ReturnType<typeof mergeFromAutomation>['delta'] | undefined;
   let suiteUri: string | undefined;
@@ -374,7 +374,7 @@ export async function runAutomationGenerate(
       };
       const linkRes = linkAutomationSuite(session.root, suiteRef, now);
       if (linkRes.ok) appMapUri = linkRes.appMapUri ?? appMapUri;
-      else automationWarnings.push('app map not found — automation suite not linked into the map');
+      else automationWarnings.push('app map not found; automation suite not linked into the map');
     } catch (e) {
       automationWarnings.push(`app-map automation link failed: ${String(e)}`);
     }
@@ -420,7 +420,7 @@ export async function runAutomationGenerate(
     `runner ${assembled.profile.testFramework}; backend ${assembled.profile.defaultBackend}${assembled.profile.secondaryBackend ? ` (+${assembled.profile.secondaryBackend})` : ''}\n` +
     `locators: ${a.durable} durable / ${a.semi} semi / ${a.brittle} brittle (${a.brittlePct}% brittle)\n` +
     `validation: ${validation.ok ? 'passed' : 'FAILED'} (${validation.findings.filter((f) => f.severity === 'error').length} error, ${validation.findings.filter((f) => f.severity === 'warning').length} warn); secrets ${validation.secretsClean ? 'clean' : 'LEAK'}\n` +
-    (written.length ? `wrote ${written.length} files under ${join(session.root, targetDir)}` : '(preview — pass save:true)') +
+    (written.length ? `wrote ${written.length} files under ${join(session.root, targetDir)}` : '(preview, pass save:true)') +
     (skippedExisting.length
       ? `\nskipped ${skippedExisting.length} existing file(s) (no overwrite): ${skippedExisting.slice(0, 5).join(', ')}`
       : '') +

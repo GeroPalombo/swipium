@@ -1,8 +1,8 @@
 // Framework-aware STATIC scanner. Additive + confidence-based: it never fails a
-// run because one framework can't be parsed — parser problems are recorded in `parserNotes` and
+// run because one framework can't be parsed. Parser problems are recorded in `parserNotes` and
 // surface as reduced confidence. For JS/TS the TypeScript compiler API (Vision Gap Fix 10) is the
-// PRIMARY parser — it resolves route-constant references, navigator <Stack.Screen> declarations, and
-// multiline default-export components that regex misses — with line-aware regex as the fallback when
+// PRIMARY parser. It resolves route-constant references, navigator <Stack.Screen> declarations, and
+// multiline default-export components that regex misses, with line-aware regex as the fallback when
 // the `typescript` package is not resolvable. Each scanner is independent so the surface can grow.
 
 import { existsSync } from 'node:fs';
@@ -158,7 +158,7 @@ function scanReactNavigation(root: string, topo: StaticTopology, jsFiles: string
       }
       topo.edges.push({ to: id, kind: navKind, evidence: `${relPath}:${navType}.Screen`, confidence: 0.7 });
     }
-    // navigation.navigate('Foo') / .push('Foo') call sites → probable edges.
+    // navigation.navigate('Foo') / .push('Foo') call sites > probable edges.
     const navCallRe = /\.(navigate|push|replace)\(\s*["'`]([^"'`]+)["'`]/g;
     while ((m = navCallRe.exec(text))) {
       const to = `screen:${slug(m[2])}`;
@@ -169,13 +169,13 @@ function scanReactNavigation(root: string, topo: StaticTopology, jsFiles: string
 }
 
 /**
- * Vision Gap Fix 10 — AST pass over JS/TS/TSX files. Folds AST-discovered navigator screens (with
+ * Vision Gap Fix 10: AST pass over JS/TS/TSX files. Folds AST-discovered navigator screens (with
  * resolved route-constant names + bound components), exported screen components, navigation edges, and
  * route constants into the topology. Bounded; parse failures become parserNotes, never hard failures.
  */
 function scanTsAst(root: string, topo: StaticTopology, jsFiles: string[]): void {
   if (!tsAstAvailable()) {
-    topo.parserNotes.push('TypeScript compiler API unavailable — JS/TS scanned with regex fallback only');
+    topo.parserNotes.push('TypeScript compiler API unavailable, JS/TS scanned with regex fallback only');
     return;
   }
   let parsedFiles = 0;
@@ -193,7 +193,7 @@ function scanTsAst(root: string, topo: StaticTopology, jsFiles: string[]): void 
       continue;
     }
     parsedFiles++;
-    // Fold ONLY explicit navigator (<Stack/Tab/Drawer.Screen>) declarations into the topology — these
+    // Fold ONLY explicit navigator (<Stack/Tab/Drawer.Screen>) declarations into the topology. These
     // carry an authoritative route name (incl. constant-resolved) that regex misses. Generic component
     // / default-export screens are intentionally NOT folded here to avoid duplicating expo-router's
     // file-based routes and the screen-filename convention; scanTsSource still exposes them to callers.
@@ -232,7 +232,7 @@ function scanTsAst(root: string, topo: StaticTopology, jsFiles: string[]): void 
   if (!topo.router && parsedFiles && topo.screens.some((s) => (s.reasons ?? []).includes('ast_navigator_screen')))
     topo.router = 'react-navigation';
   topo.routeConstants = topo.routeConstants.slice(0, 200);
-  if (failedFiles) topo.parserNotes.push(`AST scan: ${failedFiles} JS/TS file(s) failed to parse — reduced confidence`);
+  if (failedFiles) topo.parserNotes.push(`AST scan: ${failedFiles} JS/TS file(s) failed to parse, reduced confidence`);
 }
 
 function scanRnScreenFiles(root: string, topo: StaticTopology, jsFiles: string[]): void {
@@ -276,7 +276,7 @@ function detectRnInputModels(jsFiles: string[], root: string): InputModel[] {
     const text = readTextSafe(f);
     if (!text || !/TextInput|TextField|<Input\b/.test(text)) continue;
     const relPath = rel(root, f);
-    // secureTextEntry → password; keyboardType email-address → email; placeholder hints.
+    // secureTextEntry > password; keyboardType email-address > email; placeholder hints.
     if (/secureTextEntry/.test(text) && !seen.has('password')) {
       out.push({
         fieldPurpose: 'password',
@@ -330,10 +330,9 @@ function scanExpoRn(root: string, fw: Framework, topo: StaticTopology, result: S
     const schemes = Array.isArray(expo.scheme) ? expo.scheme : expo.scheme ? [expo.scheme] : [];
     topo.deepLinks.push(...schemes.map((s) => `${s}://`));
   }
-  // config presence notes (app.config.js/ts not evaluated — recorded as partial confidence)
+  // config presence notes (app.config.js/ts not evaluated, recorded as partial confidence)
   for (const cfg of ['app.config.js', 'app.config.ts']) {
-    if (existsSync(join(root, cfg)))
-      topo.parserNotes.push(`${cfg} present but not evaluated (dynamic config) — identity may be incomplete`);
+    if (existsSync(join(root, cfg))) topo.parserNotes.push(`${cfg} present but not evaluated (dynamic config), identity may be incomplete`);
   }
 
   scanExpoRouter(root, topo);
@@ -402,7 +401,7 @@ function scanNativeAndroid(root: string, topo: StaticTopology, result: StaticSca
           if (n) topo.permissions.push(n);
         }
       } catch {
-        topo.parserNotes.push(`Failed to parse ${rel(root, manifestPath)} — activities/permissions may be incomplete`);
+        topo.parserNotes.push(`Failed to parse ${rel(root, manifestPath)}, activities/permissions may be incomplete`);
       }
     }
   } else {
@@ -541,14 +540,14 @@ function scanNativeIos(root: string, topo: StaticTopology, result: StaticScanRes
         });
       topo.viewControllers.push(name);
     }
-    // NavigationLink destinations → edges (best-effort)
+    // NavigationLink destinations > edges (best-effort)
     for (const m of text.matchAll(/NavigationLink[^{]*?destination:\s*([A-Za-z0-9_]+)\s*\(/g)) {
       topo.edges.push({ to: `view:${slug(m[1])}`, kind: 'navigation', evidence: `${relPath}:NavigationLink`, confidence: 0.5 });
     }
   }
   // storyboards/xibs
   const sb = walkFiles(root, { exts: ['.storyboard', '.xib'], maxFiles: 200 });
-  if (sb.length) topo.parserNotes.push(`${sb.length} storyboard/xib file(s) present — scene graph not parsed (partial confidence)`);
+  if (sb.length) topo.parserNotes.push(`${sb.length} storyboard/xib file(s) present, scene graph not parsed (partial confidence)`);
 }
 
 // ---------------------------------------------------------------------------
@@ -599,7 +598,7 @@ function scanFlutter(root: string, topo: StaticTopology, result: StaticScanResul
         topo.screens.push({ id, name: route, route, kind: 'route', sourceFiles: [relPath], confidence: 0.8, reasons: ['go_router_route'] });
       topo.flutterRoutes.push(route);
     }
-    if (/onGenerateRoute/.test(text)) topo.parserNotes.push(`onGenerateRoute in ${relPath} — dynamic routes not fully enumerated`);
+    if (/onGenerateRoute/.test(text)) topo.parserNotes.push(`onGenerateRoute in ${relPath}, dynamic routes not fully enumerated`);
   }
   // pages/screens under lib/screens, lib/pages, lib/features
   for (const f of dartFiles) {
@@ -718,7 +717,7 @@ export function staticScan(root: string, generatedAt: string): StaticScanResult 
       result.collectedFiles = dart;
       scanFlutter(root, topo, result, dart);
     } else {
-      topo.parserNotes.push(`Framework "${fw}" — no static scanner; map will rely on runtime observation`);
+      topo.parserNotes.push(`Framework "${fw}": no static scanner, map will rely on runtime observation`);
     }
   } catch (e) {
     topo.parserNotes.push(`Static scan error (non-fatal): ${String(e)}`);

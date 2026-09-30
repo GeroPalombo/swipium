@@ -1,7 +1,7 @@
-// qa_explore (Phase 3.3) — bounded, safe-by-default guided exploration as a background job. Drives
-// the runExplore service: observe → rank safe candidates → act → health → graph, writing a screen
+// qa_explore (Phase 3.3): bounded, safe-by-default guided exploration as a background job. Drives
+// the runExplore service: observe > rank safe candidates > act > health > graph, writing a screen
 // graph artifact (JSON + Markdown) and recording qa_note outcomes. Returns a running jobId; the
-// terminal state + graphUri land in the job result (poll qa_job_status). Thin wrapper — all logic
+// terminal state + graphUri land in the job result (poll qa_job_status). Thin wrapper; all logic
 // is in src/explore/*.
 
 import { z } from 'zod';
@@ -358,8 +358,8 @@ async function runExploreJob(
       summary: res.summary,
     };
     sessions.setExploration(session, record);
-    // Merge this exploration into the durable App Knowledge Map by default. Best-effort
-    // — a map failure must never fail the exploration job.
+    // Merge this exploration into the durable App Knowledge Map by default. Best-effort:
+    // a map failure must never fail the exploration job.
     try {
       buildAppMap(session.root, {
         mode: 'runtime_merge',
@@ -371,7 +371,7 @@ async function runExploreJob(
     } catch (e) {
       log('warn', 'app map merge after explore failed', { jobId: job.jobId, err: String(e) });
     }
-    // Fix 9: keep the persistent suite current directly after exploration — don't wait for a later
+    // Fix 9: keep the persistent suite current directly after exploration. Don't wait for a later
     // qa_report. Best-effort: a suite-merge failure is a warning, never an exploration failure.
     const suiteMerge = mergeFromExploration(session.root, record, {
       source: 'exploration',
@@ -411,7 +411,7 @@ async function runExploreJob(
         nextRecommendedAction,
       },
       resultText:
-        `🧭 exploration ${res.state} — ${res.summary.screensVisited} screens, ${res.summary.actionsTried} actions, ${res.summary.workflowsFound} transitions, ${res.summary.visualOnlyScreens} visual-only, ${res.summary.unsafeActionsSkipped} unsafe skipped, ${res.summary.appErrors} app errors.\n` +
+        `🧭 exploration ${res.state}: ${res.summary.screensVisited} screens, ${res.summary.actionsTried} actions, ${res.summary.workflowsFound} transitions, ${res.summary.visualOnlyScreens} visual-only, ${res.summary.unsafeActionsSkipped} unsafe skipped, ${res.summary.appErrors} app errors.\n` +
         `reason: ${res.stoppedReason}\ngraph: ${graphUri}` +
         (generatedSuite && !generatedSuite.skipped ? `\npromoted suite: ${generatedSuite.name}` : '') +
         (res.needsInput ? `\n❓ ${res.needsInput.question}` : ''),

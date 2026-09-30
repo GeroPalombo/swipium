@@ -1,4 +1,4 @@
-// qa_doctor — proactive environment self-diagnosis. Run first.
+// qa_doctor: proactive environment self-diagnosis. Run first.
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -26,7 +26,7 @@ const CLIENT_HINTS: Record<string, string> = {
   gemini:
     'Register with: gemini mcp add swipium npx -y swipium (project scope), or add to .gemini/settings.json mcpServers with "cwd" set to your app repo. Preview: `swipium init gemini`.',
   codex:
-    'Register with `codex mcp add swipium -- npx -y swipium` or `swipium init codex` (sets cwd + startup_timeout_sec/tool_timeout_sec). Codex Desktop threads may not expose custom stdio MCP tools (openai/codex#19425) — confirm the tools appear.',
+    'Register with `codex mcp add swipium -- npx -y swipium` or `swipium init codex` (sets cwd + startup_timeout_sec/tool_timeout_sec). Codex Desktop threads may not expose custom stdio MCP tools (openai/codex#19425), so confirm the tools appear.',
   cursor:
     'Add to .cursor/mcp.json under "mcpServers": { "swipium": { "command": "npx", "args": ["-y", "swipium"], "env": { "SWIPIUM_PROJECT_ROOT": "${workspaceFolder}" } } } (or run `swipium init cursor --apply`).',
   vscode:
@@ -131,7 +131,7 @@ export function registerDoctor(server: McpServer): void {
           ok,
           detail: ok
             ? `client matches running server (v${SWIPIUM_VERSION}, ${TOOL_COUNT} tools, schema ${schemaHash})`
-            : `STALE CLIENT — running v${SWIPIUM_VERSION}/${TOOL_COUNT} tools/schema ${schemaHash} but client expected ${expectedVersion ?? '?'}/${expectedToolCount ?? '?'}/${expectedSchemaHash ?? '?'}`,
+            : `STALE CLIENT: running v${SWIPIUM_VERSION}/${TOOL_COUNT} tools/schema ${schemaHash} but client expected ${expectedVersion ?? '?'}/${expectedToolCount ?? '?'}/${expectedSchemaHash ?? '?'}`,
           fix: ok ? undefined : STALE_CLIENT_HINT,
         });
       }
@@ -153,7 +153,7 @@ export function registerDoctor(server: McpServer): void {
           detail: hasAdb ? ((await firstLine('adb', ['version'])) ?? 'present') : `not on PATH (SDK dirs checked: ${sdkDirs})`,
           fix: hasAdb
             ? undefined
-            : 'Install Android platform-tools (Android Studio → SDK Manager) and set ANDROID_HOME to the SDK dir (or put platform-tools on PATH).',
+            : 'Install Android platform-tools (Android Studio > SDK Manager) and set ANDROID_HOME to the SDK dir (or put platform-tools on PATH).',
         });
 
         devices = hasAdb ? await adbDevices() : [];

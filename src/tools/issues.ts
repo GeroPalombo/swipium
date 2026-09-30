@@ -1,12 +1,12 @@
 // SWIPIUM Issue Log MCP tools. qa_issue_log is still the only exposed issue
 // tool, but it now carries the full ledger lifecycle via `mode`:
-//   history (default) — list current issues + counts + recurrence candidates (original behavior)
-//   log               — record a new observation (re-observing a fixed fingerprint reopens it)
-//   mark_fixed        — transition an issue to fixed (commit/version/how-fixed provenance)
-//   verify_fixed      — confirm a fixed issue held, with current-run evidence
-//   suppress          — hide expected noise from default history (stays under known-noise);
+//   history (default): list current issues + counts + recurrence candidates (original behavior)
+//   log:               record a new observation (re-observing a fixed fingerprint reopens it)
+//   mark_fixed:        transition an issue to fixed (commit/version/how-fixed provenance)
+//   verify_fixed:      confirm a fixed issue held, with current-run evidence
+//   suppress:          hide expected noise from default history (stays under known-noise);
 //                       `suppressedUntil` expires it automatically, `unsuppress:true` lifts it early
-//   metrics           — opened/fixed/reopened/verified counts + trends from the event log
+//   metrics:           opened/fixed/reopened/verified counts + trends from the event log
 //
 // Thin wrappers over src/issues/*; heavy logic lives there. Large lists are returned inline but
 // compact (issue ids + summaries), with a resource URI for the full index.
@@ -179,7 +179,7 @@ export function registerIssues(server: McpServer, sessions: SessionStore): void 
           });
         const title = (args.title ?? args.summary!).trim();
         // Identity: the normalized title rides the fingerprint's `text:` token (the same token the
-        // report bridge uses for visible text), plus category/platform/app scope — so two different
+        // report bridge uses for visible text), plus category/platform/app scope, so two different
         // defects logged on one platform are two issues, and re-logging the same title matches.
         const observation = {
           title,
@@ -188,10 +188,10 @@ export function registerIssues(server: McpServer, sessions: SessionStore): void 
           visibleText: title.replace(/[\s.!?…:;,]+$/u, ''),
         };
         // The `app:` token is NEVER part of a manual entry's identity: the ledger is already
-        // project-scoped, and appId is only known when a sessionId was passed — including it made
+        // project-scoped, and appId is only known when a sessionId was passed. Including it made
         // the same title logged via sessionId vs via projectRoot two different issues. appId is
         // still stored on the event as metadata. (Pre-1.6 manual issues keep their old
-        // platform-only fingerprint; they are never auto-merged — close them via mark_fixed/suppress.)
+        // platform-only fingerprint; they are never auto-merged; close them via mark_fixed/suppress.)
         const meta = {
           appId,
           fingerprintWithoutAppId: true,
@@ -212,7 +212,7 @@ export function registerIssues(server: McpServer, sessions: SessionStore): void 
         )
           return qaError({
             failureCode: 'ISSUE_LOG_TOO_VAGUE',
-            what: `The title "${title}" has no identifying words once ids/numbers are scrubbed — it would merge with unrelated issues`,
+            what: `The title "${title}" has no identifying words once ids/numbers are scrubbed, so it would merge with unrelated issues`,
             changedState: false,
             retrySafe: true,
             nextSteps: ['Use a descriptive title (what broke, where), or pass failureCode.'],
@@ -235,7 +235,7 @@ export function registerIssues(server: McpServer, sessions: SessionStore): void 
             recurrenceMessage: res.recurrenceMessage,
           },
           res.reopened
-            ? `Reopened ${res.issueId} — ${res.recurrenceMessage}`
+            ? `Reopened ${res.issueId}: ${res.recurrenceMessage}`
             : `${res.isNew ? 'Logged new' : 'Updated'} issue ${res.issueId} (${res.record.state}, ${res.record.category}/${res.record.severity})`,
         );
       }
@@ -257,7 +257,7 @@ export function registerIssues(server: McpServer, sessions: SessionStore): void 
               topAgingIssues: m.topAgingIssues.map(lifecycleRecord),
             },
           },
-          `Issue metrics — opened=${m.opened} fixed=${m.fixed} reopened=${m.reopened} verifiedFixed=${m.verifiedFixed} suppressed=${m.suppressed} reopenRate=${m.reopenRatePct}% fixVerification=${m.fixVerificationRatePct}%`,
+          `Issue metrics: opened=${m.opened} fixed=${m.fixed} reopened=${m.reopened} verifiedFixed=${m.verifiedFixed} suppressed=${m.suppressed} reopenRate=${m.reopenRatePct}% fixVerification=${m.fixVerificationRatePct}%`,
         );
       }
 
@@ -333,7 +333,7 @@ export function registerIssues(server: McpServer, sessions: SessionStore): void 
               ? `Verified fix for ${r.issueId} with current-run evidence`
               : args.unsuppress
                 ? `Unsuppressed ${r.issueId} (now ${r.state})`
-                : `Suppressed ${r.issueId}${r.suppressionReason ? ` — ${r.suppressionReason}` : ''} (hidden from default history${r.suppressedUntil ? ` until ${r.suppressedUntil}` : ''}; still visible under known-noise)`;
+                : `Suppressed ${r.issueId}${r.suppressionReason ? ` (${r.suppressionReason})` : ''} (hidden from default history${r.suppressedUntil ? ` until ${r.suppressedUntil}` : ''}; still visible under known-noise)`;
         return qaOk({ mode, issue: lifecycleRecord(r) }, summary);
       }
 
@@ -369,7 +369,7 @@ export function registerIssues(server: McpServer, sessions: SessionStore): void 
           counts: res.counts,
           recurrenceCandidates: res.recurrenceCandidates.map((r) => r.issueId),
         },
-        `${res.counts.total} issue(s) — ${Object.entries(res.counts.byState)
+        `${res.counts.total} issue(s): ${Object.entries(res.counts.byState)
           .map(([k, v]) => `${k}=${v}`)
           .join(' ')}${res.recurrenceCandidates.length ? ` | ${res.recurrenceCandidates.length} recurrence candidate(s)` : ''}`,
       );

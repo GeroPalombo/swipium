@@ -1,4 +1,4 @@
-// Retention for ~/.swipium/runs (pre-launch disk finding: session dirs were never deleted — one
+// Retention for ~/.swipium/runs (pre-launch disk finding: session dirs were never deleted; one
 // machine had 27,870 dirs / 283 MB; registry.json caps ENTRIES at 200 but the dirs stayed forever).
 //
 // Rule (both the automatic startup prune and `swipium gc`): a session dir under
@@ -7,10 +7,10 @@
 //   - it is NOT listed in ~/.swipium/registry.json (reloadable prior sessions stay);
 //   - it is NOT live in this process;
 //   - it is NOT among the newest `keepPerProject` sessions of its project (kept regardless of age).
-// Thresholds: SWIPIUM_RETENTION_DAYS (default 30; "0"/"off" disables the automatic startup prune —
+// Thresholds: SWIPIUM_RETENTION_DAYS (default 30; "0"/"off" disables the automatic startup prune,
 // `swipium gc` still works) and SWIPIUM_RETENTION_KEEP (default 20 per project).
 // Async fs throughout so the background prune never blocks the server's event loop; every error is
-// swallowed per entry (logged) — retention must never break a run.
+// swallowed per entry (logged). Retention must never break a run.
 
 import { readFile, readdir, rm, rmdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -28,7 +28,7 @@ export interface RetentionOptions {
   keepPerProject?: number;
   dryRun?: boolean;
   now?: number;
-  /** Session dirs live in this process — never deleted. */
+  /** Session dirs live in this process. Never deleted. */
   liveDirs?: Iterable<string>;
 }
 
@@ -42,7 +42,7 @@ export interface RetentionResult {
   deleted: string[];
   bytesReclaimed: number;
   errors: number;
-  /** Set when the prune was skipped entirely (e.g. registry.json unreadable — fail closed). */
+  /** Set when the prune was skipped entirely (e.g. registry.json unreadable, so fail closed). */
   skipped?: string;
 }
 
@@ -66,7 +66,7 @@ export function retentionKeepFromEnv(env: NodeJS.ProcessEnv = process.env): numb
   return envInt(env.SWIPIUM_RETENTION_KEEP, DEFAULT_KEEP_PER_PROJECT) ?? 0;
 }
 
-/** Registered session dirs, or `null` when registry.json exists but cannot be read/parsed — the
+/** Registered session dirs, or `null` when registry.json exists but cannot be read/parsed. The
  *  prune then fails CLOSED (skips) rather than treating every registered session as deletable.
  *  A missing registry.json is a genuine "nothing registered" (empty set). */
 async function registryDirs(swipiumDir: string): Promise<Set<string> | null> {
@@ -76,7 +76,7 @@ async function registryDirs(swipiumDir: string): Promise<Set<string> | null> {
     raw = await readFile(file, 'utf8');
   } catch (e) {
     if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') return new Set();
-    log('warn', 'retention: registry.json unreadable — skipping prune (fail closed)', { file, err: String(e) });
+    log('warn', 'retention: registry.json unreadable, skipping prune (fail closed)', { file, err: String(e) });
     return null;
   }
   try {
@@ -89,7 +89,7 @@ async function registryDirs(swipiumDir: string): Promise<Set<string> | null> {
         .map((d) => resolve(d)),
     );
   } catch (e) {
-    log('warn', 'retention: registry.json corrupt — skipping prune (fail closed)', { file, err: String(e) });
+    log('warn', 'retention: registry.json corrupt, skipping prune (fail closed)', { file, err: String(e) });
     return null;
   }
 }
@@ -139,7 +139,7 @@ export async function pruneSessionRuns(opts: RetentionOptions = {}): Promise<Ret
   const registered = await registryDirs(swipiumDir);
   if (!registered) {
     result.errors++;
-    result.skipped = 'registry.json unreadable or corrupt — no session dir deleted (fail closed)';
+    result.skipped = 'registry.json unreadable or corrupt, no session dir deleted (fail closed)';
     return result;
   }
   const live = new Set([...(opts.liveDirs ?? [])].map((d) => resolve(d)));
@@ -167,7 +167,7 @@ export async function pruneSessionRuns(opts: RetentionOptions = {}): Promise<Ret
       }
     } catch (e) {
       result.errors++;
-      log('warn', 'retention: unreadable project runs dir — skipped', { dir: projectDir, err: String(e) });
+      log('warn', 'retention: unreadable project runs dir, skipped', { dir: projectDir, err: String(e) });
       continue;
     }
     result.scanned += sessions.length;

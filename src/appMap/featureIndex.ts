@@ -39,7 +39,7 @@ export interface FeatureIndex {
   routes: RouteRef[];
   files: SourceFileEntry[];
   scannedFiles: number;
-  truncated: boolean; // hit the maxFiles cap — coverage is partial
+  truncated: boolean; // hit the maxFiles cap, so coverage is partial
 }
 
 const SOURCE_EXT = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.swift', '.kt', '.java', '.dart', '.vue']);
@@ -76,13 +76,13 @@ export function tokenize(name: string): string[] {
     .filter((t) => t.length > 1 && !/^\d+$/.test(t));
 }
 
-/** Classify a symbol by conventional name suffixes/prefixes — deterministic, English-leaning v1. */
+/** Classify a symbol by conventional name suffixes/prefixes. Deterministic, English-leaning v1. */
 export function classifySymbol(name: string): SymbolKind {
   if (/^use[A-Z]/.test(name)) return 'hook';
   if (/(Screen|Page|View|Activity|Fragment|Route)$/.test(name)) return 'screen';
   if (/(Service|Api|Client|Repository|Store|Manager|Provider|Controller|Analyzer|Engine)$/.test(name)) return 'service';
   if (/(Component|Card|Button|List|Modal|Sheet|Header|Footer|Item|Row|Tile|Widget)$/.test(name)) return 'component';
-  if (/^[A-Z]/.test(name)) return 'component'; // PascalCase default → likely a component/class
+  if (/^[A-Z]/.test(name)) return 'component'; // PascalCase default > likely a component/class
   return 'function';
 }
 

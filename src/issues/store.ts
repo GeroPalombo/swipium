@@ -1,17 +1,17 @@
-// SWIPIUM Issue Log — persistence.
+// SWIPIUM Issue Log: persistence.
 //
-// `.swipium/issues-log.jsonl`   — canonical, append-only event ledger. NEVER pruned by default.
-// `.swipium/issues/index.json`  — derived cache, rebuildable from the log if deleted/corrupt.
-// `.swipium/issues/policy.json` — classifier + retention + source-revision policy.
-// `.swipium/issues/artifacts/`  — large evidence files (may follow normal retention).
+// `.swipium/issues-log.jsonl`   : canonical, append-only event ledger. NEVER pruned by default.
+// `.swipium/issues/index.json`  : derived cache, rebuildable from the log if deleted/corrupt.
+// `.swipium/issues/policy.json` : classifier + retention + source-revision policy.
+// `.swipium/issues/artifacts/`  : large evidence files (may follow normal retention).
 //
 // The log is the source of truth: the index is always recomputable via rebuildRecords(). Writes are
-// append-only for events and atomic (unique temp + rename) for the index. Best-effort I/O — corrupt
+// append-only for events and atomic (unique temp + rename) for the index. Best-effort I/O: corrupt
 // files degrade to a rebuild, never throw on read.
 //
 // Concurrency: several MCP server instances (and the CI CLI) can share one project. Every
 // read-modify-write of the ledger runs under withLedgerLock(), and the cached index records the
-// log's size/mtime it was derived from — a cache whose stamp no longer matches the log (another
+// log's size/mtime it was derived from. A cache whose stamp no longer matches the log (another
 // process appended) is rebuilt instead of trusted.
 
 import { randomUUID } from 'node:crypto';
@@ -56,7 +56,7 @@ export const DEFAULT_POLICY: IssuePolicyFile = {
   retention: { keepIssueEvents: 'forever', pruneEvidenceAfterDays: 90 },
 };
 
-/** Load the policy file, merged over defaults. Best-effort — corrupt file → defaults. */
+/** Load the policy file, merged over defaults. Best-effort: corrupt file > defaults. */
 export function loadPolicy(root: string): IssuePolicyFile {
   try {
     const path = issuesPolicyPath(root);
@@ -86,7 +86,7 @@ export function readEvents(root: string): IssueEvent[] {
       const ev = JSON.parse(trimmed) as IssueEvent;
       if (validateEvent(ev).length === 0) out.push(ev);
     } catch {
-      /* skip a corrupt line — the log stays usable */
+      /* skip a corrupt line; the log stays usable */
     }
   }
   return out;
@@ -136,7 +136,7 @@ export function pruneEvidence(root: string, days: number | undefined, now: numbe
           remaining--;
         }
       } catch {
-        /* vanished / unreadable — skip */
+        /* vanished / unreadable, skip */
       }
     }
     return remaining === 0; // caller may remove an emptied sub-dir
@@ -210,7 +210,7 @@ export function rebuildIndex(root: string, now: string, appId?: string): IssueIn
     try {
       saveIndex(root, index, stamp);
     } catch {
-      /* cache write is best-effort — the log stays authoritative */
+      /* cache write is best-effort; the log stays authoritative */
     }
   }
   return index;
@@ -220,7 +220,7 @@ export function rebuildIndex(root: string, now: string, appId?: string): IssueIn
 export function getIndex(root: string, now: string, appId?: string): IssueIndex {
   const index = loadIndex(root) ?? (readEvents(root).length === 0 ? emptyIndex(now, appId) : rebuildIndex(root, now, appId));
   // Enforce `suppressedUntil`: an expired suppression is shown in its pre-suppression lane from
-  // `now` on (the next event on the issue makes that durable in the log — see foldEvent).
+  // `now` on (the next event on the issue makes that durable in the log, see foldEvent).
   index.records = index.records.map((r) => (suppressionExpired(r, now) ? liftSuppression(r) : r));
   return index;
 }

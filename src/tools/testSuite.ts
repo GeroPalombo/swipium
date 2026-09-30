@@ -1,4 +1,4 @@
-// qa_suite_* — the MCP surface for the persistent, project-level QA test-case suite.
+// qa_suite_*: the MCP surface for the persistent, project-level QA test-case suite.
 // These query, update, generate, export, and lint the canonical suite under
 // `.swipium/test-suite.json` independently of per-run asset generation (qa_generate). All
 // persistence + merge logic lives in src/testSuite/* (pure); these tools resolve a root/session,
@@ -209,7 +209,7 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
             created: [],
             updated: [],
           },
-          'No recorded actions or exploration in this session — nothing to generate yet.',
+          'No recorded actions or exploration in this session, nothing to generate yet.',
         );
       }
 
@@ -234,7 +234,7 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
             .filter((e) => e.durability === 'brittle')
             .map((e) => `${e.page}.${e.element}: ${e.remediation ?? 'brittle locator'}`)
         : [];
-      const summary = `Generated ${filtered.length} case(s) → +${applied.result.created.length} new, ~${applied.result.updated.length} updated. Suite now ${applied.result.suite.cases.length} case(s).`;
+      const summary = `Generated ${filtered.length} case(s) > +${applied.result.created.length} new, ~${applied.result.updated.length} updated. Suite now ${applied.result.suite.cases.length} case(s).`;
       return qaOk(
         {
           generated: filtered.map((c) => ({

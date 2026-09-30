@@ -1,10 +1,10 @@
-// qa_generate (tool-surface consolidation) — the single entry point for "generate test
+// qa_generate (tool-surface consolidation): the single entry point for "generate test
 // assets from this session's recorded actions". Dispatches by `target` to the existing core
 // handlers (services/flowGenerate.ts, suite.ts, automationGen/run.ts) so behavior, consent gates, and
 // error envelopes are unchanged; only the tool surface is unified.
 //
 // Not to be confused with qa_suite_generate, which grows the DURABLE repo-level test suite
-// (.swipium/test-suite.json) across runs — qa_generate emits per-run assets from this run.
+// (.swipium/test-suite.json) across runs; qa_generate emits per-run assets from this run.
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -56,7 +56,7 @@ function noteGenerated(sessions: SessionStore, sessionId: string | undefined, ta
 
 /** Label a mode:"plan" result of a generate-capable target as a read-only preview. */
 function labelPreview(result: CallToolResult): CallToolResult {
-  const label = 'PREVIEW (mode:"plan" — read-only, nothing was written). Re-run with mode:"generate" to write files.';
+  const label = 'PREVIEW (mode:"plan", read-only, nothing was written). Re-run with mode:"generate" to write files.';
   const content = [...(result.content ?? [])];
   const first = content[0];
   if (first && first.type === 'text') content[0] = { ...first, text: `${label}\n${String(first.text)}` };
@@ -121,7 +121,7 @@ export function registerGenerate(server: McpServer, sessions: SessionStore): voi
         .sort();
       if (ignored.length) notes.push(`ignored parameter(s) not applicable to target:"${target}": ${ignored.join(', ')}`);
 
-      // ---- target:"appium" — plan is exactly the automation plan; generate supports bootstrap. ----
+      // ---- target:"appium": plan is exactly the automation plan; generate supports bootstrap. ----
       if (target === 'appium') {
         if (planMode) {
           const res = await runAutomationPlan(sessions, {
@@ -137,7 +137,7 @@ export function registerGenerate(server: McpServer, sessions: SessionStore): voi
         }
         if (args.backend && args.backend !== 'auto' && args.backend !== 'appium') {
           notes.push(
-            `backend:"${args.backend}" applies to mode:"plan" only — Appium code is generated as an additional layer; existing ${args.backend} flows are kept`,
+            `backend:"${args.backend}" applies to mode:"plan" only; Appium code is generated as an additional layer; existing ${args.backend} flows are kept`,
           );
         }
         const res = await runAutomationGenerate(server, sessions, {
@@ -172,7 +172,7 @@ export function registerGenerate(server: McpServer, sessions: SessionStore): voi
         });
       }
 
-      if (planMode && args.save) notes.push('mode:"plan" is read-only — save was forced off; re-run with mode:"generate" to write files');
+      if (planMode && args.save) notes.push('mode:"plan" is read-only, so save was forced off; re-run with mode:"generate" to write files');
       const save = planMode ? false : args.save;
 
       let res: CallToolResult;

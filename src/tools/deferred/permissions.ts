@@ -1,4 +1,4 @@
-// qa_permissions — list / grant / revoke Android runtime permissions without
+// qa_permissions: list / grant / revoke Android runtime permissions without
 // raw adb. grant is low-risk (commonly used to pre-approve and skip a dialog) and only logged;
 // revoke can break app state, so it is consent-gated. Every mutation is recorded as an
 // environment change for qa_report.
@@ -17,7 +17,7 @@ export function registerPermissions(server: McpServer, sessions: SessionStore): 
     {
       title: 'App permissions',
       description:
-        "Inspect or change a package's Android runtime permissions. action: list (granted/denied), grant (pre-approve to skip a dialog — logged), revoke (consent-gated, can break app state — logged). `package` defaults to the session's appId; `permission` is a full android.permission.* name (e.g. android.permission.ACCESS_FINE_LOCATION).",
+        "Inspect or change a package's Android runtime permissions. action: list (granted/denied), grant (pre-approve to skip a dialog, logged), revoke (consent-gated, can break app state, logged). `package` defaults to the session's appId; `permission` is a full android.permission.* name (e.g. android.permission.ACCESS_FINE_LOCATION).",
       inputSchema: {
         sessionId: z.string(),
         action: z.enum(['list', 'grant', 'revoke']),
@@ -56,7 +56,7 @@ export function registerPermissions(server: McpServer, sessions: SessionStore): 
         const perms = await listRuntimePermissions(serial, pkg);
         return qaOk(
           { package: pkg, ...perms },
-          `${pkg}: ${perms.granted.length} granted, ${perms.denied.length} denied\n  granted: ${perms.granted.join(', ') || '—'}\n  denied: ${perms.denied.join(', ') || '—'}`,
+          `${pkg}: ${perms.granted.length} granted, ${perms.denied.length} denied\n  granted: ${perms.granted.join(', ') || 'none'}\n  denied: ${perms.denied.join(', ') || 'none'}`,
         );
       }
 
@@ -70,7 +70,7 @@ export function registerPermissions(server: McpServer, sessions: SessionStore): 
       }
 
       if (action === 'revoke') {
-        // Revoking can crash/break the app — gate behind consent.
+        // Revoking can crash/break the app, so gate behind consent.
         const gate = consumeConsent(consentId, approve, { action: 'permission_revoke', affects: { package: pkg, permission } });
         if (!gate.approved) {
           sessions.recordMutation(session, {
@@ -128,7 +128,7 @@ export function registerPermissions(server: McpServer, sessions: SessionStore): 
         return qaOk({ package: pkg, permission, action }, `revoked ${permission} from ${pkg}`);
       }
 
-      // grant — low risk, but still a state mutation (it can hide a permission-dialog bug), so
+      // grant: low risk, but still a state mutation (it can hide a permission-dialog bug), so
       // it is consent-gated (low) and always reported, never silent.
       const grantGate = consumeConsent(consentId, approve, { action: 'permission_grant', affects: { package: pkg, permission } });
       if (!grantGate.approved) {
@@ -145,7 +145,7 @@ export function registerPermissions(server: McpServer, sessions: SessionStore): 
           risk: 'low',
           exactCommand: `adb -s ${serial} shell pm grant ${pkg} ${permission}`,
           affects: { package: pkg, permission },
-          explain: `Pre-grant ${permission} to ${pkg}? This skips the runtime permission dialog — convenient, but it can mask a permission-prompt bug.`,
+          explain: `Pre-grant ${permission} to ${pkg}? This skips the runtime permission dialog. Convenient, but it can mask a permission-prompt bug.`,
         });
       }
       sessions.recordMutation(session, {

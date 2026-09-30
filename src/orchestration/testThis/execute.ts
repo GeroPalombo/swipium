@@ -1,4 +1,4 @@
-// qa_test_this execute/interactive mode gate — handles the synchronous half of execution:
+// qa_test_this execute/interactive mode gate. Handles the synchronous half of execution:
 // the auth question, the unified consent preflight (Milestone A), job creation, and the
 // optional waitForCompletion window. The heavy pipeline itself runs in ./pipeline.js.
 
@@ -35,16 +35,16 @@ export function isWithinRoot(p: string, root: string): boolean {
 }
 
 /** Execute / interactive orchestration: handle questions + consent synchronously, then run the
- *  build/convert → prepare → smoke → report pipeline as a job. */
+ *  build/convert > prepare > smoke > report pipeline as a job. */
 export async function runExecuteMode(server: McpServer, sessions: SessionStore, session: Session, a: ExecuteArgs): Promise<CallToolResult> {
-  // 1. Auth question — interactive (or stopOnNeedsInput / goal:test_login) asks; execute proceeds pre-login.
+  // 1. Auth question: interactive (or stopOnNeedsInput / goal:test_login) asks; execute proceeds pre-login.
   if (
     a.scan.likelyAuth &&
     !isLoginDeclined(session) &&
     !hasUsableCredentials(session) &&
     (a.mode === 'interactive' || a.stopOnNeedsInput)
   ) {
-    // Stored credential METADATA survives a restart but the values do not — re-ask, and say why.
+    // Stored credential METADATA survives a restart but the values do not. Re-ask, and say why.
     const lost = credentialsLostOnRestart(session);
     const attempted = [
       `scanned project (framework=${a.scan.framework}; detected likely auth: ${a.scan.authSignals.slice(0, 3).join(', ') || 'login UI'})`,
@@ -83,7 +83,7 @@ export async function runExecuteMode(server: McpServer, sessions: SessionStore, 
     try {
       externalApk = { path: a.effectiveApk, sha256: createHash('sha256').update(readFileSync(a.effectiveApk)).digest('hex') };
     } catch {
-      /* unreadable — treated as in-root install */
+      /* unreadable: treated as in-root install */
     }
   }
   const iosApp = !a.isAndroid && !a.isIosReal ? a.art.best?.path : undefined;
@@ -123,9 +123,9 @@ export async function runExecuteMode(server: McpServer, sessions: SessionStore, 
         affects: preflight.consentAffects,
         explain: `Running "test this" needs these privileged steps (approved together so they don't re-prompt):\n${preflight.exactCommand}\nApprove to start; Swipium then installs, smokes, reports${a.generateSuite ? ', and generates a suite' : ''}.`,
       });
-      // A supplied consentId that could not be used must be explained — never a silent re-challenge.
+      // A supplied consentId that could not be used must be explained, never a silent re-challenge.
       const staleNote = a.consentId
-        ? `consent ${a.consentId} ${/unknown|expired|already-used/i.test(gate.reason ?? '') ? 'unknown or expired' : `not applied (${gate.reason ?? 'not usable'})`} — new challenge issued`
+        ? `consent ${a.consentId} ${/unknown|expired|already-used/i.test(gate.reason ?? '') ? 'unknown or expired' : `not applied (${gate.reason ?? 'not usable'})`}; new challenge issued`
         : undefined;
       // sessionId rides on the consent result so the approving re-call reuses THIS session (no
       // projectRoot needed); the static app map URI stays visible too (Fix 1).
@@ -178,10 +178,10 @@ export async function runExecuteMode(server: McpServer, sessions: SessionStore, 
         cur.resultText ?? `test-this ${a.mode} ${res.state ?? cur.status}.`,
       );
     }
-    // Timed out — leave the job running and tell the agent to poll.
+    // Timed out: leave the job running and tell the agent to poll.
     return qaOk(
       { sessionId: session.id, state: 'running', mode: a.mode, jobId: job.jobId, appMapUri: a.appMapUri, timedOutWaiting: true },
-      `⏳ test-this ${a.mode} still running after the wait window — poll qa_job_status { sessionId:"${session.id}", jobId:"${job.jobId}" }.`,
+      `⏳ test-this ${a.mode} still running after the wait window. Poll qa_job_status { sessionId:"${session.id}", jobId:"${job.jobId}" }.`,
     );
   }
 

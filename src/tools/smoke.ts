@@ -1,4 +1,4 @@
-// qa_smoke — server-side smoke orchestration. Runs the whole loop WITHOUT
+// qa_smoke: server-side smoke orchestration. Runs the whole loop WITHOUT
 // the model mediating each step (the context-efficiency + determinism win): launch the app,
 // run the deterministic baseline (snapshot quality + Tier-1 health + an evidence screenshot),
 // then run every saved flow (.swipium/flows/*.yaml). Records a structured qa_note per workflow
@@ -49,10 +49,10 @@ export function registerSmoke(server: McpServer, sessions: SessionStore): void {
       const result = await runSmoke(sessions, session, d, { launch, runFlows, variables });
       const launchOutcome = (result.baseline.launch as { outcome?: string } | undefined)?.outcome ?? 'unknown';
       const summary =
-        `qa_smoke done — launch=${launchOutcome}, flows ${result.flowsPassed}/${result.flowsTotal} passed.\n` +
+        `qa_smoke done: launch=${launchOutcome}, flows ${result.flowsPassed}/${result.flowsTotal} passed.\n` +
         `baseline: ${JSON.stringify(result.baseline.launch)}\n` +
         (result.flows.length
-          ? result.flows.map((f) => `${f.passed ? '✓' : '✗'} ${f.name}${f.passed ? '' : ` — ${f.reason}`}`).join('\n')
+          ? result.flows.map((f) => `${f.passed ? '✓' : '✗'} ${f.name}${f.passed ? '' : `: ${f.reason}`}`).join('\n')
           : 'no saved flows (.swipium/flows is empty)') +
         `\nCall qa_report to summarize.`;
 

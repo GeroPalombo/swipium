@@ -1,6 +1,6 @@
 // Present snapshot elements to the model with sensitive-mode applied:
-//  - secure fields → value masked to «secure»
-//  - any known secret value (typed into a secure field) → scrubbed everywhere
+//  - secure fields > value masked to «secure»
+//  - any known secret value (typed into a secure field) > scrubbed everywhere
 //  - the list is capped at MAX_PRESENTED_ELEMENTS (context-blowup guard): when over the cap,
 //    the most interaction-relevant elements (focused/clickable/fields/scrollables) are kept,
 //    document order is preserved, and a trailing hint says how to see the rest.
@@ -49,7 +49,6 @@ export function presentElements(
     .map((x) => x.e);
   const omitted = masked.length - kept.length;
   const rendered =
-    renderElements(kept) +
-    `\n…${omitted} more element(s) not shown — re-run qa_snapshot with { filter } (or qa_inspect a ref) to see them.`;
+    renderElements(kept) + `\n…${omitted} more element(s) not shown. Re-run qa_snapshot with { filter } (or qa_inspect a ref) to see them.`;
   return { elements: kept, rendered, omitted };
 }

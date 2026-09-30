@@ -1,6 +1,6 @@
-// qa_seed — turn a declared precondition into one Swipium can
+// qa_seed: turn a declared precondition into one Swipium can
 // actually create, OPT-IN and consent-gated. A fixture may carry a `seed` spec: a deep link, a
-// project-root script, or an API call. Every seed is a mutation → explicit consent, exact action
+// project-root script, or an API call. Every seed is a mutation, so explicit consent, exact action
 // shown. The raw execution lives in src/flows/seedExec.ts (shared with the flow `seed` step). If
 // seeding fails it is reported as a SETUP failure (environment bucket), never an app bug.
 
@@ -59,7 +59,7 @@ export function registerSeed(server: McpServer, sessions: SessionStore): void {
         });
       }
 
-      // Consent — exact action shown, scoped to this fixture + seed type.
+      // Consent: exact action shown, scoped to this fixture + seed type.
       const affects = { fixture: fixtureName, type: seed.type };
       const risk = seed.type === 'script' ? 'high' : seed.type === 'api' ? 'medium' : 'low';
       const gate = consumeConsent(consentId, approve, { action: 'seed_state', affects });
@@ -134,7 +134,7 @@ export function registerSeed(server: McpServer, sessions: SessionStore): void {
       });
       return qaOk(
         { fixture: fixtureName, type: seed.type, seeded: true, warnings: result.warnings },
-        `✅ seeded "${fixtureName}" via ${seed.type} — the precondition should now be met. Re-run the workflow.${result.warnings.length ? `\n⚠ ${result.warnings.join(' ')}` : ''}`,
+        `✅ seeded "${fixtureName}" via ${seed.type}. The precondition should now be met. Re-run the workflow.${result.warnings.length ? `\n⚠ ${result.warnings.join(' ')}` : ''}`,
       );
     },
   );

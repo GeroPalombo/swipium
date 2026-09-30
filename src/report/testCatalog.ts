@@ -1,6 +1,6 @@
 // Universal run test catalog (Developer-3 plan Deliverable 4 / review item #6). The POM test-case
-// catalog only exists when a suite is generated; this builds a catalog for EVERY run — executed,
-// skipped, blocked, and exploration-promoted workflows — straight from the session's observed state
+// catalog only exists when a suite is generated; this builds a catalog for EVERY run (executed,
+// skipped, blocked, and exploration-promoted workflows) straight from the session's observed state
 // (smoke notes, findings, exploration summary, suite status). Pure + deterministic so blocked and
 // no-suite runs are documented as thoroughly as a green suite run, and skipped/blocked entries are
 // as visible as passing ones.
@@ -71,7 +71,7 @@ export function buildRunTestCatalog(input: RunTestCatalogInput): RunTestCatalog 
   const replayStatus = input.suiteReplayStatus ?? 'not_replayed';
   const preconditions = ['app installed', ...(input.fixtures ?? [])];
 
-  // 1. One entry per recorded workflow outcome — pass/fail/blocked/skipped all equally visible.
+  // 1. One entry per recorded workflow outcome: pass/fail/blocked/skipped all equally visible.
   input.notes.forEach((n, i) => {
     const status = asStatus(n.outcome);
     const blockers: string[] = [];
@@ -88,7 +88,7 @@ export function buildRunTestCatalog(input: RunTestCatalogInput): RunTestCatalog 
       preconditions,
       steps: [`Exercise the ${n.workflow} workflow`],
       expectedResult: 'Workflow completes without an error surface.',
-      actualResult: `${n.workflow}: ${n.outcome}${n.reason ? ` — ${n.reason}` : ''}${n.verifiedVisually || n.method === 'visual' ? ' (visual-only evidence — weaker than a structured assertion)' : ''}`,
+      actualResult: `${n.workflow}: ${n.outcome}${n.reason ? `: ${n.reason}` : ''}${n.verifiedVisually || n.method === 'visual' ? ' (visual-only evidence, weaker than a structured assertion)' : ''}`,
       evidence: n.artifactUris ?? [],
       blockers,
       cleanup: ['return to home/initial screen'],

@@ -1,4 +1,4 @@
-// Vision Gap Fix 2 — match a runtime observation to likely STATIC screens from the durable app map,
+// Vision Gap Fix 2: match a runtime observation to likely STATIC screens from the durable app map,
 // so first-run classification validates the live screen against code/app-map context instead of from
 // runtime UI alone. Pure: scores each static screen against the observation's foreground owner, route/
 // name tokens, visible text, source-file names, and the map's known auth/onboarding/paywall models,

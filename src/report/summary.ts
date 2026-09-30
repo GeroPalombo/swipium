@@ -1,4 +1,4 @@
-// Release assessment (Report 2.0) — turn the accumulated health + outcomes
+// Release assessment (Report 2.0): turn the accumulated health + outcomes
 // into a single verdict a non-QA developer can act on: ship | caution | block, with reasons
 // and the one most important next action. Pure + deterministic so it's unit-testable.
 
@@ -33,7 +33,7 @@ export function releaseAssessment(i: RiskInput): ReleaseAssessment {
 
   if (blocking) {
     const next = i.topFail
-      ? `Fix "${i.topFail.workflow}"${i.topFail.reason ? ` — ${i.topFail.reason}` : ''} before shipping.`
+      ? `Fix "${i.topFail.workflow}"${i.topFail.reason ? `: ${i.topFail.reason}` : ''} before shipping.`
       : i.topHighFinding
         ? `Investigate: ${i.topHighFinding}`
         : 'Resolve the blocking health issue before shipping.';

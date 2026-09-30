@@ -1,4 +1,4 @@
-// Artifact Resolver V2 — find the build a developer actually has, wherever it
+// Artifact Resolver V2: find the build a developer actually has, wherever it
 // lives. detectContext() only looked under the project root and apps/android|ios; most real
 // builds land deep under Gradle/Flutter/Xcode output trees. This module does a bounded
 // recursive walk of the project (plus opt-in DerivedData), classifies every .apk/.aab/.ipa/.app
@@ -34,9 +34,9 @@ export interface ArtifactCandidate {
   /** Human label of which search location matched (e.g. "gradle apk output"). */
   source: string;
   /** Targets this artifact can DIRECTLY install on, before runtime ABI/signing checks.
-   *  An .aab is NOT directly installable → []; see convertibleTo/requiresTool. */
+   *  An .aab is NOT directly installable, so []; see convertibleTo/requiresTool. */
   installableOn: InstallTarget[];
-  /** Types this artifact can be converted into to become installable (e.g. .aab → .apk). */
+  /** Types this artifact can be converted into to become installable (e.g. .aab > .apk). */
   convertibleTo?: ArtifactType[];
   /** External tool needed to convert/install (e.g. 'bundletool' for .aab). */
   requiresTool?: string;
@@ -61,7 +61,7 @@ export interface ResolveOptions {
   projectRoot: string;
   platform?: PlatformPref;
   buildType?: BuildTypePref;
-  /** Explicit artifact path — short-circuits the search (still validated/classified). */
+  /** Explicit artifact path. Short-circuits the search (still validated/classified). */
   explicitPath?: string;
   /** Allow a best candidate found outside the project root (downloads, DerivedData). */
   allowOutsideRoot?: boolean;
@@ -77,7 +77,7 @@ export interface ResolveResult {
   newest: ArtifactCandidate | null; // newest by mtime regardless of score
   searchedLocations: string[];
   warnings: string[];
-  /** Set when no usable artifact was resolved — a typed, actionable blocker. */
+  /** Set when no usable artifact was resolved: a typed, actionable blocker. */
   failureCode?: FailureCode;
 }
 
@@ -98,10 +98,10 @@ function iosAppInstallTargets(path: string): { targets: InstallTarget[]; warning
     return { targets: ['ios-simulator'], warnings: [] };
   }
   if (p.includes('iphoneos') || p.includes('-iphoneos')) {
-    return { targets: ['ios-real'], warnings: ['device build (.app) — installing on a real device requires signing'] };
+    return { targets: ['ios-real'], warnings: ['device build (.app): installing on a real device requires signing'] };
   }
-  // Unknown destination — assume simulator (the common QA-first case) but warn.
-  return { targets: ['ios-simulator'], warnings: ['could not infer simulator vs device from path — assuming simulator'] };
+  // Unknown destination: assume simulator (the common QA-first case) but warn.
+  return { targets: ['ios-simulator'], warnings: ['could not infer simulator vs device from path, assuming simulator'] };
 }
 
 function baseInstallTargets(
@@ -116,14 +116,14 @@ function baseInstallTargets(
       // installableOn stays [] so it never flows into an install path as if it were ready.
       return {
         targets: [],
-        warnings: ['.aab is not directly installable — convert to an APK with bundletool first'],
+        warnings: ['.aab is not directly installable; convert to an APK with bundletool first'],
         convertibleTo: ['apk'],
         requiresTool: 'bundletool',
       };
     case 'ipa':
       return {
         targets: ['ios-real'],
-        warnings: ['.ipa installs only on a real device (with signing) — use a simulator .app for the simulator'],
+        warnings: ['.ipa installs only on a real device (with signing); use a simulator .app for the simulator'],
       };
     case 'app':
       return iosAppInstallTargets(path);
@@ -140,7 +140,7 @@ function makeCandidate(path: string, type: ArtifactType, source: string, project
   const sizeBytes = type === 'app' ? dirSize(path) : st.size;
   const warnings: string[] = [];
   if (type === 'apk' && sizeBytes < MIN_APK_BYTES) {
-    warnings.push('APK <1MB — likely a Git-LFS pointer, not a real build');
+    warnings.push('APK <1MB, likely a Git-LFS pointer, not a real build');
   }
   const platform: ArtifactPlatform = type === 'ipa' || type === 'app' ? 'ios' : 'android';
   const { targets, warnings: instWarn, convertibleTo, requiresTool } = baseInstallTargets(type, path);
@@ -201,7 +201,7 @@ function sourceLabel(relDir: string, type: ArtifactType): string {
 /**
  * Bounded recursive walk collecting artifacts. Pure filesystem; no external tools. Records every
  * directory it descends into so the caller can report exact search locations. `.app` is a
- * directory — we record it as a hit and do NOT descend into it.
+ * directory: we record it as a hit and do NOT descend into it.
  */
 function walk(root: string, projectRoot: string, maxDepth: number, out: ArtifactCandidate[], searched: Set<string>, depth = 0): void {
   if (depth > maxDepth) return;
@@ -455,7 +455,7 @@ export async function resolveArtifact(opts: ResolveOptions, enrich = true): Prom
   const topPlat = best?.platform;
   const close = ranked.filter((c) => c.platform === topPlat && best && Math.abs(c.score - best.score) <= 5);
   if (close.length > 1)
-    warnings.push(`${close.length} similar ${topPlat} artifacts found — picked the newest/best; pass an explicit path to override.`);
+    warnings.push(`${close.length} similar ${topPlat} artifacts found; picked the newest/best; pass an explicit path to override.`);
 
   // A lone .aab with no APK is a precise, common blocker.
   if (best && best.type === 'aab' && !ranked.some((c) => c.type === 'apk')) {

@@ -1,4 +1,4 @@
-// Suite generation service (Phase 3.2 Milestone C) — generate POM files + test cases from a
+// Suite generation service (Phase 3.2 Milestone C): generate POM files + test cases from a
 // session's recorded actions, write them under .swipium/, and (optionally) compile them to runnable
 // Flow V2. Shared by qa_generate target:"suite" and qa_test_this execute so the autopilot
 // produces REAL files (not a note). Honest: when there are no recorded actions it returns a typed
@@ -38,7 +38,7 @@ export interface SuiteGenerationResult {
   audit?: PomResult['audit'];
   variables?: string[];
   testCases?: ReturnType<typeof generateTestCases>['cases'];
-  /** Set when generation was refused (e.g. SECRET_IN_GENERATED_OUTPUT) — nothing was written. */
+  /** Set when generation was refused (e.g. SECRET_IN_GENERATED_OUTPUT). Nothing was written. */
   failureCode?: string;
 }
 
@@ -74,7 +74,7 @@ export function pomForSession(
     appId,
     budgetProfile: session.budgetProfile,
     secrets: session.secrets,
-    inputs: inputBindings(session), // typed text equal to a stored input → its ${SWIPIUM_TEST_*} placeholder
+    inputs: inputBindings(session), // typed text equal to a stored input maps to its ${SWIPIUM_TEST_*} placeholder
   });
   return { pom, flowName };
 }
@@ -127,7 +127,7 @@ export function generateAndCompileSuite(sessions: SessionStore, session: Session
       skippedReason: `SECRET_IN_GENERATED_OUTPUT: a registered secret value would be written in plaintext (${leaks
         .slice(0, 5)
         .map((l) => `${l.path}:${l.line}`)
-        .join(', ')}) — nothing was written`,
+        .join(', ')}). Nothing was written`,
       recommendation: 'Re-record the credential step so it is captured as a ${VAR}, then regenerate.',
       written: [],
       compiledFlows: [],

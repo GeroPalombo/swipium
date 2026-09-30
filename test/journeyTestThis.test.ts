@@ -226,7 +226,7 @@ describe('consent ids (P2 #9)', () => {
     });
     const out = sc(r);
     expect(out.requiresConsent).toBe(true);
-    expect(out.consentNote).toMatch(/consent deadbeef unknown or expired — new challenge issued/);
+    expect(out.consentNote).toMatch(/consent deadbeef unknown or expired; new challenge issued/);
     expect(out.consentId).not.toBe('deadbeef');
     expect(typeof out.sessionId).toBe('string');
     expect(text(r)).toContain('unknown or expired');

@@ -1,6 +1,6 @@
-// qa_test_this plan-phase resolution — the cheap, side-effect-free half of the
+// qa_test_this plan-phase resolution: the cheap, side-effect-free half of the
 // orchestration state machine. Resolves the session/project, finds (or plans a build for) an
-// artifact, picks a target, and returns an ordered plan with the EXACT next tool call to make —
+// artifact, picks a target, and returns an ordered plan with the EXACT next tool call to make,
 // or a typed blocker / one concise NeedsInput question. Execute/interactive modes are dispatched
 // to runExecuteMode (./execute.js).
 
@@ -64,7 +64,7 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
     const resolved = await resolveProjectRoot(server, projectRoot);
     if (!resolved.root) return unresolvedProjectRootError(resolved);
     session = sessions.create(resolved.root, undefined, responseMode ? { responseMode } : {});
-    // An explicit projectRoot IS the user's target choice — never re-ask the monorepo question for it.
+    // An explicit projectRoot IS the user's target choice. Never re-ask the monorepo question for it.
     if (projectRoot) session.chosenTarget = resolved.root;
   } else if (responseMode && session.responseMode !== responseMode) {
     session.responseMode = responseMode;
@@ -73,7 +73,7 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
   // Remember the user's intent (goal/goalText/flags) so a blocker resume replays it.
   rememberTestThisIntent(sessions, session, input);
   // The EXACT re-invocation for plan steps that route back through qa_test_this: execute mode plus
-  // the caller's original goal/flags — a bare {sessionId} would just re-plan forever.
+  // the caller's original goal/flags. A bare {sessionId} would just re-plan forever.
   const reinvokeArgs: Record<string, unknown> = { sessionId: session.id, mode: 'execute' };
   for (const [k, v] of Object.entries({
     goal,
@@ -107,7 +107,7 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
     );
     const cls = classifyDiscovery(disc);
     if (cls.decision === 'adopt' && cls.chosen) {
-      wa(`root is not itself a mobile app — discovered one candidate (${cls.chosen.framework}) at ${cls.chosen.rel}; proceeding with it`);
+      wa(`root is not itself a mobile app; discovered one candidate (${cls.chosen.framework}) at ${cls.chosen.rel}; proceeding with it`);
       root = cls.chosen.path;
       session.root = root; // adopt the app subdir as the effective project root
       sessions.persist(session);
@@ -116,7 +116,7 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
       return qaNeedsInput(NeedsInput.monorepoTarget(cls.choices.map((c) => c.path)), {
         sessionId: session.id,
         state: 'needs_input' as State,
-        attempted: [...preAttempted, `identified ${cls.choices.length} plausible app targets — cannot pick safely`],
+        attempted: [...preAttempted, `identified ${cls.choices.length} plausible app targets, cannot pick safely`],
         candidates: cls.choices
           .slice(0, 6)
           .map((c) => ({ path: c.path, rel: c.rel, framework: c.framework, score: c.score, reasons: c.reasons })),
@@ -135,7 +135,7 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
   } else if (scan.monorepo && session.chosenTarget === root) {
     // The user already chose this root (monorepo_target resume / explicit projectRoot): asking again
     // would loop forever when the chosen app IS the monorepo root.
-    preAttempted.push('monorepo detected — using the explicitly chosen target');
+    preAttempted.push('monorepo detected, using the explicitly chosen target');
   } else if (scan.monorepo) {
     // The root is itself an app but also a monorepo: surface other sibling apps for disambiguation
     // only when there are genuinely multiple recognized targets to choose between.
@@ -152,12 +152,12 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
           .map((c) => ({ path: c.path, rel: c.rel, framework: c.framework, score: c.score, reasons: c.reasons })),
       });
     }
-    wa('monorepo detected — proceeding with the resolved root; pass projectRoot/target to disambiguate if the wrong app is chosen');
+    wa('monorepo detected, proceeding with the resolved root; pass projectRoot/target to disambiguate if the wrong app is chosen');
   }
 
   // ---- 1c. pre-launch app map (Vision Gap Fix 1): load or build the durable STATIC app map
   //      BEFORE prepare/smoke so first-run decisions, exploration seeding, automation readiness,
-  //      and the report are informed by the map at the time they are made — and so the map still
+  //      and the report are informed by the map at the time they are made, and so the map still
   //      exists when no device/artifact is available (every blocker below carries appMapUri). ----
   let prelaunchMap: AppKnowledgeMap | undefined;
   let appMapUri: string | undefined;
@@ -174,11 +174,11 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
     prelaunchMap = pre.map;
     appMapUri = pre.appMapUri;
     preAttempted.push(
-      `${pre.rescanned ? 'built' : 'loaded'} static app map (${pre.reason}; ${pre.map.staticTopology.screens.length} static screen(s)) → ${pre.appMapUri}`,
+      `${pre.rescanned ? 'built' : 'loaded'} static app map (${pre.reason}; ${pre.map.staticTopology.screens.length} static screen(s)) > ${pre.appMapUri}`,
     );
     if (pre.rescanned)
       wa(
-        `built static app map before launch (${pre.map.staticTopology.screens.length} screen(s)) — durable map drives first-run/exploration/report`,
+        `built static app map before launch (${pre.map.staticTopology.screens.length} screen(s)); durable map drives first-run/exploration/report`,
       );
   } catch (e) {
     log('warn', 'test_this pre-launch app map failed', { err: String(e) });
@@ -197,7 +197,7 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
     return qaNeedsInput(NeedsInput.artifactOutsideRoot(outside?.path ?? '(outside root)'), {
       sessionId: session.id,
       state: 'needs_input' as State,
-      attempted: [...preAttempted, 'resolved candidate artifacts — the best one is outside the project root'],
+      attempted: [...preAttempted, 'resolved candidate artifacts, but the best one is outside the project root'],
       candidates: art.candidates.slice(0, 3),
     });
   }
@@ -205,7 +205,7 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
   if (art.best) {
     steps.push({ tool: '(resolved)', why: `Using ${art.best.type.toUpperCase()} ${art.best.path}`, status: 'satisfied' });
     if (isAab) {
-      // Honest (P0.2): an .aab is not installable — it must be converted first.
+      // Honest (P0.2): an .aab is not installable; it must be converted first.
       wa('only a .aab is present; qa_test_this will convert it to an installable universal APK with bundletool');
       steps.push({
         tool: 'qa_test_this',
@@ -289,9 +289,9 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
     adbPresent ? listAvds() : Promise.resolve<string[]>([]),
     simPresent ? listSimulators() : Promise.resolve([]),
   ]);
-  // H6: pattern OR property-verified emulators (localhost:5555, Genymotion) — same as getDriver.
+  // H6: pattern OR property-verified emulators (localhost:5555, Genymotion), same as getDriver.
   // ALL online serials go to the planner (it refuses physical ones with PHYSICAL_DEVICE_UNSUPPORTED
-  // when nothing else is viable) — pre-filtering to emulators hid that and reported NO_DEVICE.
+  // when nothing else is viable). Pre-filtering to emulators hid that and reported NO_DEVICE.
   const emulators = await verifiedEmulatorSerials(onlineAll);
   if (device && onlineAll.includes(device) && !emulators.includes(device)) {
     return qaFail('PHYSICAL_DEVICE_UNSUPPORTED', {
@@ -324,15 +324,15 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
       state: 'blocked' as State,
     };
     const avdSteps = [
-      'Create an Android Virtual Device: Android Studio → Device Manager → Create device, or ' +
+      'Create an Android Virtual Device: Android Studio > Device Manager > Create device, or ' +
         '`avdmanager create avd -n Pixel_7 -k "system-images;android-34;google_apis;arm64-v8a" -d pixel_7` (install the image with sdkmanager first).',
-      `Then re-run qa_test_this ${JSON.stringify(reinvokeArgs)} — Swipium boots the AVD itself (one consent).`,
+      `Then re-run qa_test_this ${JSON.stringify(reinvokeArgs)}. Swipium boots the AVD itself (one consent).`,
     ];
     if (target.blocked.failureCode === 'NO_DEVICE' && androidWanted && !adbPresent) {
       return qaFail('ADB_NOT_FOUND', {
         what: 'adb (Android platform-tools) is not on PATH, so Swipium cannot see or boot any Android emulator.',
         nextSteps: [
-          'Install Android platform-tools (Android Studio → SDK Manager, or `sdkmanager "platform-tools" "emulator"`) and put $ANDROID_HOME/platform-tools and $ANDROID_HOME/emulator on PATH (or set ANDROID_HOME).',
+          'Install Android platform-tools (Android Studio > SDK Manager, or `sdkmanager "platform-tools" "emulator"`) and put $ANDROID_HOME/platform-tools and $ANDROID_HOME/emulator on PATH (or set ANDROID_HOME).',
           ...avdSteps,
           ...(simPresent ? ['Or test on iOS: qa_test_this {"mode":"execute","platform":"ios"}.'] : []),
         ],
@@ -345,13 +345,13 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
         : target.blocked.failureCode === 'PHYSICAL_DEVICE_UNSUPPORTED'
           ? {
               what: target.blocked.detail,
-              nextSteps: ['Physical devices are out of scope (docs/physical-devices.md) — use an emulator instead.', ...avdSteps],
+              nextSteps: ['Physical devices are out of scope (docs/physical-devices.md). Use an emulator instead.', ...avdSteps],
             }
           : { what: target.blocked.detail }),
       extra: blockedExtra,
     });
   }
-  if (target.willBoot) wa(`no online ${selToPlatform[target.selected!]} target — will boot ${target.bootTarget}`);
+  if (target.willBoot) wa(`no online ${selToPlatform[target.selected!]} target, will boot ${target.bootTarget}`);
 
   const isAndroid = selToPlatform[target.selected!] === 'android';
   const isIosReal = false;
@@ -387,7 +387,7 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
             `WebDriverAgent backend, and WDA is not ready at ${wdaConfig.url}. A visual-only smoke (launch + screenshots + health) does not need WDA.`,
           nextSteps: [
             `Visual-only alternative now: qa_test_this ${JSON.stringify(visualSmoke)}`,
-            'Or set up WDA: qa_wda { action:"doctor" } → qa_wda { action:"build" } → qa_wda { action:"start" } (or attach an external WDA URL), then re-run the same qa_test_this call.',
+            'Or set up WDA: qa_wda { action:"doctor" } > qa_wda { action:"build" } > qa_wda { action:"start" } (or attach an external WDA URL), then re-run the same qa_test_this call.',
             ...(appMapUri ? [`Static app map is still available: qa_app_map_read { projectRoot:"${root}" }`] : []),
           ],
           extra: {
@@ -405,23 +405,23 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
       effGenerateSuite = false;
       effRequiredOutputs = effRequiredOutputs.filter((o) => o !== 'suite' && o !== 'exploration');
       wa(
-        `WebDriverAgent not ready at ${wdaConfig.url} — skipping ${structuredNeeds.join(' + ')}; running a visual-only iOS smoke (set up WDA via qa_wda to enable them)`,
+        `WebDriverAgent not ready at ${wdaConfig.url}, skipping ${structuredNeeds.join(' + ')}; running a visual-only iOS smoke (set up WDA via qa_wda to enable them)`,
       );
-      preAttempted.push(`checked WebDriverAgent at ${wdaConfig.url} — not ready; degraded to visual-only`);
+      preAttempted.push(`checked WebDriverAgent at ${wdaConfig.url}: not ready; degraded to visual-only`);
     }
   }
 
   // ---- 4. auth (be effective: proceed pre-login; surface the question as optional) ----
   let optionalQuestion: ReturnType<typeof NeedsInput.credentials> | undefined;
   if (scan.likelyAuth) {
-    wa('app likely has a login — will test pre-login coverage; authenticated flows are blocked until credentials are provided');
+    wa('app likely has a login: will test pre-login coverage; authenticated flows are blocked until credentials are provided');
     optionalQuestion = NeedsInput.credentials('Authenticated workflows need a test account.');
   }
 
   // ---- 5. assemble the ordered plan ----
   // Effective installable artifact path: a converted universal APK for an .aab, else the artifact.
   const effectiveApk = art.best ? (isAab ? universalApkCachePath(root, art.best.path) : art.best.path) : undefined;
-  // Milestone E: when a build is pending, the artifact does not exist yet — use SYMBOLIC refs
+  // Milestone E: when a build is pending, the artifact does not exist yet, so use SYMBOLIC refs
   // (${artifact.path}/${artifact.appId}) and mark the dependency, never `undefined` args.
   const prepArgs: Record<string, unknown> = { sessionId: session.id };
   if (isAndroid) {
@@ -477,7 +477,7 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
           .map((c) => c.path),
       }
     : needBuild
-      ? { why: 'No prebuilt artifact — building from source', alternatives: [] }
+      ? { why: 'No prebuilt artifact, building from source', alternatives: [] }
       : null;
   const targetChoice = target.selected
     ? { target: `${target.selected}${target.device ? ` (${target.device})` : ''}`, why: target.reason, alternatives: [] }
@@ -518,13 +518,13 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
 
   const summary =
     `🚀 test-this plan for ${root} (framework=${scan.framework}, session ${session.id})\n` +
-    `target: ${target.selected}${target.device ? ` (${target.device})` : ''} — ${target.reason}\n` +
+    `target: ${target.selected}${target.device ? ` (${target.device})` : ''}: ${target.reason}\n` +
     (art.best
       ? `artifact: ${art.best.type.toUpperCase()} ${art.best.path}`
-      : `artifact: none — ${needBuild ? 'will build from source' : 'blocked'}`) +
+      : `artifact: none (${needBuild ? 'will build from source' : 'blocked'})`) +
     '\n' +
-    `plan:\n${steps.map((s, i) => `  ${i + 1}. [${s.status === 'satisfied' ? '✓' : ' '}] ${s.tool} — ${s.why}`).join('\n')}\n` +
-    (nextAction ? `→ next: call ${nextAction.tool} ${JSON.stringify(nextAction.args ?? {})}\n` : '') +
+    `plan:\n${steps.map((s, i) => `  ${i + 1}. [${s.status === 'satisfied' ? '✓' : ' '}] ${s.tool}: ${s.why}`).join('\n')}\n` +
+    (nextAction ? `next: call ${nextAction.tool} ${JSON.stringify(nextAction.args ?? {})}\n` : '') +
     (session.workarounds.length ? `workarounds: ${session.workarounds.length} (see workaroundsAttempted)\n` : '') +
     (optionalQuestion ? `note: ${optionalQuestion.question}` : '');
 

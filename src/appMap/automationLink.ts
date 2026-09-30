@@ -1,4 +1,4 @@
-// Vision Gap Fix 7 — write a generated automation suite back into the durable app map. After
+// Vision Gap Fix 7: write a generated automation suite back into the durable app map. After
 // qa_generate target:"appium" emits an Appium POM suite, the app map should KNOW automation now exists for
 // these screens/features, so future feature/ticket decisions can see which flows are automated. Pure-
 // ish: loads + saves `.swipium/app-map.json`, upserting an AutomationSuiteRef (by path) with the
@@ -21,21 +21,21 @@ function fallbackProject(root: string): ProjectIdentity {
   };
 }
 
-// Generic page/screen suffixes carry no identity — a POM "LoginPage" and a static "login" route are
-// the same screen. Strip these (on both sides) so the page-name → static-screen match actually fires.
+// Generic page/screen suffixes carry no identity. A POM "LoginPage" and a static "login" route are
+// the same screen. Strip these (on both sides) so the page-name > static-screen match actually fires.
 const SCREEN_NOISE = new Set(['page', 'screen', 'view', 'component', 'tab', 'modal', 'navigator', 'stack', 'drawer', 'route', 'index']);
 
 /** Split camelCase/PascalCase/snake/kebab into lowercase identity tokens, dropping generic noise. */
 function tokenize(s: string): string[] {
   return s
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2') // camelCase boundary: LoginPage → Login Page
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2') // camelCase boundary: LoginPage > Login Page
     .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2') // ACRONYMWord boundary
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter((t) => t.length >= 2 && !SCREEN_NOISE.has(t));
 }
 
-/** Best-effort map of generated POM screen names → app-map static screen ids + their feature ids. */
+/** Best-effort map of generated POM screen names > app-map static screen ids + their feature ids. */
 export function deriveAutomationLinks(map: AppKnowledgeMap, screenNames: string[]): { screenIds: string[]; featureIds: string[] } {
   const screenIds = new Set<string>();
   for (const name of screenNames) {
@@ -66,7 +66,7 @@ export interface LinkAutomationResult {
 
 /** Upsert (by path) an automation suite record into the durable app map. */
 export function linkAutomationSuite(root: string, suite: AutomationSuiteRef, now: string): LinkAutomationResult {
-  // Synchronous load→upsert→save cycle, held under the cross-process app-map lock (see store.ts).
+  // Synchronous load > upsert > save cycle, held under the cross-process app-map lock (see store.ts).
   return withAppMapLock(root, () => {
     const loaded = loadAppMap(root, fallbackProject(root), now);
     if (!loaded.map) return { ok: false };

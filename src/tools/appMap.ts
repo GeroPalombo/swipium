@@ -119,7 +119,7 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
         includeCodeIndex: z.boolean().optional().describe('Persist a code symbol index for queries (default true).'),
         forceRescan: z.boolean().optional().describe('Re-scan even if the map is current.'),
       },
-      // NOTE: no outputSchema — a declared (closed) output schema makes strict MCP clients
+      // NOTE: no outputSchema. A declared (closed) output schema makes strict MCP clients
       // reject BOTH the rich qaOk payload and the qaError envelope as "additional properties"
       // (caught by test/errorContract.test.ts). structuredContent stays self-describing.
     },
@@ -216,7 +216,7 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
           });
         return qaOk(
           { appMapUri: uri, section: 'feature', feature: f, featureResourceUri: `${uri}/feature/${featureId}` },
-          `feature ${f.title} — ${f.testCoverage} coverage, ${f.status}, confidence ${f.confidence}`,
+          `feature ${f.title}: ${f.testCoverage} coverage, ${f.status}, confidence ${f.confidence}`,
         );
       }
       if (screenId) {
@@ -293,7 +293,7 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
               appMapUri: uri,
               section: 'full',
               summary: summarizeMap(map),
-              note: 'Full map omitted from text to protect context — read the appMapUri resource for everything.',
+              note: 'Full map omitted from text to protect context. Read the appMapUri resource for everything.',
             },
             `Full map at resource: ${uri}`,
           );
@@ -334,10 +334,10 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
         .slice(0, 5)
         .map(
           (r, i) =>
-            `  ${i + 1}. [${r.type}] ${r.title} (score ${r.score}${r.confidence !== undefined ? `, conf ${r.confidence}` : ''}) → ${r.recommendedNextTool.tool}`,
+            `  ${i + 1}. [${r.type}] ${r.title} (score ${r.score}${r.confidence !== undefined ? `, conf ${r.confidence}` : ''}) > ${r.recommendedNextTool.tool}`,
         )
         .join('\n');
-      return qaOk({ ...out, appMapUri: appMapResourceUri(root) }, `🔎 "${query}" — ${out.total} result(s)\n${top || '  (no matches)'}`);
+      return qaOk({ ...out, appMapUri: appMapResourceUri(root) }, `🔎 "${query}": ${out.total} result(s)\n${top || '  (no matches)'}`);
     },
   );
   // ----------------------------------------------------------- feature_scope
@@ -406,7 +406,7 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
               fields: [{ name: 'query', description: 'The exact feature to test', example: scopeResult.candidates[0]?.title }],
               fallbackOptions: scopeResult.needsInput.options,
               resume: { tool: 'qa_app_map_feature_scope', args: {} },
-              attempted: [`scoped "${query}" — matched ${scopeResult.candidates.length} distinct candidates that tie`],
+              attempted: [`scoped "${query}" matched ${scopeResult.candidates.length} distinct candidates that tie`],
               ifDeclined: 'Swipium scopes the highest-confidence candidate and records the others as alternatives.',
             },
             { sessionId: sessionId ?? undefined, candidates: scopeResult.candidates },
@@ -443,7 +443,7 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
             codeIndex: { scannedFiles: index.scannedFiles, truncated: index.truncated },
             nextRecommendedAction,
           },
-          `🔎 ${scope.title} (confidence ${Math.round(scope.confidence * 100)}%, strategy ${scope.recommendedStrategy}) — ` +
+          `🔎 ${scope.title} (confidence ${Math.round(scope.confidence * 100)}%, strategy ${scope.recommendedStrategy}): ` +
             `${scope.staticScreens.length} static screen(s), ${scope.runtimeScreens.length} runtime screen(s), ${scope.functions.length} symbol(s), ${scope.existingTests.length} existing test(s).` +
             (scopeResult.candidates.length > 1 ? ` ${scopeResult.candidates.length} candidate(s).` : ''),
         );
@@ -501,8 +501,8 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
               ...(needsCreds ? { stopOnNeedsInput: true } : {}),
             },
             why: needsCreds
-              ? `Drive "${f.title}"; will stop for test credentials (fixture) — ${f.testCoverage} coverage today`
-              : `Drive "${f.title}" with focused exploration — ${f.testCoverage} coverage today`,
+              ? `Drive "${f.title}"; will stop for test credentials (fixture); ${f.testCoverage} coverage today`
+              : `Drive "${f.title}" with focused exploration; ${f.testCoverage} coverage today`,
           },
         };
       });
@@ -512,7 +512,7 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
         scope
           .map(
             (s) =>
-              `  • ${s.title} [${s.testCoverage}] — ${s.staticScreens.length} screen(s), ${s.sourceFiles.length} file(s)${s.blockers.length ? ` · blockers: ${s.blockers.join(', ')}` : ''}\n    → ${s.recommendedPlan.tool} ${JSON.stringify(s.recommendedPlan.args)}`,
+              `  • ${s.title} [${s.testCoverage}]: ${s.staticScreens.length} screen(s), ${s.sourceFiles.length} file(s)${s.blockers.length ? ` · blockers: ${s.blockers.join(', ')}` : ''}\n    > ${s.recommendedPlan.tool} ${JSON.stringify(s.recommendedPlan.args)}`,
           )
           .join('\n');
       return qaOk({ appMapUri: appMapResourceUri(root), featureId: scope[0]?.featureId, scope }, text);
@@ -562,7 +562,7 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
       const { root, hint, error } = await rootFor(server, sessions, { projectRoot, sessionId });
       if (!root) return error ?? unresolvedProjectRootError({ source: 'none', hint });
       remember(root);
-      // Synchronous load→mutate→save cycle, held under the cross-process app-map lock (see store.ts).
+      // Synchronous load > mutate > save cycle, held under the cross-process app-map lock (see store.ts).
       return withAppMapLock(root, () => {
         const map = readExistingMap(root);
         if (!map)
@@ -675,7 +675,7 @@ export interface ListedAppMapResource {
 
 /** Project roots whose app map can be listed RIGHT NOW: roots touched this server run
  *  (in-memory registry) plus live-session roots, filtered to those with an app map on disk.
- *  Deliberately NOT the durable machine-wide registry — listing every project ever mapped on
+ *  Deliberately NOT the durable machine-wide registry. Listing every project ever mapped on
  *  this machine into an unrelated client session would be noise, not discovery. */
 function appMapRoots(sessions: SessionStore): string[] {
   const roots = new Set<string>(projectRegistry.values());
@@ -684,12 +684,12 @@ function appMapRoots(sessions: SessionStore): string[] {
 }
 
 /** Enumerate the actually-readable app-map resource URIs for the MCP resources/list callbacks.
- * `full` → one complete-map URI per known project; `sections` → the per-feature /
+ * `full`: one complete-map URI per known project; `sections`: the per-feature /
  *  per-screen / test-suite section URIs served by readAppMapResource above (same URI shapes
  *  qa_app_map_read emits). Section ids are percent-encoded (encodeUriSegment) so ids containing
  *  `/`, spaces or `(` still match the `{kind}/{id}` template; the read handlers decode them.
  *  Read-only and never throws: an unparseable map is skipped, and an
- *  empty world lists as [] — caller applies any cap. */
+ *  empty world lists as []. Caller applies any cap. */
 export function listAppMapResources(sessions: SessionStore, which: 'full' | 'sections'): ListedAppMapResource[] {
   const out: ListedAppMapResource[] = [];
   for (const root of appMapRoots(sessions)) {
@@ -712,7 +712,7 @@ export function listAppMapResources(sessions: SessionStore, which: 'full' | 'sec
           uri: `${base}/feature/${encodeUriSegment(f.id)}`,
           name: f.title,
           mimeType: 'application/json',
-          description: `feature section — ${project}`,
+          description: `feature section: ${project}`,
         });
       }
       // Static + runtime screens share the /screen/{id} read path; dedupe on id (static wins).
@@ -724,7 +724,7 @@ export function listAppMapResources(sessions: SessionStore, which: 'full' | 'sec
           uri: `${base}/screen/${encodeUriSegment(id)}`,
           name,
           mimeType: 'application/json',
-          description: `screen section — ${project}`,
+          description: `screen section: ${project}`,
         });
       }
       // The read path ignores {id} for test-suite; "cases" is the listed canonical spelling.
@@ -732,10 +732,10 @@ export function listAppMapResources(sessions: SessionStore, which: 'full' | 'sec
         uri: `${base}/test-suite/cases`,
         name: `test-suite (${project})`,
         mimeType: 'application/json',
-        description: `test-suite section — ${map.testSuite.cases.length} cases`,
+        description: `test-suite section: ${map.testSuite.cases.length} cases`,
       });
     } catch {
-      // Listing must never throw — a broken map is simply not browsable; reads still error loudly.
+      // Listing must never throw. A broken map is simply not browsable; reads still error loudly.
     }
   }
   return out;

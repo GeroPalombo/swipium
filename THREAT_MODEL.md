@@ -29,11 +29,11 @@ who started the client.
 
 | Boundary | What crosses it | How much Swipium trusts it |
 | --- | --- | --- |
-| MCP client / agent → Swipium | Tool calls and arguments over stdio | The transport is trusted. The intent is not: privileged actions need server-side consent. |
-| Cloned repository → Swipium | `.swipium/config.json`, `.swipium/flows/*.yaml`, `.swipium/fixtures.json`, suites, build and Metro commands | Untrusted. Anyone who can commit to the repo controls these files. |
-| Device / app → Swipium → agent | UI trees, screenshots, OCR text, logs, deep-link targets | Untrusted. The app, or a server it talks to, controls what is on screen. |
-| Local processes → Swipium | PIDs of processes Swipium started earlier, the adb server, WebDriverAgent | Verified before use. Another process can reuse a PID or listen on a port. |
-| Swipium → WebDriverAgent endpoint | App screens and typed text (WDA receives both) | Loopback only unless the user approves otherwise. |
+| MCP client / agent > Swipium | Tool calls and arguments over stdio | The transport is trusted. The intent is not: privileged actions need server-side consent. |
+| Cloned repository > Swipium | `.swipium/config.json`, `.swipium/flows/*.yaml`, `.swipium/fixtures.json`, suites, build and Metro commands | Untrusted. Anyone who can commit to the repo controls these files. |
+| Device / app > Swipium > agent | UI trees, screenshots, OCR text, logs, deep-link targets | Untrusted. The app, or a server it talks to, controls what is on screen. |
+| Local processes > Swipium | PIDs of processes Swipium started earlier, the adb server, WebDriverAgent | Verified before use. Another process can reuse a PID or listen on a port. |
+| Swipium > WebDriverAgent endpoint | App screens and typed text (WDA receives both) | Loopback only unless the user approves otherwise. |
 
 ## Adversaries and mitigations
 
@@ -82,7 +82,7 @@ A developer clones an untrusted repository and points Swipium at it.
 
 - **Repo commands are shown, not trusted**. Every command the repository can make Swipium run is
   consent-gated, and the challenge shows its exact argv with its origin, for example "configured
-  by the repository (.swipium/config.json) — unreviewed". This covers seed scripts, build
+  by the repository (.swipium/config.json), unreviewed". This covers seed scripts, build
   commands, `ocrCommand` and `visualMaskCommand`. The OCR consent names both the mask command and
   the OCR command, so a harmless-looking OCR command cannot hide an arbitrary mask command. The
   `qa_flow_run` seed consent lists each seed's argv or URL.

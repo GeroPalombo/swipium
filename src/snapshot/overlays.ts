@@ -27,7 +27,7 @@ export interface Overlay {
 const LOGBOX_RE = /open debugger|view warnings|LogBox|\b\d+ (warning|error)s?\b/i;
 const REDBOX_RE = /unhandled (js|javascript) exception|render error|reload\b.*\bdismiss/i;
 
-/** Overlays visible in the current window's UI tree (not toasts/IME/foreign — see callers). */
+/** Overlays visible in the current window's UI tree (not toasts/IME/foreign; see callers). */
 const DISMISS_RE = /close|dismiss|got it|\bok\b|minimize|×|✕|✖/i;
 
 /** Class/id of an overlay-like container (the signal the geometric heuristic requires). */
@@ -42,8 +42,8 @@ const NAV_CHROME_RE =
 /** Scrolling list containers: an edge-touching row inside one is content, not a pinned overlay. */
 const LIST_CONTAINER_RE = /RecyclerView|ListView|ScrollView|GridView|ViewPager|XCUIElementType(?:Table|CollectionView|ScrollView)\b/;
 
-/** The app-chosen part of a resource-id: `com.acme.shop.debug:id/promo_banner` → `promo_banner`.
- * The package prefix must never carry an overlay/nav signal — with applicationIdSuffix ".debug"
+/** The app-chosen part of a resource-id: `com.acme.shop.debug:id/promo_banner` > `promo_banner`.
+ * The package prefix must never carry an overlay/nav signal. With applicationIdSuffix ".debug"
  * EVERY id contains "debug" (and package names can contain notification/alert/toolbar…). iOS
  * accessibility identifiers have no package prefix and are used whole. */
 export function localResourceId(id: string): string {
@@ -52,7 +52,7 @@ export function localResourceId(id: string): string {
   return id.startsWith('id/') ? id.slice(3) : id;
 }
 
-/** Class + package-less id — what the overlay / nav-chrome signals are tested against. */
+/** Class + package-less id: what the overlay / nav-chrome signals are tested against. */
 function signalText(n: RawNode): string {
   return `${n.cls} ${localResourceId(n.id)}`;
 }
@@ -64,7 +64,7 @@ function ancestorsOf(allNodes: RawNode[], n: RawNode): RawNode[] {
 /**
  * Heuristic detector for persistent in-app debug banners / snackbars / toast-like RN views
  * (RevenueCat debug banner, custom error toasts, etc.) that the id/class detectors miss.
- * A banner is a wide, short, edge-pinned content block that is NOT the full screen — AND
+ * A banner is a wide, short, edge-pinned content block that is NOT the full screen, AND
  * (real-device smoke 2.0.0 false positives: iOS Settings nav title as "banner", its last list
  * row as "snackbar", the Android search field as "top banner"):
  *  - not an editable text field, not inside navigation chrome (nav/tool/app/tab/search bar),
@@ -95,7 +95,7 @@ function detectBanners(allNodes: RawNode[], screen?: [number, number]): Overlay[
     if (ancestors.some((m) => m.scrollable || LIST_CONTAINER_RE.test(m.cls))) continue;
     const sub = allNodes.filter((m) => m.dfs >= n.dfs && m.dfs <= n.subtreeEnd);
     const dismissible = sub.some((m) => (m.clickable || m.cls.includes('Button')) && DISMISS_RE.test(`${m.text} ${m.desc}`));
-    // The window root (dfs 0) is the whole app window — its class/id never marks an overlay.
+    // The window root (dfs 0) is the whole app window; its class/id never marks an overlay.
     const overlaySignal =
       lineage.some((m) => m.dfs !== 0 && OVERLAY_SIGNAL_RE.test(signalText(m))) ||
       dismissible ||
@@ -163,7 +163,7 @@ export function classifyForeground(appId: string | undefined, foreground: string
   if (appId && foreground.startsWith(appId)) return null;
   if (/permissioncontroller/i.test(foreground)) return { type: 'permission_dialog', detail: foreground };
   if (/accountpicker|account\.|gms/i.test(foreground)) return { type: 'account_picker', detail: foreground };
-  if (/launcher/i.test(foreground)) return null; // not an overlay — handled by health
+  if (/launcher/i.test(foreground)) return null; // not an overlay; handled by health
   if (/inputmethod/i.test(foreground)) return { type: 'keyboard', detail: foreground };
   if (foreground && foreground !== 'unknown') return { type: 'foreign_app', detail: foreground };
   return null;
@@ -175,7 +175,7 @@ export interface Obstruction {
 }
 
 /**
- * Is the point (x,y) — typically the center of the intended target — covered by content
+ * Is the point (x,y) (typically the center of the intended target) covered by content
  * drawn ON TOP of the target's subtree? Topmost = greatest DFS index among nodes containing
  * the point; an obstruction is a topmost node OUTSIDE the target's subtree that carries
  * visible content (text/desc/clickable or a known overlay class).
@@ -188,14 +188,14 @@ export function obstructionAt(allNodes: RawNode[], target: RawNode | undefined, 
   // misclassifies, so we use DFS order as the safe global signal (later DFS = drawn later).
   const topmost = containing.reduce((a, b) => (b.dfs > a.dfs ? b : a));
   if (!target) {
-    // no known target → only flag if the topmost is clearly an overlay-ish content node
+    // no known target: only flag if the topmost is clearly an overlay-ish content node
     const looksOverlay = !!(topmost.text || topmost.desc) && topmost.isLeaf;
     return looksOverlay ? { obstructed: false } : { obstructed: false };
   }
   const withinTarget = topmost.dfs >= target.dfs && topmost.dfs <= target.subtreeEnd;
   const isAncestor = topmost.dfs <= target.dfs && topmost.subtreeEnd >= target.subtreeEnd;
   if (withinTarget || isAncestor) return { obstructed: false };
-  // topmost is outside the target subtree and on top → only an obstruction if it's real content
+  // topmost is outside the target subtree and on top: it's only an obstruction if it's real content
   const realContent = !!(topmost.text || topmost.desc) || topmost.clickable;
   if (!realContent) return { obstructed: false };
   return {

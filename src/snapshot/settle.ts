@@ -1,9 +1,9 @@
 // Settle oracle: wait until the accessibility tree stops changing.
-// With OS animations disabled this converges fast. Bounded — never waits forever.
+// With OS animations disabled this converges fast. Bounded, so it never waits forever.
 //
-// Latency: a uiautomator dump itself takes ~1–2 s on real devices, so the poll interval is
+// Latency: a uiautomator dump itself takes ~1-2 s on real devices, so the poll interval is
 // ADAPTIVE (sleep only `intervalMs - lastDumpDuration`), and every dump is bounded by the
-// remaining settle deadline with at most SETTLE_DUMP_ATTEMPTS attempts — one stuck dump can no
+// remaining settle deadline with at most SETTLE_DUMP_ATTEMPTS attempts, so one stuck dump can no
 // longer run 5 attempts x 20 s past the settle budget.
 
 import type { Driver } from '../drivers/Driver.js';
@@ -24,7 +24,7 @@ export async function settle(
     timeoutMs?: number;
     stableForMs?: number;
     intervalMs?: number;
-    /** A dump the caller just took (e.g. scroll untilVisible's last probe) — used as the first
+    /** A dump the caller just took (e.g. scroll untilVisible's last probe). Used as the first
      * sample instead of dumping again. `at` = when it was captured. */
     seed?: { xml: string; at: number };
   } = {},

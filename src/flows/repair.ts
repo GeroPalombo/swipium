@@ -82,7 +82,7 @@ export function resolveFlowSource(
   const candidates = raw.map((p) => withinRootOrNull(root, p));
   if (candidates.every((p) => p === null) || candidates[0] === null)
     return {
-      error: `Flow path "${flow}" resolves outside the project root (${root}) — qa_flow_repair only reads and patches flows under the project root.`,
+      error: `Flow path "${flow}" resolves outside the project root (${root}). qa_flow_repair only reads and patches flows under the project root.`,
       errorCode: 'PATH_OUTSIDE_ROOT',
     };
   const path = candidates.find((p): p is string => !!p && existsSync(p));
@@ -596,7 +596,7 @@ export function repairFlow(opts: {
       // Never auto-apply a guess: low confidence means no text match to the failed selector.
       if (picked.confidence === 'low')
         notes.push(
-          `apply refused: the proposal is low confidence (no text match for "${originalSelector ?? 'target'}") — review proposedYaml and apply it manually if correct.`,
+          `apply refused: the proposal is low confidence (no text match for "${originalSelector ?? 'target'}"). Review proposedYaml and apply it manually if correct.`,
         );
       else {
         writeFileSync(src.source, proposedYaml);

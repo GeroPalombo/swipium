@@ -1,7 +1,7 @@
 // qa_test_feature MCP tool.
 // Feature-focused testing from the durable app map: map a natural-language feature request to code +
 // runtime + existing tests, model its objective, generate scoped cases, optionally execute a focused
-// run, and update the feature map. Thin wrappers — all logic lives in src/featureTesting/* + src/appMap.
+// run, and update the feature map. Thin wrappers; all logic lives in src/featureTesting/* + src/appMap.
 // Free-text feature scoping (read-only) lives under qa_app_map_feature_scope (src/tools/appMap.ts),
 // which reuses resolveFeatureContext() below.
 
@@ -109,7 +109,7 @@ export function registerFeatureTesting(server: McpServer, sessions: SessionStore
         'device from projectRoot (consent-gated). A feature behind auth/paywall/permission/missing fixture is blocked with ' +
         'setup guidance, not failed.',
       inputSchema: {
-        sessionId: z.string().optional().describe('Prepared session; omitted → bootstrap from projectRoot.'),
+        sessionId: z.string().optional().describe('Prepared session; omitted > bootstrap from projectRoot.'),
         projectRoot: z.string().optional(),
         feature: z.string().describe('The feature to test, in natural language.'),
         mode: z
@@ -166,7 +166,7 @@ export function registerFeatureTesting(server: McpServer, sessions: SessionStore
               fields: [{ name: 'feature', example: scopeResult.candidates[0]?.title }],
               fallbackOptions: scopeResult.needsInput.options,
               resume: { tool: 'qa_test_feature', args: { mode: 'plan' } },
-              attempted: [`scoped "${feature}" — multiple candidates tie`],
+              attempted: [`scoped "${feature}": multiple candidates tie`],
               ifDeclined: 'Swipium plans the highest-confidence candidate.',
             },
             { sessionId: sessionId ?? undefined, candidates: scopeResult.candidates },
@@ -187,7 +187,7 @@ export function registerFeatureTesting(server: McpServer, sessions: SessionStore
       }
 
       // EXECUTE / INTERACTIVE: reuse a prepared session, else BOOTSTRAP one from projectRoot using
-      // the same resolver/planner/prepare path as qa_test_this (Fix Group 4) — so "test the weather
+      // the same resolver/planner/prepare path as qa_test_this (Fix Group 4), so "test the weather
       // feature" works even when the first instruction is feature-focused.
       let session = sessionId ? sessions.get(sessionId) : undefined;
       if (sessionId && !session) {
@@ -215,7 +215,7 @@ export function registerFeatureTesting(server: McpServer, sessions: SessionStore
       if (!scopeResult.found) {
         return qaOk(
           { sessionId: session.id, feature, mode: effectiveMode, found: false, searched: scopeResult.searched },
-          `No feature matched "${feature}" — nothing to execute. Searched: ${scopeResult.searched.terms.slice(0, 10).join(', ')}.`,
+          `No feature matched "${feature}", nothing to execute. Searched: ${scopeResult.searched.terms.slice(0, 10).join(', ')}.`,
         );
       }
       if (scopeResult.needsInput) {
@@ -227,7 +227,7 @@ export function registerFeatureTesting(server: McpServer, sessions: SessionStore
             fields: [{ name: 'feature', example: scopeResult.candidates[0]?.title }],
             fallbackOptions: scopeResult.needsInput.options,
             resume: { tool: 'qa_test_feature', args: { sessionId: session.id, mode: effectiveMode } },
-            attempted: [`scoped "${feature}" — multiple candidates tie`],
+            attempted: [`scoped "${feature}": multiple candidates tie`],
             ifDeclined: 'Swipium tests the highest-confidence candidate.',
           },
           { sessionId: session.id, candidates: scopeResult.candidates },
@@ -282,7 +282,7 @@ interface FeatureTestJobArgs {
   stopOnAuth: boolean;
 }
 
-/** Focused feature run: targeted exploration → record cases → merge into the feature map → report. */
+/** Focused feature run: targeted exploration > record cases > merge into the feature map > report. */
 async function runFeatureTestJob(sessions: SessionStore, session: Session, job: JobRecord, a: FeatureTestJobArgs): Promise<void> {
   const signal = sessions.abortSignal(session, job.jobId);
   const upd = (patch: Partial<JobRecord>) => sessions.updateJobIfRunning(session, job, patch);
@@ -370,7 +370,7 @@ async function runFeatureTestJob(sessions: SessionStore, session: Session, job: 
       prior,
     );
 
-    // 4. Refresh the DERIVED feature-coverage cache (Fix 11 — disposable; the durable truth is the app
+    // 4. Refresh the DERIVED feature-coverage cache (Fix 11, disposable; the durable truth is the app
     //    map + persistent suite written below) + a readable cases artifact.
     const mapPath = upsertFeatureCoverage(session.root, session.appId, merge.coverage);
     const casesUri = sessions.saveArtifact(
@@ -458,8 +458,8 @@ async function runFeatureTestJob(sessions: SessionStore, session: Session, job: 
         nextRecommendedAction,
       },
       resultText:
-        `🎯 feature test ${state} — ${liveScope.title}: ${merge.delta.summary}\n` +
-        `cases: ${merge.cases.length} (${merge.delta.casesPassed} pass / ${merge.delta.casesFailed} fail / ${merge.delta.casesBlocked} blocked); map: ${merge.delta.statusBefore ?? 'new'} → ${merge.delta.statusAfter}\n` +
+        `🎯 feature test ${state}: ${liveScope.title}: ${merge.delta.summary}\n` +
+        `cases: ${merge.cases.length} (${merge.delta.casesPassed} pass / ${merge.delta.casesFailed} fail / ${merge.delta.casesBlocked} blocked); map: ${merge.delta.statusBefore ?? 'new'} > ${merge.delta.statusAfter}\n` +
         (reportUri ? `report: ${reportUri}\n` : '') +
         (appMapUri ? `appMap: ${appMapUri}\n` : '') +
         `featureCoverageCache: ${mapPath}` +

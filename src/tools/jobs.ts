@@ -1,4 +1,4 @@
-// qa_job_status / qa_job_cancel — poll (or long-poll with waitMs) or cancel a background job.
+// qa_job_status / qa_job_cancel: poll (or long-poll with waitMs) or cancel a background job.
 // Lets a client reconnect after a tool-call timeout instead of restarting the work.
 
 import { z } from 'zod';
@@ -7,7 +7,7 @@ import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { progressLine } from '../session/progress.js';
 import type { SessionStore } from '../session/store.js';
 
-/** Upper bound for qa_job_status waitMs — keeps one call well under typical client tool timeouts. */
+/** Upper bound for qa_job_status waitMs. Keeps one call well under typical client tool timeouts. */
 export const MAX_JOB_WAIT_MS = 120_000;
 const JOB_POLL_INTERVAL_MS = 500;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, Math.max(0, ms)));
@@ -67,7 +67,7 @@ export function registerJobs(server: McpServer, sessions: SessionStore): void {
           ...(waited ? { waited } : {}),
         },
         `job ${job.jobId} [${job.kind}] = ${job.status}${progLine ? `\n  ${progLine}` : job.progress ? ` (${job.progress})` : ''}${job.resultText ? `\n${job.resultText}` : ''}${job.error ? `\nerror: ${job.error}` : ''}` +
-          (waited?.timedOut ? `\nstill running after ${waited.waitedMs}ms — call again (waitMs) or qa_job_cancel.` : ''),
+          (waited?.timedOut ? `\nstill running after ${waited.waitedMs}ms, call again (waitMs) or qa_job_cancel.` : ''),
       );
     },
   );

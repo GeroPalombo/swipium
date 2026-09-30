@@ -2,7 +2,7 @@
 //
 // Thin wrappers over the Driver + SessionStore so audit checks can capture a screenshot, read the
 // current screen's visible text, and run a health check without each check duplicating that plumbing.
-// Sensitive-mode aware (no pixels when session.sensitive). Best-effort — never throws.
+// Sensitive-mode aware (no pixels when session.sensitive). Best-effort, never throws.
 
 import { parseSnapshot } from '../snapshot/parse.js';
 import { checkHealth, type HealthResult } from '../oracle/health.js';
@@ -27,7 +27,7 @@ export async function captureScreenshot(ctx: AuditEvidenceCtx, label: string): P
   }
 }
 
-/** Read the current screen's visible text (lowercased, joined). Best-effort → '' on failure. */
+/** Read the current screen's visible text (lowercased, joined). Best-effort: '' on failure. */
 export async function snapshotText(ctx: AuditEvidenceCtx): Promise<string> {
   try {
     const xml = await ctx.driver.dumpXml();
@@ -47,7 +47,7 @@ export async function health(ctx: AuditEvidenceCtx): Promise<HealthResult> {
   return checkHealth(ctx.driver, ctx.appId);
 }
 
-/** Current foreground app/owner. Best-effort → 'unknown'. */
+/** Current foreground app/owner. Best-effort: 'unknown'. */
 export async function foreground(ctx: AuditEvidenceCtx): Promise<string> {
   try {
     return await ctx.driver.foregroundOwner();

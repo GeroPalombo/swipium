@@ -45,7 +45,7 @@ export function registerMobileAudit(server: McpServer, sessions: SessionStore): 
     {
       title: 'Mobile QA release audit',
       description:
-        'Plan or execute a release audit. profile: smoke, account_cycle (create → logout → login → forgot-password on a ' +
+        'Plan or execute a release audit. profile: smoke, account_cycle (create > logout > login > forgot-password on a ' +
         'DISPOSABLE generated account), store_compliance (privacy/terms/account deletion/subscription/paywall), resilience ' +
         '(offline/relaunch/rotation; airplane toggle is consent-gated, original network restored), release_gate (all + locator readiness + issue recurrence). mode:"plan" ' +
         '(default) returns the checklist + safety contract without the device; "execute" (prepared session) runs every check, ' +
@@ -152,7 +152,7 @@ export function registerMobileAudit(server: McpServer, sessions: SessionStore): 
           const passed = run.checks.filter((c) => c.status === 'pass').length;
           return qaOk(
             { ...run, markdown: auditRunToMarkdown(run) },
-            `🔍 mobile audit ${prof}: ${run.state}, release=${run.releaseImpact} — ${passed}/${run.checks.length} pass, ${run.issueIds.length} issue(s)${run.recurrenceWarnings.length ? `, ${run.recurrenceWarnings.length} recurrence` : ''}`,
+            `🔍 mobile audit ${prof}: ${run.state}, release=${run.releaseImpact}, ${passed}/${run.checks.length} pass, ${run.issueIds.length} issue(s)${run.recurrenceWarnings.length ? `, ${run.recurrenceWarnings.length} recurrence` : ''}`,
           );
         } catch (e) {
           return qaError({

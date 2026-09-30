@@ -1,6 +1,6 @@
 // `swipium suite <lint|compile|init>`. `lint` audits generated page objects for
 // brittle locators; `init` prints how to bootstrap a suite (generation needs a recorded run,
-// which is a live MCP session — the CLI points the user at it rather than guessing).
+// which is a live MCP session, so the CLI points the user at it rather than guessing).
 
 import { isAbsolute, join } from 'node:path';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -34,7 +34,7 @@ function compileToFlows(root: string, suiteRel?: string): { ok: boolean; slugs: 
       writeFileSync(join(flowsDir, `${slug}.yaml`), f.yaml);
       writeFileSync(join(compiledDir, `${slug}.flow.yaml`), f.yaml);
       slugs.push(slug);
-      lines.push(`✓ ${f.name} → .swipium/flows/${slug}.yaml`);
+      lines.push(`✓ ${f.name} > .swipium/flows/${slug}.yaml`);
     } else {
       allOk = false;
       lines.push(`✗ ${f.name}: ${[...f.errors, ...parse.errors].join('; ')}`);
@@ -75,10 +75,10 @@ export async function runSuite(args: string[]): Promise<void> {
       [
         'Swipium suites are generated from a recorded run (durable selectors > guesswork):',
         '  1. Start the MCP server and a session (qa_start_session).',
-        '  2. Drive the app with qa_act (or qa_smoke) — every action is recorded.',
-        '  3. qa_generate target:"suite" → writes .swipium/{pages,tests,suites,testcases,locators}.',
-        '  4. swipium suite lint — audit locator durability before committing.',
-        '  5. swipium suite compile — POM → runnable Flow V2 under .swipium/flows.',
+        '  2. Drive the app with qa_act (or qa_smoke). Every action is recorded.',
+        '  3. qa_generate target:"suite" writes .swipium/{pages,tests,suites,testcases,locators}.',
+        '  4. swipium suite lint: audit locator durability before committing.',
+        '  5. swipium suite compile: POM > runnable Flow V2 under .swipium/flows.',
         '  6. Execute compiled flows through qa_flow_run from an MCP session.',
         '',
       ].join('\n'),

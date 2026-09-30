@@ -1,6 +1,6 @@
 // Linter for the persistent suite. PURE. Catches the failure
 // modes that make a maintained suite untrustworthy: missing expected/actual results, unlinked or
-// stale map links, duplicate ids, brittle automation above threshold, and — most importantly —
+// stale map links, duplicate ids, brittle automation above threshold, and (most importantly)
 // `adversarial` cases that lack the safety metadata Swipium requires before it will ever run them.
 
 import type { CanonicalTestCase, TestSuiteFile } from './schema.js';
@@ -22,7 +22,7 @@ export interface LintResult {
 }
 
 export interface LintOptions {
-  /** Feature IDs still present in the current app map — enables the stale-map-link rule. */
+  /** Feature IDs still present in the current app map. Enables the stale-map-link rule. */
   liveFeatureIds?: string[];
   /** Locator-readiness grade (and worse) that counts as brittle. Default 'D'. */
   brittleThreshold?: 'C' | 'D';
@@ -73,14 +73,14 @@ export function lintSuite(suite: TestSuiteFile, opts: LintOptions = {}): LintRes
       add('warn', 'brittle_automation', `Automated case has brittle locators (grade ${c.automation.locatorReadiness})`, c.id);
     }
     if (c.automation.status === 'automated' && (c.automation.replayStatus === 'failed' || c.automation.replayStatus === 'blocked')) {
-      add('warn', 'unreplayable_automation', `Automated case has replayStatus ${c.automation.replayStatus} — not release-gate proof`, c.id);
+      add('warn', 'unreplayable_automation', `Automated case has replayStatus ${c.automation.replayStatus}, not release-gate proof`, c.id);
     }
 
     if (c.creativityLevel === 'adversarial' && !hasAdversarialSafety(c)) {
       add(
         'error',
         'unsafe_adversarial',
-        'Adversarial case lacks disposable-state/consent safety metadata — Swipium will refuse to run it',
+        'Adversarial case lacks disposable-state/consent safety metadata. Swipium will refuse to run it',
         c.id,
       );
     }

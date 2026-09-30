@@ -1,4 +1,4 @@
-// Build-from-source planner — propose the EXACT commands that turn a source
+// Build-from-source planner: propose the EXACT commands that turn a source
 // project into an installable artifact, per framework + platform, with prerequisites
 // (dependency install, Expo prebuild, CocoaPods) and the artifact globs the build will produce.
 //
@@ -20,7 +20,7 @@ export interface BuildStep {
   command: string; // human-readable command line
   argv: string[]; // argv form for spawn (command[0] is the executable)
   cwd: string;
-  /** Only run this step if its marker is absent (e.g. android dir missing → needs prebuild). */
+  /** Only run this step if its marker is absent (e.g. android dir missing > needs prebuild). */
   optionalIfPresent?: string;
 }
 
@@ -28,7 +28,7 @@ export interface BuildPlan {
   framework: Framework;
   platform: BuildPlatform;
   variant: BuildVariant;
-  /** Dependency install / prebuild / pod install — run before the main build if needed. */
+  /** Dependency install / prebuild / pod install. Run before the main build if needed. */
   prerequisites: BuildStep[];
   /** The main build command. */
   build: BuildStep | null;
@@ -84,12 +84,12 @@ function podInstallStep(root: string): BuildStep | null {
 function xcodebuildStep(root: string, variant: BuildVariant): { step: BuildStep | null; notes: string[] } {
   const { workspace, project, scheme, dir } = iosWorkspace(root);
   const notes: string[] = [];
-  if (!scheme) return { step: null, notes: ['Could not find an .xcworkspace/.xcodeproj — pass the scheme/workspace explicitly.'] };
+  if (!scheme) return { step: null, notes: ['Could not find an .xcworkspace/.xcodeproj. Pass the scheme/workspace explicitly.'] };
   const config = variant === 'release' ? 'Release' : 'Debug';
   const argv = ['xcodebuild', '-scheme', scheme, '-sdk', 'iphonesimulator', '-configuration', config, '-derivedDataPath', 'build', 'build'];
   if (workspace) argv.splice(1, 0, '-workspace', basename(workspace));
   else if (project) argv.splice(1, 0, '-project', basename(project));
-  notes.push(`Using scheme "${scheme}" (best-effort) — override if your scheme differs.`);
+  notes.push(`Using scheme "${scheme}" (best-effort). Override if your scheme differs.`);
   return { step: { label: 'build iOS simulator app', command: argv.join(' '), argv, cwd: dir }, notes };
 }
 
@@ -132,8 +132,8 @@ export async function buildPlan(opts: BuildPlanOptions): Promise<BuildPlan> {
 
     switch (framework) {
       case 'expo': {
-        // No native android dir → expo run:android prebuilds; otherwise it reuses it.
-        if (!hasFile(root, 'android')) notes.push('No android/ directory — expo run:android will prebuild it (EXPO_PREBUILD).');
+        // No native android dir: expo run:android prebuilds; otherwise it reuses it.
+        if (!hasFile(root, 'android')) notes.push('No android/ directory, so expo run:android will prebuild it (EXPO_PREBUILD).');
         notes.push(
           'Expo Android local run compiles native code, installs the app, and starts Metro. First run can take several minutes; later JS/TS-only work should usually reuse the installed development build with Metro.',
         );
@@ -148,7 +148,7 @@ export async function buildPlan(opts: BuildPlanOptions): Promise<BuildPlan> {
         if (!hasFile(root, 'android/gradlew', 'gradlew')) {
           return base({
             failureCode: 'BUILD_COMMAND_UNAVAILABLE',
-            notes: ['No gradlew found — run from the Android project or add the Gradle wrapper.'],
+            notes: ['No gradlew found. Run from the Android project or add the Gradle wrapper.'],
           });
         }
         const cwd = existsSync(join(root, 'android')) ? join(root, 'android') : root;
@@ -176,7 +176,7 @@ export async function buildPlan(opts: BuildPlanOptions): Promise<BuildPlan> {
 
   switch (framework) {
     case 'expo': {
-      if (!hasFile(root, 'ios')) notes.push('No ios/ directory — expo run:ios will prebuild it (EXPO_PREBUILD).');
+      if (!hasFile(root, 'ios')) notes.push('No ios/ directory, so expo run:ios will prebuild it (EXPO_PREBUILD).');
       const argv = ['npx', 'expo', 'run:ios', '--no-bundler'];
       return base({
         build: { label: 'build + run iOS simulator (Expo)', command: argv.join(' '), argv, cwd: root },

@@ -1,10 +1,10 @@
-// SWIPIUM Issue Log — policy-trained issue classifier.
+// SWIPIUM Issue Log: policy-trained issue classifier.
 //
 // Runs AFTER raw health/log extraction and BEFORE report rendering. Turns a normalized observation
 // into a category + severity + owner + release impact, distinguishing real product defects from
 // expected simulator / StoreKit / Google Play Billing / RevenueCat noise, hard gates, and readiness
 // improvements. Built-in rules encode the spec's taxonomy; an optional `.swipium/issues/policy.json`
-// can ADD or OVERRIDE rules. PURE — no clock, no fs.
+// can ADD or OVERRIDE rules. PURE: no clock, no fs.
 
 import type {
   IssueCategory,
@@ -53,10 +53,10 @@ export interface ClassifyContext {
   realDevicePurchaseFlow?: boolean;
   policy?: ClassifierPolicy;
   /** Caller-supplied category (e.g. an agent's qa_note category) used only when the built-in rules
-   *  cannot classify the observation — never overrides a strong app-defect signal. */
+   *  cannot classify the observation. Never overrides a strong app-defect signal. */
   categoryHint?: IssueCategory;
   severityHint?: IssueSeverity;
-  /** Authoritative category from a caller that IS the classifier (e.g. a mobile-audit check) —
+  /** Authoritative category from a caller that IS the classifier (e.g. a mobile-audit check);
    *  overrides the built-in rules entirely. Use when the observer already decided the category. */
   forceCategory?: IssueCategory;
 }
@@ -150,34 +150,34 @@ export function classifyObservation(obs: IssueObservation, ctx: ClassifyContext 
 
   // --- 2. Hard gates (stop the workflow, not the run; not an app bug by themselves) ---
   if (/\botp\b|one-?time|mfa|2fa|verification code|magic link/.test(hay)) {
-    return mk('hard_gate', 'medium', 'OTP/MFA challenge requires a real user code — workflow gated, not an app bug');
+    return mk('hard_gate', 'medium', 'OTP/MFA challenge requires a real user code; workflow gated, not an app bug');
   }
   if (obs.screenPurpose === 'paywall' && /hard paywall|no free|purchase required|must subscribe/.test(hay)) {
-    return mk('hard_gate', 'medium', 'Hard paywall with no permitted test path — recorded without purchase');
+    return mk('hard_gate', 'medium', 'Hard paywall with no permitted test path; recorded without purchase');
   }
 
   // --- 3. Expected environment noise (sim/emulator billing/store + explicit offline) ---
   if (ctx.expectedOffline && /no internet|offline|no connection|network unavailable/.test(hay)) {
-    return mk('environment_noise', 'info', 'Network unavailable during an explicit offline test — expected');
+    return mk('environment_noise', 'info', 'Network unavailable during an explicit offline test (expected)');
   }
   if (obs.subsystem && BILLING_SUBSYSTEMS.has(obs.subsystem) && isSim && !ctx.realDevicePurchaseFlow) {
-    return mk('environment_noise', 'info', `${obs.subsystem} warning on ${env} — sandbox/simulator noise, not a product defect`);
+    return mk('environment_noise', 'info', `${obs.subsystem} warning on ${env}: sandbox/simulator noise, not a product defect`);
   }
   if (/revenuecat/.test(hay) && /sandbox/.test(hay) && isSim) {
-    return mk('environment_noise', 'info', 'RevenueCat sandbox warning on simulator/emulator — expected');
+    return mk('environment_noise', 'info', 'RevenueCat sandbox warning on simulator/emulator (expected)');
   }
   if (/storekit/.test(hay) && /(sandbox|test|simulator)/.test(hay) && isSim) {
-    return mk('environment_noise', 'info', 'StoreKit sandbox/test warning on simulator — expected');
+    return mk('environment_noise', 'info', 'StoreKit sandbox/test warning on simulator (expected)');
   }
   if (
     /billing_unavailable|billing service unavailable|billing.*unavailable/.test(hay) &&
     env === 'emulator' &&
     !ctx.realDevicePurchaseFlow
   ) {
-    return mk('environment_noise', 'info', 'Google Play billing unavailable on emulator — environment, not an app bug');
+    return mk('environment_noise', 'info', 'Google Play billing unavailable on emulator: environment, not an app bug');
   }
   if (/missing.*(product|offering|sku)/.test(hay) && isSim && !ctx.realDevicePurchaseFlow) {
-    return mk('environment_noise', 'info', 'Missing production purchase products in a local simulator run — expected');
+    return mk('environment_noise', 'info', 'Missing production purchase products in a local simulator run (expected)');
   }
 
   // --- 4. Real billing/entitlement failure on device or during release-gate purchase ---
@@ -189,7 +189,7 @@ export function classifyObservation(obs: IssueObservation, ctx: ClassifyContext 
 
   // --- 5. App defects: React/JS/native + crashes ---
   const fc = obs.failureCode;
-  if (fc === 'REDBOX' || /red\s?box/.test(hay)) return mk('blocker_app_bug', 'blocker', 'React Native RedBox — fatal JS/runtime error');
+  if (fc === 'REDBOX' || /red\s?box/.test(hay)) return mk('blocker_app_bug', 'blocker', 'React Native RedBox: fatal JS/runtime error');
   if (fc === 'NATIVE_CRASH' || /native crash|sigsegv|sigabrt/.test(hay)) return mk('blocker_app_bug', 'blocker', 'Fatal native crash');
   if (fc === 'ANR' || /\banr\b|not responding/.test(hay)) return mk('blocker_app_bug', 'blocker', 'Application not responding (ANR)');
   if (fc === 'ERROR_BOUNDARY' || /error boundary/.test(hay))
@@ -223,10 +223,10 @@ export function classifyObservation(obs: IssueObservation, ctx: ClassifyContext 
     fc === 'COORDINATE_ONLY_FLOW' ||
     /accessibility id|missing testid|unstable locator|no durable locator/.test(hay)
   ) {
-    return mk('accessibility_readiness', 'low', 'Missing accessibility IDs / unstable locators — readiness improvement, not a blocker');
+    return mk('accessibility_readiness', 'low', 'Missing accessibility IDs / unstable locators: readiness improvement, not a blocker');
   }
   if (fc === 'LOGBOX' || /logbox|console warning|non-fatal warning|slow network|missing (empty|loading|error) state/.test(hay)) {
-    return mk('improvement', 'low', 'Non-fatal warning / readiness gap — precaution, not a blocker');
+    return mk('improvement', 'low', 'Non-fatal warning / readiness gap: precaution, not a blocker');
   }
 
   // --- 9. Privacy / store-compliance & missing test data ---
@@ -234,16 +234,16 @@ export function classifyObservation(obs: IssueObservation, ctx: ClassifyContext 
     return mk('store_compliance', 'high', 'Store-compliance surface (privacy/terms/account-deletion/subscription) issue');
   }
   if (fc === 'MISSING_TEST_DATA' || fc === 'AUTH_GATE' || fc === 'MISSING_FIXTURE' || /no test (data|account)|fixture missing/.test(hay)) {
-    return mk('missing_test_data', 'medium', 'Required test data / fixture missing — provide it, not an app bug');
+    return mk('missing_test_data', 'medium', 'Required test data / fixture missing. Provide it, not an app bug');
   }
 
   // --- 10. Fallback ---
   // Honor a caller-supplied category (e.g. an explicit qa_note category) when no built-in rule
-  // matched — this is how hard-gate / store-compliance / improvement notes still land correctly.
+  // matched. This is how hard-gate / store-compliance / improvement notes still land correctly.
   if (ctx.categoryHint) {
     return mk(ctx.categoryHint, ctx.severityHint ?? 'medium', `classified from caller-supplied category "${ctx.categoryHint}"`);
   }
-  return mk('mcp_limitation', 'low', 'Unclassified observation — recorded for triage');
+  return mk('mcp_limitation', 'low', 'Unclassified observation, recorded for triage');
 
   function mk(category: IssueCategory, severity: IssueSeverity, reason: string, owner?: IssueOwner): IssueClassification {
     return {

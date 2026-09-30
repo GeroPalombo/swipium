@@ -1,4 +1,4 @@
-// Android prepare service (hardening P0.1) — boot (if needed) → reverse → install → launch,
+// Android prepare service (hardening P0.1): boot (if needed) > reverse > install > launch,
 // extracted from qa_prepare_target's job worker so qa_test_this execute mode runs the SAME path
 // without going through the MCP transport. Returns a structured result + drives progress via a
 // callback; the caller maps it to a job. Behaviour mirrors the original worker exactly.
@@ -83,7 +83,7 @@ export async function prepareAndroid(
       return {
         ok: false,
         failureCode: 'PHYSICAL_DEVICE_UNSUPPORTED',
-        error: `${serial} is not an Android emulator — Swipium never installs on physical devices (docs/physical-devices.md).`,
+        error: `${serial} is not an Android emulator. Swipium never installs on physical devices (docs/physical-devices.md).`,
       };
     }
     if (a.needBoot && a.bootTarget) {
@@ -139,7 +139,7 @@ export async function prepareAndroid(
         return {
           ok: false,
           failureCode: 'DEVICE_NOT_READY',
-          error: `${serial} did not report sys.boot_completed=1 — wait for it to finish booting, then retry.`,
+          error: `${serial} did not report sys.boot_completed=1. Wait for it to finish booting, then retry.`,
         };
       }
       if (aborted()) return { ok: false, aborted: true };
@@ -252,7 +252,7 @@ export async function prepareAndroid(
       }
     }
     if (a.rnDebug && a.allowLaunchWithoutMetro)
-      sessions.addEnvChange(session, 'OVERRIDE allowLaunchWithoutMetro — launched without confirmed Metro readiness');
+      sessions.addEnvChange(session, 'OVERRIDE allowLaunchWithoutMetro: launched without confirmed Metro readiness');
     progress('launching');
     sessions.milestone(session, 'app_launch_start');
     await driver.launchApp(a.resolvedAppId);
@@ -286,7 +286,7 @@ export async function prepareAndroid(
       display,
       ...(metroHint ? { metroHint } : {}),
     };
-    const viewHint = a.needBoot && session.headless ? ` (headless — view with: scrcpy -s ${serial})` : '';
+    const viewHint = a.needBoot && session.headless ? ` (headless, view with: scrcpy -s ${serial})` : '';
     return {
       ok: true,
       device: serial,

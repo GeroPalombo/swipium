@@ -1,18 +1,18 @@
-// qa_visual — consolidated local visual intelligence for screens with no usable UI
+// qa_visual: consolidated local visual intelligence for screens with no usable UI
 // tree (maps/canvases/games) and for visual regression. Its whole point is that it stays
 // backend-neutral: only driver.screenshot() is required, so it works in visual-only iOS
 // simulator mode (no WDA) where qa_act / qa_snapshot are rejected. Modes:
-//   baseline   — save the current screen as a named baseline (<repo>/.swipium/baselines/<name>.png)
-//   diff       — compare the current screen to a baseline → changed-ratio + changed region
-//   find_text  — consent-gated OCR (locally-configured provider, none bundled) → text matches
-//   find_image — locate a reference PNG in the current screen → tappable coordinates
-//   assert     — record a visual pass/fail with screenshot evidence (a qa_note with
+//   baseline   : save the current screen as a named baseline (<repo>/.swipium/baselines/<name>.png)
+//   diff       : compare the current screen to a baseline > changed-ratio + changed region
+//   find_text  : consent-gated OCR (locally-configured provider, none bundled) > text matches
+//   find_image : locate a reference PNG in the current screen > tappable coordinates
+//   assert     : record a visual pass/fail with screenshot evidence (a qa_note with
 //                verifiedVisually=true; a pass is also recorded as a semantic IR step)
 // Every result declares its coordinateSpace so screenshot-pixel hits convert
-// honestly to device (tap) coordinates — POINTS on iOS (WDA and the idb fallback), pixels on
+// honestly to device (tap) coordinates: POINTS on iOS (WDA and the idb fallback), pixels on
 // Android. Policy matches qa_screenshot: refuse in sensitive mode, and
 // withhold capture when a secure field is (or may be) on screen unless force:true
-// (THREAT_MODEL "Sensitive-screen capture" — pixels are not redactable).
+// (THREAT_MODEL "Sensitive-screen capture": pixels are not redactable).
 //
 // Each mode is one handler in MODE_HANDLERS sharing a VisualContext, so adding a mode is one
 // enum value + one handler.
@@ -61,7 +61,7 @@ export type VisualMode = (typeof VISUAL_MODES)[number];
 // ---------------------------------------------------------------------------------------------
 // B5: path containment for baselines and templates.
 
-/** Baseline names are plain file stems: 1–64 of [A-Za-z0-9._-], never starting with a dot. */
+/** Baseline names are plain file stems: 1-64 of [A-Za-z0-9._-], never starting with a dot. */
 const BASELINE_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
 
 export function baselinesDirFor(root: string): string {
@@ -75,16 +75,16 @@ function pathRefused(what: string, nextStep: string): CallToolResult {
 /** Resolve `<root>/.swipium/baselines/<name>.png`, refusing any name that could escape it. */
 export function resolveBaselinePath(root: string, name: string): { path: string } | { error: string } {
   if (!BASELINE_NAME_RE.test(name) || name.startsWith('.')) {
-    return { error: `Invalid baseline name ${JSON.stringify(name)} — use 1–64 of [A-Za-z0-9._-], not starting with "."` };
+    return { error: `Invalid baseline name ${JSON.stringify(name)}. Use 1-64 of [A-Za-z0-9._-], not starting with "."` };
   }
   const dir = resolve(baselinesDirFor(root));
   const path = resolve(dir, `${name}.png`);
   if (!path.startsWith(dir + sep)) return { error: `Baseline name ${JSON.stringify(name)} resolves outside .swipium/baselines` };
-  // A symlinked baseline file could still redirect the write/read elsewhere — refuse it.
+  // A symlinked baseline file could still redirect the write/read elsewhere, so refuse it.
   try {
-    if (lstatSync(path).isSymbolicLink()) return { error: `Baseline ${JSON.stringify(name)} is a symlink — refusing to follow it` };
+    if (lstatSync(path).isSymbolicLink()) return { error: `Baseline ${JSON.stringify(name)} is a symlink, refusing to follow it` };
   } catch {
-    // does not exist yet — fine
+    // does not exist yet, fine
   }
   return { path };
 }
@@ -98,7 +98,7 @@ function realOrResolved(p: string): string {
 }
 
 /** A find_image template must be a PNG inside the project root (symlinks resolved) or a
- * swipium:// artifact of this session's project — never an arbitrary absolute path. */
+ * swipium:// artifact of this session's project, never an arbitrary absolute path. */
 export function resolveTemplatePath(
   sessions: SessionStore,
   session: Session,
@@ -115,7 +115,7 @@ export function resolveTemplatePath(
   const real = realOrResolved(candidate);
   if (real !== root && !real.startsWith(root + sep)) {
     return {
-      error: `Template ${JSON.stringify(template)} is outside the project root — only project files or swipium:// artifacts are allowed`,
+      error: `Template ${JSON.stringify(template)} is outside the project root. Only project files or swipium:// artifacts are allowed`,
     };
   }
   return { path: real };
@@ -139,7 +139,7 @@ export function secureScreenState(session: Session): SecureScreenState {
 
 /** When the cached tree is missing or stale (e.g. after a qa_visual tap), a structured backend
  * (Android adb / WDA) can simply re-dump it: a qa_visual tap must not, by itself, turn the next
- * qa_visual call into an "unverified" one there. The fresh dump only informs the secure gate —
+ * qa_visual call into an "unverified" one there. The fresh dump only informs the secure gate:
  * session.lastSnapshot (the agent's @ref numbering) is left untouched. WDA-less simulators
  * cannot dump a tree, so they stay 'unknown'. */
 async function refreshSecureState(session: Session, driver: Driver): Promise<SecureScreenState> {
@@ -155,7 +155,7 @@ async function refreshSecureState(session: Session, driver: Driver): Promise<Sec
 }
 
 /** The session has handled credentials (typed secrets, secret inputs, a login, or a
- * rehydrated session whose secrets were dropped) — an unverified screen may be sensitive. */
+ * rehydrated session whose secrets were dropped). An unverified screen may be sensitive. */
 function hasSecretContext(session: Session): boolean {
   return (
     session.secrets.size > 0 ||
@@ -296,7 +296,7 @@ async function tapAndRecord(
     at: Date.now(),
     action: 'tap',
     ...rec,
-    warning: `Located visually (${visual.ocrText ? `OCR "${visual.ocrText}"` : 'template match'}) — coordinate-only replay; add an accessibilityIdentifier/testID for a durable selector`,
+    warning: `Located visually (${visual.ocrText ? `OCR "${visual.ocrText}"` : 'template match'}). Coordinate-only replay; add an accessibilityIdentifier/testID for a durable selector`,
     provenance: {
       ...(rec.provenance ?? {}),
       selectorKind: 'coords',
@@ -312,8 +312,8 @@ async function tapAndRecord(
   const budgetReached = sessions.budgetStop(session);
   return qaOk(
     { ...payload, tapped: true, tapVia: tapped.via, recorded: true, ...(budgetReached ? { budgetReached } : {}) },
-    `${label} → tapped device (${devicePoint.x}, ${devicePoint.y}) via ${tapped.via}` +
-      (budgetReached ? `\n⏹ budget reached: ${budgetReached} — call qa_report.` : ''),
+    `${label} > tapped device (${devicePoint.x}, ${devicePoint.y}) via ${tapped.via}` +
+      (budgetReached ? `\n⏹ budget reached: ${budgetReached}. Call qa_report.` : ''),
   );
 }
 
@@ -338,7 +338,7 @@ async function capture(ctx: VisualContext): Promise<{ png: Buffer; coordinateSpa
 
 /** Pixel outputs carry an explicit warning when the secure-field check could not run.
  * `ocrChecked`: the OCR text of this very capture was screened for password/OTP wording (the
- * only signal without a UI tree) — reported as secureFieldCheck:"ocr". */
+ * only signal without a UI tree), reported as secureFieldCheck:"ocr". */
 function unverifiedNote(ctx: VisualContext, opts: { ocrChecked?: boolean } = {}): Record<string, unknown> {
   if (ctx.secureState !== 'unknown' || ctx.args.force)
     return { secureFieldCheck: ctx.secureState === 'unknown' ? 'forced' : ctx.secureState };
@@ -346,17 +346,17 @@ function unverifiedNote(ctx: VisualContext, opts: { ocrChecked?: boolean } = {})
   return opts.ocrChecked
     ? {
         secureFieldCheck: 'ocr',
-        warning: 'No fresh UI tree — the secure-field check was OCR-text only (no password/OTP wording found).',
+        warning: 'No fresh UI tree. The secure-field check was OCR-text only (no password/OTP wording found).',
         ...withheld,
       }
     : {
         secureFieldCheck: 'unverified',
-        warning: 'No fresh UI tree — could not verify that no password/OTP field is on screen.',
+        warning: 'No fresh UI tree. Could not verify that no password/OTP field is on screen.',
         ...withheld,
       };
 }
 
-/** Persist a capture as a session artifact — unless the screen is unverified in a
+/** Persist a capture as a session artifact, unless the screen is unverified in a
  * credential-handling session (then nothing is written and the result says so). */
 function saveCapture(ctx: VisualContext, name: string, png: Buffer, label: string): string | undefined {
   if (ctx.withholdCapture) return undefined;
@@ -364,7 +364,7 @@ function saveCapture(ctx: VisualContext, name: string, png: Buffer, label: strin
 }
 
 const WITHHELD_EVIDENCE =
-  'evidence: withheld (no fresh UI tree to rule out a password/OTP field in a credential-handling session — pass force:true to keep the screenshot)';
+  'evidence: withheld (no fresh UI tree to rule out a password/OTP field in a credential-handling session. Pass force:true to keep the screenshot)';
 
 // ---------------------------------------------------------------------------------------------
 // Mode handlers.
@@ -384,7 +384,7 @@ async function findText(ctx: VisualContext): Promise<CallToolResult> {
   if (!command) {
     return qaError(
       {
-        what: 'OCR is not configured — find_text needs a local OCR provider (none is bundled)',
+        what: 'OCR is not configured. find_text needs a local OCR provider (none is bundled)',
         changedState: false,
         retrySafe: false,
         failureCode: 'OCR_NOT_CONFIGURED',
@@ -421,7 +421,7 @@ async function findText(ctx: VisualContext): Promise<CallToolResult> {
     });
   }
   const maskConfigured = !!maskPreview;
-  // BOTH commands that will run are disclosed (argv + provenance) — a repo config could otherwise
+  // BOTH commands that will run are disclosed (argv + provenance). A repo config could otherwise
   // pair a harmless-looking ocrCommand with an arbitrary visualMaskCommand the user never sees.
   const ocrSource = providerSourceLabel(ocrCommandSource(session.root) ?? 'environment', 'SWIPIUM_OCR_CMD');
   const maskSource = maskPreview ? providerSourceLabel(maskCommandSource(session.root) ?? 'environment', 'SWIPIUM_VISUAL_MASK_CMD') : null;
@@ -480,11 +480,11 @@ async function findText(ctx: VisualContext): Promise<CallToolResult> {
     });
   }
   ctx.sessions.bump(session, 'screenshots'); // runOcr captured the screen
-  // B8: no fresh UI tree → the OCR text itself is the only signal; a password/OTP screen is
+  // B8: no fresh UI tree, so the OCR text itself is the only signal; a password/OTP screen is
   // withheld (no text, no regions, no tap) unless force:true.
   if (ctx.secureState === 'unknown' && !force && (SECURE_TEXT_RE.test(ocr.text) || ocr.regions.some((r) => SECURE_TEXT_RE.test(r.text)))) {
     return qaError({
-      what: 'Withheld — the screen reads like a password/OTP/payment screen and no fresh UI tree could confirm otherwise',
+      what: 'Withheld: the screen reads like a password/OTP/payment screen and no fresh UI tree could confirm otherwise',
       changedState: false,
       retrySafe: true,
       failureCode: 'CAPTURE_WITHHELD_SECURE',
@@ -541,7 +541,7 @@ async function findText(ctx: VisualContext): Promise<CallToolResult> {
     );
   return qaOk(
     payload,
-    `${label} → tap device (${hit.devicePoint.x}, ${hit.devicePoint.y}) via qa_act { action:"tap", target:{ x:${hit.devicePoint.x}, y:${hit.devicePoint.y} } }`,
+    `${label} > tap device (${hit.devicePoint.x}, ${hit.devicePoint.y}) via qa_act { action:"tap", target:{ x:${hit.devicePoint.x}, y:${hit.devicePoint.y} } }`,
   );
 }
 
@@ -566,7 +566,7 @@ async function baseline(ctx: VisualContext): Promise<CallToolResult> {
   const uri = sessions.saveArtifact(session, 'baseline', `${name}.png`, png, 'image/png', `visual baseline: ${name}`);
   return qaOk(
     { mode: 'baseline', name, uri, path: target.path, coordinateSpace, ...unverifiedNote(ctx) },
-    `saved baseline "${name}" (${png.length} bytes) → .swipium/baselines/${name}.png + ${uri}`,
+    `saved baseline "${name}" (${png.length} bytes) > .swipium/baselines/${name}.png + ${uri}`,
   );
 }
 
@@ -585,7 +585,7 @@ async function diff(ctx: VisualContext): Promise<CallToolResult> {
   if ('error' in target) return pathRefused(target.error, 'Use the plain name you passed to mode:"baseline".');
   if (!existsSync(target.path)) {
     return qaError({
-      what: `No baseline "${name}" — capture one first`,
+      what: `No baseline "${name}". Capture one first`,
       changedState: false,
       retrySafe: true,
       nextSteps: [`Call qa_visual { mode: "baseline", name: "${name}" } on the reference screen.`],
@@ -622,7 +622,7 @@ async function diff(ctx: VisualContext): Promise<CallToolResult> {
       coordinateSpace,
       ...unverifiedNote(ctx),
     },
-    `diff vs "${name}": ${result.comparable ? `${(result.ratio * 100).toFixed(2)}% changed (threshold ${(tol * 100).toFixed(1)}%) → ${pass ? '✅ PASS' : '❌ FAIL'}` : `not comparable: ${result.reason}`}\n${currentUri ? `evidence: ${currentUri}` : WITHHELD_EVIDENCE}`,
+    `diff vs "${name}": ${result.comparable ? `${(result.ratio * 100).toFixed(2)}% changed (threshold ${(tol * 100).toFixed(1)}%) > ${pass ? '✅ PASS' : '❌ FAIL'}` : `not comparable: ${result.reason}`}\n${currentUri ? `evidence: ${currentUri}` : WITHHELD_EVIDENCE}`,
   );
 }
 
@@ -679,7 +679,7 @@ async function findImage(ctx: VisualContext): Promise<CallToolResult> {
   return qaOk(
     payload,
     match.found
-      ? `found (score ${match.score}) at screenshot (${match.x},${match.y}) → tap device (${devicePoint!.x},${devicePoint!.y}) via qa_act { action:"tap", target:{ x:${devicePoint!.x}, y:${devicePoint!.y} } }`
+      ? `found (score ${match.score}) at screenshot (${match.x},${match.y}) > tap device (${devicePoint!.x},${devicePoint!.y}) via qa_act { action:"tap", target:{ x:${devicePoint!.x}, y:${devicePoint!.y} } }`
       : `not found (best score ${match.score} < ${minScore ?? 0.85})`,
   );
 }
@@ -802,20 +802,20 @@ export function registerVisual(server: McpServer, sessions: SessionStore): void 
       }
       if (session.sensitive) return sensitiveRefusal('Visual capture');
 
-      // Budget gate (B7): same rule as qa_act / qa_screenshot — no new capture or tap once spent.
+      // Budget gate (B7): same rule as qa_act / qa_screenshot: no new capture or tap once spent.
       const stopReason = sessions.budgetStop(session);
       if (stopReason) return qaStop(stopReason, { counters: session.counters, mode: session.mode });
 
       // Secure-screen guard (same policy as qa_screenshot, THREAT_MODEL "Sensitive-screen
       // capture"): never persist or OCR password/OTP pixels by default. Without a fresh UI tree
       // (B8) the screen is unverified; in a session that has handled credentials only the
-      // mode that persists a capture into the repo (baseline) requires force:true — the others
+      // mode that persists a capture into the repo (baseline) requires force:true; the others
       // run, but never persist the capture (diff/assert evidence withheld), and find_text
       // screens the OCR text itself for password/OTP wording (withheld on a hit).
       const secureState = await refreshSecureState(session, driver);
       if (!args.force && secureState === 'secure') {
         return qaError({
-          what: 'Withheld — a secure field (password/OTP) is on screen',
+          what: 'Withheld: a secure field (password/OTP) is on screen',
           changedState: false,
           retrySafe: true,
           failureCode: 'CAPTURE_WITHHELD_SECURE',
@@ -825,7 +825,7 @@ export function registerVisual(server: McpServer, sessions: SessionStore): void 
       const unverifiedCredentialScreen = !args.force && secureState === 'unknown' && hasSecretContext(session);
       if (unverifiedCredentialScreen && args.mode === 'baseline') {
         return qaError({
-          what: 'Withheld — a baseline persists the screenshot, but no fresh UI tree can verify the screen has no password/OTP field, and this session has handled credentials',
+          what: 'Withheld: a baseline persists the screenshot, but no fresh UI tree can verify the screen has no password/OTP field, and this session has handled credentials',
           changedState: false,
           retrySafe: true,
           failureCode: 'CAPTURE_WITHHELD_SECURE',

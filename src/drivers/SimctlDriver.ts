@@ -1,4 +1,4 @@
-// SimctlDriver — the iOS Simulator backend behind the same Driver seam.
+// SimctlDriver: the iOS Simulator backend behind the same Driver seam.
 // It implements exactly what `simctl` supports (screenshot, lifecycle, deep links) so the shared
 // visual tools (qa_screenshot, qa_visual) work on iOS unchanged. Operations that
 // require a UI tree or input injection are honestly UNSUPPORTED here. Attach WebDriverAgent
@@ -14,7 +14,7 @@ import { invalidateWdaPageSource } from './WdaDriver.js';
 
 export type SimulatorScaleSource = 'idb' | 'device_type' | 'name_heuristic' | 'pixel_heuristic';
 
-/** Parse `idb describe --json` → the point scale. idb reports `screen_dimensions` as
+/** Parse `idb describe --json` > the point scale. idb reports `screen_dimensions` as
  * { width, height, density, width_points, height_points } (width/height in pixels). */
 export function parseIdbDescribeScale(stdout: string): number | null {
   try {
@@ -44,17 +44,17 @@ export function scaleFromDeviceName(name: string | undefined): number | null {
 }
 
 /** Last-resort scale from the screenshot pixel size: iPhone 3x panels have a short edge of
- * 1080–1320 px; 2x iPhones are <= 828 px and 2x iPads are > 1320 px. */
+ * 1080-1320 px; 2x iPhones are <= 828 px and 2x iPads are > 1320 px. */
 export function scaleFromPixels(px: { width: number; height: number }): number {
   const short = Math.min(px.width, px.height);
   return short >= 1000 && short <= 1320 ? 3 : 2;
 }
 
 /**
- * Resolve the simulator's pixel-per-point scale so screenSize() can report POINTS — the unit
+ * Resolve the simulator's pixel-per-point scale so screenSize() can report POINTS, the unit
  * `idb ui tap` and WebDriverAgent take. Order: `idb describe` (authoritative, when idb is on
- * PATH) → the device type's `profile.plist` `mainScreenScale` (via `simctl list`) → the device
- * name heuristic → the screenshot-size heuristic. Never throws.
+ * PATH) > the device type's `profile.plist` `mainScreenScale` (via `simctl list`) > the device
+ * name heuristic > the screenshot-size heuristic. Never throws.
  */
 export async function resolveSimulatorScale(
   udid: string,
@@ -114,7 +114,7 @@ export class SimctlDriver implements Driver {
     this.udid = udid;
   }
 
-  // REJECT (not throw) — these implement async Driver methods, so callers that do
+  // REJECT (not throw): these implement async Driver methods, so callers that do
   // `driver.x().catch(...)` (e.g. qa_report) must see a rejected promise, not a sync throw.
   private no(op: string): Promise<never> {
     return Promise.reject(new Error(`${op} ${UNSUPPORTED}`));
@@ -162,7 +162,7 @@ export class SimctlDriver implements Driver {
   async screenshot(): Promise<Buffer> {
     return sim.screenshot(this.udid);
   }
-  /** Screen size in POINTS (B6) — the unit `idb ui tap` and WebDriverAgent use — so
+  /** Screen size in POINTS (B6), the unit `idb ui tap` and WebDriverAgent use, so
    * captureCoordinateSpace derives scale = screenshot px / points and every devicePoint a
    * visual tool returns is directly tappable, consistent with the WDA backend. */
   async screenSize(): Promise<{ width: number; height: number } | null> {

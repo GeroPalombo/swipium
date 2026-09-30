@@ -64,7 +64,7 @@ export interface ParseResult {
 }
 
 /** Credential-like variable names whose resolved values are registered as session secrets. The
- *  ONE shared definition — qa_act placeholder expansion, flow parsing/running and
+ *  ONE shared definition: qa_act placeholder expansion, flow parsing/running and
  *  qa_continue_from_blocker all use it (`code` covers OTP vars like SWIPIUM_VERIFICATION_CODE). */
 export const SECRET_VAR_NAME = /pass|secret|token|otp|pin|cvv|key|code/i;
 const DIRECTIONS = ['up', 'down', 'left', 'right'] as const;
@@ -313,7 +313,7 @@ export function parseFlow(yamlText: string): ParseResult {
 }
 
 /** Environment variables a flow may read implicitly. A flow file can come from an untrusted
- *  (cloned) repo, so `${NAME}` falls back to process.env ONLY for names with this prefix — never
+ *  (cloned) repo, so `${NAME}` falls back to process.env ONLY for names with this prefix, never
  *  arbitrary server secrets like DATABASE_URL / AWS_SECRET_ACCESS_KEY (THREAT_MODEL). Explicit
  *  qa_flow_run `variables` and the session's stored inputs are not restricted. */
 export const FLOW_ENV_PREFIX = 'SWIPIUM_';

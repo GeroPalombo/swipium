@@ -1,6 +1,6 @@
 // Parse a uiautomator dump into @eN-referenced elements + a snapshotQuality verdict.
 // The dump is the Android accessibility tree, so quality is a property
-// of the target app — we measure it rather than pretend a weak tree is strong.
+// of the target app. We measure it rather than pretend a weak tree is strong.
 
 import { XMLParser } from 'fast-xml-parser';
 import type { SnapshotElement } from '../drivers/Driver.js';
@@ -112,7 +112,7 @@ function role(n: RawNode): string {
 }
 
 function isSurfaced(n: RawNode): boolean {
-  // A text field is always surfaced — an iOS SearchField has child nodes (magnifier, clear
+  // A text field is always surfaced. An iOS SearchField has child nodes (magnifier, clear
   // button) and must not be dropped for not being a leaf.
   if (n.clickable || n.longClickable || n.scrollable || isTextFieldClass(n.cls)) return true;
   return n.isLeaf && (n.text.length > 0 || n.desc.length > 0);
@@ -123,9 +123,9 @@ function isSurfaced(n: RawNode): boolean {
  * Surfacing them lets untilVisible "find" off-screen rows and taps land on the list edge. */
 function isOnScreen(b: [number, number, number, number], screen: [number, number]): boolean {
   const [x1, y1, x2, y2] = b;
-  if (x1 === 0 && y1 === 0 && x2 === 0 && y2 === 0) return true; // no bounds attribute — unknown, keep
+  if (x1 === 0 && y1 === 0 && x2 === 0 && y2 === 0) return true; // no bounds attribute: unknown, keep
   if (x2 <= x1 || y2 <= y1) return false;
-  if (screen[0] <= 0 || screen[1] <= 0) return true; // screen size unknown — keep the node
+  if (screen[0] <= 0 || screen[1] <= 0) return true; // screen size unknown, keep the node
   return x2 > 0 && y2 > 0 && x1 < screen[0] && y1 < screen[1];
 }
 

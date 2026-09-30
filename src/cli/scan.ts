@@ -1,12 +1,12 @@
-// `swipium scan [path]` — inspect a project and scaffold its .swipium/.
+// `swipium scan [path]`: inspect a project and scaffold its .swipium/.
 // Writes .swipium/config.json (generated, overwritten), and scaffolds .swipium/fixtures.json
-// (only if absent — never clobbers user fixtures) and .swipium/flows/. Ends with a clear
+// (only if absent, never clobbers user fixtures) and .swipium/flows/. Ends with a clear
 // ready | partial | blocked summary and the exact missing items.
 // Pass --check / --dry-run / --no-write to inspect without writing project files. Nothing is
 // written when the project is BLOCKED (a scaffold for a non-app directory is just litter), nor
 // on --help.
 //
-// CLI path, not the MCP server — writing to stdout is fine here, and defaulting to cwd is
+// CLI path, not the MCP server, so writing to stdout is fine here, and defaulting to cwd is
 // fine (the no-cwd rule is for the stdio server, which has no meaningful working directory).
 
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
@@ -63,15 +63,15 @@ export async function runScan(args: string[]): Promise<void> {
   if (write) {
     mkdirSync(swipiumDir, { recursive: true });
 
-    // config.json — generated artifact, always refreshed.
+    // config.json: generated artifact, always refreshed.
     writeFileSync(configPath, JSON.stringify(scan, null, 2));
 
-    // fixtures.json — scaffold only if absent (don't clobber the user's declared preconditions).
+    // fixtures.json: scaffold only if absent (don't clobber the user's declared preconditions).
     if (!existsSync(fixturesPath)) {
       writeFileSync(fixturesPath, JSON.stringify(FIXTURES_TEMPLATE, null, 2));
     }
 
-    // flows/ — scaffold the directory + a README if empty.
+    // flows/: scaffold the directory + a README if empty.
     mkdirSync(flowsDir, { recursive: true });
     mkdirSync(join(swipiumDir, 'packs'), { recursive: true }); // flow packs (release suites)
     const flowsReadme = join(flowsDir, 'README.md');
@@ -82,7 +82,7 @@ export async function runScan(args: string[]): Promise<void> {
   const lines = [
     '',
     `${icon} ${scan.readiness.toUpperCase()}`,
-    `framework: ${scan.framework}${scan.monorepo ? ' (monorepo — pick a target)' : ''}`,
+    `framework: ${scan.framework}${scan.monorepo ? ' (monorepo, pick a target)' : ''}`,
     `appId: ${scan.appId ?? 'unknown'}${scan.appIdSource ? ` (via ${scan.appIdSource})` : ''}`,
     `artifacts: ${scan.apks.length} apk, ${scan.ipas.length} ipa, ${scan.appBundles.length} .app${scan.installed === true ? ' · app installed' : scan.installed === false ? ' · app NOT installed' : ''}`,
     `devices: online=[${scan.devices.androidOnline.join(', ')}] avds=[${scan.devices.avds.join(', ')}]`,
@@ -102,7 +102,7 @@ export async function runScan(args: string[]): Promise<void> {
     `git scope: scan does not edit .gitignore (Swipium adds .swipium/ to a Git repo's .gitignore the first time it writes the app map or issue ledger)`,
     '',
     write
-      ? 'Next: in your agent, call qa_test_this { mode: "execute" } — or qa_start_session, then qa_resolve_target { sessionId, include: ["plan"] } for READY/BLOCKED/UNSAFE workflows.'
+      ? 'Next: in your agent, call qa_test_this { mode: "execute" }, or qa_start_session, then qa_resolve_target { sessionId, include: ["plan"] } for READY/BLOCKED/UNSAFE workflows.'
       : blocked
         ? 'Next: fix the items above and rerun `swipium scan` (or point it at your app directory: `swipium scan <path>`).'
         : 'Next: rerun without --check when you are ready to create Swipium project files, or use qa_resolve_target { include: ["context"] } for read-only MCP inspection.',

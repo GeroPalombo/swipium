@@ -1,5 +1,5 @@
-// Platform of the device a session actually ran on — the second link in the generated-suite platform
-// resolution chain: explicit `platform` arg → session device platform → project profile → android.
+// Platform of the device a session actually ran on. It's the second link in the generated-suite platform
+// resolution chain: explicit `platform` arg > session device platform > project profile > android.
 // Pure (reads only the session's driver kind / device id), so it also works on a rehydrated session.
 
 import type { Session } from '../session/store.js';
@@ -12,12 +12,12 @@ const IOS_DEVICE_UDID_RE = /^(?:[0-9A-F]{8}-[0-9A-F]{16}|[0-9A-F]{40})$/i;
 export type DevicePlatform = 'android' | 'ios';
 
 /** The live driver kind is authoritative (simulator/WDA ⇒ iOS, direct adb ⇒ Android), then the
- *  persisted driverKind; without either fall back to the device id shape — iOS UDIDs vs adb serials (emulator-5554, R58M…, ip:port). */
+ *  persisted driverKind; without either fall back to the device id shape: iOS UDIDs vs adb serials (emulator-5554, R58M…, ip:port). */
 export function sessionDevicePlatform(
   s: (Pick<Session, 'device' | 'driver'> & { driverKind?: Session['driverKind'] }) | undefined,
 ): DevicePlatform | undefined {
   if (!s) return undefined;
-  // No live driver after a restart → the persisted driverKind is still authoritative.
+  // No live driver after a restart > the persisted driverKind is still authoritative.
   const kind = s.driver?.kind ?? s.driverKind;
   if (kind === 'simulator' || kind === 'wda') return 'ios';
   if (kind === 'direct') return 'android';

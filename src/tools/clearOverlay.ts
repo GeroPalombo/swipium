@@ -1,4 +1,4 @@
-// qa_clear_overlay — clear common overlays so a covered CTA becomes tappable (Phase 2 CR5).
+// qa_clear_overlay: clear common overlays so a covered CTA becomes tappable (Phase 2 CR5).
 // Strategies: auto | hide_keyboard | press_back | tap_outside | minimize_logbox |
 // dismiss_logbox | allow_permission | deny_permission | dismiss_toast_if_possible.
 
@@ -117,12 +117,12 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
       const overlaysBefore = treeOverlays.map((o) => o.type);
       const fgOverlay = classifyForeground(session.appId, fg);
 
-      // Set when the keyboard is up and could not be dismissed → typed KEYBOARD_NOT_DISMISSIBLE.
+      // Set when the keyboard is up and could not be dismissed: typed KEYBOARD_NOT_DISMISSIBLE.
       let keyboardStuck: string | undefined;
       const doHideKeyboard = async () => {
         if (await safe(() => d.imeShown(), false)) {
           // Backend-native hide first (WDA /wda/keyboard/dismiss; adb BACK-if-shown). A BACK
-          // fallback only where BACK is a real key (Android) — on iOS it is not a keyboard dismiss.
+          // fallback only where BACK is a real key (Android). On iOS it is not a keyboard dismiss.
           let hid: boolean;
           let why = '';
           try {
@@ -201,9 +201,9 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
             if (ime) await doHideKeyboard();
             else if (treeOverlays.some((o) => o.type === 'rn_logbox' || o.type === 'rn_redbox')) await doMinimizeLogbox();
             else if (fgOverlay?.type === 'permission_dialog')
-              cleared.push({ type: 'permission_dialog', action: 'present — call allow_permission/deny_permission deliberately' });
+              cleared.push({ type: 'permission_dialog', action: 'present; call allow_permission/deny_permission deliberately' });
             else if (treeOverlays.some((o) => o.type === 'native_dialog'))
-              cleared.push({ type: 'native_dialog', action: 'present — handle via qa_act (e.g. tap a dialog button)' });
+              cleared.push({ type: 'native_dialog', action: 'present; handle via qa_act (e.g. tap a dialog button)' });
             else await doTapOutside();
             break;
         }
@@ -269,7 +269,7 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
           remaining,
           ...(targetRef ? { targetObstructedBefore: before, targetObstructedAfter: after } : {}),
         },
-        `outcome: ${outcome}\ncleared: ${cleared.map((c) => `${c.type}:${c.action}`).join(', ') || '(none)'}${targetRef ? `\ntarget ${targetRef} obstructed: ${before} → ${after}` : ''}${remaining.length ? `\nremaining overlays: ${remaining.join(', ')}` : ''}`,
+        `outcome: ${outcome}\ncleared: ${cleared.map((c) => `${c.type}:${c.action}`).join(', ') || '(none)'}${targetRef ? `\ntarget ${targetRef} obstructed: ${before} > ${after}` : ''}${remaining.length ? `\nremaining overlays: ${remaining.join(', ')}` : ''}`,
       );
     },
   );

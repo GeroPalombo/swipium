@@ -1,13 +1,13 @@
 // Identifier safety for the generated JS/TS and Python suites (H4). Recorded element/page names
 // come from arbitrary app copy ("Continue", "Return", "2FA code", "class", "登录"), so every name
 // that becomes a class, field, attribute or method in generated source is sanitized here:
-//   - Latin diacritics transliterated first (asciiFold: "Configuración" → "Configuracion"), then
-//     remaining non-ASCII / punctuation stripped; empty → a stable fallback (element, element2, …);
-//   - a leading digit gets a prefix (2FACode → el2FACode / el_2fa_code);
-//   - language keywords / reserved words get a trailing underscore (continue → continue_);
+//   - Latin diacritics transliterated first (asciiFold: "Configuración" > "Configuracion"), then
+//     remaining non-ASCII / punctuation stripped; empty > a stable fallback (element, element2, …);
+//   - a leading digit gets a prefix (2FACode > el2FACode / el_2fa_code);
+//   - language keywords / reserved words get a trailing underscore (continue > continue_);
 //   - names that would shadow a BaseScreen member (tap, find, driver, …) are suffixed too;
 //   - collisions are deduped deterministically in declaration order (name, name2, name3, …).
-// Pure — no I/O.
+// Pure, no I/O.
 
 import type { AppiumScreen, AppiumSuiteModel } from './appiumModel.js';
 
@@ -116,7 +116,7 @@ export const PY_KEYWORDS: ReadonlySet<string> = new Set([
 ]);
 
 /** Transliterate to ASCII where Unicode allows it: NFKD, then drop combining marks
- *  ("Configuración" → "Configuracion", "Überblick" → "Uberblick", "ﬁle" → "file"). Scripts with no
+ *  ("Configuración" > "Configuracion", "Überblick" > "Uberblick", "ﬁle" > "file"). Scripts with no
  *  ASCII decomposition ("登录") pass through unchanged and are stripped by the sanitizers. Applied
  *  before EVERY class / module / file / member name derivation so they stay consistent
  *  (without it "ó" became a word break: configuraci_nscreen.py next to configuraci_n2_screen.py). */
@@ -151,7 +151,7 @@ export function snakeWords(s: string): string {
 
 /** Deterministic de-duplicating allocator: first come keeps the base, later ones get 2, 3, …
  *  A name that clashes with a RESERVED member (e.g. BaseScreen.tap) is suffixed with `_` first
- *  (tap → tap_), matching the keyword convention; only then numbered. */
+ *  (tap > tap_), matching the keyword convention; only then numbered. */
 export class NameAllocator {
   private readonly used: Set<string>;
   private readonly reserved: Set<string>;
@@ -214,7 +214,7 @@ export function checkDirection(dir: string | undefined, what: string): Direction
   const d = (dir ?? '').toLowerCase();
   if ((DIRECTIONS as readonly string[]).includes(d)) return d as Direction;
   throw new UnemittableStepError(
-    `cannot emit ${what}: direction ${JSON.stringify(dir)} is not one of up/down/left/right — fix the recorded step and regenerate`,
+    `cannot emit ${what}: direction ${JSON.stringify(dir)} is not one of up/down/left/right. Fix the recorded step and regenerate`,
   );
 }
 

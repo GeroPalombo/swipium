@@ -1,4 +1,4 @@
-// qa_locator_suggest (Locator And Maintainability) — for the current screen, recommend
+// qa_locator_suggest (Locator And Maintainability): for the current screen, recommend
 // the most durable locator for each element + score it, and grade the screen's "automation
 // readiness" (how much of the interactive UI has a durable testID/accessibility handle). This
 // tells a developer exactly which controls need testIDs to make flows non-brittle.
@@ -17,10 +17,10 @@ export function registerLocator(server: McpServer, sessions: SessionStore): void
     {
       title: 'Suggest durable locators',
       description:
-        "For the current screen, recommend the most durable locator for each element (priority: accessibility/content-desc > resource-id/testID > visible text > structure > coordinate) with a durability score, and grade the screen's automation readiness — listing exactly which interactive controls need a testID. Use this to make generated flows non-brittle and to hand developers an actionable testID to-do list. Needs a structured UI tree (not the iOS simulator / visual-fallback).",
+        "For the current screen, recommend the most durable locator for each element (priority: accessibility/content-desc > resource-id/testID > visible text > structure > coordinate) with a durability score, and grade the screen's automation readiness, listing exactly which interactive controls need a testID. Use this to make generated flows non-brittle and to hand developers an actionable testID to-do list. Needs a structured UI tree (not the iOS simulator / visual-fallback).",
       inputSchema: {
         sessionId: z.string(),
-        interactiveOnly: z.boolean().optional().describe('Only score clickable elements (default false → all addressable elements).'),
+        interactiveOnly: z.boolean().optional().describe('Only score clickable elements (default false = all addressable elements).'),
       },
     },
     async ({ sessionId, interactiveOnly }) => {
@@ -93,7 +93,7 @@ export function registerLocator(server: McpServer, sessions: SessionStore): void
               .slice(0, 15)
               .map(
                 (n) =>
-                  `  - ${n.ref} [${n.role}] — ${n.hint}${n.suggestedTestId ? `; suggested ${platform === 'ios' ? 'accessibilityIdentifier' : 'testID'}: ${n.suggestedTestId}` : ''}`,
+                  `  - ${n.ref} [${n.role}]: ${n.hint}${n.suggestedTestId ? `; suggested ${platform === 'ios' ? 'accessibilityIdentifier' : 'testID'}: ${n.suggestedTestId}` : ''}`,
               )
               .join('\n')
           : 'every interactive control already has a durable locator ✅');

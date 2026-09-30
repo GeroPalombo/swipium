@@ -1,4 +1,4 @@
-// Vision Gap Fix 10 — AST-based JS/TS/TSX route + screen + symbol discovery using the TypeScript
+// Vision Gap Fix 10: AST-based JS/TS/TSX route + screen + symbol discovery using the TypeScript
 // compiler API, with the regex scanner as a fallback. Regex misses common navigation patterns it can't
 // resolve: a route name passed through a constant (`<Stack.Screen name={ROUTES.Weather} .../>`), a
 // multiline default-export component, or `navigation.navigate(ROUTES.Weather)`. This module parses the
@@ -77,7 +77,7 @@ function scriptKindFor(ts: typeof import('typescript'), fileName: string): impor
 
 /**
  * Parse a single JS/TS source file and extract screens, navigation edges, and route constants.
- * Returns parsed:false (empty result) when the TS compiler API is unavailable — the caller then uses
+ * Returns parsed:false (empty result) when the TS compiler API is unavailable. The caller then uses
  * the regex scanner. Never throws: a parse error is recorded in parserNotes.
  */
 export function scanTsSource(fileName: string, text: string): TsScanResult {
@@ -96,7 +96,7 @@ export function scanTsSource(fileName: string, text: string): TsScanResult {
   const navEdges: TsNavEdge[] = [];
   const routeConstants: TsRouteConstant[] = [];
   const parserNotes: string[] = [];
-  // Resolution map: both "ROUTES.Weather" → "WeatherAnalysis" and bare "Weather" → "WeatherAnalysis".
+  // Resolution map: both "ROUTES.Weather" > "WeatherAnalysis" and bare "Weather" > "WeatherAnalysis".
   const constMap = new Map<string, string>();
 
   const addScreen = (s: TsScreen) => {

@@ -1,5 +1,5 @@
 // Feature objective model. PURE, best-effort,
-// deterministic. From a resolved FeatureScope it derives what the feature is *for* — happy path,
+// deterministic. From a resolved FeatureScope it derives what the feature is *for*: happy path,
 // expected outputs, inputs, business rules (marked as hypotheses when low-confidence), negative and
 // edge cases, destructive boundaries, and the oracle strategy. Every claim carries provenance and a
 // confidence so a low-confidence hypothesis is never presented as proof (Non-Goals).
@@ -62,7 +62,7 @@ export function buildObjective(scope: FeatureScope): FeatureObjective {
   const edgeCases: string[] = [];
   const destructiveBoundaries: string[] = [];
 
-  // ---- entry → happy path ----
+  // ---- entry > happy path ----
   const entry = scope.entryPoints[0];
   if (entry) {
     happyPath.push(`Open the ${entry.kind.replace('_', ' ')} "${entry.value}"`);
@@ -83,24 +83,24 @@ export function buildObjective(scope: FeatureScope): FeatureObjective {
     happyPath.push('Enter a query and apply the search/filter');
     expectedOutputs.push('A result list updates to reflect the query');
     inputFields.push({ name: 'searchTerm', type: 'text', required: true, source: 'search vocabulary' });
-    negativeCases.push('Empty query → no crash; shows empty/zero-results state');
+    negativeCases.push('Empty query > no crash; shows empty/zero-results state');
     edgeCases.push('Query with special characters / very long input');
     provenance.push({ source: 'vocabulary', detail: 'search/filter terms', confidence: 0.5 });
   }
   if (has(terms, CREATE_TERMS)) {
     happyPath.push('Fill the required fields and submit');
     expectedOutputs.push('The new item appears / a success confirmation is shown');
-    negativeCases.push('Submit with required fields blank → validation error, no creation');
+    negativeCases.push('Submit with required fields blank > validation error, no creation');
     edgeCases.push('Duplicate / boundary-length values; interruption mid-create');
     businessRules.push('Required fields must be validated before submission');
-    hypotheses.push('Required-field set is inferred from vocabulary, not a schema — verify against the form');
+    hypotheses.push('Required-field set is inferred from vocabulary, not a schema. Verify against the form');
     provenance.push({ source: 'vocabulary', detail: 'create/add terms', confidence: 0.45 });
   }
   if (has(terms, AUTH_TERMS)) {
     inputFields.push({ name: 'email', type: 'email', required: true, source: 'auth vocabulary' });
     inputFields.push({ name: 'password', type: 'password', required: true, source: 'auth vocabulary' });
     expectedOutputs.push('On valid credentials the authenticated home/landing surface is reached');
-    negativeCases.push('Invalid credentials → inline error, stays on the login screen');
+    negativeCases.push('Invalid credentials > inline error, stays on the login screen');
     edgeCases.push('Locked/rate-limited account; OTP/2FA step');
     externalDependencies.push('Authentication backend / identity provider');
     businessRules.push('Invalid credentials must not grant access');
@@ -110,14 +110,14 @@ export function buildObjective(scope: FeatureScope): FeatureObjective {
     happyPath.push('Proceed through the checkout/payment step');
     expectedOutputs.push('An order/subscription confirmation is shown');
     externalDependencies.push('Payment processor (use sandbox/test mode)');
-    destructiveBoundaries.push('Do NOT submit a real payment — only a sandbox/test method, with explicit consent');
-    negativeCases.push('Declined card → error surfaced, no charge');
+    destructiveBoundaries.push('Do NOT submit a real payment. Only use a sandbox/test method, with explicit consent');
+    negativeCases.push('Declined card > error surfaced, no charge');
     businessRules.push('A charge must only occur after explicit user confirmation');
     provenance.push({ source: 'vocabulary', detail: 'payment terms', confidence: 0.55 });
   }
   if (has(terms, DESTRUCTIVE_TERMS)) {
     destructiveBoundaries.push('Destructive actions (delete/remove/cancel) require disposable test state + candidate-bound consent');
-    negativeCases.push('Cancel the destructive confirmation → nothing is destroyed');
+    negativeCases.push('Cancel the destructive confirmation > nothing is destroyed');
     edgeCases.push('Undo / recovery path after the destructive action');
     provenance.push({ source: 'vocabulary', detail: 'destructive terms', confidence: 0.5 });
   }

@@ -70,7 +70,7 @@ export interface NormalizedQuery {
   raw: string;
   /** Salient terms typed by the user (stopwords removed). These drive title + cluster naming. */
   coreTerms: string[];
-  /** coreTerms ∪ synonym expansions — the full search vocabulary. */
+  /** coreTerms ∪ synonym expansions: the full search vocabulary. */
   expandedTerms: string[];
 }
 

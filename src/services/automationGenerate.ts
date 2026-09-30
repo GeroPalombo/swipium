@@ -34,7 +34,7 @@ export function mapPresent(root: string): boolean {
 }
 
 export function buildAutomationProfile(session: Session, inputs: ProfileInputs = {}): AutomationProjectProfile {
-  // Platform resolution: explicit arg → the session's device platform → project profile → android.
+  // Platform resolution: explicit arg > the session's device platform > project profile > android.
   return buildProjectProfile(session.root, {
     ...inputs,
     appId: inputs.appId ?? appIdOf(session),

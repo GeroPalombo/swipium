@@ -20,7 +20,7 @@ export interface AutomationSuitePlan {
   language: AutomationLanguage;
   outputDir: string;
   platforms: { android: boolean; ios: boolean };
-  /** Default platform of the generated suite + why (explicit → session device → project → android). */
+  /** Default platform of the generated suite + why (explicit > session device > project > android). */
   primaryPlatform: 'android' | 'ios';
   platformSource: NonNullable<AutomationProjectProfile['platformSource']>;
   backends: { default: string; secondary?: string };
@@ -40,7 +40,7 @@ export interface AutomationSuitePlan {
   nextAction: string;
 }
 
-/** .swipium/automation/<dir> — js for TS/JS, python for Python (the generated-suite layout). */
+/** .swipium/automation/<dir>: js for TS/JS, python for Python (the generated-suite layout). */
 export function outputDirFor(language: AutomationLanguage): string {
   return `.swipium/automation/${language === 'python' ? 'python' : 'js'}`;
 }
@@ -98,7 +98,7 @@ export function buildSuitePlan(profile: AutomationProjectProfile, opts: BuildPla
     filesPlanned.push(`${outputDir}/README.md`);
     if (opts.includeCi) filesPlanned.push(`${outputDir}/ci.example.yml`);
   } else {
-    // No model yet — list the skeleton we WOULD generate, and require a recording/map pass first.
+    // No model yet: list the skeleton we WOULD generate, and require a recording/map pass first.
     blockers.push({
       code: 'NO_RECORDED_ACTIONS',
       detail: 'No recorded actions / app map to turn into a POM suite.',
@@ -124,7 +124,7 @@ export function buildSuitePlan(profile: AutomationProjectProfile, opts: BuildPla
   if (mapCoverage && mapCoverage.brittle > 0) {
     blockers.push({
       code: 'BRITTLE_LOCATORS',
-      detail: `${mapCoverage.brittle} brittle/coordinate locator(s) (${mapCoverage.brittlePct}% brittle) — not release-grade.`,
+      detail: `${mapCoverage.brittle} brittle/coordinate locator(s) (${mapCoverage.brittlePct}% brittle), not release-grade.`,
       nextStep: 'Add durable accessibility id / resource-id / testID; generated suite marks these as candidate-only.',
     });
   }

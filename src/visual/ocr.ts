@@ -29,8 +29,8 @@ export interface OcrResult {
 
 /**
  * The local OCR provider contract (what `find_text` needs; no provider is bundled):
- *  - Configure `ocrCommand` in .swipium/config.json — an argv array (preferred), a string
- *    (deprecated, shell-split), or { command, io: "argv" | "json", timeoutMs } — or the
+ *  - Configure `ocrCommand` in .swipium/config.json: an argv array (preferred), a string
+ *    (deprecated, shell-split), or { command, io: "argv" | "json", timeoutMs }. Or use the
  *    SWIPIUM_OCR_CMD env var (a string). Project config wins over the env var.
  *  - `{image}` in the argv is replaced with the path of a PNG screenshot (already masked when
  *    visualMaskCommand is configured). With io:"json" the command ALSO receives one JSON line on
@@ -42,13 +42,13 @@ export interface OcrResult {
  *    can be located. Default timeout 30 s; Git executables are refused.
  *  - The command runs with cwd = the project root (relative argv such as ".swipium/ocr_tesseract.py"
  *    resolves there). A non-zero exit or timeout is a typed OCR_PROVIDER_FAILED failure carrying the
- *    exit code and trimmed (redacted) stderr — never a silent "found: false".
+ *    exit code and trimmed (redacted) stderr, never a silent "found: false".
  */
 export const OCR_PROVIDER_CONTRACT =
   'ocrCommand (.swipium/config.json, argv array with an {image} placeholder; or env SWIPIUM_OCR_CMD) is run on a PNG screenshot and must ' +
-  'print JSON to stdout: [{"text":"Log in","confidence":0.97,"bbox":{"x":53,"y":182,"width":104,"height":38}}] (or {"regions":[...]}) — ' +
-  'bbox in screenshot pixels, confidence 0..1, one region per text line. Optional {command, io:"json", timeoutMs} form also sends a ' +
-  'swipium.visual.provider.v1 JSON line on stdin. Runs with cwd = project root; non-zero exit → OCR_PROVIDER_FAILED. Timeout 30 s.';
+  'print JSON to stdout: [{"text":"Log in","confidence":0.97,"bbox":{"x":53,"y":182,"width":104,"height":38}}] (or {"regions":[...]}). ' +
+  'Bbox in screenshot pixels, confidence 0..1, one region per text line. Optional {command, io:"json", timeoutMs} form also sends a ' +
+  'swipium.visual.provider.v1 JSON line on stdin. Runs with cwd = project root; non-zero exit > OCR_PROVIDER_FAILED. Timeout 30 s.';
 
 /** A verified tesseract-based provider: groups tesseract's word TSV into line regions. Save as
  * e.g. .swipium/ocr_tesseract.py and set ocrCommand to ["python3", ".swipium/ocr_tesseract.py", "{image}"]. */
@@ -112,7 +112,7 @@ export async function runOcr(driver: Driver, root: string, command: VisualProvid
   const png = await driver.screenshot();
   const coordinateSpace = await captureCoordinateSpace(driver, png);
   // Real (symlink-resolved) temp path: tesseract/leptonica cannot open macOS /tmp/... paths.
-  // A private mkdtemp (0700) dir per call — never a predictable name in the shared tmpdir.
+  // A private mkdtemp (0700) dir per call, never a predictable name in the shared tmpdir.
   const workDir = makeProviderWorkDir('swipium-ocr-');
   const imgPath = join(workDir, 'screen.png');
   const cleanup = [workDir];

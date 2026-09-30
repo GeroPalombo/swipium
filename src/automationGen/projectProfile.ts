@@ -17,7 +17,7 @@ export type AppiumBackend = 'appium-uiautomator2' | 'appium-xcuitest';
 export type SecondaryBackend = 'appium-xcuitest' | 'appium-uiautomator2' | 'ios-wda' | 'android-direct';
 export type OutputMode = 'project_native' | 'swipium_scaffold';
 
-/** How well a platform is supported by THIS project — distinct from "we actually ran on it". */
+/** How well a platform is supported by THIS project, distinct from "we actually ran on it". */
 export type PlatformSupportLevel = 'supported' | 'evidence_only' | 'none';
 
 export interface PlatformSupport {
@@ -47,23 +47,23 @@ export interface AutomationProjectProfile {
   defaultBackend: AppiumBackend;
   secondaryBackend?: SecondaryBackend;
   /** Platform the generated suite targets by default (SWIPIUM_PLATFORM default) and WHY:
-   *  explicit `platform` arg → the session's device platform → project profile → android. */
+   *  explicit `platform` arg > the session's device platform > project profile > android. */
   primaryPlatform?: 'android' | 'ios';
   platformSource?: 'explicit' | 'session' | 'project' | 'default';
   reasons: string[];
 }
 
 export interface ProfileInputs {
-  /** auto | javascript | typescript | python — caller override of the language decision. */
+  /** auto | javascript | typescript | python: caller override of the language decision. */
   language?: 'auto' | AutomationLanguage;
-  /** auto | android | ios | both — caller override of the platform decision. */
+  /** auto | android | ios | both: caller override of the platform decision. */
   platform?: 'auto' | 'android' | 'ios' | 'both';
   /** Write into the user's existing test dir (project_native) vs .swipium scaffold. Default false. */
   integrateIntoProject?: boolean;
   /** appId from the session/scan, used only to enrich reasons. */
   appId?: string;
   /** Platform of the device the session ran on (Android serial vs iOS UDID / driver kind). Used when
-   *  `platform` is auto — it outranks project detection. */
+   *  `platform` is auto. It outranks project detection. */
   sessionPlatform?: 'android' | 'ios';
 }
 
@@ -281,7 +281,7 @@ export function buildProjectProfile(root: string, inputs: ProfileInputs = {}): A
   const platformsBase = platformSupport(root, fw, inputs.appId);
   const platforms = applyPlatformOverride(platformsBase, inputs.platform);
   const explicitPlatform = inputs.platform && inputs.platform !== 'auto' ? inputs.platform : undefined;
-  // The session ran on a real device of this platform — generation must cover it even when the
+  // The session ran on a real device of this platform, so generation must cover it even when the
   // project root carries no platform evidence (e.g. a store app driven by package id only).
   if (!explicitPlatform && inputs.sessionPlatform) {
     const p = platforms[inputs.sessionPlatform];
@@ -302,29 +302,29 @@ export function buildProjectProfile(root: string, inputs: ProfileInputs = {}): A
     reasons.push(`language forced to ${automationLanguage} by caller`);
   } else if ((primaryLanguage === 'python' || py.pytest || py.appiumClient) && !hasJsProject) {
     automationLanguage = 'python';
-    reasons.push('Python project / pytest / Appium-Python-Client present and no JS package.json → Python');
+    reasons.push('Python project / pytest / Appium-Python-Client present and no JS package.json > Python');
   } else if (hasJsProject) {
     automationLanguage = hasTs ? 'typescript' : 'javascript';
-    reasons.push(`JS/TS project (package.json) → ${automationLanguage}${hasTs ? ' (TypeScript present)' : ' (no TypeScript)'}`);
+    reasons.push(`JS/TS project (package.json) > ${automationLanguage}${hasTs ? ' (TypeScript present)' : ' (no TypeScript)'}`);
   } else if (py.present) {
     automationLanguage = 'python';
-    reasons.push('Python stack present (no package.json) → Python');
+    reasons.push('Python stack present (no package.json) > Python');
   } else {
     automationLanguage = 'typescript';
-    reasons.push('No clear JS/Python stack — defaulting to TypeScript WebdriverIO Appium');
+    reasons.push('No clear JS/Python stack, defaulting to TypeScript WebdriverIO Appium');
   }
 
   // ---- test framework selection ----
   let testFramework: TestFramework;
   if (automationLanguage === 'python') {
     testFramework = py.pytest ? 'pytest' : 'unittest';
-    reasons.push(testFramework === 'pytest' ? 'pytest already in project → pytest' : 'no pytest → unittest-compatible structure');
+    reasons.push(testFramework === 'pytest' ? 'pytest already in project > pytest' : 'no pytest > unittest-compatible structure');
   } else if (hasDep(d, /^@wdio\/|^webdriverio$/)) {
     testFramework = 'webdriverio';
-    reasons.push('WebdriverIO already in project → webdriverio runner');
+    reasons.push('WebdriverIO already in project > webdriverio runner');
   } else if (hasDep(d, /^jest$|^@jest\//)) {
     testFramework = 'jest';
-    reasons.push('Jest present — generated WDIO suite uses the mocha-style runner but jest noted as existing');
+    reasons.push('Jest present; generated WDIO suite uses the mocha-style runner but jest noted as existing');
   } else {
     testFramework = 'webdriverio';
     reasons.push('default WebdriverIO + Appium for Node (per Appium JS quickstart)');
@@ -335,11 +335,11 @@ export function buildProjectProfile(root: string, inputs: ProfileInputs = {}): A
 
   const existingAutomation = detectExistingAutomation(root, d, py);
   if (existingAutomation.some((s) => s.tool === 'maestro' || s.tool === 'swipium-flows')) {
-    reasons.push('existing Maestro/.swipium flows kept — Appium code generated as an ADDITIONAL layer, not a replacement');
+    reasons.push('existing Maestro/.swipium flows kept; Appium code generated as an ADDITIONAL layer, not a replacement');
   }
 
   // ---- platform + backend selection ----
-  // Resolution order: explicit platform arg → session device platform → project profile → android.
+  // Resolution order: explicit platform arg > session device platform > project profile > android.
   const androidOk = platforms.android.level !== 'none';
   const iosOk = platforms.ios.level !== 'none';
   let primaryPlatform: 'android' | 'ios';
@@ -374,7 +374,7 @@ export function buildProjectProfile(root: string, inputs: ProfileInputs = {}): A
           ? androidOk && iosOk
             ? 'dual-platform project (Android default for faster feedback)'
             : `${primaryPlatform}-only project`
-          : 'no platform evidence — default';
+          : 'no platform evidence, default';
   reasons.push(
     `${primaryPlatform} primary (${sourceWhy}): ${backendName}` +
       (secondaryBackend ? `; ${secondaryBackend === 'appium-xcuitest' ? 'iOS XCUITest' : 'Android UiAutomator2'} secondary` : ''),
@@ -385,9 +385,9 @@ export function buildProjectProfile(root: string, inputs: ProfileInputs = {}): A
   let outputMode: OutputMode = 'swipium_scaffold';
   if (inputs.integrateIntoProject && projectE2eDir) {
     outputMode = 'project_native';
-    reasons.push(`integrateIntoProject + existing ${projectE2eDir}/ → project_native`);
+    reasons.push(`integrateIntoProject + existing ${projectE2eDir}/ > project_native`);
   } else if (inputs.integrateIntoProject) {
-    reasons.push('integrateIntoProject requested but no e2e/ dir found — writing to .swipium/automation and recommending a copy target');
+    reasons.push('integrateIntoProject requested but no e2e/ dir found; writing to .swipium/automation and recommending a copy target');
   } else {
     reasons.push('default: write under .swipium/automation/<language> (no in-project mutation)');
   }

@@ -1,4 +1,4 @@
-// qa_bundletool (hardening P0.2) — convert an .aab to an installable universal .apk via bundletool,
+// qa_bundletool (hardening P0.2): convert an .aab to an installable universal .apk via bundletool,
 // cached under .swipium/artifacts/. Runs as a job (conversion can take a minute). Returns a typed
 // AAB_NEEDS_BUNDLETOOL / AAB_BUILD_APKS_FAILED blocker when it cannot, never a generic error.
 
@@ -18,7 +18,7 @@ export function registerBundletool(server: McpServer, sessions: SessionStore): v
   server.registerTool(
     'qa_bundletool',
     {
-      title: 'Convert .aab → installable .apk',
+      title: 'Convert .aab > installable .apk',
       description:
         'Convert an .aab (not directly installable) into an installable APK with bundletool, cached under .swipium/artifacts/, before ' +
         'qa_prepare_target. Default: a universal .apk (debug keystore). connectedDevice:true builds a device-specific APK set; ' +
@@ -51,7 +51,7 @@ export function registerBundletool(server: McpServer, sessions: SessionStore): v
         aabPath = found.path;
       }
 
-      // Installing an APK set runs app code on a real device/emulator → consent-gated (build-only
+      // Installing an APK set runs app code on a real device/emulator, so it's consent-gated (build-only
       // is safe and ungated). Confirm intent BEFORE any work, regardless of whether bundletool is
       // installed. Mirrors qa_prepare_target / qa_prepare_ios_target.
       let mutationConsent: { required: boolean; consentId?: string; approved: boolean; payloadHash?: string } | undefined;
@@ -82,7 +82,7 @@ export function registerBundletool(server: McpServer, sessions: SessionStore): v
       const launcher = await findBundletool();
       if (!launcher) {
         return qaFail('AAB_NEEDS_BUNDLETOOL', {
-          what: `bundletool is not installed — cannot convert ${aabPath}`,
+          what: `bundletool is not installed, cannot convert ${aabPath}`,
           nextSteps: [
             'Install bundletool (brew install bundletool) or set $BUNDLETOOL_JAR to bundletool.jar.',
             'Or build an APK directly: qa_build { platform: "android", variant: "debug" }  (./gradlew assembleDebug).',
@@ -113,7 +113,7 @@ export function registerBundletool(server: McpServer, sessions: SessionStore): v
       void runWithSignal(sessions.abortSignal(session, job.jobId), () => runConvert(sessions, session, job, aabPath, !!force));
       return qaOk(
         { jobId: job.jobId, status: 'running', kind: job.kind, aab: aabPath, mode: 'universal', bundletool: launcher.describe },
-        `Converting ${aabPath} → universal APK as job ${job.jobId} (${launcher.describe}). Poll qa_job_status.`,
+        `Converting ${aabPath} > universal APK as job ${job.jobId} (${launcher.describe}). Poll qa_job_status.`,
       );
     },
   );
@@ -257,7 +257,7 @@ async function runConvert(sessions: SessionStore, session: Session, job: JobReco
       return;
     }
     prog.done('Universal APK ready.');
-    sessions.addWorkaround(session, `converted .aab → universal .apk via bundletool (${result.fromCache ? 'cached' : 'built'})`);
+    sessions.addWorkaround(session, `converted .aab > universal .apk via bundletool (${result.fromCache ? 'cached' : 'built'})`);
     upd({
       status: 'done',
       progress: 'done',

@@ -24,7 +24,7 @@ async function main(): Promise<void> {
   }
   // GUI MCP clients don't inherit the shell PATH: when `adb` / `emulator` is not already on
   // PATH, APPEND the Android SDK's platform-tools/ and emulator/ ($ANDROID_HOME,
-  // $ANDROID_SDK_ROOT, or the OS default SDK dir) so bare spawns still resolve — a user's own
+  // $ANDROID_SDK_ROOT, or the OS default SDK dir) so bare spawns still resolve. A user's own
   // adb on PATH is never shadowed.
   try {
     const { ensureAndroidToolsOnPath } = await import('./lib/android.js');

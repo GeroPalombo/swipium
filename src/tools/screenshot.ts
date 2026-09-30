@@ -1,4 +1,4 @@
-// qa_screenshot — capture the screen, save as a session artifact, return a resource URI
+// qa_screenshot: capture the screen, save as a session artifact, return a resource URI
 // (not inline bytes). Sensitive-mode: if a secure field is on screen, withhold
 // by default (pixels can't be redacted) unless force:true.
 
@@ -51,7 +51,7 @@ export function registerScreenshot(server: McpServer, sessions: SessionStore): v
       const hasSecure = session.lastSnapshot ? [...session.lastSnapshot.fullByRef.values()].some((n) => isSecureNode(n)) : false;
       if (hasSecure && !force) {
         return qaError({
-          what: 'Screenshot withheld — a secure field (password/OTP) is on screen',
+          what: 'Screenshot withheld: a secure field (password/OTP) is on screen',
           changedState: false,
           retrySafe: true,
           failureCode: 'CAPTURE_WITHHELD_SECURE',
@@ -71,7 +71,7 @@ export function registerScreenshot(server: McpServer, sessions: SessionStore): v
         // captured a screen with a secure field, say so explicitly so the agent can treat the
         // artifact as sensitive.
         const secureWarning = hasSecure
-          ? '\n⚠ A secure field (password/OTP) was on screen and screenshot pixels are NOT redacted — treat this artifact as sensitive.'
+          ? '\n⚠ A secure field (password/OTP) was on screen and screenshot pixels are NOT redacted. Treat this artifact as sensitive.'
           : '';
         return qaOk(
           {
@@ -85,7 +85,7 @@ export function registerScreenshot(server: McpServer, sessions: SessionStore): v
             counters: session.counters,
             ...(budgetReached ? { budgetReached } : {}),
           },
-          `Saved screenshot #${n} (${png.length} bytes) → ${uri}${secureWarning}\ncoordinate space: ${coordinateSpace.screenshot?.width}x${coordinateSpace.screenshot?.height} screenshot px, scale ${coordinateSpace.scale}, ${coordinateSpace.orientation}${budgetReached ? `\n⏹ budget reached: ${budgetReached} — call qa_report.` : ''}`,
+          `Saved screenshot #${n} (${png.length} bytes) > ${uri}${secureWarning}\ncoordinate space: ${coordinateSpace.screenshot?.width}x${coordinateSpace.screenshot?.height} screenshot px, scale ${coordinateSpace.scale}, ${coordinateSpace.orientation}${budgetReached ? `\n⏹ budget reached: ${budgetReached}, call qa_report.` : ''}`,
         );
       } catch (e) {
         return qaError({

@@ -40,14 +40,14 @@ function hasGeneratedAssets(s: Session): boolean {
 export function effectiveMode(
   s: Pick<Session, 'mode' | 'driver'> & { driverKind?: Session['driverKind'] },
 ): Session['mode'] | 'visual-only' {
-  // After a restart there is no live driver — the persisted driverKind still tells the transport.
+  // After a restart there is no live driver, but the persisted driverKind still tells the transport.
   return (s.driver?.kind ?? s.driverKind) === 'simulator' ? 'visual-only' : s.mode;
 }
 
 const SIMULATOR_UDID_RE = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i;
 
 /** Which platform the session's bound device is on. The live driver kind is authoritative
- *  (simctl/WDA ⇒ iOS); a rehydrated session has no driver, so fall back to the device id shape —
+ *  (simctl/WDA ⇒ iOS); a rehydrated session has no driver, so fall back to the device id shape:
  *  iOS simulators are UUIDs, adb serials never are. */
 export function sessionPlatform(
   s: Pick<Session, 'device' | 'driver'> & { driverKind?: Session['driverKind'] },
@@ -93,28 +93,28 @@ function latestReport(s: Session): { uri: string; createdAt: number } | undefine
 }
 
 /** Deterministic "what next" given the session's observed state (optionally goal-aware).
- *  An explicit state ladder — evaluated top-down, the first matching state wins. Every rung keys
+ *  An explicit state ladder, evaluated top-down, the first matching state wins. Every rung keys
  *  on state its recommended tool CHANGES, so following the advice always advances the ladder:
- *    1. a job is running                   → qa_job_status (poll it)
- *    2. the last qa_test_this job ended    → its nextRecommendedAction (report / explain blocker /
- *       and nothing happened since            answer the needs_input question) — but only until that
+ *    1. a job is running                   > qa_job_status (poll it)
+ *    2. the last qa_test_this job ended    > its nextRecommendedAction (report / explain blocker /
+ *       and nothing happened since            answer the needs_input question), but only until that
  *                                             action is observably done: a report newer than the job,
  *                                             an answer (stored input / resume call) newer than the job
- *                                             (→ re-run the autopilot with it), or a qa_explain_blocker
+ *                                             (> re-run the autopilot with it), or a qa_explain_blocker
  *                                             {sessionId} call newer than the job. Replaying a done
  *                                             action would loop, so the ladder moves on.
- *    3. no device bound                    → qa_test_this  (orchestrate setup)
- *    4. device but no app                  → qa_prepare_target (Android) / qa_prepare_ios_target (iOS sim)
- *    5. no smoke yet and nothing recorded  → qa_smoke (records the smoke milestone)
- *    6. findings, no report since          → qa_report
- *    7. clean run, actions, no assets yet  → qa_generate (make the run durable)
- *    8. no report since the last activity  → qa_report (wrap up)
- *    9. a fresh report exists              → qa_get_artifact (read it — done; TERMINAL: the only
+ *    3. no device bound                    > qa_test_this  (orchestrate setup)
+ *    4. device but no app                  > qa_prepare_target (Android) / qa_prepare_ios_target (iOS sim)
+ *    5. no smoke yet and nothing recorded  > qa_smoke (records the smoke milestone)
+ *    6. findings, no report since          > qa_report
+ *    7. clean run, actions, no assets yet  > qa_generate (make the run durable)
+ *    8. no report since the last activity  > qa_report (wrap up)
+ *    9. a fresh report exists              > qa_get_artifact (read it, done; TERMINAL: the only
  *                                             rung whose advice changes nothing, by design)
  *  Exported for unit tests (test/nextBestAction.test.ts, test/orchStatusLadder.test.ts). */
 export function nextBestAction(s: Session, goal?: string): { tool: string; why: string; args: Record<string, unknown> } {
   const sid = s.id;
-  // 1. A job is still running — poll it before anything else.
+  // 1. A job is still running: poll it before anything else.
   const lastJob = [...s.jobs.values()].sort((a, b) => b.startedAt - a.startedAt)[0];
   if (lastJob?.status === 'running')
     return {
@@ -137,15 +137,15 @@ export function nextBestAction(s: Session, goal?: string): { tool: string; why: 
     if (blocked && !explained)
       return {
         tool: 'qa_explain_blocker',
-        why: `last job ${lastJob.jobId} ended ${result.state} (${result.failureCode ?? 'UNKNOWN'}) — explain the blocker and relay the fix`,
+        why: `last job ${lastJob.jobId} ended ${result.state} (${result.failureCode ?? 'UNKNOWN'}): explain the blocker and relay the fix`,
         args: { failureCode: result.failureCode ?? 'UNKNOWN', sessionId: sid },
       };
     // The question was answered (qa_continue_from_blocker stored the input): resume the autopilot
-    // with it — starting that job is the state change; replaying the resume call would loop.
+    // with it. Starting that job is the state change; replaying the resume call would loop.
     if (answered)
       return {
         tool: 'qa_test_this',
-        why: `the needs_input question of job ${lastJob.jobId} was answered — re-run the autopilot with the answer`,
+        why: `the needs_input question of job ${lastJob.jobId} was answered; re-run the autopilot with the answer`,
         args: { mode: 'execute', ...(recallTestThisIntent(s) as Record<string, unknown>), sessionId: sid, stopOnNeedsInput: false },
       };
     // A qa_report recommendation is satisfied by any report newer than the job.
@@ -155,19 +155,19 @@ export function nextBestAction(s: Session, goal?: string): { tool: string; why: 
         tool: nra.tool,
         why:
           result.state === 'needs_input'
-            ? `last job ${lastJob.jobId} is waiting on one question — ${nra.why ?? 'answer it and resume'}`
-            : `last job ${lastJob.jobId} ${result.state} — ${nra.why ?? 'follow its recommendation'}; no further calls needed after that`,
+            ? `last job ${lastJob.jobId} is waiting on one question: ${nra.why ?? 'answer it and resume'}`
+            : `last job ${lastJob.jobId} ${result.state}: ${nra.why ?? 'follow its recommendation'}; no further calls needed after that`,
         args: { ...(nra.args ?? {}) },
       };
   }
-  // 3. No device bound — orchestrate setup end-to-end.
+  // 3. No device bound: orchestrate setup end-to-end.
   if (!s.device)
     return {
       tool: 'qa_test_this',
-      why: goal ? `no device/app prepared yet — run the autopilot for goal "${goal}"` : 'no device/app prepared yet — orchestrate setup',
+      why: goal ? `no device/app prepared yet, run the autopilot for goal "${goal}"` : 'no device/app prepared yet, orchestrate setup',
       args: { sessionId: sid, mode: 'execute', ...(goal ? { goal } : {}) },
     };
-  // 4. Device bound but no app launched — route to the platform's prepare tool (H9: after
+  // 4. Device bound but no app launched: route to the platform's prepare tool (H9: after
   //    `qa_ios boot` the bound device is a simulator; the Android-only qa_prepare_target would fail).
   if (!s.appId)
     return sessionPlatform(s) === 'ios'
@@ -179,17 +179,17 @@ export function nextBestAction(s: Session, goal?: string): { tool: string; why: 
       : { tool: 'qa_prepare_target', why: 'device bound but no app launched', args: { sessionId: sid } };
   // 5. App is up but nothing has been exercised (a smoke pass is a milestone, not an action count).
   if (!smokeRan(s) && s.recordedActions.length === 0)
-    return { tool: 'qa_smoke', why: 'app is up but nothing exercised yet — run a smoke pass', args: { sessionId: sid } };
+    return { tool: 'qa_smoke', why: 'app is up but nothing exercised yet, run a smoke pass', args: { sessionId: sid } };
   const report = latestReport(s);
   const reportFresh = !!report && report.createdAt >= lastActivityAt(s);
-  // 6. Findings recorded — reporting them beats generating more assets.
+  // 6. Findings recorded: reporting them beats generating more assets.
   if (s.findings.length > 0 && !reportFresh)
-    return { tool: 'qa_report', why: `${s.findings.length} finding(s) recorded — summarize with evidence`, args: { sessionId: sid } };
-  // 7. Clean run with recorded actions but no durable asset yet — make the run reusable.
+    return { tool: 'qa_report', why: `${s.findings.length} finding(s) recorded, summarize with evidence`, args: { sessionId: sid } };
+  // 7. Clean run with recorded actions but no durable asset yet: make the run reusable.
   if (s.findings.length === 0 && s.recordedActions.length > 0 && !hasGeneratedAssets(s))
     return {
       tool: 'qa_generate',
-      why: 'actions recorded — turn the run into a durable POM suite',
+      why: 'actions recorded, turn the run into a durable POM suite',
       args: { sessionId: sid, target: 'suite' },
     };
   // 8. Wrap up with a report covering everything done so far.
@@ -197,20 +197,20 @@ export function nextBestAction(s: Session, goal?: string): { tool: string; why: 
     return {
       tool: 'qa_report',
       why: hasGeneratedAssets(s)
-        ? 'clean run and test assets already generated — wrap up and report'
-        : 'smoke done — wrap up and report what was covered',
+        ? 'clean run and test assets already generated, wrap up and report'
+        : 'smoke done, wrap up and report what was covered',
       args: { sessionId: sid },
     };
-  // 9. Terminal: a report newer than any activity exists — read it; nothing else to do.
+  // 9. Terminal: a report newer than any activity exists. Read it; nothing else to do.
   return {
     tool: 'qa_get_artifact',
-    why: 'the run is reported — read the report; no further Swipium calls are needed',
+    why: 'the run is reported. Read the report; no further Swipium calls are needed',
     args: { uri: report!.uri },
   };
 }
 
 /** Server `instructions` (MCP InitializeResult.instructions): the operating manual clients may put
- *  in the model's system prompt. Kept short on purpose — per-tool detail lives in tool descriptions
+ *  in the model's system prompt. Kept short on purpose; per-tool detail lives in tool descriptions
  *  and docs/tools.md; qa_status (no sessionId) returns the same rules plus capability groups. */
 export const SERVER_INSTRUCTIONS = [
   'Swipium runs mobile QA on local Android Emulators and iOS Simulators (physical devices are out of scope).',
@@ -267,7 +267,7 @@ export function orientation(goal?: TestGoal) {
     capabilityGroups: CAPABILITY_GROUPS.map((g) => ({ group: g.group, purpose: g.purpose, tools: [...g.tools] })),
     nextBestAction: {
       tool: 'qa_test_this',
-      why: goal ? `no session yet — run the autopilot for goal "${goal}"` : 'no session yet — start the autopilot',
+      why: goal ? `no session yet, run the autopilot for goal "${goal}"` : 'no session yet, start the autopilot',
       args: { mode: 'execute', ...(goal ? { goal } : {}) },
     },
   };
@@ -280,9 +280,9 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
     {
       title: 'Status, orientation, and next step',
       description:
-        'Without sessionId: first-call orientation — how to drive Swipium (first call, polling, stop rules) plus the tool groups. ' +
+        'Without sessionId: first-call orientation: how to drive Swipium (first call, polling, stop rules) plus the tool groups. ' +
         'With sessionId: compact session state (device, app, budget left, counters, findings, last job, workarounds, readiness) and ' +
-        'nextBestAction — the single next tool to call, with args and why. Pass goal to bias the recommendation. Cheap; call between steps.',
+        'nextBestAction: the single next tool to call, with args and why. Pass goal to bias the recommendation. Cheap; call between steps.',
       inputSchema: {
         sessionId: z.string().optional().describe('Omit for orientation; pass to get that session state.'),
         goal: z
@@ -299,7 +299,7 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
           `1. ${o.firstCall.tool} ${JSON.stringify(o.firstCall.args)}\n` +
           `2. ${o.polling.tool} {sessionId, jobId, waitMs} until status ≠ running; result.state ∈ {${o.polling.terminalStates.join(', ')}}\n` +
           `3. ${o.report.tool} { uri: reportUri }, then stop\n` +
-          'requiresConsent → show it to the user; needs_input → ask the one returned question; otherwise continue.\n' +
+          'requiresConsent > show it to the user; needs_input > ask the one returned question; otherwise continue.\n' +
           o.capabilityGroups.map((g) => `[${g.group}] ${g.tools.join(', ')}`).join('\n');
         return qaOk(o, summary);
       }
@@ -338,14 +338,14 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
       };
       const progLine = progressLine(lastJob?.progressDetail);
       const summary =
-        `session ${s.id} — ${s.device ?? 'no device'}${s.appId ? ` / ${s.appId}` : ''} (mode=${status.mode})\n` +
+        `session ${s.id}: ${s.device ?? 'no device'}${s.appId ? ` / ${s.appId}` : ''} (mode=${status.mode})\n` +
         `budget left: ${remaining.minutes}m / ${remaining.actions} actions / ${remaining.screenshots} shots\n` +
         `recorded=${s.recordedActions.length} findings=${s.findings.length} notes=${s.notes.length}` +
         (lastJob
           ? `\nlast job: ${lastJob.kind} [${lastJob.status}]${progLine ? `\n  ${progLine}` : lastJob.progress ? ` ${lastJob.progress}` : ''}`
           : '') +
         (s.workarounds.length ? `\nworkarounds: ${s.workarounds.length}` : '') +
-        `\n→ next: ${next.tool} ${JSON.stringify(next.args)} — ${next.why}`;
+        `\nnext: ${next.tool} ${JSON.stringify(next.args)} (${next.why})`;
       return qaOk(status, summary);
     },
   );
@@ -402,7 +402,7 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
         context: context ?? null,
       };
       const summary =
-        `${code} — ${info.summary}\n` +
+        `${code}: ${info.summary}\n` +
         `owner: ${ownerText[owner]}; retry-safe: ${info.retrySafe}; Swipium can fix: ${isSelfFixable(code)}\n` +
         `fix: ${info.recovery}`;
       return qaOk(explanation, summary);
@@ -425,7 +425,7 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
         values: z
           .record(z.union([z.string(), z.boolean()]))
           .optional()
-          .describe('Field name → value. Secret fields are redacted on receipt.'),
+          .describe('Field name > value. Secret fields are redacted on receipt.'),
         secretFields: z.array(z.string()).optional().describe('Secret keys (default: password/otp/token-like names).'),
       },
     },
@@ -452,13 +452,13 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
           const varName = inputVarName(k);
           sessions.setInput(s, varName, v, secret, `needs_input:${kind}`);
           storedVars.push(varName);
-          accepted.push(`${k} → \${${varName}}${secret ? ' (redacted)' : ''}`);
+          accepted.push(`${k} > \${${varName}}${secret ? ' (redacted)' : ''}`);
         } else {
           choices[k] = v;
         }
       }
       // H1: map non-secret choices onto args the re-invoked tool ACTUALLY accepts; anything it
-      // doesn't consume is reported back as `ignored` (with how to apply it) — never silently dropped.
+      // doesn't consume is reported back as `ignored` (with how to apply it), never silently dropped.
       const mapped = mapBlockerChoices(kind, choices, s.root);
       if (mapped.error) {
         sessions.persist(s);
@@ -475,7 +475,7 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
       for (const [k, v] of Object.entries(choices)) if (!mapped.ignored.some((i) => i.field === k)) accepted.push(`${k}=${v}`);
       if (mapped.projectRoot) {
         // qa_test_this resolves an existing session's root from the SESSION (projectRoot is only
-        // read when creating one), so adopt the chosen app directory as the effective root — the
+        // read when creating one), so adopt the chosen app directory as the effective root; the
         // same thing the single-candidate discovery path does.
         s.root = mapped.projectRoot;
         s.chosenTarget = mapped.projectRoot; // qa_test_this skips the monorepo question for this root
@@ -485,7 +485,7 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
       sessions.persist(s);
       sessions.addWorkaround(s, `resumed from "${kind}" blocker with: ${accepted.join(', ') || '(no values)'}`);
       const reInvokeArgs: Record<string, unknown> = { sessionId: s.id, ...mapped.args };
-      // Replay the ORIGINAL qa_test_this intent (goal/goalText/flags) — a resume that drops it
+      // Replay the ORIGINAL qa_test_this intent (goal/goalText/flags). A resume that drops it
       // silently downgrades e.g. release_gate to the default smoke.
       const intent = recallTestThisIntent(s) as Record<string, unknown>;
 
@@ -500,22 +500,22 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
       ]);
       // Every resume is a DIRECTLY executable call. Credentials/OTP are now registered as secure
       // inputs, so re-invoking the autopilot drives the authenticated flows with them (the macro
-      // tool resolves the already-prepared session/device and continues) — no bare qa_act guess.
+      // tool resolves the already-prepared session/device and continues), not a bare qa_act guess.
       const resume = declined
         ? {
             tool: 'qa_test_this',
             why:
               kind === 'credentials'
-                ? 'login marked out of scope for this session — continue with pre-login coverage only (authenticated flows are reported as blocked, not failed)'
-                : 'verification marked out of scope — flows behind it are skipped and reported as blocked',
+                ? 'login marked out of scope for this session. Continue with pre-login coverage only (authenticated flows are reported as blocked, not failed)'
+                : 'verification marked out of scope; flows behind it are skipped and reported as blocked',
             args: { mode: 'execute', ...intent, sessionId: s.id, stopOnNeedsInput: false },
           }
         : kind === 'credentials' || kind === 'otp_or_manual_verification'
           ? {
               tool: 'qa_test_this',
               why: storedVars.length
-                ? 'credentials registered (redacted) — re-run the autopilot to drive authenticated flows with them'
-                : 'no credentials were provided — re-run the autopilot (pre-login coverage)',
+                ? 'credentials registered (redacted). Re-run the autopilot to drive authenticated flows with them'
+                : 'no credentials were provided. Re-run the autopilot (pre-login coverage)',
               args: { mode: 'execute', ...intent, sessionId: s.id, stopOnNeedsInput: false },
             }
           : kind === 'destructive_exploration_approval' && mapped.approveDestructive
@@ -523,7 +523,7 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
                 // qa_test_this has no destructive switch; the supported path is qa_explore's
                 // candidate-bound approval: discover candidates first, then approve one exactly.
                 tool: 'qa_explore',
-                why: 'destructive exploration approved — discover exact destructive candidates first (dry run), then approve one with safeMode:"approved_destructive_candidate"',
+                why: 'destructive exploration approved. Discover exact destructive candidates first (dry run), then approve one with safeMode:"approved_destructive_candidate"',
                 args: { sessionId: s.id, safeMode: 'dry_run_destructive' },
               }
             : reInvokeKinds.has(kind)
@@ -545,22 +545,22 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
           nextAction: resume,
           secretsRegistered: accepted.filter((a) => a.includes('redacted')).length,
         },
-        (declined ? 'Login marked out of scope for this session — testing continues pre-login only.\n' : '') +
+        (declined ? 'Login marked out of scope for this session. Testing continues pre-login only.\n' : '') +
           `Accepted ${accepted.length} field(s)${accepted.some((a) => a.includes('redacted')) ? ' (secrets redacted)' : ''}.` +
           (storedVars.length ? `\nstored for replay: ${storedVars.join(', ')}` : '') +
           (mapped.ignored.length ? `\nnot applied: ${mapped.ignored.map((i) => `${i.field} (${i.howToApply})`).join('; ')}` : '') +
-          `\n→ next: ${resume.tool} ${JSON.stringify(resume.args)} — ${resume.why}`,
+          `\nnext: ${resume.tool} ${JSON.stringify(resume.args)} (${resume.why})`,
       );
     },
   );
 }
 
 /** The qa_test_this input keys a blocker resume may set (mirrors its zod schema in
- *  src/tools/testThis.ts — test/blockerResume.test.ts asserts they stay in lockstep). */
+ *  src/tools/testThis.ts; test/blockerResume.test.ts asserts they stay in lockstep). */
 export const TEST_THIS_RESUME_KEYS = ['projectRoot', 'platform', 'device', 'allowOutsideRoot'] as const;
 
 export interface BlockerChoiceMapping {
-  /** Args for the re-invoked tool — only keys in TEST_THIS_RESUME_KEYS. */
+  /** Args for the re-invoked tool (only keys in TEST_THIS_RESUME_KEYS). */
   args: Record<string, unknown>;
   /** Choices the re-invoked tool does not consume, with how the user can apply them instead. */
   ignored: Array<{ field: string; value: string | boolean; howToApply: string }>;
@@ -603,7 +603,7 @@ export function mapBlockerChoices(kind: string, choices: Record<string, string |
         break;
       case 'target': {
         if (kind === 'monorepo_target') {
-          // The monorepo question offers app DIRECTORIES — this is the project root, not a device.
+          // The monorepo question offers app DIRECTORIES. This is the project root, not a device.
           if (typeof v !== 'string' || !v.trim()) {
             out.error = 'monorepo target must be an app directory path';
             break;
@@ -630,7 +630,7 @@ export function mapBlockerChoices(kind: string, choices: Record<string, string |
           const realRoot = realOrSelf(sessionRoot);
           const realTarget = realOrSelf(abs);
           if (realTarget !== realRoot && !realTarget.startsWith(realRoot.endsWith(sep) ? realRoot : realRoot + sep)) {
-            out.error = `monorepo target "${v}" (${realTarget}) is outside the project root ${realRoot} — pick one of the offered app directories`;
+            out.error = `monorepo target "${v}" (${realTarget}) is outside the project root ${realRoot}; pick one of the offered app directories`;
             break;
           }
           out.projectRoot = abs;
@@ -650,21 +650,21 @@ export function mapBlockerChoices(kind: string, choices: Record<string, string |
         ignore(
           k,
           v,
-          'qa_test_this does not take a signing team — set ios.wda.developmentTeam in .swipium/config.json (or DEVELOPMENT_TEAM in the server environment), then resume',
+          'qa_test_this does not take a signing team. Set ios.wda.developmentTeam in .swipium/config.json (or DEVELOPMENT_TEAM in the server environment), then resume',
         );
         break;
       case 'provisioningProfile':
         ignore(
           k,
           v,
-          'Swipium builds for the simulator and does not consume a provisioning profile — configure it in Xcode if your scheme needs one',
+          'Swipium builds for the simulator and does not consume a provisioning profile. Configure it in Xcode if your scheme needs one',
         );
         break;
       case 'serviceEndpoint':
         ignore(
           k,
           v,
-          'Swipium cannot route the app to a service endpoint — configure it in the app build/env (e.g. a staging config), then resume',
+          'Swipium cannot route the app to a service endpoint. Configure it in the app build/env (e.g. a staging config), then resume',
         );
         break;
       default:

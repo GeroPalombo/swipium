@@ -1,15 +1,15 @@
 // Package/dependency patch computation. Pure: computes WHAT would need to change
 // in the user's package.json / requirements to run a project-native suite, WITHOUT mutating anything.
 // Per the non-goals, Swipium never silently installs deps or edits package.json/pyproject.toml
-// outside .swipium — this just describes the diff so the tool can request explicit consent.
+// outside .swipium. This just describes the diff so the tool can request explicit consent.
 
 import type { AutomationProjectProfile } from './projectProfile.js';
 
 export interface DependencyPatch {
   manifest: 'package.json' | 'requirements.txt' | 'pyproject.toml';
-  /** Dependencies to add (name → version range). */
+  /** Dependencies to add (name > version range). */
   addDevDependencies: Record<string, string>;
-  /** Scripts to add (name → command). */
+  /** Scripts to add (name > command). */
   addScripts: Record<string, string>;
   /** Plain requirement lines (Python). */
   addRequirements: string[];

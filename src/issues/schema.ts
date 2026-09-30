@@ -3,7 +3,7 @@
 //
 // The ledger is Swipium's mobile-QA memory: an append-only event log (`.swipium/issues-log.jsonl`)
 // plus a derived index (`.swipium/issues/index.json`). Events are compact and never hold full
-// screenshots / logs / stack traces / report JSON — only references to artifacts (Developer Notes).
+// screenshots / logs / stack traces / report JSON. Only references to artifacts (Developer Notes).
 // Every lifecycle mutation is append-only so a developer can audit WHY an issue is currently
 // considered fixed / reopened / suppressed.
 //
@@ -53,7 +53,7 @@ export interface SourceRevision {
   artifactHash?: string;
 }
 
-/** A reference back to the run that produced an event (compact — no inline report JSON). */
+/** A reference back to the run that produced an event (compact, no inline report JSON). */
 export interface IssueRunRef {
   sessionId?: string;
   reportPath?: string;
@@ -70,7 +70,7 @@ export interface IssueObservation {
   screenId?: string;
   route?: string;
   workflow?: string;
-  visibleText?: string; // short, normalized — redact before storing long text
+  visibleText?: string; // short, normalized; redact before storing long text
   visibleTextHash?: string;
   exception?: { type?: string; message?: string; topFrame?: string };
   http?: { method?: string; routeTemplate?: string; status?: number };
@@ -185,7 +185,7 @@ export interface IssueRecord {
   suppressedUntil?: string;
   suppressionReason?: string;
   suppressionScope?: SuppressionScope;
-  /** Lane the issue was in when it was suppressed — restored on unsuppress / suppression expiry. */
+  /** Lane the issue was in when it was suppressed. Restored on unsuppress / suppression expiry. */
   stateBeforeSuppression?: IssueState;
   appMapRefs?: AppMapRef[];
   testRefs?: TestRef[];

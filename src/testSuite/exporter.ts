@@ -1,6 +1,6 @@
 // Exporters for the persistent suite. PURE: serialize the
 // canonical suite to Markdown (review-ready), a per-functionality YAML directory, JSON, and a
-// JUnit-like results doc. TestRail CSV / Jira-Xray are explicitly deferred (Non-Goals) — the shapes
+// JUnit-like results doc. TestRail CSV / Jira-Xray are explicitly deferred (Non-Goals); the shapes
 // here are the v1 surface other tools can build on.
 
 import { stringify } from 'yaml';
@@ -50,13 +50,13 @@ export function exportMarkdown(suite: TestSuiteFile): string {
         '',
         '**Steps:**',
         ...(c.steps.length
-          ? c.steps.map((s) => `${s.index}. ${s.action}${s.target ? ` → ${s.target}` : ''}${s.data ? ` [${s.data}]` : ''}`)
+          ? c.steps.map((s) => `${s.index}. ${s.action}${s.target ? ` > ${s.target}` : ''}${s.data ? ` [${s.data}]` : ''}`)
           : ['- _none_']),
         '',
         '**Expected:**',
         ...c.expectedResult.map((e) => `- ${e}`),
         '',
-        `**Actual:** ${c.actualResult.status} — ${c.actualResult.summary}`,
+        `**Actual:** ${c.actualResult.status}: ${c.actualResult.summary}`,
         ...(c.evidence.length ? ['', `**Evidence:** ${c.evidence.map((e) => e.uri).join(', ')}`] : []),
         ...(c.ticketRefs.length ? [`**Tickets:** ${c.ticketRefs.join(', ')}`] : []),
         ...(c.requirementRefs.length ? [`**Requirements:** ${c.requirementRefs.join(', ')}`] : []),

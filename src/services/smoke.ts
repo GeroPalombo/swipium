@@ -1,4 +1,4 @@
-// Smoke service (hardening P0.1) — the server-side smoke loop, extracted from the qa_smoke tool so
+// Smoke service (hardening P0.1): the server-side smoke loop, extracted from the qa_smoke tool so
 // BOTH the tool and qa_test_this execute mode run the exact same path (no MCP-over-transport). It
 // launches the app, runs the deterministic baseline (snapshot quality + health + evidence shot),
 // then runs every saved flow, recording a structured qa_note per workflow.
@@ -51,7 +51,7 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
   const doLaunch = opts.launch ?? !!session.appId;
   const baseline: Record<string, unknown> = {};
 
-  // ---- baseline: launch → snapshot quality → health → evidence screenshot ----
+  // ---- baseline: launch > snapshot quality > health > evidence screenshot ----
   try {
     if (doLaunch && session.appId) {
       await d.launchApp(session.appId);
@@ -68,13 +68,13 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
         };
         quality = parsed.quality.verdict;
       } catch {
-        /* visual-only screen — health + screenshot still run */
+        /* visual-only screen, health + screenshot still run */
       }
     }
     const health = await checkHealth(d, session.appId);
     await recordHealthFindings(sessions, session, health.findings, d, health.foreground);
     let shotUri: string | undefined;
-    // Sensitive mode never persists screenshots — the baseline note says so instead.
+    // Sensitive mode never persists screenshots. The baseline note says so instead.
     const screenshotSkipped = session.sensitive ? 'screenshot skipped: sensitive mode' : undefined;
     if (!screenshotSkipped) {
       try {

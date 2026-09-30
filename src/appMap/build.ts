@@ -25,7 +25,7 @@ export type BuildMode = 'static_only' | 'runtime_merge' | 'full';
 
 export interface BuildOptions {
   mode: BuildMode;
-  at: string; // ISO timestamp (caller supplies — keeps this testable/deterministic)
+  at: string; // ISO timestamp (caller supplies it, keeps this testable/deterministic)
   includeCodeIndex?: boolean; // default true
   forceRescan?: boolean; // default false
   sessionId?: string;
@@ -37,7 +37,7 @@ export interface BuildOptions {
     artifactHash?: string | null;
     environment?: string | null;
   };
-  persist?: boolean; // default true — write to disk
+  persist?: boolean; // default true: write to disk
 }
 
 export interface BuildResult {
@@ -83,7 +83,7 @@ function projectIdentity(root: string, fw: Framework, packageName: string | null
 }
 
 function recomputeCoverage(map: AppKnowledgeMap): void {
-  // Recompute unvisited static screens here so it is correct after EVERY build path — including a
+  // Recompute unvisited static screens here so it is correct after EVERY build path, including a
   // static-only scan where mergeRuntimeGraph never runs.
   map.runtimeTopology.unvisitedStaticScreens = computeUnvisitedStaticScreens(map);
   const staticScreens = map.staticTopology.screens.length;
@@ -106,8 +106,8 @@ function recomputeCoverage(map: AppKnowledgeMap): void {
   };
 }
 
-/** Everything the (slow) static scan produces — computed OUTSIDE the app-map lock (H8) so the
- *  locked critical section is only load → merge → save and can never outlive the stale threshold. */
+/** Everything the (slow) static scan produces, computed OUTSIDE the app-map lock (H8) so the
+ *  locked critical section is only load > merge > save and can never outlive the stale threshold. */
 interface StaticScanBundle {
   scan: ReturnType<typeof staticScan>;
   features: ReturnType<typeof inferFeatures>;
@@ -131,7 +131,7 @@ function computeStaticScan(root: string, at: string): StaticScanBundle {
 }
 
 /** Replace the static topology + static-derived facts; preserve runtime feature enrichment.
- *  Pure over (map, bundle) — cheap enough to run inside the lock. */
+ *  Pure over (map, bundle), cheap enough to run inside the lock. */
 function applyStaticScan(map: AppKnowledgeMap, bundle: StaticScanBundle, at: string): CodeIndex | null {
   const { scan } = bundle;
   map.staticTopology = scan.staticTopology;
@@ -189,9 +189,9 @@ export const buildHooks: { onStaticScan?: (root: string) => void } = {};
 /** Build (or incrementally update) the app map. Filesystem-bound but never throws on scan errors. */
 export function buildAppMap(root: string, opts: BuildOptions): BuildResult {
   // H8: the static scan can take many seconds on a large repo, and the lock is synchronous (no
-  // heartbeat can fire while a sync fn runs) — holding it across the scan let a concurrent builder
+  // heartbeat can fire while a sync fn runs), and holding it across the scan let a concurrent builder
   // judge it stale and steal it. So the scan runs FIRST, lock-free (it reads sources, not the map),
-  // and the lock covers only load → merge → save. The whole cycle still holds the lock end-to-end,
+  // and the lock covers only load > merge > save. The whole cycle still holds the lock end-to-end,
   // so two builders can never load the same base map and clobber each other's merge.
   const willRescan = opts.mode === 'static_only' || opts.mode === 'full' || opts.forceRescan === true || !existsSync(appMapPath(root));
   const bundle = willRescan ? runStaticScan(root, opts.at) : null;
@@ -258,7 +258,7 @@ function buildAppMapLocked(root: string, opts: BuildOptions, prescanned: StaticS
 
   recomputeCoverage(map);
   recomputeConfidence(map);
-  // Derived issue summaries from the durable issue ledger. Best-effort — the issue
+  // Derived issue summaries from the durable issue ledger. Best-effort: the issue
   // ledger is an additive context layer and must never break an app-map build.
   try {
     applyIssueSummariesToAppMap(map, root, opts.at);
@@ -279,7 +279,7 @@ function buildAppMapLocked(root: string, opts: BuildOptions, prescanned: StaticS
   return { map, codeIndex, mergeResult, firstRunApply, migration: loaded.migration, save, rescanned };
 }
 
-/** Read just the coverage counts from an existing map (zeros if none) — for computing a delta. */
+/** Read just the coverage counts from an existing map (zeros if none), for computing a delta. */
 export function quickCoverage(root: string, at: string): { overallPercent: number; runtimeScreens: number; staticScreens: number } {
   const fw = detectFramework(root);
   const loaded = loadAppMap(root, projectIdentity(root, fw, null), at);

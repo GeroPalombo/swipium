@@ -64,7 +64,7 @@ function liveManagedWda(sessionId: string): { pid: number; adopted: boolean } | 
 }
 
 /** The managed-WDA signature of this session's latest successful `qa_wda start` (from the
- *  mutation ledger, which survives a server restart) — lets `qa_wda stop` find the xcodebuild
+ *  mutation ledger, which survives a server restart). Lets `qa_wda stop` find the xcodebuild
  *  even when its process-registry entry was lost. Exported for tests. */
 export function lastManagedWdaStart(session: Pick<Session, 'mutations'>): ManagedWdaSignature | undefined {
   const m = [...(session.mutations ?? [])]
@@ -201,7 +201,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
       // `device` is canonical (as on every other tool); `udid` is the deprecated alias.
       if (device && udidAlias && device !== udidAlias)
         return qaError({
-          what: `Conflicting device "${device}" and udid "${udidAlias}" — udid is a deprecated alias of device`,
+          what: `Conflicting device "${device}" and udid "${udidAlias}"; udid is a deprecated alias of device`,
           changedState: false,
           retrySafe: true,
           failureCode: 'INVALID_ARGUMENT',
@@ -237,7 +237,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
             risk: 'medium',
             exactCommand: `connect to WebDriverAgent at ${url}`,
             affects: { url },
-            explain: `Use non-loopback WebDriverAgent URL ${url}${webDriverAgentUrl ? '' : ' (configured by the repository (.swipium/config.json) — unreviewed)'}? WDA is an automation server that receives app screens and typed text; only approve this on a trusted, isolated network.`,
+            explain: `Use non-loopback WebDriverAgent URL ${url}${webDriverAgentUrl ? '' : ' (configured by the repository (.swipium/config.json), unreviewed)'}? WDA is an automation server that receives app screens and typed text; only approve this on a trusted, isolated network.`,
           });
         }
       }
@@ -245,13 +245,13 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
       const resolvePath = (p: string | undefined) => (p ? (isAbsolute(p) ? p : join(session.root, p)) : undefined);
       const explicitProjectPath = resolvePath(wdaProjectPath);
       // Managed build/start without wdaProjectPath: use a user-installed Appium WebDriverAgent
-      // (~/.appium/…/appium-webdriveragent, global npm) — reported as wdaProjectSource.
+      // (~/.appium/…/appium-webdriveragent, global npm), reported as wdaProjectSource.
       const discoveredAppiumProject =
         !explicitProjectPath && (action === 'build' || action === 'start') ? discoverAppiumWdaProjects()[0] : undefined;
       const projectPath = explicitProjectPath ?? discoveredAppiumProject;
       const wdaProjectSource = explicitProjectPath ? 'argument' : discoveredAppiumProject ? 'appium-discovered' : null;
       const ddPath = resolvePath(derivedDataPath) ?? configured.derivedDataPath;
-      // What this call actually uses (args over config) — echoed as `wdaConfig` so a passed
+      // What this call actually uses (args over config), echoed as `wdaConfig` so a passed
       // derivedDataPath / webDriverAgentUrl is not misreported as the configured default.
       const effectiveConfig = { ...configured, url, derivedDataPath: ddPath };
       const targetUdid = udid ?? session.device;
@@ -542,7 +542,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
               derivedDataPath: ddPath,
               wdaBuildProduct,
             },
-            `WDA build completed (${wdaProjectSource === 'appium-discovered' ? 'auto-discovered Appium WDA ' : ''}${projectPath}) → ${logUri}`,
+            `WDA build completed (${wdaProjectSource === 'appium-discovered' ? 'auto-discovered Appium WDA ' : ''}${projectPath}) > ${logUri}`,
           );
         }
         const logUri = sessions.saveArtifact(session, 'wda', `wda-start-${Date.now()}.log`, '', 'text/plain', 'WDA start log');
@@ -637,7 +637,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
             wda: waited.status,
             startupWaitMs: waited.durationMs,
           },
-          `started managed WDA pid ${child.pid ?? 'unknown'} and /status is ready → ${logUri}\nNext: qa_wda attach.`,
+          `started managed WDA pid ${child.pid ?? 'unknown'} and /status is ready > ${logUri}\nNext: qa_wda attach.`,
         );
       }
 

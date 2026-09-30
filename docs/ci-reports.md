@@ -37,7 +37,7 @@ swipium report --format <junit|sarif|github-summary|markdown|json>
 - **`--session <id>`** picks one session. **`--report <file>`** renders a report JSON you copied
   yourself, for example from a downloaded artifact.
 - **Output.** The file goes to stdout, or to `--out` (parent directories are created). The verdict
-  line `Release gate: PASS|BLOCK — <reason>` always goes to stderr.
+  line `Release gate: PASS|BLOCK: <reason>` always goes to stderr.
 - **Exit codes:**
 
   | Code | Meaning |

@@ -9,8 +9,8 @@
 // URIs are relative to the REPOSITORY root (%SRCROOT% = the checkout root in CI), not the session
 // root: in a monorepo (repo/apps/mobile) an anchor must read `apps/mobile/app.json`, or code
 // scanning points at a nonexistent file. The repository root is found by walking up to the
-// nearest `.git` entry (directory, or file for worktrees/submodules) — no git subprocess
-// (git is outside Swipium's spawn scope, see lib/spawn.ts assertNoGitScope). Not a git checkout →
+// nearest `.git` entry (directory, or file for worktrees/submodules), with no git subprocess
+// (git is outside Swipium's spawn scope, see lib/spawn.ts assertNoGitScope). Not a git checkout >
 // the session root is used as before.
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
@@ -22,9 +22,9 @@ import type { ReportData } from './export.js';
 export interface SarifSourceMap {
   /** Repo-relative (POSIX) path of the fallback anchor file. */
   defaultUri: string;
-  /** Lower-cased screen id/name/route → repo-relative source file. */
+  /** Lower-cased screen id/name/route > repo-relative source file. */
   byScreen?: Record<string, string>;
-  /** Lower-cased workflow / feature title → repo-relative source file. */
+  /** Lower-cased workflow / feature title > repo-relative source file. */
   byWorkflow?: Record<string, string>;
 }
 

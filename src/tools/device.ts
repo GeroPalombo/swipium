@@ -1,4 +1,4 @@
-// qa_device_info + qa_orientation — device-parity introspection and rotation,
+// qa_device_info + qa_orientation: device-parity introspection and rotation,
 // without raw adb. Read-only info needs no consent; orientation is a logged, non-destructive
 // environment change.
 
@@ -46,7 +46,7 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
         );
       }
       if (driver.kind === 'simulator' || driver.kind === 'wda') {
-        // H9: the getprop/settings helpers below are adb-only — on an iOS simulator they would
+        // H9: the getprop/settings helpers below are adb-only. On an iOS simulator they would
         // return ok:true with every field null. Report what simctl actually knows instead.
         const sims = await listSimulators().catch(() => [] as Simulator[]);
         const sim = sims.find((x) => x.udid === serial);
@@ -129,13 +129,13 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
         );
       }
       if (driver.kind !== 'direct') {
-        // H9: setOrientation drives adb `settings put` — on iOS it would fail or no-op.
+        // H9: setOrientation drives adb `settings put`, so on iOS it would fail or no-op.
         return qaError({
           what: 'Setting orientation is only supported on the Android emulator backend',
           changedState: false,
           retrySafe: false,
           failureCode: 'BACKEND_UNSUPPORTED',
-          nextSteps: ['On an iOS simulator, rotate from the Simulator menu (Device → Rotate Left/Right) or via your WDA client.'],
+          nextSteps: ['On an iOS simulator, rotate from the Simulator menu (Device > Rotate Left/Right) or via your WDA client.'],
         });
       }
       try {
@@ -149,10 +149,10 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
           nextSteps: ['Confirm the device is online.'],
         });
       }
-      // DirectDriver caches screen size + rotation for a short TTL — drop it so the very next
+      // DirectDriver caches screen size + rotation for a short TTL. Drop it so the very next
       // swipe/keyboard check uses the new axes instead of the pre-rotation ones.
       invalidateScreenSizeCache(serial);
-      sessions.addEnvChange(session, `orientation → ${orientation}`);
+      sessions.addEnvChange(session, `orientation > ${orientation}`);
       const now = await getOrientation(serial);
       sessions.recordMutation(session, {
         tool: 'qa_orientation',
@@ -237,7 +237,7 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
       try {
         await setGeo(serial, lat, lng);
       } catch (e) {
-        const emulatorHint = !serial.startsWith('emulator-') ? ' (this looks like a real device — `adb emu` only works on emulators)' : '';
+        const emulatorHint = !serial.startsWith('emulator-') ? ' (this looks like a real device; `adb emu` only works on emulators)' : '';
         sessions.recordMutation(session, {
           tool: 'qa_geolocation',
           action: 'geo_set',
@@ -254,7 +254,7 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
           nextSteps: ['Use an emulator for location spoofing.'],
         });
       }
-      sessions.addEnvChange(session, `geolocation → (${lat}, ${lng})`);
+      sessions.addEnvChange(session, `geolocation > (${lat}, ${lng})`);
       sessions.recordMutation(session, {
         tool: 'qa_geolocation',
         action: 'geo_set',

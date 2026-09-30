@@ -1,4 +1,4 @@
-// qa_get_artifact — portable fallback for clients without MCP resource support.
+// qa_get_artifact: portable fallback for clients without MCP resource support.
 // To protect the context budget (review #7), images default to METADATA (uri/mime/size);
 // fetch pixels explicitly with mode:"inline". Text defaults to inline.
 
@@ -9,7 +9,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { qaError } from '../lib/result.js';
 import type { SessionStore } from '../session/store.js';
 
-/** Images → metadata by default (large); text → inline. Explicit mode always wins. */
+/** Images return metadata by default (large); text is inline. Explicit mode always wins. */
 export function chooseMode(mime: string, mode?: 'metadata' | 'inline'): 'metadata' | 'inline' {
   return mode ?? (mime.startsWith('image/') ? 'metadata' : 'inline');
 }

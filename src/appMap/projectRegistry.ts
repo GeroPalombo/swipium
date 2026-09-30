@@ -1,4 +1,4 @@
-// Vision Gap Fix 8 — a DURABLE reverse registry of projectId → project root, so app-map MCP resource
+// Vision Gap Fix 8: a DURABLE reverse registry of projectId > project root, so app-map MCP resource
 // URIs (swipium://project/<projectId>/app-map…) stay resolvable across server restarts. projectId(root)
 // is a one-way hash; without a persisted reverse lookup, a previously-returned resource URI only
 // resolves while a live session for that root exists. This stores the mapping under ~/.swipium so any
@@ -106,14 +106,14 @@ export function rememberProject(root: string, info: { packageName?: string | nul
     cache = written ?? cache;
   } catch (e) {
     // In-memory + session fallbacks still work this process, but app-map resource URIs for this
-    // project will NOT resolve after a restart — surface that instead of losing it silently.
+    // project will NOT resolve after a restart. Surface that instead of losing it silently.
     try {
       const id = projectId(root);
       registry().projects[id] = { projectId: id, root, lastSeenAt: info.at ?? new Date().toISOString(), appMapPath: appMapPath(root) };
     } catch {
       /* ignore */
     }
-    log('warn', 'failed to persist project registry (~/.swipium/projects.json) — app-map URIs will not survive a restart', {
+    log('warn', 'failed to persist project registry (~/.swipium/projects.json); app-map URIs will not survive a restart', {
       root,
       err: String(e),
     });

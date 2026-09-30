@@ -20,19 +20,19 @@ It is for mobile developers who want their agent to catch the broken login scree
 
 ```text
 You:    Smoke test this app on Android with Swipium.
-Agent → qa_test_this { goal: "smoke" }                       (mode defaults to "plan": nothing runs)
+Agent > qa_test_this { goal: "smoke" }                       (mode defaults to "plan": nothing runs)
         plan for ~/code/shop-app (framework=react-native, session 3f9c2a1b)
         target: android (will boot Pixel_8_API_35)
         artifact: APK android/app/build/outputs/apk/release/app-release.apk
-          1. [ ] qa_prepare_target — Install + launch   2. [ ] qa_smoke   3. [ ] qa_report
-Agent → qa_test_this { sessionId: "3f9c2a1b", mode: "execute", goal: "smoke" }
+          1. [ ] qa_prepare_target: Install + launch   2. [ ] qa_smoke   3. [ ] qa_report
+Agent > qa_test_this { sessionId: "3f9c2a1b", mode: "execute", goal: "smoke" }
         🔐 Consent required (low): • boot_emulator: emulator -avd Pixel_8_API_35 -no-window
                                    • install_apk: adb install -r -g android/app/.../app-release.apk
 You:    Approve                                               (one prompt covers boot + install)
         state: "running", jobId: "a41c09e2"
-Agent → qa_job_status { sessionId: "3f9c2a1b", jobId: "a41c09e2", waitMs: 60000 }
+Agent > qa_job_status { sessionId: "3f9c2a1b", jobId: "a41c09e2", waitMs: 60000 }
         status: "done", result.state: "completed"
-        reportSummary: "PASS app · COVERED coverage · PASS tool — read swipium://session/3f9c2a1b/report/…"
+        reportSummary: "PASS app · COVERED coverage · PASS tool. Read swipium://session/3f9c2a1b/report/…"
 Agent:  The app launched and passed the smoke checks with no crashes or error screens.
 ```
 
@@ -117,11 +117,11 @@ Clients that support MCP prompts can use the built-in ones instead: `swipium_set
 ## How it works
 
 ```text
-qa_test_this {mode:"plan"}  →  qa_test_this {mode:"execute"}  →  consent  →  job
+qa_test_this {mode:"plan"}  >  qa_test_this {mode:"execute"}  >  consent  >  job
                                                                                │
                          qa_job_status {waitMs} ◄──────────────────────────────┘
-                           ├─ completed / blocked / unsafe  →  report (qa_get_artifact reportUri)
-                           └─ needs_input  →  ask you one question  →  qa_continue_from_blocker
+                           ├─ completed / blocked / unsafe  >  report (qa_get_artifact reportUri)
+                           └─ needs_input  >  ask you one question  >  qa_continue_from_blocker
 ```
 
 `qa_test_this` finds or builds the app, boots a simulator, installs and launches the app, runs a smoke check (plus exploration or suite generation, per `goal`), and always writes a report. Failures carry a `failureCode` that `qa_explain_blocker` explains. For hands-on work the agent opens a session (`qa_start_session`), reads the screen with `qa_snapshot`, and acts on element refs such as `@e3`.
@@ -213,7 +213,7 @@ With no subcommand, `swipium` runs the stdio MCP server (what clients launch). `
 2.0.0 removes and renames tools and tightens defaults. Work through this list:
 
 1. **Restart your MCP client.** A client still running the old server gets `STALE_CLIENT` for removed tools and old call shapes.
-2. **Rename environment variables your flows and fixtures read** so they start with `SWIPIUM_` (for example `${TEST_PASSWORD}` → `${SWIPIUM_TEST_PASSWORD}`). Other names are no longer read from the environment.
+2. **Rename environment variables your flows and fixtures read** so they start with `SWIPIUM_` (for example `${TEST_PASSWORD}` becomes `${SWIPIUM_TEST_PASSWORD}`). Other names are no longer read from the environment.
 3. **CI: every app install now asks for consent**, including an APK inside the project. Install the app yourself before the agent step ([docs/ci-reports.md](docs/ci-reports.md)).
 4. **Saved prompts and scripts:** replace removed tools using the [migration table](CHANGELOG.md#migrating-from-150) (also in [docs/tools.md](docs/tools.md#migrating-from-150)), and drop arguments a tool doesn't declare; they now fail with `INVALID_ARGUMENT` instead of being ignored.
 5. **Remote WDA:** `ios.wda.allowNonLoopbackUrls` in `.swipium/config.json` no longer pre-approves a URL. Pass `allowNonLoopback:true` and approve the consent, or list the URL in `SWIPIUM_ALLOW_REMOTE_WDA` in your client config.

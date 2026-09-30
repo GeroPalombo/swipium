@@ -1,4 +1,4 @@
-// qa_report — thin wrapper around the report service (Phase 3.2 Milestone B). All assembly lives in
+// qa_report: thin wrapper around the report service (Phase 3.2 Milestone B). All assembly lives in
 // src/services/report.ts so qa_test_this execute produces the identical report artifact in every
 // terminal state. This tool resolves the session, runs the service, and surfaces its result.
 
@@ -21,8 +21,8 @@ export function registerReport(server: McpServer, sessions: SessionStore): void 
       inputSchema: {
         sessionId: z.string(),
         format: z.enum(['summary', 'markdown', 'json', 'junit', 'sarif', 'github-summary', 'flow', 'playwright']).optional(),
-        baseline: z.string().optional().describe('Baseline report.json path → adds comparison links.'),
-        trendRoot: z.string().optional().describe('Project root with .swipium/runs history → adds trend/flake context.'),
+        baseline: z.string().optional().describe('Baseline report.json path; adds comparison links.'),
+        trendRoot: z.string().optional().describe('Project root with .swipium/runs history; adds trend/flake context.'),
       },
     },
     async ({ sessionId, format, baseline, trendRoot }) => {
@@ -37,7 +37,7 @@ export function registerReport(server: McpServer, sessions: SessionStore): void 
           what: 'No actions were recorded this run, so there is no flow to export',
           changedState: false,
           retrySafe: true,
-          nextSteps: ['Drive the app with qa_act first, then qa_report { format: "flow" } — or use qa_generate target:"flow".'],
+          nextSteps: ['Drive the app with qa_act first, then qa_report { format: "flow" }, or use qa_generate target:"flow".'],
         });
       }
 

@@ -1,4 +1,4 @@
-// qa_resolve_target — gather live device/simulator/artifact inputs and pick the
+// qa_resolve_target: gather live device/simulator/artifact inputs and pick the
 // best target with an explained reason, alternatives, preconditions, and whether a boot is
 // needed. Pure decision logic lives in src/core/targetPlan.ts. `include` folds in what used to be
 // the (formerly separate, now removed) qa_detect_context tool (project context: framework, artifacts, Android devices + iOS simulators,
@@ -25,7 +25,7 @@ import type { Session, SessionStore } from '../session/store.js';
 export function workflowPlan(ctx: DetectedContext, root: string, session?: Session): Plan & { framework: string } {
   const plan = buildPlan({
     framework: ctx.framework,
-    // A booted/bootable iOS simulator counts — iOS workflows are not missing_device.
+    // A booted/bootable iOS simulator counts; iOS workflows are not missing_device.
     hasDevice: hasAnyDevice(ctx.devices),
     hasApk: ctx.artifacts.apks.length > 0 || ctx.artifacts.ipas.length > 0 || ctx.artifacts.appBundles.length > 0,
     appPrepared: !!session?.appId,
@@ -53,10 +53,10 @@ function planSummary(plan: Plan): string {
     `\nplan READY (${plan.ready.length}): ${plan.ready.map((w) => `${w.workflow} [${w.budgetProfile}]`).join(', ') || '(none)'}` +
     (plan.blocked.length
       ? `\nBLOCKED (${plan.blocked.length}):\n` +
-        plan.blocked.map((w) => line(`${w.workflow}: ${w.category} — ${w.requiredState} → ${w.recommendedSetup}`)).join('\n')
+        plan.blocked.map((w) => line(`${w.workflow}: ${w.category}: ${w.requiredState} > ${w.recommendedSetup}`)).join('\n')
       : '') +
     (plan.unsafe.length
-      ? `\nUNSAFE (${plan.unsafe.length}):\n` + plan.unsafe.map((w) => line(`${w.workflow}: ${w.reason} — ${w.detail}`)).join('\n')
+      ? `\nUNSAFE (${plan.unsafe.length}):\n` + plan.unsafe.map((w) => line(`${w.workflow}: ${w.reason}: ${w.detail}`)).join('\n')
       : '')
   );
 }
@@ -101,9 +101,9 @@ export function registerResolveTarget(server: McpServer, sessions: SessionStore)
         adbPresent ? listAvds() : Promise.resolve<string[]>([]),
         simPresent ? listSimulators() : Promise.resolve([]),
       ]);
-      // H6: property-verified emulators (localhost:5555, Genymotion) — same policy as getDriver.
+      // H6: property-verified emulators (localhost:5555, Genymotion) get the same policy as getDriver.
       const emulators = await verifiedEmulatorSerials(online);
-      // The artifact (best-effort) tells us the platform constraint — never fail on this.
+      // The artifact (best-effort) tells us the platform constraint. Never fail on this.
       const art = await resolveArtifact({ projectRoot: root, platform: platform ?? 'any' }, false).catch(() => null);
 
       const inputs: TargetInputs = {
@@ -117,7 +117,7 @@ export function registerResolveTarget(server: McpServer, sessions: SessionStore)
           bootedSimulators: sims.filter((s) => s.state === 'Booted').map((s) => ({ udid: s.udid, name: s.name })),
           availableSimulators: sims.filter((s) => s.state !== 'Booted').map((s) => ({ udid: s.udid, name: s.name })),
         },
-        wdaAvailable: undefined, // unknown without probing — surfaced as a precondition
+        wdaAvailable: undefined, // unknown without probing; surfaced as a precondition
       };
 
       const plan = planTarget(inputs);
@@ -136,7 +136,7 @@ export function registerResolveTarget(server: McpServer, sessions: SessionStore)
       const summary =
         `selected: ${plan.selected}${plan.device ? ` (${plan.device})` : ''}\n` +
         `reason: ${plan.reason}\n` +
-        (plan.willBoot ? `willBoot: yes${plan.bootTarget ? ` → ${plan.bootTarget}` : ''}\n` : 'willBoot: no\n') +
+        (plan.willBoot ? `willBoot: yes${plan.bootTarget ? ` > ${plan.bootTarget}` : ''}\n` : 'willBoot: no\n') +
         (plan.alternatives.length ? `alternatives: ${plan.alternatives.join(', ')}\n` : '') +
         (plan.preconditions.length ? `preconditions: ${plan.preconditions.join('; ')}` : 'preconditions: none') +
         (extras.context ? contextSummary(extras.context) : '') +

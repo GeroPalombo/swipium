@@ -1,4 +1,4 @@
-// qa_wait — non-shell synchronization for setup conditions, so agents don't shell out to
+// qa_wait: non-shell synchronization for setup conditions, so agents don't shell out to
 // `sleep`/poll. Waits for: device_online or metro_ready (serving). Jobs are waited on with
 // qa_job_status waitMs. Returns timeout + current state + next steps.
 

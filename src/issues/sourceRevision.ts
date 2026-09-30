@@ -1,8 +1,8 @@
-// SWIPIUM Issue Log — source revision resolution.
+// SWIPIUM Issue Log: source revision resolution.
 //
 // Fix attribution is strongest when issues link to a commit/release. But Swipium intentionally does
 // NOT execute Git in spawned providers. So we resolve a SourceRevision in priority order WITHOUT
-// running Git: explicit input → CI environment variables → app build metadata → optional read-only
+// running Git: explicit input > CI environment variables > app build metadata > optional read-only
 // `.git/HEAD` (only when policy sets allowGitMetadataRead). `unknown` is always an acceptable result.
 //
 // PURE w.r.t. process state except the optional read-only git read, which only touches `.git/HEAD`

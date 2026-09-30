@@ -1,4 +1,4 @@
-// qa_generate target:"flow" core — turn the actions recorded during
+// qa_generate target:"flow" core: turn the actions recorded during
 // this session (via qa_act) into a durable flow YAML, with a durability grade and the brittle
 // steps that need testIDs. Optionally saves it to .swipium/flows/<name>.yaml so it shows up
 // in the workflow plan (qa_resolve_target include:["plan"]) and can be replayed with qa_flow_run. Registered through src/tools/generate.ts.
@@ -19,7 +19,7 @@ export interface FlowGenerateArgs {
   save?: boolean;
 }
 
-/** Core handler for qa_generate target:"flow" — draft a repeatable flow YAML from recorded actions. */
+/** Core handler for qa_generate target:"flow": draft a repeatable flow YAML from recorded actions. */
 export async function runFlowGenerate(
   sessions: SessionStore,
   { sessionId, name, budgetProfile, save }: FlowGenerateArgs,
@@ -45,7 +45,7 @@ export async function runFlowGenerate(
     appId,
     budgetProfile,
     secrets: session.secrets,
-    inputs: inputBindings(session), // typed text equal to a stored input → its ${SWIPIUM_TEST_*} placeholder
+    inputs: inputBindings(session), // typed text equal to a stored input maps to its ${SWIPIUM_TEST_*} placeholder
   });
   // Backstop: never write (artifact or project file) a flow that still carries a registered secret.
   const leaks = findSecretLeaks([{ path: `${flowName}.yaml`, content: gen.yaml }], session.secrets, {
@@ -79,11 +79,11 @@ export async function runFlowGenerate(
   }
 
   const summary =
-    `Generated flow "${flowName}" — durability ${gen.durability.grade} (${gen.durability.semanticPct}% semantic; ` +
+    `Generated flow "${flowName}": durability ${gen.durability.grade} (${gen.durability.semanticPct}% semantic; ` +
     `${gen.durability.coordinate} coordinate, ${gen.durability.needsHumanData} needs-human-data), ${gen.stepCount} steps.` +
     (gen.variables.length ? `\nvariables: ${gen.variables.join(', ')} (provide via qa_flow_run { variables }).` : '') +
     (gen.brittleSteps.length ? `\n⚠ brittle steps:\n - ${gen.brittleSteps.map((b) => `step ${b.index}: ${b.reason}`).join('\n - ')}` : '') +
-    (savedTo ? `\nsaved: ${savedTo}` : `\n(not saved to disk — pass save:true to write it under .swipium/flows)`) +
+    (savedTo ? `\nsaved: ${savedTo}` : `\n(not saved to disk. Pass save:true to write it under .swipium/flows)`) +
     `\n\n${gen.yaml}`;
 
   return qaOk(

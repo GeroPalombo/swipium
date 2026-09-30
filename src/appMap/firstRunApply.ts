@@ -126,7 +126,7 @@ export function applyFirstRunPatches(map: AppKnowledgeMap, patches: AppMapPatch[
     }
   }
 
-  // Observed transitions → runtime edges (best-effort; only when both endpoints resolve).
+  // Observed transitions > runtime edges (best-effort; only when both endpoints resolve).
   for (const p of patches) {
     const fromSig = p.transition?.fromSignature;
     if (!fromSig) continue;

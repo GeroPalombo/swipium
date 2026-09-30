@@ -1,4 +1,4 @@
-// iOS Simulator helpers via `xcrun simctl` — local, macOS host only. Covers
+// iOS Simulator helpers via `xcrun simctl`. Local, macOS host only. Covers
 // the lifecycle + screenshot + deep links + privacy/erase that simctl supports natively. UI-tree
 // reads and input injection are NOT available through simctl (they need an XCUITest backend, a
 // attach WebDriverAgent for structured iOS automation, so SimctlDriver reports those as
@@ -33,7 +33,7 @@ export async function simctlAvailable(): Promise<boolean> {
 }
 
 function prettyRuntime(key: string): string {
-  // runtime key '<reverse-dns>.SimRuntime.iOS-18-0' → 'iOS 18.0'
+  // runtime key '<reverse-dns>.SimRuntime.iOS-18-0' > 'iOS 18.0'
   const m = key.match(/SimRuntime\.([A-Za-z]+)-([\d-]+)$/);
   return m ? `${m[1]} ${m[2].replace(/-/g, '.')}` : key;
 }
@@ -53,7 +53,7 @@ export async function listSimulators(): Promise<Simulator[]> {
 }
 
 export async function boot(udid: string): Promise<void> {
-  // 'Unable to boot ... current state: Booted' is fine — treat already-booted as success.
+  // 'Unable to boot ... current state: Booted' is fine; treat already-booted as success.
   const r = await run(X, ['simctl', 'boot', udid], { timeoutMs: 120000 });
   if (r.code !== 0 && !/current state: Booted/i.test(r.stderr)) {
     throw new Error(`boot failed: ${r.stderr.trim() || r.stdout.trim()}`);

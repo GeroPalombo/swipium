@@ -1,7 +1,7 @@
 // Device-parity adb helpers. Serial-based (Android/adb-specific)
-// rather than on the Driver interface, so the iOS/native-backend swap seam stays lean — when iOS
+// rather than on the Driver interface, so the iOS/native-backend swap seam stays lean. When iOS
 // lands it provides its own device-parity implementations. All spawns use arg arrays, but `adb shell`
-// re-joins them for the device-side sh — so app ids / permissions are validated AND quoted (M1).
+// re-joins them for the device-side sh, so app ids / permissions are validated AND quoted (M1).
 
 import { run } from './spawn.js';
 import { assertAndroidAppId, deviceShellQuote, shellAppId } from '../drivers/DirectDriver.js';

@@ -8,12 +8,12 @@
 // tools inject).
 //
 // Portability: anything that lands in a TEAM-SHARED project file (`claude --scope project`,
-// gemini project scope, .cursor/.vscode) uses `npx -y swipium` — never this machine's absolute
+// gemini project scope, .cursor/.vscode) uses `npx -y swipium`, never this machine's absolute
 // node/script paths. Absolute paths are used only for machine-local registrations
 // (claude local/user, gemini user, codex), and even then not when this process runs from the
 // npx cache (that path is ephemeral).
 //
-// NOTE: this is the CLI path, not the MCP server — writing to stdout is fine here.
+// NOTE: this is the CLI path, not the MCP server, so writing to stdout is fine here.
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, appendFileSync, mkdirSync, writeFileSync, statSync } from 'node:fs';
@@ -32,7 +32,7 @@ export interface ServerCommand {
   args: string[];
 }
 
-/** True when `self` lives in npm's npx cache (…/_npx/…) — an absolute path to it would rot. */
+/** True when `self` lives in npm's npx cache (…/_npx/…). An absolute path to it would rot. */
 export function isEphemeralInstall(self: string = SELF): boolean {
   return self.split(/[\\/]/).includes('_npx');
 }
@@ -68,13 +68,13 @@ export function codexBlock(node: string, cwd: string, self: string = SELF): stri
   ].join('\n');
 }
 
-/** `claude mcp add` argv. Project scope writes the team-shared .mcp.json → portable command. */
+/** `claude mcp add` argv. Project scope writes the team-shared .mcp.json, so the command is portable. */
 export function claudeAddArgs(scope: string, node: string = process.execPath, self: string = SELF): string[] {
   const c = serverCommand(scope === 'project', node, self);
   return ['mcp', 'add', 'swipium', ...(scope !== 'local' ? ['--scope', scope] : []), '--', c.command, ...c.args];
 }
 
-/** `gemini mcp add` argv. Gemini's default scope is project (.gemini/settings.json) → portable. */
+/** `gemini mcp add` argv. Gemini's default scope is project (.gemini/settings.json), so it's portable. */
 export function geminiAddArgs(scope: string, node: string = process.execPath, self: string = SELF): string[] {
   const user = scope === 'user';
   const c = serverCommand(!user, node, self);
@@ -150,7 +150,7 @@ function isDir(p: string): boolean {
   }
 }
 
-const CWD_NOTE = '(cwd should be your mobile app repo — run init from it, or pass --cwd <dir>)';
+const CWD_NOTE = '(cwd should be your mobile app repo: run init from it, or pass --cwd <dir>)';
 
 export const INIT_USAGE =
   'Usage: swipium init <claude|codex|gemini|cursor|vscode> [--apply] [--scope local|user|project] [--cwd <dir>]\n' +

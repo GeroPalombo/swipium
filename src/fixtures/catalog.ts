@@ -95,19 +95,19 @@ function variableName(fixture: string, field: string): string {
 }
 
 /** Why a fixture field's declared `var` was not read from the server environment. Fixtures come
- *  from the repo's .swipium/fixtures.json (untrusted per THREAT_MODEL), so — like flows — only
+ *  from the repo's .swipium/fixtures.json (untrusted per THREAT_MODEL), so, like flows, only
  *  SWIPIUM_* names are ever read from process.env; any other name is treated as missing. */
 export function fixtureVarBlockedMessage(fixture: string, field: string, varName: string): string {
   return (
     `fixture "${fixture}" field "${field}" declares var ${varName}, which was not read from the environment: ` +
-    `fixtures read process.env only for ${FLOW_ENV_PREFIX}* names — rename it (e.g. ${variableName(fixture, field)}) ` +
+    `fixtures read process.env only for ${FLOW_ENV_PREFIX}* names. Rename it (e.g. ${variableName(fixture, field)}) ` +
     `or provide the value via secure input`
   );
 }
 
 const warnedBlockedVars = new Set<string>();
 
-/** process.env value for a fixture's declared var — SWIPIUM_* names only (else undefined + a warning). */
+/** process.env value for a fixture's declared var. SWIPIUM_* names only (else undefined + a warning). */
 function envFixtureVar(fixture: string, field: string, varName: string): string | undefined {
   if (!flowEnvAllowed(varName)) {
     const key = `${fixture}\0${field}\0${varName}`;

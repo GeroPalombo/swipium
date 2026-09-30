@@ -15,7 +15,7 @@ export interface MigrationResult {
 
 /** Per-version upgrade steps. Add an entry when bumping APP_MAP_SCHEMA_VERSION. */
 const MIGRATIONS: Record<number, { to: number; name: string; up: (m: Record<string, unknown>) => Record<string, unknown> }> = {
-  // 0 → 1: pre-schema / legacy blobs. Normalize by merging onto an empty v1 map so every required
+  // 0 > 1: pre-schema / legacy blobs. Normalize by merging onto an empty v1 map so every required
   // top-level field exists. Known legacy fields are carried over where the shape is compatible.
   0: {
     to: 1,
@@ -47,7 +47,7 @@ const MIGRATIONS: Record<number, { to: number; name: string; up: (m: Record<stri
 function detectVersion(raw: Record<string, unknown>): number | 'unknown' {
   const v = raw.schemaVersion;
   if (typeof v === 'number') return v;
-  // No version field at all → treat as legacy v0.
+  // No version field at all > treat as legacy v0.
   return raw && typeof raw === 'object' ? 0 : 'unknown';
 }
 
@@ -73,7 +73,7 @@ export function migrateAppMap(raw: unknown, fallbackProject: ProjectIdentity, at
   let guard = 0;
   while (version < APP_MAP_SCHEMA_VERSION && guard++ < 50) {
     const step = MIGRATIONS[version];
-    if (!step) break; // no migration defined — stop and patch defaults below
+    if (!step) break; // no migration defined, so stop and patch defaults below
     cur = step.up(cur);
     applied.push(step.name);
     version = step.to;

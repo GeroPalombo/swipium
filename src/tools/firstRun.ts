@@ -65,7 +65,7 @@ export function registerFirstRun(server: McpServer, sessions: SessionStore): voi
           })
         );
 
-      // ---- mode:"plan" — read-only (merged twin, 1.5.0). ----
+      // ---- mode:"plan": read-only (merged twin, 1.5.0). ----
       if (effectiveMode === 'plan') {
         const ignored = [
           until !== undefined && 'until',
@@ -73,7 +73,7 @@ export function registerFirstRun(server: McpServer, sessions: SessionStore): voi
           maxDurationMs !== undefined && 'maxDurationMs',
         ].filter((x): x is string => !!x);
         if (ignored.length)
-          notes.push(`ignored parameter(s) not applicable to mode:"plan": ${ignored.join(', ')} — re-run with mode:"continue" to execute`);
+          notes.push(`ignored parameter(s) not applicable to mode:"plan": ${ignored.join(', ')}; re-run with mode:"continue" to execute`);
 
         const { policy, policySource, environment, decision } = resolveFirstRunPolicy(session, {
           testDataPolicyPath,
@@ -83,11 +83,11 @@ export function registerFirstRun(server: McpServer, sessions: SessionStore): voi
         const plan = planFirstRun({ ...obs, screenSignature: obs.screenSignature, appError: obs.appError }, session, { policy, decision });
 
         const summary =
-          `🔎 first-run plan — screen: ${plan.classification.purpose} (confidence ${plan.classification.confidence})\n` +
-          `environment: ${environment.environment} (prodRisk=${environment.productionRisk}); generated account ${decision.allowed ? 'ALLOWED' : 'NOT allowed'} — ${decision.reason}\n` +
+          `🔎 first-run plan: screen: ${plan.classification.purpose} (confidence ${plan.classification.confidence})\n` +
+          `environment: ${environment.environment} (prodRisk=${environment.productionRisk}); generated account ${decision.allowed ? 'ALLOWED' : 'NOT allowed'} (${decision.reason})\n` +
           `state: ${plan.state}${plan.pathTaken ? ` [${plan.pathTaken}]` : ''}; planned actions: ${plan.actions.length}` +
           (plan.needsInput ? `\n❓ ${plan.needsInput.reason}` : '') +
-          `\n→ execute with qa_first_run { sessionId:"${session.id}", mode:"continue", until:"one_step" }`;
+          `\nnext: execute with qa_first_run { sessionId:"${session.id}", mode:"continue", until:"one_step" }`;
 
         return qaAnnotate(
           qaOk(
@@ -96,7 +96,7 @@ export function registerFirstRun(server: McpServer, sessions: SessionStore): voi
               classification: plan.classification,
               state: plan.state,
               pathTaken: plan.pathTaken,
-              actions: plan.actions, // no raw values — secrets stay in the secure store
+              actions: plan.actions, // no raw values; secrets stay in the secure store
               expectedNextPurposes: plan.expectedNextPurposes,
               stopConditions: plan.stopConditions,
               appMapPatch: plan.mapUpdates,
@@ -113,7 +113,7 @@ export function registerFirstRun(server: McpServer, sessions: SessionStore): voi
         );
       }
 
-      // ---- mode:"continue" — execute (merged twin, 1.5.0). ----
+      // ---- mode:"continue": execute (merged twin, 1.5.0). ----
       const res = await runFirstRun(sessions, session, driver, {
         mode: (until ?? 'one_step') as FirstRunMode,
         allowGeneratedAccount,
@@ -167,14 +167,14 @@ export function registerFirstRun(server: McpServer, sessions: SessionStore): voi
       };
 
       const summary =
-        `🚦 first-run ${res.state} — ${res.steps.length} screen(s); path: ${res.pathTaken}; account: ${res.accountOutcome}\n` +
+        `🚦 first-run ${res.state}: ${res.steps.length} screen(s); path: ${res.pathTaken}; account: ${res.accountOutcome}\n` +
         `environment: ${res.environment.environment} (prodRisk=${res.environment.productionRisk}); generated account ${res.decision.allowed ? 'allowed' : 'refused'}\n` +
         `reason: ${res.stoppedReason}` +
         (res.generatedVariables.length ? `\ngenerated: ${res.generatedVariables.map((g) => `${g.varName}=${g.value}`).join(', ')}` : '') +
         (res.mapArtifactUri ? `\napp-map: ${res.mapArtifactUri}` : '') +
-        (res.nextRecommendedTool ? `\n→ next: ${res.nextRecommendedTool}` : '');
+        (res.nextRecommendedTool ? `\nnext: ${res.nextRecommendedTool}` : '');
 
-      // A genuine pause → surface the single NeedsInput question (not an error).
+      // A genuine pause: surface the single NeedsInput question (not an error).
       if ((res.state === 'needs_input' || res.state === 'unsafe') && res.needsInput) {
         return qaNeedsInput(needsInputPayload(res.needsInput.kind, res.needsInput.reason), {
           sessionId: session.id,

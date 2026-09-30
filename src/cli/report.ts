@@ -1,10 +1,10 @@
-// `swipium report` — render a persisted Swipium session report as a CI artifact, WITHOUT an agent.
+// `swipium report`: render a persisted Swipium session report as a CI artifact, WITHOUT an agent.
 //
 // An agent (Claude Code headless, etc.) drives the device through the MCP server and calls
 // qa_report; that persists a deep-redacted report JSON as a session artifact under
 // ~/.swipium/runs/<project-hash>/<session>/report/. This command finds that report for the
 // project, renders junit | sarif | github-summary | markdown | json with the same exporters
-// qa_report uses, and — with --fail-on-gate — turns the release-gate policy
+// qa_report uses, and (with --fail-on-gate) turns the release-gate policy
 // (.swipium/policy.json blockOn/warnOn/ignoreKnown) into the process exit code.
 //
 // Exit codes: 0 = written (gate passed or not checked), 1 = --fail-on-gate and the gate blocks,
@@ -25,7 +25,7 @@ export type CliReportFormat = (typeof REPORT_FORMATS)[number];
 export const REPORT_USAGE = `Usage: swipium report --format <junit|sarif|github-summary|markdown|json> [options]
 
 Render the report a Swipium session already produced (via the qa_report MCP tool) as a CI file.
-Needs no device and no agent — only the session state Swipium persisted under ~/.swipium/runs.
+Needs no device and no agent, only the session state Swipium persisted under ~/.swipium/runs.
 
 Options:
   --format <fmt>     junit | sarif | github-summary | markdown | json   (required)
@@ -153,7 +153,7 @@ export function findProjectSessions(root: string, home = homedir()): SessionCand
       if (typeof st.id !== 'string' || typeof st.root !== 'string' || canonical(st.root) !== want) continue;
       out.push({ id: st.id, dir, createdAt: st.createdAt ?? 0, reportPath: latestReportJson(dir, st) });
     } catch {
-      /* unreadable / partial session — skip */
+      /* unreadable / partial session: skip */
     }
   }
   return out.sort((a, b) => a.createdAt - b.createdAt);
@@ -213,7 +213,7 @@ export async function runReport(args: string[], io: ReportCliIo = defaultIo): Pr
       return 2;
     }
     if (!pick.reportPath) {
-      io.stderr(`Session ${pick.id} has no persisted report yet — call qa_report for it first.\n`);
+      io.stderr(`Session ${pick.id} has no persisted report yet. Call qa_report for it first.\n`);
       return 2;
     }
     reportPath = pick.reportPath;
@@ -236,10 +236,10 @@ export async function runReport(args: string[], io: ReportCliIo = defaultIo): Pr
     const outPath = isAbsolute(parsed.out) ? parsed.out : join(cwd, parsed.out);
     mkdirSync(dirname(outPath), { recursive: true });
     writeFileSync(outPath, body.endsWith('\n') ? body : `${body}\n`);
-    io.stderr(`Wrote ${format} for session ${data.sessionId} → ${outPath}\n`);
+    io.stderr(`Wrote ${format} for session ${data.sessionId} > ${outPath}\n`);
   } else {
     io.stdout(body.endsWith('\n') ? body : `${body}\n`);
   }
-  io.stderr(`Release gate: ${block ? 'BLOCK' : 'PASS'} — ${reason}\n`);
+  io.stderr(`Release gate: ${block ? 'BLOCK' : 'PASS'}: ${reason}\n`);
   return parsed.failOnGate && block ? 1 : 0;
 }

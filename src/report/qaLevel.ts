@@ -1,7 +1,7 @@
-// QA level (Developer-3 plan Deliverable 6) — the single, deterministic, product-facing
+// QA level (Developer-3 plan Deliverable 6): the single, deterministic, product-facing
 // QA verdict label every Swipium run earns. This is DISTINCT from the automation `ReadinessLabel`
 // (which scores the *generated suite*): the QA level answers "how far did QA actually get on this app?"
-// — the rung a developer, QA engineer, reviewer, and CI all read straight off the report.
+// It's the rung a developer, QA engineer, reviewer, and CI all read straight off the report.
 //
 // Pure + deterministic so it is unit-testable and stable across runs. It NEVER claims a level whose
 // evidence was not observed (Hard Product Rule: "always report what was attempted; never over-claim").
@@ -17,7 +17,7 @@ export const QA_LEVEL_MEANING: Record<QaLevel, string> = {
   smoke_tested: 'Launch + health guardrails passed (no native crash or fatal app-error surface).',
   automation_candidate: 'A POM automation suite was generated from recorded actions.',
   automation_runnable: 'The generated suite compiled and dry-run validated.',
-  ci_ready: 'The suite replayed from a declared state profile — safe to gate CI on.',
+  ci_ready: 'The suite replayed from a declared state profile. Safe to gate CI on.',
 };
 
 export interface QaLevelSignals {
@@ -35,7 +35,7 @@ export interface QaLevelSignals {
 
 export interface QaLevelAssessment {
   /**
-   * Highest level (in ladder order) whose evidence — and prerequisites — were met. `not_observed`
+   * Highest level (in ladder order) whose evidence (and prerequisites) were met. `not_observed`
    * when no evidence was captured at all (the app may not have launched), so the model never
    * over-claims `observed`.
    */
@@ -50,7 +50,7 @@ export interface QaLevelAssessment {
   skipped: QaLevel[];
   /** Human-readable explanation of the reported level. */
   rationale: string;
-  /** Honest caveats — e.g. a higher marker reached without a CI suite below it. */
+  /** Honest caveats, e.g. a higher marker reached without a CI suite below it. */
   notes: string[];
 }
 
@@ -114,20 +114,20 @@ export function deriveQaLevel(signals: QaLevelSignals): QaLevelAssessment {
   const skipped = QA_LEVELS.filter((l, i) => i < reportedIndex && !met.has(l));
 
   const notes: string[] = [];
-  if (!signals.observed) notes.push('No evidence captured yet — the app may not have launched.');
+  if (!signals.observed) notes.push('No evidence captured yet. The app may not have launched.');
   if (signals.suiteGenerated && !signals.suiteRunnable) {
-    notes.push('A suite was generated but has not compiled/dry-run — it is a candidate, not runnable.');
+    notes.push('A suite was generated but has not compiled/dry-run. It is a candidate, not runnable.');
   }
   if (signals.suiteRunnable && !signals.ciReplayed) {
-    notes.push('Suite is runnable but has not replayed from a declared state — not yet CI-ready.');
+    notes.push('Suite is runnable but has not replayed from a declared state, so it is not CI-ready yet.');
   }
   if (signals.observed && !signals.smokePassed) {
-    notes.push('Launch/health was not confirmed passing — smoke level not reached.');
+    notes.push('Launch/health was not confirmed passing, so smoke level not reached.');
   }
 
   const rationale =
     level === 'not_observed'
-      ? 'No QA level reached yet — no evidence was captured (the app may not have launched).'
+      ? 'No QA level reached yet: no evidence was captured (the app may not have launched).'
       : `Reached ${level}: ${QA_LEVEL_MEANING[level]}`;
   return { level, achieved, next, nextRequirement, skipped, rationale, notes };
 }

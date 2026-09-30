@@ -36,7 +36,7 @@ export function structuredSignature(elements: SnapshotElement[], ctx: SignatureC
 
 /**
  * Visual signature: screen dimensions + a cheap content hash of the screenshot bytes (sampled).
- * Not a perceptual hash — good enough to dedupe an unchanged canvas/map screen across revisits.
+ * Not a perceptual hash, but good enough to dedupe an unchanged canvas/map screen across revisits.
  */
 export function visualSignature(png: Buffer, screen: { width: number; height: number }, ctx: SignatureContext = {}): string {
   // Sample bytes across the buffer so a large PNG hashes quickly and stably.

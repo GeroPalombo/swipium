@@ -1,4 +1,4 @@
-// qa_screen_info — device + screen metadata for coordinate-driven (visual-fallback) work,
+// qa_screen_info: device + screen metadata for coordinate-driven (visual-fallback) work,
 // so the agent doesn't shell out to `adb shell wm size/density` or measure screenshots.
 
 import { z } from 'zod';
@@ -40,7 +40,7 @@ export function registerScreenInfo(server: McpServer, sessions: SessionStore): v
       const orientation = orient ? (orient.rotation === 1 || orient.rotation === 3 ? 'landscape' : 'portrait') : 'unknown';
       const lastShot = [...session.artifacts].reverse().find((a) => a.kind === 'screenshot');
 
-      // Coordinate landmarks (P1.7) for visual-fallback taps — so the agent places taps from
+      // Coordinate landmarks (P1.7) for visual-fallback taps, so the agent places taps from
       // named anchors instead of guessing pixels off a screenshot.
       let landmarks: Record<string, [number, number]> | undefined;
       let bands: Record<string, { yFrom: number; yTo: number }> | undefined;
@@ -73,7 +73,7 @@ export function registerScreenInfo(server: McpServer, sessions: SessionStore): v
           screen: size ? { width: size.width, height: size.height, density } : null,
           orientation,
           coordinateNote:
-            'landmarks/bands are DEVICE pixels (origin top-left) — pass directly as qa_act {x,y}. For screenshot-space hits (qa_visual find_image) convert with coordinateSpace.scale.',
+            'landmarks/bands are DEVICE pixels (origin top-left). Pass directly as qa_act {x,y}. For screenshot-space hits (qa_visual find_image) convert with coordinateSpace.scale.',
           mode: session.mode,
           headless: session.headless ?? null,
           latestScreenshot: lastShot?.uri ?? null,
@@ -86,7 +86,7 @@ export function registerScreenInfo(server: McpServer, sessions: SessionStore): v
           (landmarks
             ? `\nlandmarks: center=${landmarks.center} bottomNav=${landmarks.bottomNavCenter} cta=${landmarks.primaryCtaArea}`
             : '') +
-          (lastShot ? `\nlatest screenshot: ${lastShot.uri}` : '\n(no screenshot yet — call qa_screenshot)'),
+          (lastShot ? `\nlatest screenshot: ${lastShot.uri}` : '\n(no screenshot yet, call qa_screenshot)'),
       );
     },
   );

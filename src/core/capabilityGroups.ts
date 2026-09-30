@@ -1,6 +1,6 @@
 // The public tool surface grouped by purpose. Returned (names only) by qa_status when called
 // without a sessionId, mirrored by the section layout of docs/tools.md, and checked at startup
-// by server.ts assertToolSurface() — every TOOL_NAMES entry must appear in exactly one group, so
+// by server.ts assertToolSurface(): every TOOL_NAMES entry must appear in exactly one group, so
 // the grouping can never drift from the registered surface (test/publicSurface.test.ts too).
 
 import type { ToolName } from '../version.js';

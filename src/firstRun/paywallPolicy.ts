@@ -4,7 +4,7 @@
 import type { SnapshotElement } from '../drivers/Driver.js';
 import type { PlannedAction } from './types.js';
 
-// Controls that buy / subscribe — must never be auto-tapped.
+// Controls that buy / subscribe. These must never be auto-tapped.
 const PURCHASE =
   /\b(subscribe|buy|purchase|start\s+(free\s+)?trial|upgrade|continue\s+to\s+payment|pay|unlock\s+premium|get\s+premium|choose\s+plan|select\s+plan)\b/i;
 // Safe ways off a paywall.
@@ -21,7 +21,7 @@ const CLOSE_ID = /(^|[:/])(close|btn_close|dismiss|cancel|x_button|close_button|
 export interface PaywallDecision {
   /** A safe dismiss/skip/close action, when one is clearly present. */
   action?: PlannedAction;
-  /** Always set — paywall coverage to record regardless of whether we can dismiss. */
+  /** Always set: paywall coverage to record regardless of whether we can dismiss. */
   coverage: string;
   /** True when there is no safe exit and the first-run run should stop here. */
   stop: boolean;
@@ -44,7 +44,7 @@ export function planPaywall(elements: SnapshotElement[]): PaywallDecision {
     if (!best || match.rank > best.rank) best = { el, rank: match.rank, why: match.why };
   }
 
-  const coverage = 'paywall encountered — recorded coverage; no purchase attempted';
+  const coverage = 'paywall encountered: recorded coverage, no purchase attempted';
   if (!best) {
     return { coverage, stop: true };
   }

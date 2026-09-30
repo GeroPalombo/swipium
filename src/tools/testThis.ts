@@ -1,7 +1,7 @@
-// qa_test_this — the "just test this" entry point. A DETERMINISTIC orchestration
+// qa_test_this: the "just test this" entry point. A DETERMINISTIC orchestration
 // state machine so a first run does not depend on the agent's skill or token budget. It resolves
 // the project, finds (or plans a build for) an artifact, picks a target, and returns an ordered
-// plan with the EXACT next tool call to make — or a typed blocker / one concise NeedsInput
+// plan with the EXACT next tool call to make, or a typed blocker / one concise NeedsInput
 // question. It performs the cheap, side-effect-free resolution itself; the heavy device steps
 // (build, boot/install, smoke) are dispatched to the existing one-shot tools via `nextAction`,
 // so an agent reaches real work in one or two calls instead of ten.
@@ -24,7 +24,7 @@ export function registerTestThis(server: McpServer, sessions: SessionStore): voi
       title: 'Test this app (autopilot)',
       description:
         'Autopilot for "test this app": finds or builds an artifact, picks a device/simulator, then plans ' +
-        '(mode:"plan", default, no side effects) or executes prepare → smoke → (explore) → report → (suite). execute returns ' +
+        '(mode:"plan", default, no side effects) or executes prepare > smoke > (explore) > report > (suite). execute returns ' +
         'state:"running" + jobId; the terminal state (completed/blocked/unsafe/needs_input) and reportUri are in the ' +
         'qa_job_status result. One combined consent covers boot/install/build. A report in every terminal state. iOS without WDA ' +
         'falls back to a visual-only smoke.',

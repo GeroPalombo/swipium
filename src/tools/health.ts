@@ -1,4 +1,4 @@
-// qa_check_health — run the Tier-1 deterministic oracle on demand.
+// qa_check_health: run the Tier-1 deterministic oracle on demand.
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -36,10 +36,10 @@ export function registerCheckHealth(server: McpServer, sessions: SessionStore): 
       await recordHealthFindings(sessions, session, health.findings, driver, health.foreground); // feeds qa_report
       const summary =
         `native health: ${health.nativeHealthy ? '✅ OK' : `❌ ${health.nativeStatus}`} · ` +
-        `app health: ${health.appStatus === 'ok' ? '✅ OK' : health.appStatus === 'degraded' ? '⚠ degraded' : '❌ error'} — foreground=${health.foreground}\n` +
+        `app health: ${health.appStatus === 'ok' ? '✅ OK' : health.appStatus === 'degraded' ? '⚠ degraded' : '❌ error'}, foreground=${health.foreground}\n` +
         (health.findings.length
           ? health.findings
-              .map((f) => `[${f.severity}] ${f.layer ?? '?'}/${f.kind}: ${f.detail}${f.evidence ? ` — "${f.evidence}"` : ''}`)
+              .map((f) => `[${f.severity}] ${f.layer ?? '?'}/${f.kind}: ${f.detail}${f.evidence ? `: "${f.evidence}"` : ''}`)
               .join('\n')
           : 'no findings');
       return qaOk(

@@ -6,7 +6,7 @@
 // When the connected client advertises the MCP elicitation capability, server.ts installs an
 // elicitation provider here and routes each pending consent through a REAL out-of-band user
 // prompt (requestConsentDecision) before the envelope ever reaches the model. On such clients a
-// declined, dismissed (`cancel`), timed-out or failed prompt is a REFUSAL — it never falls back
+// declined, dismissed (`cancel`), timed-out or failed prompt is a REFUSAL. It never falls back
 // to the model-mediated re-call. Which path decided an action is tagged as its
 // ApprovalMechanism and lands in the mutation ledger.
 
@@ -28,7 +28,7 @@ interface PendingConsent {
   req: ConsentRequest;
   createdAt: number;
   /** The session the challenge was minted in (when the minting call carried one): it can only be
-   *  consumed by a call in the SAME session — a consent minted in A is useless in B. */
+   *  consumed by a call in the SAME session. A consent minted in A is useless in B. */
   sessionId?: string;
 }
 
@@ -56,7 +56,7 @@ function prunePending(now = Date.now()): void {
   for (const [id, p] of pending) {
     if (now - p.createdAt > CONSENT_TTL_MS) forget(id);
   }
-  // Map iteration order is insertion order → the first keys are the oldest challenges.
+  // Map iteration order is insertion order, so the first keys are the oldest challenges.
   while (pending.size > CONSENT_PENDING_CAP) {
     const oldest = pending.keys().next().value;
     if (oldest === undefined) break;
@@ -71,15 +71,15 @@ function forget(consentId: string): void {
 }
 
 /** How a consent was decided (mutation-ledger audit trail, THREAT_MODEL):
- *  - 'elicitation'      — a real out-of-band user prompt (MCP elicitation) answered it;
- *  - 'client-assertion' — the client re-called with { consentId, approve:true } (portable path);
- *  - 'policy'           — the server refused it without asking (SWIPIUM_REQUIRE_ELICITATION=1). */
+ *  - 'elicitation': a real out-of-band user prompt (MCP elicitation) answered it;
+ *  - 'client-assertion': the client re-called with { consentId, approve:true } (portable path);
+ *  - 'policy': the server refused it without asking (SWIPIUM_REQUIRE_ELICITATION=1). */
 export type ApprovalMechanism = 'elicitation' | 'client-assertion' | 'policy';
 
 /** What the out-of-band prompt answered.
- *  - 'unavailable' — the client does NOT advertise (form) elicitation; nothing was asked →
+ *  - 'unavailable': the client does NOT advertise (form) elicitation; nothing was asked, so
  *    portable re-call fallback.
- *  - 'cancelled'   — the prompt was dismissed (MCP `cancel`), timed out, or the transport failed
+ *  - 'cancelled': the prompt was dismissed (MCP `cancel`), timed out, or the transport failed
  *    while it was outstanding. The human never approved, so this is a REFUSAL, never a fallback. */
 export type ElicitationAnswer = 'approved' | 'declined' | 'cancelled' | 'unavailable';
 export interface ElicitationContext {
@@ -97,13 +97,13 @@ export function setElicitationProvider(provider: ElicitationProvider | undefined
   elicitationProvider = provider;
 }
 
-// consentId → mechanism for approvals already consumed, so the mutation ledger can record
+// consentId > mechanism for approvals already consumed, so the mutation ledger can record
 // HOW each privileged action was approved even at recording sites far from the gate
 // (SessionStore.recordMutation reads this). Bounded like the ledger itself.
 const consumedMechanisms = new Map<string, ApprovalMechanism>();
 const elicitationApproved = new Set<string>();
 // Challenges currently routed to (or decided by) an out-of-band prompt: a client re-call can
-// never approve these — only the elicitation answer can (no approve:true bypass).
+// never approve these. Only the elicitation answer can (no approve:true bypass).
 const awaitingElicitation = new Set<string>();
 
 /** Mechanism that approved an already-consumed consentId (audit trail for the ledger). */
@@ -148,12 +148,12 @@ export type ConsentDecision =
 
 /**
  * Ask the connected client's HUMAN to decide a freshly-minted consent via MCP elicitation.
- *  - approved  → the caller re-invokes the tool; consumeConsent tags mechanism 'elicitation'.
- *  - declined / cancelled (dismissed, timed out, transport error, aborted call) → REFUSAL: the
+ *  - approved: the caller re-invokes the tool; consumeConsent tags mechanism 'elicitation'.
+ *  - declined / cancelled (dismissed, timed out, transport error, aborted call): REFUSAL. The
  *    challenge is burned so the client cannot self-approve it afterwards (a re-call of the tool
  *    mints a fresh challenge and a fresh prompt).
- *  - unavailable (client does not advertise elicitation) → portable re-call convention
- *    ('client-assertion') — unless SWIPIUM_REQUIRE_ELICITATION=1, in which case EVERY
+ *  - unavailable (client does not advertise elicitation): portable re-call convention
+ *    ('client-assertion'), unless SWIPIUM_REQUIRE_ELICITATION=1, in which case EVERY
  *    consent-gated action (builds, Metro, installs, data wipes, seeds…) is refused outright.
  */
 export async function requestConsentDecision(consentId: string, ctx?: ElicitationContext): Promise<ConsentDecision> {
@@ -186,7 +186,7 @@ export async function requestConsentDecision(consentId: string, ctx?: Elicitatio
       reason:
         answer === 'declined'
           ? `User declined "${req.action}" in the consent prompt`
-          : `Consent prompt for "${req.action}" was dismissed or not answered${failure ? ` (${failure})` : ''} — treated as a refusal`,
+          : `Consent prompt for "${req.action}" was dismissed or not answered${failure ? ` (${failure})` : ''}, treated as a refusal`,
     };
   }
   if (process.env.SWIPIUM_REQUIRE_ELICITATION === '1') {
@@ -223,7 +223,7 @@ export function consumeConsent(
   const entry = pending.get(consentId);
   if (entry && Date.now() - entry.createdAt > CONSENT_TTL_MS) {
     forget(consentId);
-    return { approved: false, reason: 'consent expired — re-call without consentId for a fresh challenge' };
+    return { approved: false, reason: 'consent expired; re-call without consentId for a fresh challenge' };
   }
   const req = entry?.req;
   if (!req) return { approved: false, reason: 'unknown or already-used consentId' };

@@ -153,7 +153,7 @@ describe('swipium report', () => {
     expect(JSON.parse(io.out).releaseGate.block).toBe(true);
     const md = capture();
     expect(await runReport(['--root', root, '--format', 'markdown'], md)).toBe(0);
-    expect(md.out).toContain('# QA report — com.example.demo');
+    expect(md.out).toContain('# QA report: com.example.demo');
   });
 
   it('missing session / missing report exit 2 with guidance', async () => {

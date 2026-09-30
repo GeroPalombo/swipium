@@ -1,6 +1,6 @@
 // Flow packs (Flow System V2). A pack (.swipium/packs/*.yaml) names an ordered set of
 // flows to run as one release suite. v1 runs them sequentially on the one attached device
-// (parallel:true is accepted but ignored with a warning — parallel on a single device is unsafe).
+// (parallel:true is accepted but ignored with a warning, since parallel on a single device is unsafe).
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, basename } from 'node:path';
@@ -73,7 +73,7 @@ export async function runPack(
   opts: { variables?: Record<string, string> } = {},
 ): Promise<PackRunResult> {
   const warnings: string[] = [];
-  if (pack.parallel) warnings.push('parallel:true ignored — flows run sequentially on a single device (parallel needs a device matrix).');
+  if (pack.parallel) warnings.push('parallel:true ignored: flows run sequentially on a single device (parallel needs a device matrix).');
   const results: FlowRunResult[] = [];
   for (const name of pack.flows) {
     const p = flowPath(root, name);

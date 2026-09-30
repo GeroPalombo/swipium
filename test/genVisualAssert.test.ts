@@ -42,7 +42,7 @@ describe('visual assertion prose is a manual checkpoint, not a text assertion', 
       emitPythonSuite({ model, profile: {} as never, framework: 'pytest' }),
     ]) {
       const src = all(files.filter((f) => /test|e2e/i.test(f.path)));
-      expect(src).toContain(`TODO(manual visual check — not automated): ${PROSE}`);
+      expect(src).toContain(`TODO(manual visual check, not automated): ${PROSE}`);
       expect(src).not.toContain(`assertTextVisible(${JSON.stringify(PROSE)})`);
       expect(src).not.toMatch(/assert_text_visible\(["']Settings home/);
     }

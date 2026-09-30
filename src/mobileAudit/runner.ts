@@ -36,7 +36,7 @@ export function auditChangesNetwork(profile: AuditProfile): boolean {
   return profile === 'resilience' || profile === 'release_gate';
 }
 
-/** The consent request a caller should raise before executing a network-changing audit — the same
+/** The consent request a caller should raise before executing a network-changing audit. Same
  *  `network_change` action/risk qa_network uses, with the exact toggles shown. */
 export function auditNetworkConsentRequest(profile: AuditProfile) {
   return {
@@ -69,7 +69,7 @@ export async function runMobileAudit(
   const recurrenceWarnings: string[] = [];
   let state: AuditRunState = 'completed';
 
-  // Record a fail/blocked check as an issue (the check IS the classifier → forceCategory). Returns
+  // Record a fail/blocked check as an issue (the check IS the classifier, so forceCategory). Returns
   // the issue id, or undefined when the check has no category (pure environment/setup gap).
   const recordIssue = async (title: string, raw: RawCheckResult): Promise<string | undefined> => {
     if (raw.status !== 'fail' && raw.status !== 'blocked') return undefined;
@@ -143,7 +143,7 @@ export async function runMobileAudit(
         if (!networkApproved) {
           await finalize('offline_entry', 'Offline entry', {
             status: 'blocked',
-            reason: 'airplane-mode toggle needs network_change consent — the device network was not touched',
+            reason: 'airplane-mode toggle needs network_change consent; the device network was not touched',
             evidenceUris: [],
             nextStep: 'Re-run qa_mobile_audit execute with the network_change consent approved (same gate as qa_network).',
           });
@@ -176,7 +176,7 @@ export async function runMobileAudit(
         await finalize('process_relaunch', 'Process kill / relaunch', await C.checkProcessRelaunch(ev));
         await finalize('rotation', 'Rotation', C.checkRotation());
       } finally {
-        // GUARANTEED network restore to the recorded ORIGINAL state — even if a check threw.
+        // GUARANTEED network restore to the recorded ORIGINAL state, even if a check threw.
         if (networkApproved) {
           try {
             if (auditOwnsRestore) await restoreNetwork(sessions, session, driver);
@@ -235,7 +235,7 @@ export async function runMobileAudit(
   return { profile: opts.profile, state, releaseImpact, checks, issueIds, recurrenceWarnings };
 }
 
-/** Bounded, honest account-cycle: create (first-run) → logout (controlled explore). Steps that
+/** Bounded, honest account-cycle: create (first-run) > logout (controlled explore). Steps that
  *  cannot be confirmed are reported blocked/needs_input/skipped, never a false pass. */
 async function runAccountCycle(
   sessions: SessionStore,
@@ -321,7 +321,7 @@ async function runAccountCycle(
   // oracles, so the outcome is honest: skipped/blocked unless the create step already failed.
   if (createResult.status === 'pass') {
     // Controlled logout: find + tap a logout control (disposable account only) and READ the resulting
-    // logged-out auth surface immediately — without a full exploration that would auto-re-login via the
+    // logged-out auth surface immediately, without a full exploration that would auto-re-login via the
     // stored generated credentials and hide the forgot-password entrypoint (account-cycle bug).
     const ev: AuditEvidenceCtx = { sessions, session, driver, appId: session.appId };
     let loggedOutText = '';
@@ -331,14 +331,14 @@ async function runAccountCycle(
       if (lo.tapped && lo.authSurface)
         await finalize('logout', 'Logout', {
           status: 'pass',
-          reason: 'logged out — reached a logged-out auth surface',
+          reason: 'logged out: reached a logged-out auth surface',
           evidenceUris: [],
           workflow: 'account_cycle',
         });
       else if (lo.tapped)
         await finalize('logout', 'Logout', {
           status: 'skipped',
-          reason: 'tapped a logout control but did not clearly reach a logged-out auth surface — confirm manually',
+          reason: 'tapped a logout control but did not clearly reach a logged-out auth surface; confirm manually',
           evidenceUris: [],
           workflow: 'account_cycle',
         });
@@ -364,12 +364,12 @@ async function runAccountCycle(
     }
 
     // Forgot-password is evaluated on the LOGGED-OUT auth surface captured above (right after logout),
-    // BEFORE login_again returns to home — otherwise a valid "Forgot password?" link on the login
+    // BEFORE login_again returns to home. Otherwise a valid "Forgot password?" link on the login
     // screen would be falsely reported missing. Finalized after login_again to keep output order.
     const forgotResult = C.checkForgotPassword(loggedOutText);
 
     // Login again: re-run first-run, which now reuses the generated credentials (hasProvidedCredentials
-    // → login intent). Pass ONLY when an authenticated/home state is observed; OTP/MFA → needs_input.
+    // > login intent). Pass ONLY when an authenticated/home state is observed; OTP/MFA > needs_input.
     try {
       const fr2 = await runFirstRun(sessions, session, driver, { mode: 'until_home', allowGeneratedAccount: true });
       let login: RawCheckResult;

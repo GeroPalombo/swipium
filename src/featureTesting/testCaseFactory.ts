@@ -21,7 +21,7 @@ export interface FeatureTestCase {
   fixtures: string[];
   steps: string[];
   expected: string[];
-  /** Filled after execution by resultMerge — never conflated with `expected`. */
+  /** Filled after execution by resultMerge. Never conflated with `expected`. */
   actualResult: string[];
   status: CaseStatus;
   evidence: string[];
@@ -81,7 +81,7 @@ export function generateFeatureTestCases(
   // ---- conservative: the core happy path only ----
   cases.push(
     mk({
-      title: `${scope.title} — happy path`,
+      title: `${scope.title}: happy path`,
       creativity: 'conservative',
       purpose: objective.userGoal,
       preconditions: [
@@ -98,18 +98,18 @@ export function generateFeatureTestCases(
     for (const neg of objective.negativeCases) {
       cases.push(
         mk({
-          title: `${scope.title} — ${shorten(neg)}`,
+          title: `${scope.title}: ${shorten(neg)}`,
           creativity: 'standard',
           purpose: `Validate a common negative/validation case for ${scope.title}.`,
-          steps: [`Reach the ${scope.title} surface`, neg.split('→')[0].trim()],
-          expected: [neg.includes('→') ? neg.split('→')[1].trim() : 'A clear validation/error state is shown without a crash'],
+          steps: [`Reach the ${scope.title} surface`, neg.split(' > ')[0].trim()],
+          expected: [neg.includes(' > ') ? neg.split(' > ')[1].trim() : 'A clear validation/error state is shown without a crash'],
         }),
       );
     }
     if (objective.inputFields.length) {
       cases.push(
         mk({
-          title: `${scope.title} — required input validation`,
+          title: `${scope.title}: required input validation`,
           creativity: 'standard',
           purpose: 'Submitting with required inputs missing is rejected.',
           steps: [
@@ -131,7 +131,7 @@ export function generateFeatureTestCases(
     for (const edge of objective.edgeCases) {
       cases.push(
         mk({
-          title: `${scope.title} — edge: ${shorten(edge)}`,
+          title: `${scope.title} edge: ${shorten(edge)}`,
           creativity: 'creative',
           purpose: `Exercise an edge/boundary condition for ${scope.title}.`,
           steps: [`Reach the ${scope.title} surface`, edge],
@@ -141,7 +141,7 @@ export function generateFeatureTestCases(
     }
     cases.push(
       mk({
-        title: `${scope.title} — offline / interruption resilience`,
+        title: `${scope.title}: offline / interruption resilience`,
         creativity: 'creative',
         purpose: 'The feature degrades gracefully when connectivity drops or it is interrupted.',
         steps: [`Reach the ${scope.title} surface`, 'Toggle airplane mode / background and foreground the app mid-flow'],
@@ -151,12 +151,12 @@ export function generateFeatureTestCases(
     );
   }
 
-  // ---- adversarial: destructive/security/high-impact — consent-gated, disposable state only ----
+  // ---- adversarial: destructive/security/high-impact, consent-gated, disposable state only ----
   if (maxRank >= CREATIVITY_RANK.adversarial && opts.allowAdversarial && objective.destructiveBoundaries.length) {
     for (const boundary of objective.destructiveBoundaries) {
       cases.push(
         mk({
-          title: `${scope.title} — destructive boundary`,
+          title: `${scope.title}: destructive boundary`,
           creativity: 'adversarial',
           purpose: 'Probe a destructive/high-impact boundary safely.',
           riskLevel: 'high',
@@ -176,6 +176,6 @@ function rank(level: 'low' | 'medium' | 'high'): number {
   return level === 'high' ? 2 : level === 'medium' ? 1 : 0;
 }
 function shorten(s: string): string {
-  const head = s.split('→')[0].trim();
+  const head = s.split(' > ')[0].trim();
   return head.length > 48 ? head.slice(0, 45) + '…' : head;
 }

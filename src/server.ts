@@ -74,7 +74,7 @@ export interface ServerContext {
   sessions: SessionStore;
 }
 
-/** How long a consent prompt may stay open before it counts as unanswered (→ refusal).
+/** How long a consent prompt may stay open before it counts as unanswered (> refusal).
  * Explicit, because the SDK's default request timeout (60 s) is far too short for a human. */
 export const ELICITATION_TIMEOUT_MS = 10 * 60_000;
 
@@ -82,16 +82,16 @@ export const ELICITATION_TIMEOUT_MS = 10 * 60_000;
  * Elicitation provider (consent.ts header, THREAT_MODEL "compromised client self-approval"):
  * asks the connected client's HUMAN to decide a consent via the MCP elicitation capability
  * (`elicitation/create` with a flat one-boolean-field schema, per spec). Capabilities are only
- * known after `initialize` — and tools are registered before connect — so the capability check
+ * known after `initialize` (and tools are registered before connect), so the capability check
  * happens lazily on every call, never at construction. Only a client that does NOT advertise
  * form elicitation yields 'unavailable' (portable re-call fallback). Once the prompt is sent,
- * `cancel`, a timeout, an aborted tool call or a transport error all reject/return 'cancelled'
- * — a refusal (MCP spec: cancel = dismissed without an explicit choice, never consent).
+ * `cancel`, a timeout, an aborted tool call or a transport error all reject/return 'cancelled',
+ * which is a refusal (MCP spec: cancel = dismissed without an explicit choice, never consent).
  */
 /** Consent-prompt field hygiene: the explain / command strings interpolate repo-derived values
  * (flow names, queries, URLs, configured argv). Strip control characters (incl. newlines, which
  * could fake a second "Will run:" line), bidi overrides and zero-width characters, collapse
- * whitespace, and cap the length — the caller then QUOTES the result. Exported for tests. */
+ * whitespace, and cap the length. The caller then QUOTES the result. Exported for tests. */
 export function sanitizePromptField(value: unknown, max = 300): string {
   const flat = String(value ?? '')
     .replace(/[\p{Cc}\u2028\u2029\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/gu, ' ')
@@ -140,7 +140,7 @@ function makeElicitationProvider(server: McpServer): ElicitationProvider {
     );
     if (answer.action === 'accept') return answer.content?.approve === true ? 'approved' : 'declined';
     if (answer.action === 'decline') return 'declined';
-    return 'cancelled'; // 'cancel': dismissed without answering → refusal, never a self-approval fallback
+    return 'cancelled'; // 'cancel': dismissed without answering > refusal, never a self-approval fallback
   };
 }
 
@@ -182,14 +182,14 @@ function pendingConsentId(result: unknown): string | undefined {
  * Consent routing (consent.ts header): when a tool handler returns a requiresConsent envelope,
  * route the pending consent through a REAL out-of-band user prompt before the envelope ever
  * reaches the model. Outcomes:
- *  - elicitation approved → re-invoke the SAME handler exactly once with the consent attached
+ *  - elicitation approved > re-invoke the SAME handler exactly once with the consent attached
  *    (the approval was recorded, so consumeConsent tags mechanism 'elicitation');
- *  - elicitation declined → CONSENT_DECLINED; cancelled/timed out/transport error →
+ *  - elicitation declined > CONSENT_DECLINED; cancelled/timed out/transport error >
  *    CONSENT_CANCELLED (retry-safe: a re-call issues a fresh prompt). Either way the challenge
  *    is burned (no approve:true self-approval afterwards) and a `refused` ledger row is written;
- *  - refused (SWIPIUM_REQUIRE_ELICITATION=1 and no elicitation support) → CONSENT_REFUSED;
- *  - client-assertion (client does not advertise elicitation) → the portable envelope unchanged.
- * The re-invocation's result is never routed again — so this cannot loop; if it asks for a NEW
+ *  - refused (SWIPIUM_REQUIRE_ELICITATION=1 and no elicitation support) > CONSENT_REFUSED;
+ *  - client-assertion (client does not advertise elicitation) > the portable envelope unchanged.
+ * The re-invocation's result is never routed again, so this cannot loop; if it asks for a NEW
  * consent (the target changed under the prompt) that challenge is burned and CONSENT_CANCELLED
  * returned, so the model never receives a self-approvable envelope on an elicitation client.
  */
@@ -241,7 +241,7 @@ async function routePendingConsent(
       burnConsent(again);
       burnConsent(consentId);
       return qaError({
-        what: 'The action changed while the user was deciding, so the approval no longer matches it — nothing ran.',
+        what: 'The action changed while the user was deciding, so the approval no longer matches it. Nothing ran.',
         changedState: false,
         retrySafe: true,
         failureCode: 'CONSENT_CANCELLED',
@@ -250,12 +250,12 @@ async function routePendingConsent(
     }
     return out;
   }
-  return result; // 'client-assertion': portable path — the model relays the consent envelope
+  return result; // 'client-assertion': portable path (the model relays the consent envelope)
 }
 
 /**
  * Wrap every tool handler so it runs inside the calling session's response mode.
- * Resolved once, centrally — individual tools stay mode-agnostic.
+ * Resolved once, centrally. Individual tools stay mode-agnostic.
  * `compact` shrinks the text channel; `structuredContent` is always full.
  * The same wrapper also routes requiresConsent envelopes through out-of-band elicitation
  * (routePendingConsent), so every consent-gated tool inherits it with zero per-tool changes.
@@ -290,7 +290,7 @@ function installResponseModeWrapper(
       // `rootSource` (+ a note when the root was only guessed from the server cwd).
       // Consents minted/consumed during this call are bound to its sessionId (consent.ts).
       // Cancellation: the call's MCP signal (extra.signal, the handler's last argument) is scoped
-      // to THIS call (abortScope) — driver adb/WDA calls made by the tool abort with it, and a
+      // to THIS call (abortScope): driver adb/WDA calls made by the tool abort with it, and a
       // background job's signal (bound by the job itself) never leaks into or out of it.
       const extra = a[a.length - 1] as { signal?: unknown } | undefined;
       const callSignal = extra?.signal instanceof AbortSignal ? extra.signal : undefined;
@@ -366,7 +366,7 @@ export function stripSchemaDialect(result: unknown): unknown {
 }
 
 /** Top-level argument keys a tool's input schema does not declare. The advertised JSON schema
- * says additionalProperties:false, but the SDK's zod object silently STRIPS unknown keys — so a
+ * says additionalProperties:false, but the SDK's zod object silently STRIPS unknown keys, so a
  * call like qa_app_control { action:"force_stop", appId:"other.app" } used to run against the
  * session's app while the caller believed it targeted another. Deprecated aliases that are still
  * declared in the schema are accepted (they are schema properties). Exported for tests. */
@@ -380,7 +380,7 @@ export function unknownArgumentsError(name: string, unknown: string[], accepted:
   const list = (keys: readonly string[]) => keys.map((k) => JSON.stringify(k)).join(', ');
   return qaError(
     {
-      what: `${name} does not accept the argument${unknown.length === 1 ? '' : 's'} ${list(unknown)} — nothing was run.`,
+      what: `${name} does not accept the argument${unknown.length === 1 ? '' : 's'} ${list(unknown)}. Nothing was run.`,
       changedState: false,
       retrySafe: true,
       failureCode: 'INVALID_ARGUMENT',
@@ -393,8 +393,8 @@ export function unknownArgumentsError(name: string, unknown: string[], accepted:
   );
 }
 
-/** tools/call: unknown removed-tool names and legacy call shapes → STALE_CLIENT (with the
- * replacement + stale-client hint); undeclared top-level arguments → INVALID_ARGUMENT (before the
+/** tools/call: unknown removed-tool names and legacy call shapes > STALE_CLIENT (with the
+ * replacement + stale-client hint); undeclared top-level arguments > INVALID_ARGUMENT (before the
  * handler runs); tools/list: strip `$schema`. */
 function installProtocolShims(server: McpServer, paramNames: ReadonlyMap<string, readonly string[]>): void {
   wrapRequestHandler(server, 'tools/call', (orig) => async (request, extra) => {
@@ -408,7 +408,7 @@ function installProtocolShims(server: McpServer, paramNames: ReadonlyMap<string,
       if (unknown.length) return unknownArgumentsError(name, unknown, accepted);
     }
     const result = (await orig(request, extra)) as CallToolResult;
-    // Legacy enum values fail the CURRENT schema's validation → rewrite that raw error only.
+    // Legacy enum values fail the CURRENT schema's validation > rewrite that raw error only.
     if (replacement && result?.isError && !result.structuredContent)
       return staleClientError(`${name} ${JSON.stringify(args?.action ?? args?.for)}`, replacement);
     return result;
@@ -432,7 +432,7 @@ function assertToolSurface(attempted: ReadonlySet<string>): void {
   throw new Error(
     `Tool surface mismatch: ${attempted.size} tools registered vs ${TOOL_NAMES.length} in TOOL_NAMES (src/version.ts).` +
       (missing.length ? `\n  Missing (allowlisted but never registered): ${missing.join(', ')}` : '') +
-      (extra.length ? `\n  Extra (registered but not in TOOL_NAMES — they would be silently dropped): ${extra.join(', ')}` : '') +
+      (extra.length ? `\n  Extra (registered but not in TOOL_NAMES, so they would be silently dropped): ${extra.join(', ')}` : '') +
       '\nFix: add/remove the tool in TOOL_NAMES and CAPABILITY_GROUPS, or register it in createServer().',
   );
 }
@@ -441,14 +441,14 @@ function assertToolSurface(attempted: ReadonlySet<string>): void {
  * un-paginated resources/list response, so each listing stays bounded. */
 const RESOURCE_LIST_CAP = 100;
 
-/** Cap a resources/list result and DISCLOSE the truncation on the final entry's description —
- * silent truncation is forbidden. Clients read anything omitted here directly by URI
+/** Cap a resources/list result and DISCLOSE the truncation on the final entry's description.
+ * Silent truncation is forbidden. Clients read anything omitted here directly by URI
  * (qa_get_artifact / qa_app_map_read always cover the full set). */
 function capResourceListing<T extends { description?: string }>(all: T[], cap = RESOURCE_LIST_CAP): T[] {
   if (all.length <= cap) return all;
   const shown = all.slice(0, cap);
   const last = shown[shown.length - 1];
-  last.description = `${last.description ? `${last.description} — ` : ''}[listing capped: showing ${cap} of ${all.length}; the rest remain readable by URI]`;
+  last.description = `${last.description ? `${last.description} ` : ''}[listing capped: showing ${cap} of ${all.length}; the rest remain readable by URI]`;
   return shown;
 }
 
@@ -463,7 +463,7 @@ async function currentProjectRoots(server: McpServer, sessions: SessionStore): P
       for (const r of res.roots ?? []) if (typeof r.uri === 'string' && r.uri.startsWith('file://')) roots.add(fileURLToPath(r.uri));
     }
   } catch {
-    // roots/list failed — fall back to the process-local roots only
+    // roots/list failed: fall back to the process-local roots only
   }
   return [...roots];
 }
@@ -483,7 +483,7 @@ function listedArtifactUri(uri: string): string {
   return `${prefix}${seg(id)}/${seg(kind)}/${seg(rest.map(decodeUriSegment).join('/'))}`;
 }
 
-/** App-map listings load every map JSON — cache per scope, keyed on each root's map mtime.
+/** App-map listings load every map JSON, so cache per scope, keyed on each root's map mtime.
  * The short TTL also covers roots known only to src/tools/appMap.ts's in-process registry. */
 const APP_MAP_LIST_TTL_MS = 10_000;
 function makeAppMapLister(sessions: SessionStore) {
@@ -578,13 +578,13 @@ export function createServer(): ServerContext {
   setSchemaHash(computeSchemaHash(surface));
   installProtocolShims(server, paramNames);
 
-  // Reusable workflow templates (MCP prompts capability) — thin orchestration of the tools above.
+  // Reusable workflow templates (MCP prompts capability): thin orchestration of the tools above.
   registerPrompts(server);
 
   // Artifacts as MCP resources (clients that support them); qa_get_artifact is the fallback.
   // The list callback lets resource-aware clients BROWSE artifacts instead of mining
   // URIs out of tool text: newest RESOURCE_LIST_CAP across the sessions of the CURRENT project
-  // root(s) (currentProjectRoots), straight from the in-memory ledger — no device calls.
+  // root(s) (currentProjectRoots), straight from the in-memory ledger (no device calls).
   // Sensitive-mode sessions are never listed (their artifacts stay readable by exact URI only).
   // ArtifactRecord carries no byte size, so the description is kind + label; sizes come from
   // qa_get_artifact { mode: "metadata" }.
@@ -601,7 +601,7 @@ export function createServer(): ServerContext {
             uri: listedArtifactUri(rec.uri),
             name: basename(rec.path),
             mimeType: rec.mime,
-            description: rec.label ? `${rec.kind} — ${rec.label}` : rec.kind,
+            description: rec.label ? `${rec.kind}: ${rec.label}` : rec.kind,
           }));
         return { resources: capResourceListing(all) };
       },
@@ -618,12 +618,12 @@ export function createServer(): ServerContext {
     },
   );
 
-  // App Knowledge Map as MCP resources — full map + per-feature / per-screen /
+  // App Knowledge Map as MCP resources: full map + per-feature / per-screen /
   // test-suite sections, so large map data is read by URI instead of flooding a tool's text result.
   // Both app-map templates list what is ACTUALLY readable right now: section/full URIs
-  // for every project root known to this run that has a map on disk; no map → empty list, never
+  // for every project root known to this run that has a map on disk; no map > empty list, never
   // an error. Enumeration is a local JSON load (listAppMapResources), scoped to the current project
-  // root(s) and cached on map mtime (makeAppMapLister) — no device calls. Listed section ids are
+  // root(s) and cached on map mtime (makeAppMapLister), no device calls. Listed section ids are
   // percent-encoded by listAppMapResources; the read handlers decode template variables.
   const listAppMaps = makeAppMapLister(sessions);
   server.registerResource(
@@ -664,7 +664,7 @@ export function createServer(): ServerContext {
 
 export async function startServer(): Promise<void> {
   // GUI MCP clients don't inherit the shell PATH: APPEND the Android SDK's platform-tools/ and
-  // emulator/ to PATH — only for a tool (adb / emulator) that is not already resolvable on PATH,
+  // emulator/ to PATH, but only for a tool (adb / emulator) that is not already resolvable on PATH,
   // so the user's own copy is never shadowed. Idempotent (the CLI entry already calls it); done
   // here too so embedders that call startServer() directly get it.
   try {
@@ -675,7 +675,7 @@ export async function startServer(): Promise<void> {
   const { server, sessions } = createServer();
   const transport = new StdioServerTransport();
 
-  // Persistence is debounced (SessionStore.persist) — make sure a graceful exit never
+  // Persistence is debounced (SessionStore.persist), so make sure a graceful exit never
   // loses the trailing write. 'exit' handlers must be synchronous; flushAll is.
   process.once('exit', () => sessions.flushAll());
 
@@ -707,7 +707,7 @@ export async function startServer(): Promise<void> {
   log('info', 'swipium starting', { version: SWIPIUM_VERSION, tools: TOOL_COUNT });
 
   await server.connect(transport);
-  // Chain AFTER connect — server.connect() sets its own transport.onclose, so we must wrap
+  // Chain AFTER connect: server.connect() sets its own transport.onclose, so we must wrap
   // it rather than assign before (which gets overwritten). stdin EOF = client disconnected.
   const sdkOnClose = transport.onclose;
   transport.onclose = () => {
@@ -716,11 +716,11 @@ export async function startServer(): Promise<void> {
   };
   log('info', 'swipium connected over stdio');
   // Reap long-lived children (Metro, managed WDA, recorders) left behind by a crashed previous
-  // server run — AFTER connect and in the background, so a slow sweep (lock wait, WDA /status
+  // server run. Runs AFTER connect and in the background, so a slow sweep (lock wait, WDA /status
   // probes) never delays the server becoming ready. Ownership + start-time/command fingerprint
   // checks make this safe next to a live concurrent instance and against recycled PIDs. A managed
   // WDA < 12 h old whose /status is healthy is ADOPTED instead (re-owned by this server) so a
-  // resumed iOS session keeps its WDA — shutdown intentionally leaves managed WDA running.
+  // resumed iOS session keeps its WDA (shutdown intentionally leaves managed WDA running).
   void startOrphanSweep();
 }
 

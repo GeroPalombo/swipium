@@ -1,4 +1,4 @@
-// qa_flow_check + qa_flow_run — turn exploration into repeatable QA.
+// qa_flow_check + qa_flow_run: turn exploration into repeatable QA.
 // Flows live as .swipium/flows/*.yaml. check = parse + static validation (no device).
 // run (mode:"run", default) = the orchestrator (src/flows/run.ts), reporting the exact failing
 // step + evidence. run (mode:"plan", 1.5.0 consolidation) = read-only execution preview:
@@ -75,14 +75,14 @@ export function loadFlowSource(
     }
   }
   return {
-    error: `Flow not found. Looked for: ${candidates.join(', ') || '(no project root — pass projectRoot or set SWIPIUM_PROJECT_ROOT)'}`,
+    error: `Flow not found. Looked for: ${candidates.join(', ') || '(no project root; pass projectRoot or set SWIPIUM_PROJECT_ROOT)'}`,
     errorCode: 'FLOW_NOT_FOUND',
   };
 }
 
 /**
- * The project root a flow tool reads from: explicit projectRoot arg → the session's root →
- * resolveProjectRoot (MCP roots → SWIPIUM_PROJECT_ROOT/CLAUDE_PROJECT_DIR → cwd marker), like
+ * The project root a flow tool reads from: explicit projectRoot arg > the session's root >
+ * resolveProjectRoot (MCP roots > SWIPIUM_PROJECT_ROOT/CLAUDE_PROJECT_DIR > cwd marker), like
  * every other root-aware tool. Undefined only when nothing resolves (inline flowYaml still works).
  */
 async function flowRoot(server: McpServer, sessionRoot: string | undefined, projectRoot?: string): Promise<string | undefined> {
@@ -131,8 +131,8 @@ function allFlowSteps(flow: Flow): FlowStep[] {
 }
 
 /** Where a seed's command came from, stated in consent: fixtures are loaded from the repo's
- *  .swipium/fixtures.json (or qa_start_session fixtures) — Swipium never reviewed them. */
-const SEED_ORIGIN = 'declared fixture (.swipium/fixtures.json or qa_start_session fixtures) — repo-supplied, UNREVIEWED';
+ *  .swipium/fixtures.json (or qa_start_session fixtures). Swipium never reviewed them. */
+const SEED_ORIGIN = 'declared fixture (.swipium/fixtures.json or qa_start_session fixtures), repo-supplied, UNREVIEWED';
 
 /** `${VAR}` URL preview for consent: the URL as it will be opened, with credential-like variable
  *  values and registered session secrets masked, plus where each variable is read from. */
@@ -165,7 +165,7 @@ function flowMutationAffects(
           kind: step.kind,
           fixture: step.fixture,
           seedType: seed?.type ?? 'unknown',
-          // The EXACT argv / URL the seed will run — consent must show what executes.
+          // The EXACT argv / URL the seed will run. Consent must show what executes.
           command: seed ? seedExactCommand(seed) : null,
           origin: SEED_ORIGIN,
         };
@@ -189,7 +189,7 @@ function flowMutationAffects(
 function mutationCommandLines(affects: ReturnType<typeof flowMutationAffects>): string[] {
   return affects.mutations.map((m) => {
     if (m.kind === 'seed' && 'fixture' in m)
-      return `${m.step}:seed ${m.fixture} [${m.seedType}] → ${m.command ?? '(no seed spec — step will fail)'}  (repo-supplied, unreviewed)`;
+      return `${m.step}:seed ${m.fixture} [${m.seedType}] > ${m.command ?? '(no seed spec, step will fail)'}  (repo-supplied, unreviewed)`;
     if (m.kind === 'openUrl' && 'resolvedUrl' in m)
       return `${m.step}:openUrl ${m.resolvedUrl}  (variables: ${m.variables.map((v) => `${v.name}←${v.source}`).join(', ')})`;
     return `${m.step}:${m.kind}`;
@@ -220,7 +220,7 @@ const LOCATOR_FAILURES = new Set(['ELEMENT_NOT_FOUND', 'AMBIGUOUS_SELECTOR', 'ST
 /** nextSteps for a failed qa_flow_run: point at qa_flow_repair for the failing step. */
 export function failedFlowNextSteps(name: string, flowArg: string | undefined, failedAtStep?: number, failureCode?: string): string[] {
   const out: string[] = [];
-  // A missing variable is not locator drift — qa_flow_repair cannot fix it (and a cancelled run is
+  // A missing variable is not locator drift: qa_flow_repair cannot fix it (and a cancelled run is
   // not a failure to repair).
   if (failedAtStep != null && failureCode !== 'MISSING_FIXTURE' && failureCode !== 'CANCELLED') {
     const target = flowArg ? `flow:"${flowArg}"` : 'flowYaml:<same YAML>';
@@ -244,7 +244,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
         'step, plus warnings. Pass flow (name or path) or flowYaml. For an execution preview per backend use qa_flow_run mode:"plan".',
       inputSchema: {
         sessionId: z.string().optional(),
-        projectRoot: z.string().optional().describe('Absolute app root (default: session root → MCP roots → env → cwd).'),
+        projectRoot: z.string().optional().describe('Absolute app root (default: session root > MCP roots > env > cwd).'),
         flow: z.string().optional().describe('Flow name under .swipium/flows, or a path to a .yaml file.'),
         flowYaml: z.string().optional().describe('Inline flow YAML (instead of a file).'),
         platform: z.enum(['android', 'ios', 'cross-platform']).optional().describe('Authoring target for platform-aware warnings.'),
@@ -272,12 +272,12 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
       const allSteps = [...parsed.setup, ...parsed.steps, ...parsed.teardown];
       const STRUCTURED_KINDS = new Set(['tap', 'assertVisible', 'assertNotVisible', 'scrollTo', 'waitForVisible', 'inputText']);
       const warnings: string[] = [];
-      if (!parsed.appId) warnings.push("No appId — a prepareTarget step will rely on the session's prepared appId.");
+      if (!parsed.appId) warnings.push("No appId, so a prepareTarget step will rely on the session's prepared appId.");
       if (allSteps.some((s) => s.kind === 'tap' && s.selector.startsWith('@')))
-        warnings.push('Uses @ref selectors — refs are run-time only; prefer text/id selectors for durable flows.');
+        warnings.push('Uses @ref selectors. Refs are run-time only; prefer text/id selectors for durable flows.');
       if (src.yamlText!.includes('${'))
         warnings.push(
-          `Uses \${VARIABLES} — provide them via qa_flow_run { variables }, stored session inputs, or ${FLOW_ENV_PREFIX}* environment variables (other env names are never read).`,
+          `Uses \${VARIABLES}. Provide them via qa_flow_run { variables }, stored session inputs, or ${FLOW_ENV_PREFIX}* environment variables (other env names are never read).`,
         );
       const flowOcrSteps = ocrSteps(parsed);
       if (flowOcrSteps.length) {
@@ -294,12 +294,12 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
       const usesStructured = allSteps.some((s) => STRUCTURED_KINDS.has(s.kind));
       if (driverKind === 'simulator' && parsed.mode === 'structured') {
         warnings.push(
-          'mode:structured on the iOS simulator backend — tap/assertVisible/inputText need a UI tree (unavailable). Use mode: visual with image/visual steps.',
+          'mode:structured on the iOS simulator backend. tap/assertVisible/inputText need a UI tree (unavailable). Use mode: visual with image/visual steps.',
         );
       }
       if (parsed.mode === 'visual' && usesStructured) {
         warnings.push(
-          'mode:visual but the flow uses structured steps (tap/assertVisible/…) — those need a UI tree and will fail on a visual-only screen.',
+          'mode:visual but the flow uses structured steps (tap/assertVisible/…). Those need a UI tree and will fail on a visual-only screen.',
         );
       }
       for (const s of allSteps) {
@@ -349,7 +349,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
         for (const s of allSteps) {
           if (s.kind === 'tapImage' || s.kind === 'assertImage') {
             const p = withinRootOrNull(root, s.template);
-            if (!p) warnings.push(`image template outside the project root: ${s.template} — qa_flow_run will refuse it.`);
+            if (!p) warnings.push(`image template outside the project root: ${s.template}; qa_flow_run will refuse it.`);
             else if (!existsSync(p)) warnings.push(`image template not found: ${s.template} (resolve relative to the project root).`);
           }
         }
@@ -370,7 +370,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
           warnings,
           lintFindings,
         },
-        `✅ flow "${parsed.name}" is valid — ${parsed.steps.length} steps (mode=${parsed.mode}${parsed.setup.length ? `, ${parsed.setup.length} setup` : ''}${parsed.teardown.length ? `, ${parsed.teardown.length} teardown` : ''})${warnings.length ? `\nwarnings:\n - ${warnings.join('\n - ')}` : ''}`,
+        `✅ flow "${parsed.name}" is valid: ${parsed.steps.length} steps (mode=${parsed.mode}${parsed.setup.length ? `, ${parsed.setup.length} setup` : ''}${parsed.teardown.length ? `, ${parsed.teardown.length} teardown` : ''})${warnings.length ? `\nwarnings:\n - ${warnings.join('\n - ')}` : ''}`,
       );
     },
   );
@@ -391,7 +391,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
         projectRoot: z
           .string()
           .optional()
-          .describe('plan: absolute app root for flow names (default: session root → MCP roots → env → cwd).'),
+          .describe('plan: absolute app root for flow names (default: session root > MCP roots > env > cwd).'),
         flow: z.string().optional().describe('Flow name under .swipium/flows, or a .yaml path.'),
         flowYaml: z.string().optional().describe('Inline flow YAML.'),
         variables: z
@@ -419,7 +419,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
       const effectiveMode = mode ?? 'run';
       const notes: string[] = [];
 
-      // ---- mode:"plan" — read-only execution preview (merged twin, 1.5.0). ----
+      // ---- mode:"plan": read-only execution preview (merged twin, 1.5.0). ----
       if (effectiveMode === 'plan') {
         const ignored = [
           variables !== undefined && 'variables',
@@ -428,7 +428,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
           approve !== undefined && 'approve',
         ].filter((x): x is string => !!x);
         if (ignored.length)
-          notes.push(`ignored parameter(s) not applicable to mode:"plan": ${ignored.join(', ')} — re-run with mode:"run" to execute`);
+          notes.push(`ignored parameter(s) not applicable to mode:"plan": ${ignored.join(', ')}; re-run with mode:"run" to execute`);
 
         const session = sessionId ? sessions.get(sessionId) : undefined;
         const root = await flowRoot(server, session?.root, projectRoot);
@@ -440,7 +440,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
           return qaAnnotate(
             qaError(
               {
-                what: `Flow is invalid (${errors.length} error${errors.length === 1 ? '' : 's'}) — run qa_flow_check`,
+                what: `Flow is invalid (${errors.length} error${errors.length === 1 ? '' : 's'}), run qa_flow_check`,
                 changedState: false,
                 retrySafe: true,
                 failureCode: 'INVALID_FLOW',
@@ -456,7 +456,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
         const attachedBackend = session?.driver?.kind ? backendForDriverKind(session.driver.kind, appiumHints) : undefined;
 
         // Which backends to plan for: an explicit one, else all concrete backends (so the answer covers
-        // Android + iOS even with no device attached — the pre-run "can this run?" product question).
+        // Android + iOS even with no device attached: the pre-run "can this run?" product question).
         const targets: AutomationBackend[] = backend ? [backend] : [...ALL_BACKENDS];
         if (attachedBackend && attachedBackend !== 'unknown' && !targets.includes(attachedBackend)) targets.unshift(attachedBackend);
 
@@ -489,10 +489,10 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
         });
 
         const summaryLines = plans.map((p) => {
-          const head = `${STATUS_ICON[p.status] ?? '•'} ${p.backend}${p.attached ? ' (attached)' : ''}: ${p.status} — ${p.supportedSteps} supported, ${p.unsupportedSteps} unsupported`;
+          const head = `${STATUS_ICON[p.status] ?? '•'} ${p.backend}${p.attached ? ' (attached)' : ''}: ${p.status}, ${p.supportedSteps} supported, ${p.unsupportedSteps} unsupported`;
           return `${head}\n   ${p.agentMessage}`;
         });
-        const summary = `flow "${parsed.name}" — automation plan across ${plans.length} backend(s) (mode:"plan" — read-only, nothing executed):\n${summaryLines.join('\n')}`;
+        const summary = `flow "${parsed.name}": automation plan across ${plans.length} backend(s) (mode:"plan", read-only, nothing executed):\n${summaryLines.join('\n')}`;
 
         return qaAnnotate(
           qaOk({ flow: parsed.name, appId: parsed.appId ?? null, mode: parsed.mode, source: src.source, plans }, summary),
@@ -500,14 +500,14 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
         );
       }
 
-      // ---- mode:"run" — execute on the prepared device. ----
+      // ---- mode:"run": execute on the prepared device. ----
       const runIgnored = [
         backend !== undefined && 'backend',
         appium !== undefined && 'appium',
         projectRoot !== undefined && 'projectRoot',
       ].filter((x): x is string => !!x);
       if (runIgnored.length)
-        notes.push(`ignored parameter(s) not applicable to mode:"run": ${runIgnored.join(', ')} — they refine the mode:"plan" preview`);
+        notes.push(`ignored parameter(s) not applicable to mode:"run": ${runIgnored.join(', ')}; they refine the mode:"plan" preview`);
 
       const session = sessionId ? sessions.get(sessionId) : undefined;
       if (sessionId && !session) return qaAnnotate(unknownSessionError(sessionId), notes);
@@ -535,7 +535,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
         return qaAnnotate(
           qaError(
             {
-              what: `Flow is invalid — run qa_flow_check first`,
+              what: `Flow is invalid. Run qa_flow_check first`,
               changedState: false,
               retrySafe: true,
               failureCode: 'INVALID_FLOW',
@@ -664,10 +664,10 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
                   ? `Run flow "${parsed.name}" with external visual provider steps? OCR steps pass ${runs * externalProviderSteps.length} screenshot(s) to the configured provider and any mutating steps can change app/device/test state.`
                   : `Run mutating flow "${parsed.name}"? Mutating steps can change app/device/test state and will be recorded in the mutation ledger.`) +
                 (affects.mutations.some((m) => m.kind === 'seed')
-                  ? " Seed steps run the exact command/URL shown, taken from the repo's fixture declarations — these are repo-supplied and UNREVIEWED by Swipium; approve only if you trust them."
+                  ? " Seed steps run the exact command/URL shown, taken from the repo's fixture declarations. These are repo-supplied and UNREVIEWED by Swipium; approve only if you trust them."
                   : '') +
                 (affects.mutations.some((m) => m.kind === 'openUrl')
-                  ? ' openUrl steps interpolate variables into a URL that leaves the test harness — check the destination.'
+                  ? ' openUrl steps interpolate variables into a URL that leaves the test harness, so check the destination.'
                   : ''),
             }),
             notes,
@@ -710,7 +710,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
                 failureCode: r.failureCode,
               })),
             },
-            `flow "${parsed.name}" × ${results.length}: ${flake.passed} passed, ${flake.failed} failed → ${flake.classification === 'flaky' ? '⚠ FLAKY' : flake.classification === 'deterministic-pass' ? '✅ deterministic-pass' : '❌ deterministic-fail'} (${flake.passRate}% pass-rate); triage=${flake.triage.likelyCause}`,
+            `flow "${parsed.name}" × ${results.length}: ${flake.passed} passed, ${flake.failed} failed > ${flake.classification === 'flaky' ? '⚠ FLAKY' : flake.classification === 'deterministic-pass' ? '✅ deterministic-pass' : '❌ deterministic-fail'} (${flake.passRate}% pass-rate); triage=${flake.triage.likelyCause}`,
           ),
           notes,
         );
@@ -720,16 +720,16 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
 
       const head =
         `flow "${result.name}" ${result.passed ? '✅ PASSED' : `❌ FAILED at step ${result.failedAtStep} (${result.reason})`} ` +
-        `— ${result.steps.filter((s) => s.ok).length}/${result.steps.length} steps in ${Math.round(result.durationMs / 100) / 10}s` +
+        `: ${result.steps.filter((s) => s.ok).length}/${result.steps.length} steps in ${Math.round(result.durationMs / 100) / 10}s` +
         (result.appHealth ? `\nhealth: native=${result.nativeHealth} app=${result.appHealth}` : '');
       const stepLines = result.steps
         .map(
           (s) =>
-            `${s.ok ? '✓' : '✗'} ${s.index}. ${s.summary}${s.detail ? ` — ${s.detail}` : ''}${s.screenshotUri ? `\n   evidence: ${s.screenshotUri}` : ''}`,
+            `${s.ok ? '✓' : '✗'} ${s.index}. ${s.summary}${s.detail ? `: ${s.detail}` : ''}${s.screenshotUri ? `\n   evidence: ${s.screenshotUri}` : ''}`,
         )
         .join('\n');
 
-      // A failed flow is a structured result, not a protocol error — the agent should record it.
+      // A failed flow is a structured result, not a protocol error. The agent should record it.
       const nextSteps = result.passed ? undefined : failedFlowNextSteps(parsed.name, flow, result.failedAtStep, result.failureCode);
       return qaAnnotate(
         qaOk(
