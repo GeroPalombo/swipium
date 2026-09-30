@@ -8,6 +8,7 @@ import { WdaDriver } from '../src/drivers/WdaDriver.js';
 import { invalidateScreenSizeCache } from '../src/drivers/DirectDriver.js';
 import { TYPING_TIMEOUT_CAP_MS, wdaRequestTimeoutMs, withWdaCall } from '../src/lib/wda.js';
 import { buildPlan } from '../src/build/plan.js';
+import { runWithSignal } from '../src/lib/abortScope.js';
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
@@ -474,14 +475,13 @@ describe('WDA keyboard, orientation, timeouts and session recovery', () => {
     }
   });
 
-  it('aborts in-flight WDA requests when the bound job signal is cancelled', async () => {
+  it('aborts in-flight WDA requests when the scoped job signal is cancelled', async () => {
     const fake = await startFakeWda({ hangSource: true });
     try {
       const d = new WdaDriver(fake.url, { udid: 'SIM-1' });
       const ctl = new AbortController();
-      d.setSignal(ctl.signal);
       setTimeout(() => ctl.abort(), 50);
-      await expect(d.dumpXml()).rejects.toThrow(/aborted/);
+      await expect(runWithSignal(ctl.signal, () => d.dumpXml())).rejects.toThrow(/aborted/);
     } finally {
       await fake.close();
     }

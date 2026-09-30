@@ -63,7 +63,10 @@ export interface ParseResult {
   errors: string[];
 }
 
-const SECRET_VAR = /pass|secret|token|otp|pin|cvv|key/i;
+/** Credential-like variable names whose resolved values are registered as session secrets. The
+ *  ONE shared definition — qa_act placeholder expansion, flow parsing/running and
+ *  qa_continue_from_blocker all use it (`code` covers OTP vars like SWIPIUM_VERIFICATION_CODE). */
+export const SECRET_VAR_NAME = /pass|secret|token|otp|pin|cvv|key|code/i;
 const DIRECTIONS = ['up', 'down', 'left', 'right'] as const;
 const AREAS = ['center', 'top', 'bottom', 'left', 'right'] as const;
 const KEYS = ['back', 'home', 'enter'] as const;
@@ -71,7 +74,7 @@ const OUTCOMES = ['pass', 'fail', 'blocked', 'skipped', 'not_applicable'] as con
 const BARE = new Set(['prepareTarget', 'restartApp', 'waitForIdle', 'clearOverlay', 'networkOffline', 'networkOnline']);
 
 function looksSecret(value: string): boolean {
-  for (const m of value.matchAll(/\$\{([^}]+)\}/g)) if (SECRET_VAR.test(m[1])) return true;
+  for (const m of value.matchAll(/\$\{([^}]+)\}/g)) if (SECRET_VAR_NAME.test(m[1])) return true;
   return false;
 }
 
@@ -327,9 +330,6 @@ export function lookupFlowVar(name: string, vars: Record<string, string>): strin
   if (v != null) return v;
   return flowEnvAllowed(name) ? process.env[name] : undefined;
 }
-
-/** Credential-like variable names whose resolved values are registered as session secrets. */
-export const SECRET_VAR_NAME = /pass|secret|token|otp|pin|cvv|key|code/i;
 
 /** True when a string references at least one `${VAR}`. */
 export function hasFlowVariable(value: string): boolean {

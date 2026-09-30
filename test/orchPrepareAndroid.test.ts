@@ -68,7 +68,6 @@ function fakeDriver() {
     },
     launchApp: async () => {},
     foregroundOwner: async () => 'com.example.app/.Main',
-    setSignal: () => {},
   };
   return d;
 }

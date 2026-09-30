@@ -107,7 +107,7 @@ describe('nextBestAction ladder — no loops (table)', () => {
       name: 'blocked job → qa_explain_blocker with its failureCode',
       s: makeSession({ jobs: job({ state: 'blocked', failureCode: 'EMULATOR_BOOT_FAILED' }) }),
       tool: 'qa_explain_blocker',
-      args: { failureCode: 'EMULATOR_BOOT_FAILED' },
+      args: { failureCode: 'EMULATOR_BOOT_FAILED', sessionId: 's1' },
     },
     {
       name: 'needs_input job → the resume call it carries',

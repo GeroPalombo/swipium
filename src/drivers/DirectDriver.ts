@@ -6,6 +6,7 @@
 // React Native custom inputs that don't respond to programmatic clicks.
 
 import { run, runBinary } from '../lib/spawn.js';
+import { currentSignal } from '../lib/abortScope.js';
 import { adbDevices } from '../lib/android.js';
 import type { DumpOptions, Driver, ImeState, TextDeliverability } from './Driver.js';
 
@@ -172,18 +173,9 @@ export function currentScreenSizeEpoch(serial: string | undefined): number {
 export class DirectDriver implements Driver {
   readonly kind = 'direct' as const;
   private serial?: string;
-  private signal?: AbortSignal;
 
   constructor(serial?: string) {
     this.serial = serial;
-  }
-
-  /** Bind an AbortSignal so a cancelled job/tool call actually kills in-flight adb children.
-   * Returns the previously bound signal (so an interactive call can restore a job's). */
-  setSignal(signal?: AbortSignal): AbortSignal | undefined {
-    const prev = this.signal;
-    this.signal = signal;
-    return prev;
   }
 
   private base(): string[] {
@@ -194,7 +186,8 @@ export class DirectDriver implements Driver {
     const full = [...this.base(), ...args];
     return run('adb', full, {
       timeoutMs: opts.timeoutMs ?? 20000,
-      signal: opts.signal ?? this.signal,
+      // Cancellation travels with the call (abortScope), never via a shared slot on the driver.
+      signal: opts.signal ?? currentSignal(),
       rejectOnNonZero: true,
       ...(opts.sensitiveLastArg ? { redactArgs: [full.length - 1] } : {}),
     });
@@ -336,7 +329,7 @@ export class DirectDriver implements Driver {
     // exec-out returns raw PNG bytes on stdout — must be collected as binary.
     const r = await runBinary('adb', [...this.base(), 'exec-out', 'screencap', '-p'], {
       timeoutMs: 15000,
-      signal: this.signal,
+      signal: currentSignal(),
       rejectOnNonZero: true,
     });
     return r.stdout;

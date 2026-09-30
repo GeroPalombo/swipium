@@ -69,9 +69,6 @@ export interface Driver {
   screenshot(): Promise<Buffer>;
   /** Raw uiautomator XML (parsing → @eN refs happens in the snapshot module, M3). */
   dumpXml(opts?: DumpOptions): Promise<string>;
-  /** Bind the current tool call's cancellation signal to in-flight backend calls; returns the
-   * previously bound signal so the caller can restore it (background jobs bind their own). */
-  setSignal?(signal?: AbortSignal): AbortSignal | undefined;
 
   tapXY(x: number, y: number): Promise<void>;
   /** Press-and-hold at a point for `ms` (a same-point swipe) — RN often ignores instant taps. */

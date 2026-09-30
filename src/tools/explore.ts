@@ -20,6 +20,7 @@ import { log } from '../lib/logger.js';
 import type { Session, SessionStore, JobRecord, ExplorationRecord, RecordedAction } from '../session/store.js';
 import type { ExploreGraph } from '../explore/graph.js';
 import type { SuitePromotionCandidate } from '../explore/suite.js';
+import { runWithSignal } from '../lib/abortScope.js';
 
 const HIGH_IMPACT_CONFIRMATION_CLASSES = new Set([
   'payment',
@@ -250,21 +251,23 @@ export function registerExplore(server: McpServer, sessions: SessionStore): void
 
       const accountCycleCtx = accountCycle ? { enabled: true, disposableAccount: allowGeneratedData === true } : undefined;
       const job = sessions.createJob(session, 'explore');
-      void runExploreJob(sessions, session, job, {
-        goal,
-        depth,
-        maxActions,
-        maxScreens,
-        maxDurationMs,
-        strategy,
-        safeMode,
-        destructiveApproval,
-        generateSuite,
-        includeTextEntry,
-        stopOnAuth,
-        accountCycle: accountCycleCtx,
-        allowGeneratedData,
-      });
+      void runWithSignal(sessions.abortSignal(session, job.jobId), () =>
+        runExploreJob(sessions, session, job, {
+          goal,
+          depth,
+          maxActions,
+          maxScreens,
+          maxDurationMs,
+          strategy,
+          safeMode,
+          destructiveApproval,
+          generateSuite,
+          includeTextEntry,
+          stopOnAuth,
+          accountCycle: accountCycleCtx,
+          allowGeneratedData,
+        }),
+      );
       return qaOk(
         { sessionId: session.id, state: 'running', jobId: job.jobId, kind: job.kind },
         `🧭 guided exploration started as job ${job.jobId}. Poll qa_job_status { sessionId:"${session.id}", jobId:"${job.jobId}" } for the screen graph + terminal state.`,

@@ -99,6 +99,11 @@ MCP clients pick up the new tool list after a restart. Saved prompts or scripts 
   - `qa_flow_repair` proposes elements of the same kind, ranked by text similarity, and refuses to apply low-confidence repairs; a failed `qa_flow_run` points to it.
   - Flow `clearOverlay` dismisses iOS alerts with the alert API. A brief WebDriverAgent outage while resuming no longer downgrades an iOS session permanently.
   - Unknown sessions, invalid app IDs, and deliberate refusals return typed failure codes, and the report's tool status no longer counts them as tool errors.
+  - `qa_status` no longer repeats advice that was already followed (an answered question, a report generated after the run, an explained blocker). `qa_explain_blocker` accepts `sessionId`.
+  - Cancelling one call no longer cancels another: each tool call and background job carries its own cancel signal, so cancelling a `qa_snapshot` cannot stop a running install, and a cancelled job cannot break later calls.
+  - An orphaned Metro started through `npx` is cleaned up after a crash (npm renames its process title), and process start times are read in a fixed locale.
+  - Fixtures are no longer saved to `state.json` in redacted form and replayed as `«redacted»` after a restart; a resumed session reloads them from `.swipium/fixtures.json`.
+  - iOS `press back` only reuses a page source from the last few seconds, and app launches through `qa_ios` reset it.
 
 ### Security
 
@@ -110,7 +115,7 @@ MCP clients pick up the new tool list after a restart. Saved prompts or scripts 
 - A registered secret typed into an ordinary (non-password) field is recorded as a secret too, and every generator checks its output against the session's secrets: generation fails with `SECRET_IN_GENERATED_OUTPUT` and writes nothing rather than emit a secret. `state.json`, `test-suite.json`, and test cases no longer store secret values.
 - `qa_visual` baseline names and template paths are confined to the project (`VISUAL_PATH_REFUSED`); artifact names can no longer escape the session directory. On screens Swipium cannot inspect, OCR results that look like credentials are withheld.
 - `THREAT_MODEL.md` documents the limits of the re-call consent convention and the stronger elicitation path.
-- A cloned repository is treated as untrusted input: flows cannot read server environment variables outside `SWIPIUM_*`, and an `openUrl` containing a variable is consent-gated; consent shows the exact commands of flow seed steps and of repository-configured OCR/mask commands, labelled as unreviewed; a project config can no longer point iOS automation at a non-loopback WebDriverAgent (use `SWIPIUM_ALLOW_REMOTE_WDA` to allow specific URLs).
+- A cloned repository is treated as untrusted input: flows and `.swipium/fixtures.json` cannot read server environment variables outside `SWIPIUM_*` (values read from the environment are treated as secrets), and an `openUrl` containing a variable is consent-gated; consent shows the exact commands of flow seed steps and of repository-configured OCR/mask commands, labelled as unreviewed; a project config can no longer point iOS automation at a non-loopback WebDriverAgent (use `SWIPIUM_ALLOW_REMOTE_WDA` to allow specific URLs).
 - Consent prompts strip control characters and are bound to the session that requested them.
 - Orphan-process cleanup only signals a process whose recorded start time and command still match, so a reused process ID can no longer be killed; it runs after the server connects.
 - App IDs are validated and quoted for the device shell. Sensitive mode suppresses screenshots in flows and smoke runs. `qa_issue_log` redacts session secrets before writing the ledger. Session folders and files are private (`0700`/`0600`), and OCR temp files live in private per-call directories.

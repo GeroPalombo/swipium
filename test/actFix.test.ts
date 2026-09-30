@@ -218,20 +218,20 @@ describe('#4 health skips dumpsys when the dump root is the app', () => {
 });
 
 describe('#8 cancellation reaches the driver', () => {
-  it('binds the call signal during qa_act and restores the previous binding afterwards', async () => {
+  it('driver calls made by qa_act / qa_snapshot see the call signal (scoped per call, never a job signal)', async () => {
     const fake = new FakeDriver(buttonScreen('Home', 3));
     const id = await h.start(fake);
     const jobSignal = new AbortController().signal;
-    fake.setSignal(jobSignal);
     fake.signalsSeen = [];
     await act(id, { action: 'tap', target: { x: 10, y: 10 } });
-    expect(fake.signalsSeen[0]).toBeInstanceOf(AbortSignal);
-    expect(fake.signalsSeen[0]).not.toBe(jobSignal);
-    expect(fake.signal).toBe(jobSignal); // restored
+    expect(fake.signalsSeen.length).toBeGreaterThan(0);
+    for (const s of fake.signalsSeen) {
+      expect(s).toBeInstanceOf(AbortSignal);
+      expect(s).not.toBe(jobSignal);
+    }
     fake.signalsSeen = [];
     await h.call('qa_snapshot', { sessionId: id });
     expect(fake.signalsSeen[0]).toBeInstanceOf(AbortSignal);
-    expect(fake.signal).toBe(jobSignal);
   }, 20_000);
 
   it('an MCP cancel aborts the in-flight driver call', async () => {

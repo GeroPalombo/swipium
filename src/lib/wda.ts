@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { run } from './spawn.js';
+import { currentSignal } from './abortScope.js';
 import type { FailureCode } from '../oracle/failures.js';
 
 /** Is `raw` a loopback WebDriverAgent URL (http/https to 127.0.0.0/8, localhost, or ::1)?
@@ -192,7 +193,15 @@ async function wdaFetch<T>(baseUrl: string, path: string, init?: RequestInit): P
   const call = wdaCallContext.getStore() ?? {};
   const timeoutMs = call.timeoutMs ?? wdaRequestTimeoutMs(method, path, init?.body);
   const timeout = AbortSignal.timeout(timeoutMs);
-  const signal = anySignal([timeout, ...(call.signal ? [call.signal] : []), ...(init?.signal ? [init.signal] : [])]);
+  // The per-call cancellation scope (abortScope) applies even outside withWdaCall — e.g. session
+  // creation or helpers invoked directly by a driver method.
+  const scoped = currentSignal();
+  const signal = anySignal([
+    timeout,
+    ...(call.signal ? [call.signal] : []),
+    ...(scoped && scoped !== call.signal ? [scoped] : []),
+    ...(init?.signal ? [init.signal] : []),
+  ]);
   let res: Response;
   let body: string;
   try {

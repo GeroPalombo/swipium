@@ -16,6 +16,7 @@ import { TEST_GOALS, type TestGoal } from '../orchestration/goal.js';
 import { CAPABILITY_GROUPS } from '../core/capabilityGroups.js';
 import type { Session, SessionStore } from '../session/store.js';
 import { recallTestThisIntent, markLoginDeclined } from '../orchestration/testThis/sessionIntent.js';
+import { SECRET_VAR_NAME } from '../flows/schema.js';
 
 function budgetRemaining(s: Session): { minutes: number; actions: number; screenshots: number } {
   const elapsedMin = (Date.now() - s.createdAt) / 60000;
@@ -73,6 +74,19 @@ function lastActivityAt(s: Session): number {
   return t;
 }
 
+/** Milestone keys stamped by the agent-layer tools so qa_status can tell a terminal job's
+ *  recommended action was carried out (each overwritten with the latest time). */
+export const BLOCKER_ANSWERED_MILESTONE = 'blocker_answered';
+export const BLOCKER_EXPLAINED_MILESTONE = 'blocker_explained';
+
+/** Latest time the user answered a needs_input question: a stored input or a
+ *  qa_continue_from_blocker call (choices-only answers store no input). */
+function lastAnsweredAt(s: Session): number {
+  let t = s.milestones?.[BLOCKER_ANSWERED_MILESTONE] ?? 0;
+  for (const i of s.inputs ?? []) t = Math.max(t, i.at ?? 0);
+  return t;
+}
+
 /** The newest report artifact, if one exists. */
 function latestReport(s: Session): { uri: string; createdAt: number } | undefined {
   return s.artifacts.filter((a) => a.kind === 'report' && /\/report\/report-/.test(a.uri)).sort((a, b) => b.createdAt - a.createdAt)[0];
@@ -83,14 +97,20 @@ function latestReport(s: Session): { uri: string; createdAt: number } | undefine
  *  on state its recommended tool CHANGES, so following the advice always advances the ladder:
  *    1. a job is running                   → qa_job_status (poll it)
  *    2. the last qa_test_this job ended    → its nextRecommendedAction (report / explain blocker /
- *       and nothing happened since            answer the needs_input question)
+ *       and nothing happened since            answer the needs_input question) — but only until that
+ *                                             action is observably done: a report newer than the job,
+ *                                             an answer (stored input / resume call) newer than the job
+ *                                             (→ re-run the autopilot with it), or a qa_explain_blocker
+ *                                             {sessionId} call newer than the job. Replaying a done
+ *                                             action would loop, so the ladder moves on.
  *    3. no device bound                    → qa_test_this  (orchestrate setup)
  *    4. device but no app                  → qa_prepare_target (Android) / qa_prepare_ios_target (iOS sim)
  *    5. no smoke yet and nothing recorded  → qa_smoke (records the smoke milestone)
  *    6. findings, no report since          → qa_report
  *    7. clean run, actions, no assets yet  → qa_generate (make the run durable)
  *    8. no report since the last activity  → qa_report (wrap up)
- *    9. a fresh report exists              → qa_get_artifact (read it — done)
+ *    9. a fresh report exists              → qa_get_artifact (read it — done; TERMINAL: the only
+ *                                             rung whose advice changes nothing, by design)
  *  Exported for unit tests (test/nextBestAction.test.ts, test/orchStatusLadder.test.ts). */
 export function nextBestAction(s: Session, goal?: string): { tool: string; why: string; args: Record<string, unknown> } {
   const sid = s.id;
@@ -107,15 +127,30 @@ export function nextBestAction(s: Session, goal?: string): { tool: string; why: 
   const result = lastJob?.result as
     | { state?: string; failureCode?: string; nextRecommendedAction?: { tool: string; args?: Record<string, unknown>; why?: string } }
     | undefined;
-  if (lastJob && result?.state && (lastJob.endedAt ?? lastJob.startedAt) >= lastActivityAt(s)) {
+  const jobEnd = lastJob ? (lastJob.endedAt ?? lastJob.startedAt) : 0;
+  if (lastJob && result?.state && jobEnd >= lastActivityAt(s)) {
     const nra = result.nextRecommendedAction;
-    if (result.state === 'blocked' || result.state === 'unsafe')
+    const blocked = result.state === 'blocked' || result.state === 'unsafe';
+    const explained = (s.milestones?.[BLOCKER_EXPLAINED_MILESTONE] ?? 0) > jobEnd;
+    const answered = result.state === 'needs_input' && lastAnsweredAt(s) > jobEnd;
+    const reportedSince = (latestReport(s)?.createdAt ?? 0) > jobEnd;
+    if (blocked && !explained)
       return {
         tool: 'qa_explain_blocker',
         why: `last job ${lastJob.jobId} ended ${result.state} (${result.failureCode ?? 'UNKNOWN'}) — explain the blocker and relay the fix`,
-        args: { failureCode: result.failureCode ?? 'UNKNOWN' },
+        args: { failureCode: result.failureCode ?? 'UNKNOWN', sessionId: sid },
       };
-    if (nra?.tool)
+    // The question was answered (qa_continue_from_blocker stored the input): resume the autopilot
+    // with it — starting that job is the state change; replaying the resume call would loop.
+    if (answered)
+      return {
+        tool: 'qa_test_this',
+        why: `the needs_input question of job ${lastJob.jobId} was answered — re-run the autopilot with the answer`,
+        args: { mode: 'execute', ...(recallTestThisIntent(s) as Record<string, unknown>), sessionId: sid, stopOnNeedsInput: false },
+      };
+    // A qa_report recommendation is satisfied by any report newer than the job.
+    const satisfied = blocked || (nra?.tool === 'qa_report' && reportedSince);
+    if (nra?.tool && !satisfied)
       return {
         tool: nra.tool,
         why:
@@ -318,9 +353,12 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
       inputSchema: {
         failureCode: z.string().describe('failureCode from a Swipium error.'),
         context: z.string().optional(),
+        sessionId: z.string().optional().describe('The blocked session (qa_status then moves past the blocker).'),
       },
     },
-    async ({ failureCode, context }) => {
+    async ({ failureCode, context, sessionId }) => {
+      const sess = sessionId ? sessions.get(sessionId) : undefined;
+      if (sessionId && !sess) return unknownSessionError(sessionId);
       const code = failureCode as FailureCode;
       const info = FAILURES[code];
       if (!info) {
@@ -330,6 +368,11 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
           retrySafe: true,
           nextSteps: ['Pass a code surfaced by a Swipium tool (the `failureCode` field of an error).'],
         });
+      }
+      // Mark the blocker explained so qa_status's ladder stops recommending this call.
+      if (sess) {
+        sess.milestones[BLOCKER_EXPLAINED_MILESTONE] = Date.now();
+        sessions.persist(sess);
       }
       const owner = failureOwner(code);
       const ownerText: Record<string, string> = {
@@ -382,8 +425,8 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
       const s = sessions.get(sessionId);
       if (!s) return unknownSessionError(sessionId);
       const vals: Record<string, string | boolean> = { ...(values ?? {}) };
-      // `code` covers OTP fields named code / verificationCode.
-      const secretRe = /pass|secret|token|otp|pin|cvv|key|code/i;
+      // Shared secret-name rule (flows/schema.ts); `code` covers OTP fields named code / verificationCode.
+      const secretRe = SECRET_VAR_NAME;
       // "test pre-login only" (the credentials question's own fallback) is a DECISION, not an input:
       // mark login out of scope for the session instead of reporting it as an unknown field.
       const declined = (kind === 'credentials' || kind === 'otp_or_manual_verification') && extractDecline(vals);
@@ -429,6 +472,8 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
         s.root = mapped.projectRoot;
         s.chosenTarget = mapped.projectRoot; // qa_test_this skips the monorepo question for this root
       }
+      // Persisted answer marker: qa_status stops replaying the resume call once answered.
+      s.milestones[BLOCKER_ANSWERED_MILESTONE] = Date.now();
       sessions.persist(s);
       sessions.addWorkaround(s, `resumed from "${kind}" blocker with: ${accepted.join(', ') || '(no values)'}`);
       const reInvokeArgs: Record<string, unknown> = { sessionId: s.id, ...mapped.args };

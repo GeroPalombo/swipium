@@ -6,7 +6,7 @@
 import { existsSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { SimctlDriver } from '../drivers/SimctlDriver.js';
-import { WdaDriver } from '../drivers/WdaDriver.js';
+import { invalidateWdaPageSource, WdaDriver } from '../drivers/WdaDriver.js';
 import {
   checkWda,
   createWdaSession,
@@ -141,6 +141,7 @@ export async function prepareIos(
     progress('installing .app');
     try {
       sessions.milestone(session, 'app_install_start');
+      invalidateWdaPageSource(pick.udid); // screen changes outside WDA
       await sim.installApp(pick.udid, appPath);
       sessions.milestone(session, 'app_install_end');
       installed = true;
@@ -179,6 +180,7 @@ export async function prepareIos(
     progress('launching');
     try {
       sessions.milestone(session, 'app_launch_start');
+      invalidateWdaPageSource(pick.udid); // screen changes outside WDA
       await sim.launchApp(pick.udid, bundleId);
       sessions.milestone(session, 'app_launch_end');
       launched = true;

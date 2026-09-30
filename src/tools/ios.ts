@@ -13,6 +13,7 @@ import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { sensitiveRefusal } from '../lib/sensitive.js';
 import { SimctlDriver } from '../drivers/SimctlDriver.js';
 import * as sim from '../lib/simctl.js';
+import { invalidateWdaPageSource } from '../drivers/WdaDriver.js';
 import type { Session, SessionStore } from '../session/store.js';
 
 /** Ensure a SimctlDriver is bound for `udid` and recorded on the session. */
@@ -99,6 +100,7 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
           });
         try {
           sessions.milestone(session, 'simulator_boot_start');
+          invalidateWdaPageSource(pick.udid); // the screen changes outside WDA: drop cached page sources
           await sim.boot(pick.udid);
           sessions.milestone(session, 'simulator_boot_end');
         } catch (e) {
@@ -180,6 +182,7 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
         });
         try {
           sessions.milestone(session, 'app_install_start');
+          invalidateWdaPageSource(udid); // the screen changes outside WDA: drop cached page sources
           await sim.installApp(udid, appPath);
           sessions.milestone(session, 'app_install_end');
         } catch (err) {
@@ -228,6 +231,7 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
         if (e) return e;
         try {
           sessions.milestone(session, 'app_launch_start');
+          invalidateWdaPageSource(udid); // the screen changes outside WDA: drop cached page sources
           await sim.launchApp(udid, bundleId!);
           sessions.milestone(session, 'app_launch_end');
         } catch (err) {
@@ -256,6 +260,7 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
         const bundleId = args.bundleId ?? session.appId;
         const e = need(bundleId ?? undefined, 'bundleId');
         if (e) return e;
+        invalidateWdaPageSource(udid); // the screen changes outside WDA: drop cached page sources
         await sim.terminateApp(udid, bundleId!);
         sessions.recordMutation(session, {
           tool: 'qa_ios',
@@ -272,6 +277,7 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
         const e = need(args.url, 'url (a deep link)');
         if (e) return e;
         try {
+          invalidateWdaPageSource(udid); // the screen changes outside WDA: drop cached page sources
           await sim.openUrl(udid, args.url!);
         } catch (err) {
           return qaError({
@@ -354,6 +360,7 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
           status: 'approved',
         });
         try {
+          invalidateWdaPageSource(udid); // the screen changes outside WDA: drop cached page sources
           await sim.privacyReset(udid, args.service!, bundleId);
         } catch (err) {
           sessions.recordMutation(session, {
@@ -414,6 +421,7 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
           status: 'approved',
         });
         try {
+          invalidateWdaPageSource(); // the screen changes outside WDA: drop cached page sources
           await sim.erase(target);
         } catch (err) {
           sessions.recordMutation(session, {

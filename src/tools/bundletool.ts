@@ -12,6 +12,7 @@ import { convertAabToApk, findBundletool, buildAndInstallApkSet } from '../artif
 import { startProgress } from '../session/progress.js';
 import { log } from '../lib/logger.js';
 import type { Session, SessionStore, JobRecord } from '../session/store.js';
+import { runWithSignal } from '../lib/abortScope.js';
 
 export function registerBundletool(server: McpServer, sessions: SessionStore): void {
   server.registerTool(
@@ -92,7 +93,10 @@ export function registerBundletool(server: McpServer, sessions: SessionStore): v
 
       const job = sessions.createJob(session, 'bundletool:convert');
       if (connectedDevice) {
-        void runDeviceApkSet(sessions, session, job, aabPath, { install: !!install, deviceId: device, force: !!force, mutationConsent });
+        // Jobs run in their own cancellation scope (abortScope), not the starting call's.
+        void runWithSignal(sessions.abortSignal(session, job.jobId), () =>
+          runDeviceApkSet(sessions, session, job, aabPath, { install: !!install, deviceId: device, force: !!force, mutationConsent }),
+        );
         return qaOk(
           {
             jobId: job.jobId,
@@ -106,7 +110,7 @@ export function registerBundletool(server: McpServer, sessions: SessionStore): v
           `Building${install ? ' + installing' : ''} a device-specific APK set from ${aabPath} as job ${job.jobId} (${launcher.describe}). Poll qa_job_status.`,
         );
       }
-      void runConvert(sessions, session, job, aabPath, !!force);
+      void runWithSignal(sessions.abortSignal(session, job.jobId), () => runConvert(sessions, session, job, aabPath, !!force));
       return qaOk(
         { jobId: job.jobId, status: 'running', kind: job.kind, aab: aabPath, mode: 'universal', bundletool: launcher.describe },
         `Converting ${aabPath} → universal APK as job ${job.jobId} (${launcher.describe}). Poll qa_job_status.`,

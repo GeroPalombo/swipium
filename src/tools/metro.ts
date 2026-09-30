@@ -16,7 +16,7 @@ import { METRO_PORT, metroReadiness } from '../lib/metroState.js';
 import { parseSnapshot } from '../snapshot/parse.js';
 import { detectRedBox } from '../snapshot/overlays.js';
 import { getDriver, resolveDevice, bindDevice } from '../session/attach.js';
-import { registerManagedProcess, unregisterManagedProcess } from '../session/processRegistry.js';
+import { psEnv, registerManagedProcess, unregisterManagedProcess } from '../session/processRegistry.js';
 import type { SessionStore } from '../session/store.js';
 
 /** True if `pid` is a live process whose command looks like a Metro/Expo/RN bundler. Guards
@@ -25,9 +25,10 @@ import type { SessionStore } from '../session/store.js';
  * we report "not ours" so we never signal a stranger. */
 function metroProcessLooksAlive(pid: number): boolean {
   try {
-    const out = spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' });
+    const out = spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', env: psEnv() });
     if (out.status !== 0 || !out.stdout) return false;
-    return /metro|expo|react-native|node/i.test(out.stdout);
+    // `npm exec …`: npx retitles itself after spawn (the launcher we recorded as metroPid).
+    return /metro|expo|react-native|node|npm exec/i.test(out.stdout);
   } catch {
     return false;
   }

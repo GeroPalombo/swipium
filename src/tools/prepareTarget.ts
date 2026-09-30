@@ -21,6 +21,7 @@ import { resolveDevice, bindDevice } from '../session/attach.js';
 import { prepareAndroid } from '../services/prepareAndroid.js';
 import { planTarget } from '../core/targetPlan.js';
 import type { Session, SessionStore, JobRecord } from '../session/store.js';
+import { runWithSignal } from '../lib/abortScope.js';
 
 /** RN/Expo debug builds load JS from Metro; launching before Metro is SERVING → RedBox. */
 function needsMetro(root: string): boolean {
@@ -363,7 +364,9 @@ interface HeavyArgs {
 
 function startJob(sessions: SessionStore, session: Session, driver: DirectDriver, a: HeavyArgs) {
   const job = sessions.createJob(session, a.needBoot ? 'boot+install' : 'install');
-  void runHeavy(sessions, session, driver, job, a);
+  // Driver calls inside the job inherit the job's cancellation signal (abortScope) — never a
+  // mutable slot on the shared driver that a concurrent qa_snapshot/qa_act could swap.
+  void runWithSignal(sessions.abortSignal(session, job.jobId), () => runHeavy(sessions, session, driver, job, a));
   return qaOk(
     { jobId: job.jobId, status: 'running', kind: job.kind },
     `Started ${job.kind} as job ${job.jobId}. Poll with qa_job_status { sessionId:"${session.id}", jobId:"${job.jobId}" }.`,
@@ -372,7 +375,6 @@ function startJob(sessions: SessionStore, session: Session, driver: DirectDriver
 
 async function runHeavy(sessions: SessionStore, session: Session, driver: DirectDriver, job: JobRecord, a: HeavyArgs): Promise<void> {
   const signal = sessions.abortSignal(session, job.jobId);
-  driver.setSignal(signal); // cancel kills in-flight adb children (install/dump/etc.)
   const upd = (patch: Partial<JobRecord>): void => {
     sessions.updateJobIfRunning(session, job, patch);
   };

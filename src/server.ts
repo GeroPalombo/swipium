@@ -67,6 +67,7 @@ import { CAPABILITY_GROUPS } from './core/capabilityGroups.js';
 import { ensureAndroidToolsOnPath } from './lib/android.js';
 import { annotateRootSource, withRootResolutionRecording } from './context/projectRoot.js';
 import { reapOrphanedProcesses } from './session/processRegistry.js';
+import { runWithSignal } from './lib/abortScope.js';
 
 export interface ServerContext {
   server: McpServer;
@@ -281,9 +282,16 @@ function installResponseModeWrapper(server: McpServer, sessions: SessionStore, s
       // Every call records the project root it resolves (if any) so the result carries
       // `rootSource` (+ a note when the root was only guessed from the server cwd).
       // Consents minted/consumed during this call are bound to its sessionId (consent.ts).
+      // Cancellation: the call's MCP signal (extra.signal, the handler's last argument) is scoped
+      // to THIS call (abortScope) — driver adb/WDA calls made by the tool abort with it, and a
+      // background job's signal (bound by the job itself) never leaks into or out of it.
+      const extra = a[a.length - 1] as { signal?: unknown } | undefined;
+      const callSignal = extra?.signal instanceof AbortSignal ? extra.signal : undefined;
       const run = async (callArgs: unknown[]) => {
-        const { value, resolved } = await withRootResolutionRecording(async () =>
-          runWithConsentScope(first?.sessionId, () => runWithResponseMode(mode, () => handler(...callArgs))),
+        const { value, resolved } = await runWithSignal(callSignal, () =>
+          withRootResolutionRecording(async () =>
+            runWithConsentScope(first?.sessionId, () => runWithResponseMode(mode, () => handler(...callArgs))),
+          ),
         );
         return annotateRootSource(value, resolved);
       };

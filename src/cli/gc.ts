@@ -73,6 +73,7 @@ export async function runGc(argv: string[], out: (s: string) => void = (s) => vo
       `  ${args.dryRun ? 'reclaimable' : 'reclaimed'}: ${formatBytes(r.bytesReclaimed)}\n` +
       `  projects.json: ${projects.before} → ${projects.after} entr${projects.after === 1 ? 'y' : 'ies'}` +
       `${projects.removed ? ` (${projects.removed} stale ${args.dryRun ? 'would be ' : ''}removed)` : ''}\n` +
+      (r.skipped ? `  prune skipped: ${r.skipped}\n` : '') +
       (r.errors ? `  ${r.errors} entr${r.errors === 1 ? 'y' : 'ies'} could not be processed (see logs)\n` : ''),
   );
   return 0;

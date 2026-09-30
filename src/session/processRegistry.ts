@@ -6,12 +6,16 @@
 //  - Every entry records the OWNING server pid. A child whose owner is still a live
 //    node/swipium process belongs to a concurrent server instance and is never touched.
 //  - Every entry records the child's FINGERPRINT at spawn time: its start time
-//    (`ps -o lstart=`) and full command line (for WDA that includes the project path and
-//    `-destination id=<udid>`). Before signalling (or adopting), BOTH are re-read via `ps` and
-//    must match exactly — a PID recycled by the OS to an unrelated process (another node, the
-//    adb server, the user's own xcodebuild/Appium WDA) is never killed or adopted. Entries
-//    without a fingerprint (written by an older build, or when `ps` was unavailable) are
-//    unverifiable and are dropped without signalling.
+//    (`ps -o lstart=`, read under LC_ALL=C so the format is locale-independent) and full command
+//    line (for WDA that includes the project path and `-destination id=<udid>`). Before
+//    signalling (or adopting), both are re-read via `ps`. The START TIME must match exactly (the
+//    hard pid-recycling guard: a recycled pid has a different start time). The command must match
+//    per kind: exactly for WDA / recordings / emulators; for Metro — spawned via `npx`, which
+//    npm retitles right after spawn (`node …/npx react-native start` → `npm exec react-native
+//    start`) — the launcher-stripped program+args tail must match. A PID recycled by the OS to
+//    an unrelated process (another node, the adb server, the user's own xcodebuild/Appium WDA) is
+//    never killed or adopted. Entries without a fingerprint (written by an older build, or when
+//    `ps` was unavailable) are unverifiable and are dropped without signalling.
 //  - A process GROUP is only signalled when Swipium created the child as a group leader
 //    (spawned detached: pgid == pid at registration); otherwise only the pid itself is signalled.
 //  - The owning server's start time is recorded too, so a recycled server pid (any node process)
@@ -65,7 +69,7 @@ const MAX_ENTRIES = 100;
 
 /** Coarse sanity check on top of the exact fingerprint match (defence in depth). */
 const KIND_COMMAND_RE: Record<ManagedProcessKind, RegExp> = {
-  metro: /metro|expo|react-native|npx|node/i,
+  metro: /metro|expo|react-native|npx|npm|node/i,
   wda: /xcodebuild/i,
   recording: /screenrecord|recordvideo|simctl|adb/i,
   emulator: /emulator|qemu/i,
@@ -82,11 +86,17 @@ function pidAlive(pid: number): boolean {
   }
 }
 
-/** The live command line for `pid`, or null when it is gone / unreadable (POSIX `ps`). */
+/** Environment for every `ps` we parse: the C locale, so `lstart` is always `Mon Sep 28 …`
+ *  (under e.g. de_DE it would be `Mo. 28 Sep. …` and never match a fingerprint taken elsewhere). */
+export function psEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return { ...base, LC_ALL: 'C', LANG: 'C' };
+}
+
+/** A `ps -o <field>=` value for `pid`, or null when it is gone / unreadable (POSIX `ps`). */
 function psField(pid: number, field: string): string | null {
   if (process.platform === 'win32') return null;
   try {
-    const out = spawnSync('ps', ['-o', `${field}=`, '-p', String(pid)], { encoding: 'utf8' });
+    const out = spawnSync('ps', ['-o', `${field}=`, '-p', String(pid)], { encoding: 'utf8', env: psEnv() });
     if (out.status !== 0 || !out.stdout?.trim()) return null;
     return out.stdout.trim();
   } catch {
@@ -228,15 +238,39 @@ export function pidOwnedByLiveServer(pid: number): boolean {
 
 export type ReclaimOutcome = 'killed' | 'adopted' | 'gone' | 'recycled';
 
-/** Does the live `pid` still carry the fingerprint recorded at spawn (start time AND command)? */
+/** Leading launcher tokens npx/npm put in front of the real program (and the retitle swaps). */
+const LAUNCHER_TOKEN = /^(?:node|nodejs|npx|npm|npx-cli\.js|npm-cli\.js|exec|--)$/i;
+
+/** A command line with its node/npx/npm launcher prefix stripped: `node /x/bin/npx expo start`
+ *  and `npm exec expo start` both become `expo start`. Exported for tests. */
+export function commandTail(cmd: string): string {
+  const tokens = cmd.trim().split(/\s+/);
+  let i = 0;
+  while (i < tokens.length && LAUNCHER_TOKEN.test(tokens[i].split('/').pop() ?? '')) i++;
+  return tokens.slice(i).join(' ');
+}
+
+/** Per-kind command identity (on top of the exact start-time match). */
+function commandMatches(kind: ManagedProcessKind, recorded: string, live: string): boolean {
+  if (!KIND_COMMAND_RE[kind].test(live)) return false;
+  if (live === recorded) return true;
+  if (kind !== 'metro') return false;
+  // Metro is launched via `npx`, which npm retitles shortly after spawn — compare what runs.
+  const tail = commandTail(live);
+  return tail !== '' && tail === commandTail(recorded);
+}
+
+/** Does the live `pid` still carry the fingerprint recorded at spawn? Start time is the hard
+ *  requirement (exact); the command is compared per kind (see commandMatches). */
 function fingerprintMatches(entry: ManagedProcessEntry, ops: ProcessOps): boolean {
   if (!entry.procStart || !entry.command) return false; // unverifiable → never signal/adopt
   const start = norm(ops.psStartTime(entry.pid));
+  if (!start || start !== entry.procStart) return false;
   const cmd = norm(ops.psCommand(entry.pid));
-  return start === entry.procStart && cmd === entry.command && KIND_COMMAND_RE[entry.kind].test(cmd);
+  return cmd != null && commandMatches(entry.kind, entry.command, cmd);
 }
 
-/** Verify that `pid` is still EXACTLY the child we registered (start time + full command, per
+/** Verify that `pid` is still the child we registered (exact start time + per-kind command, per
  *  the registry entry — or `entry` when given), then kill or adopt it. A pid with no verifiable
  *  registry fingerprint, or whose fingerprint differs, is reported 'recycled' and never signalled.
  *  Only a child Swipium spawned as a group leader has its process group signalled. */

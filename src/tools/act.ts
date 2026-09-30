@@ -33,6 +33,8 @@ import type { RecordedAction, Session, SessionStore } from '../session/store.js'
 import type { RawNode } from '../snapshot/parse.js';
 import type { Driver, NativeSelectorStrategy, SnapshotElement } from '../drivers/Driver.js';
 import type { FailureCode } from '../oracle/failures.js';
+import { runWithSignal } from '../lib/abortScope.js';
+import { SECRET_VAR_NAME } from '../flows/schema.js';
 
 interface NativeSelector {
   using: NativeSelectorStrategy;
@@ -164,8 +166,9 @@ export const DIFF_FULL_FALLBACK_RATIO = 0.5;
 
 /** Only `${SWIPIUM_*}` placeholders are expanded in typed text (anything else stays literal). */
 const INPUT_PLACEHOLDER_RE = /\$\{(SWIPIUM_[A-Z0-9_]+)\}/g;
-/** Env-sourced placeholder values whose NAME looks secret join the redaction set. */
-const SECRET_VAR_NAME_RE = /pass|secret|token|otp|pin|cvv|key/i;
+/** Env-sourced placeholder values whose NAME looks secret join the redaction set — the shared
+ *  SECRET_VAR_NAME (flows/schema.ts), so `code` (SWIPIUM_VERIFICATION_CODE) counts here too. */
+const SECRET_VAR_NAME_RE = SECRET_VAR_NAME;
 
 /** Expand `${SWIPIUM_*}` placeholders from session inputs (qa_resume values), else the server
  * env. Returns the expanded text, the variable names used, which of them are secret, and any
@@ -474,11 +477,11 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
           .describe('diff (default after a snapshot): elements added/removed; full: capped list; none: verdicts only.'),
       },
     },
-    async (args, extra) => {
-      // Cancellation (MCP notifications/cancelled): bind this call's signal to the driver so an
-      // in-flight adb child / WDA request is aborted; restore the previous binding afterwards.
-      let bound: { d: Driver; prev: AbortSignal | undefined } | undefined;
-      try {
+    // Cancellation (MCP notifications/cancelled): the call's signal is scoped to THIS call
+    // (abortScope) — an in-flight adb child / WDA request is aborted without touching a
+    // concurrently running job's own cancellation.
+    async (args, extra) =>
+      runWithSignal(extra?.signal, async () => {
         const { sessionId, action } = args;
         // Single validation layer for the per-action field contract (see REQUIRED_BY_ACTION).
         const invalid = missingRequiredField(action, args);
@@ -499,7 +502,6 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
             })
           );
         }
-        if (d.setSignal) bound = { d, prev: d.setSignal(extra?.signal) };
         if (d.kind === 'simulator') {
           return qaError({
             what: 'Structured interaction (tap/type/swipe) is not available on the iOS simulator backend',
@@ -1125,7 +1127,13 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
           } else if (diffAsFull) {
             const removedCount = [...preSigs].filter((sig) => !postSigs.has(sig)).length;
             const { elements: outElements, rendered, omitted } = presentElements(post.elements, redact);
-            elementPayload = { diffAsFull: true, elementsOmitted: omitted, elements: outElements, addedCount: added.length, removedCount };
+            elementPayload = {
+              diffAsFull: true,
+              elementsOmitted: omitted,
+              elements: outElements,
+              addedCount: added.length,
+              removedCount,
+            };
             elementsText =
               `\n\nNEW SCREEN (${added.length}/${post.elements.length} elements new, ${removedCount} previous gone) — full list:` +
               `\n${rendered}`;
@@ -1188,9 +1196,6 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               : ['Re-check the device is online, then qa_screenshot / qa_check_health.'],
           });
         }
-      } finally {
-        if (bound) bound.d.setSignal?.(bound.prev);
-      }
-    },
+      }),
   );
 }

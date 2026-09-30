@@ -9,6 +9,8 @@ import { pngSize } from '../lib/png.js';
 import { run } from '../lib/spawn.js';
 import { which } from '../lib/android.js';
 import type { Driver } from './Driver.js';
+// App control changes the screen outside any WdaDriver on this simulator: drop its cached source.
+import { invalidateWdaPageSource } from './WdaDriver.js';
 
 export type SimulatorScaleSource = 'idb' | 'device_type' | 'name_heuristic' | 'pixel_heuristic';
 
@@ -131,24 +133,30 @@ export class SimctlDriver implements Driver {
   }
 
   installApp(appPath: string): Promise<void> {
+    invalidateWdaPageSource(this.udid);
     return sim.installApp(this.udid, appPath);
   }
   uninstallApp(bundleId: string): Promise<void> {
+    invalidateWdaPageSource(this.udid);
     return sim.uninstallApp(this.udid, bundleId);
   }
   isInstalled(bundleId: string): Promise<boolean> {
     return sim.isInstalled(this.udid, bundleId);
   }
   launchApp(bundleId: string): Promise<void> {
+    invalidateWdaPageSource(this.udid);
     return sim.launchApp(this.udid, bundleId);
   }
   launchAppWithArgs(bundleId: string, args: Record<string, unknown>): Promise<void> {
+    invalidateWdaPageSource(this.udid);
     return sim.launchAppWithArgs(this.udid, bundleId, args);
   }
   terminateApp(bundleId: string): Promise<void> {
+    invalidateWdaPageSource(this.udid);
     return sim.terminateApp(this.udid, bundleId);
   }
   openUrl(url: string): Promise<void> {
+    invalidateWdaPageSource(this.udid);
     return sim.openUrl(this.udid, url);
   }
   async screenshot(): Promise<Buffer> {

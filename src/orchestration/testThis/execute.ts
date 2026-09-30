@@ -17,6 +17,7 @@ import type { Session } from '../../session/store.js';
 import type { ExecuteArgs } from './types.js';
 import { runExecutePipeline } from './pipeline.js';
 import { hasUsableCredentials, credentialsLostOnRestart, isLoginDeclined } from './sessionIntent.js';
+import { runWithSignal } from '../../lib/abortScope.js';
 
 function realOrResolved(p: string): string {
   try {
@@ -160,7 +161,10 @@ export async function runExecuteMode(server: McpServer, sessions: SessionStore, 
 
   const job = sessions.createJob(session, `test_this:${a.mode}`);
   const execArgs = { ...a, mutationConsent, testThisPlanMutation };
-  const run = runExecutePipeline(sessions, session, job, execArgs);
+  // The job's cancellation signal is scoped to its own async context (abortScope): driver calls
+  // made by the pipeline are cancelled with the job, and interactive calls made concurrently on
+  // the shared driver keep their own signal.
+  const run = runWithSignal(sessions.abortSignal(session, job.jobId), () => runExecutePipeline(sessions, session, job, execArgs));
 
   // Optional blocking mode for short paths (Milestone D). Default = return the running job.
   if (a.waitForCompletion) {

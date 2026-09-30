@@ -42,6 +42,8 @@ export interface RetentionResult {
   deleted: string[];
   bytesReclaimed: number;
   errors: number;
+  /** Set when the prune was skipped entirely (e.g. registry.json unreadable — fail closed). */
+  skipped?: string;
 }
 
 /** Positive integer from an env value, `null` for "off"/"0" (disabled), else `fallback`. */
@@ -64,18 +66,31 @@ export function retentionKeepFromEnv(env: NodeJS.ProcessEnv = process.env): numb
   return envInt(env.SWIPIUM_RETENTION_KEEP, DEFAULT_KEEP_PER_PROJECT) ?? 0;
 }
 
-async function registryDirs(swipiumDir: string): Promise<Set<string>> {
+/** Registered session dirs, or `null` when registry.json exists but cannot be read/parsed — the
+ *  prune then fails CLOSED (skips) rather than treating every registered session as deletable.
+ *  A missing registry.json is a genuine "nothing registered" (empty set). */
+async function registryDirs(swipiumDir: string): Promise<Set<string> | null> {
+  const file = join(swipiumDir, 'registry.json');
+  let raw: string;
   try {
-    const parsed: unknown = JSON.parse(await readFile(join(swipiumDir, 'registry.json'), 'utf8'));
-    if (!Array.isArray(parsed)) return new Set();
+    raw = await readFile(file, 'utf8');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') return new Set();
+    log('warn', 'retention: registry.json unreadable — skipping prune (fail closed)', { file, err: String(e) });
+    return null;
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) throw new Error('registry.json is not an array');
     return new Set(
       parsed
         .map((e) => (e as { dir?: unknown })?.dir)
         .filter((d): d is string => typeof d === 'string')
         .map((d) => resolve(d)),
     );
-  } catch {
-    return new Set();
+  } catch (e) {
+    log('warn', 'retention: registry.json corrupt — skipping prune (fail closed)', { file, err: String(e) });
+    return null;
   }
 }
 
@@ -122,6 +137,11 @@ export async function pruneSessionRuns(opts: RetentionOptions = {}): Promise<Ret
   const cutoff = now - days * DAY_MS;
   const result: RetentionResult = { runsDir, days, keepPerProject, dryRun, scanned: 0, deleted: [], bytesReclaimed: 0, errors: 0 };
   const registered = await registryDirs(swipiumDir);
+  if (!registered) {
+    result.errors++;
+    result.skipped = 'registry.json unreadable or corrupt — no session dir deleted (fail closed)';
+    return result;
+  }
   const live = new Set([...(opts.liveDirs ?? [])].map((d) => resolve(d)));
 
   let projects;

@@ -1,6 +1,7 @@
 import type { DumpOptions, Driver, ImeState, NativeSelectorStrategy } from './Driver.js';
 import { currentScreenSizeEpoch } from './DirectDriver.js';
 import * as sim from '../lib/simctl.js';
+import { currentSignal } from '../lib/abortScope.js';
 import { parseSnapshot } from '../snapshot/parse.js';
 import {
   acceptWdaAlert,
@@ -37,8 +38,24 @@ const UNSUPPORTED = 'not supported by the WDA backend yet.';
 /** A cached screen size is re-validated (GET /orientation + /window/size) after this long even
  * without an observed rotation. Rotations seen in a page source drop it immediately. */
 export const WDA_SCREEN_SIZE_TTL_MS = 30_000;
-/** How long a post-settle page source may answer `press back` (only while no action ran since). */
-export const WDA_BACK_SOURCE_FRESH_MS = 60_000;
+/** How long a post-settle page source may answer `press back` (only while no action ran since and
+ * nothing invalidated the device's screen). Short on purpose: the app can navigate by itself. */
+export const WDA_BACK_SOURCE_FRESH_MS = 3_000;
+
+/** Per-device page-source epoch: bumped by any out-of-driver screen change on that simulator
+ * (simctl launch/terminate/openurl, app-control tools, flow openUrl) so a cached source taken
+ * before it is never reused to find a back button. Keyed by udid; '*' = every device. */
+const pageSourceEpoch = new Map<string, number>();
+function sourceEpochOf(udid: string | undefined): number {
+  return (pageSourceEpoch.get(udid ?? '') ?? 0) + (pageSourceEpoch.get('*') ?? 0);
+}
+
+/** Drop any WdaDriver's cached page source for `udid` (all devices when omitted). Call after any
+ * simctl / app-control action that can change the screen outside the WDA driver. */
+export function invalidateWdaPageSource(udid?: string): void {
+  const key = udid ?? '*';
+  pageSourceEpoch.set(key, (pageSourceEpoch.get(key) ?? 0) + 1);
+}
 /** How long the element id found by clearFocusedText() is reused by the following inputText(). */
 export const WDA_FOCUSED_REUSE_MS = 10_000;
 export type WdaTimingKind = 'session_create' | 'source' | 'find_element' | 'tap' | 'type' | 'clear' | 'screenshot';
@@ -101,7 +118,6 @@ export class WdaDriver implements Driver {
   private readonly reuseRunningApp: boolean;
   private readonly settings?: Record<string, unknown>;
   private readonly onTiming?: (kind: WdaTimingKind, durationMs: number) => void;
-  private signal?: AbortSignal;
 
   constructor(
     baseUrl: string,
@@ -131,23 +147,28 @@ export class WdaDriver implements Driver {
     }
   }
 
-  /** Bind an AbortSignal so a cancelled job/tool call aborts in-flight WDA HTTP requests.
-   * Returns the previously bound signal (so an interactive call can restore a job's). */
-  setSignal(signal?: AbortSignal): AbortSignal | undefined {
-    const prev = this.signal;
-    this.signal = signal;
-    return prev;
-  }
-
   /** Last normalized page source from dumpXml() — cleared by every state-changing call, so while
    * set it IS the current screen (as of `at`). Lets `press back` skip a fresh /source. */
-  private lastSource?: { sid?: string; xml: string; at: number };
+  private lastSource?: { sid?: string; xml: string; at: number; epoch: number };
   /** Focused element found by clearFocusedText(), reused by the next inputText(). */
   private focusedEl?: { sid: string; elementId: string; at: number };
 
   /** Called by every state-changing operation. */
   private touched(): void {
     this.lastSource = undefined;
+  }
+
+  /** Run a simctl app-control call (launch/terminate/install/openurl): the screen may change
+   * outside WDA, so every driver's cached source for this simulator is dropped before AND after
+   * (a source dumped while the call ran is stale too). */
+  private async simctlChange<T>(fn: () => Promise<T>): Promise<T> {
+    this.touched();
+    invalidateWdaPageSource(this.udid);
+    try {
+      return await fn();
+    } finally {
+      invalidateWdaPageSource(this.udid);
+    }
   }
 
   /** Set when a session was transparently re-created after "invalid session id" (WDA restart /
@@ -169,7 +190,7 @@ export class WdaDriver implements Driver {
    * `bundleId` is passed, `forceAppLaunch` defaults to YES and a running app is relaunched; with
    * NO a running app is left as-is and a backgrounded one is only activated). */
   private async withSession<T>(fn: (sid: string) => Promise<T>): Promise<T> {
-    return withWdaCall({ signal: this.signal }, async () => {
+    return withWdaCall({ signal: currentSignal() }, async () => {
       const sid = await this.ensureSession();
       try {
         return await fn(sid);
@@ -231,11 +252,17 @@ export class WdaDriver implements Driver {
 
   async installApp(appPath: string): Promise<void> {
     if (!this.udid || !this.simulator.installApp) return this.no('app install');
-    await this.simulator.installApp(this.udid, appPath);
+    const udid = this.udid;
+    await this.simctlChange(async () => {
+      await this.simulator.installApp?.(udid, appPath);
+    });
   }
   async uninstallApp(pkg: string): Promise<void> {
     if (!this.udid || !this.simulator.uninstallApp) return this.no('app uninstall');
-    await this.simulator.uninstallApp(this.udid, pkg);
+    const udid = this.udid;
+    await this.simctlChange(async () => {
+      await this.simulator.uninstallApp?.(udid, pkg);
+    });
   }
   async isInstalled(pkg: string): Promise<boolean> {
     const target = pkg || this.bundleId;
@@ -263,16 +290,20 @@ export class WdaDriver implements Driver {
   async launchApp(pkg: string): Promise<void> {
     this.touched();
     this.bundleId = pkg;
-    if (this.udid) {
-      await this.simulator.launchApp(this.udid, pkg);
+    const udid = this.udid;
+    if (udid) {
+      await this.simctlChange(() => this.simulator.launchApp(udid, pkg));
     }
     await this.ensureSession();
   }
   async launchAppWithArgs(pkg: string, args: Record<string, unknown>): Promise<void> {
     this.touched();
     this.bundleId = pkg;
-    if (this.udid && this.simulator.launchAppWithArgs) {
-      await this.simulator.launchAppWithArgs(this.udid, pkg, args);
+    const udid = this.udid;
+    if (udid && this.simulator.launchAppWithArgs) {
+      await this.simctlChange(async () => {
+        await this.simulator.launchAppWithArgs?.(udid, pkg, args);
+      });
     } else if (Object.keys(args).length) {
       return this.no('launch arguments');
     }
@@ -281,8 +312,8 @@ export class WdaDriver implements Driver {
   async terminateApp(pkg: string): Promise<void> {
     const target = pkg || this.bundleId;
     if (!this.udid || !target) return this.no('app terminate');
-    this.touched();
-    await this.simulator.terminateApp(this.udid, target);
+    const udid = this.udid;
+    await this.simctlChange(() => this.simulator.terminateApp(udid, target));
   }
   clearData(): Promise<void> {
     return this.no('clear app data');
@@ -355,7 +386,7 @@ export class WdaDriver implements Driver {
         }),
       ),
     );
-    this.lastSource = { sid, xml, at: Date.now() };
+    this.lastSource = { sid, xml, at: Date.now(), epoch: sourceEpochOf(this.udid) };
     this.noteSourceSize(xml);
     return xml;
   }
@@ -445,7 +476,12 @@ export class WdaDriver implements Driver {
       // iOS has no system back key (WDA has no /back endpoint): tap the navigation bar's back
       // button when the screen has one, else perform the interactive-pop edge swipe.
       await this.withSession((sid) =>
-        this.backIn(sid, cached && cached.sid === sid && Date.now() - cached.at < WDA_BACK_SOURCE_FRESH_MS ? cached.xml : undefined),
+        this.backIn(
+          sid,
+          cached && cached.sid === sid && cached.epoch === sourceEpochOf(this.udid) && Date.now() - cached.at < WDA_BACK_SOURCE_FRESH_MS
+            ? cached.xml
+            : undefined,
+        ),
       );
       return;
     }
@@ -548,8 +584,8 @@ export class WdaDriver implements Driver {
   }
   async openUrl(url: string): Promise<void> {
     if (!this.udid) return this.no('open url without a simulator UDID');
-    this.touched();
-    await this.simulator.openUrl(this.udid, url);
+    const udid = this.udid;
+    await this.simctlChange(() => this.simulator.openUrl(udid, url));
   }
   disableAnimations(): Promise<void> {
     return Promise.resolve();

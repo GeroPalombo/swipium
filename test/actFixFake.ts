@@ -9,6 +9,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { Driver, DumpOptions, ImeState } from '../src/drivers/Driver.js';
+import { currentSignal } from '../src/lib/abortScope.js';
 
 type Rect = [number, number, number, number];
 
@@ -62,11 +63,11 @@ export class FakeDriver implements Driver {
   ime = false;
   imeRect: Rect | null = null;
   foreground = 'com.example.app/.MainActivity';
-  signal?: AbortSignal;
+  /** The per-call cancellation signal (abortScope) seen by each recorded driver call. */
   signalsSeen: Array<AbortSignal | undefined> = [];
   onTap?: (x: number, y: number) => void;
   onSwipe?: () => void;
-  /** When set, tapXY/pressXY block until the bound signal aborts (cancellation test). */
+  /** When set, tapXY/pressXY block until the call's scoped signal aborts (cancellation test). */
   hangTap = false;
   abortedDuringTap = false;
   constructor(xml: string) {
@@ -74,15 +75,10 @@ export class FakeDriver implements Driver {
   }
   rec(m: string, ...a: unknown[]) {
     this.calls.push({ m, a });
+    this.signalsSeen.push(currentSignal());
   }
   got(m: string) {
     return this.calls.filter((c) => c.m === m);
-  }
-  setSignal(signal?: AbortSignal) {
-    const prev = this.signal;
-    this.signal = signal;
-    this.signalsSeen.push(signal);
-    return prev;
   }
   async listDevices() {
     return ['fake'];
@@ -138,7 +134,7 @@ export class FakeDriver implements Driver {
   }
   private async maybeHang() {
     if (this.hangTap) {
-      const sig = this.signal;
+      const sig = currentSignal();
       await new Promise<void>((resolve) => {
         if (!sig) return resolve();
         if (sig.aborted) return resolve();

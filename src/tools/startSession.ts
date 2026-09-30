@@ -1,8 +1,7 @@
 // qa_start_session — resolve projectRoot (src/context/projectRoot.ts) and open a session.
 
 import { z } from 'zod';
-import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { loadProjectFixtures } from '../fixtures/load.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { qaOk, qaError } from '../lib/result.js';
 import { resolveProjectRoot, unresolvedProjectRootError } from '../context/projectRoot.js';
@@ -92,18 +91,8 @@ export const FIXTURE_SCHEMA = z.object({
     .describe('Opt-in, consent-gated way to create this precondition during flows.'),
 });
 
-/** Load declared fixtures from <root>/.swipium/fixtures.json (best-effort, array or {fixtures:[]}). */
-export function loadProjectFixtures(root: string): Fixture[] {
-  const p = join(root, '.swipium', 'fixtures.json');
-  if (!existsSync(p)) return [];
-  try {
-    const raw = JSON.parse(readFileSync(p, 'utf8'));
-    const arr = Array.isArray(raw) ? raw : Array.isArray(raw?.fixtures) ? raw.fixtures : [];
-    return arr.filter((f: unknown) => f && typeof (f as Fixture).name === 'string') as Fixture[];
-  } catch {
-    return [];
-  }
-}
+// Moved to src/fixtures/load.ts (store.ts re-reads it on rehydrate); re-exported for callers.
+export { loadProjectFixtures } from '../fixtures/load.js';
 
 export function registerStartSession(server: McpServer, sessions: SessionStore): void {
   server.registerTool(

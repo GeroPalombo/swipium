@@ -27,6 +27,7 @@ import {
 import { withFileLock, writeFileAtomicSync } from '../lib/lockfile.js';
 import { log } from '../lib/logger.js';
 import { pidOwnedByLiveServer, reclaimPid } from './processRegistry.js';
+import { fixtureMetadata, rehydrateFixtures } from '../fixtures/load.js';
 import { scheduleStartupPrune } from './retention.js';
 import { approvalMechanismFor, type ApprovalMechanism } from '../consent/consent.js';
 
@@ -290,7 +291,9 @@ export function serializeSecretSafe(
   const jobs = [...(s.jobs?.values() ?? [])];
   const envChanges = s.envChanges ?? [];
   const mutations = s.mutations ?? [];
-  const fixtures = s.fixtures ?? [];
+  // Fixture values and seed specs are live config, never persisted (not even redacted): a
+  // rehydrated session re-reads them from .swipium/fixtures.json (see fixtures/load.ts).
+  const fixtures = fixtureMetadata(s.fixtures ?? []);
   if (!s.secrets.size)
     return { recordedActions: s.recordedActions, notes: s.notes, findings: s.findings, toolErrors, jobs, envChanges, mutations, fixtures };
   const redact: Redactor = makeRedactor(s.secrets);
@@ -1021,7 +1024,9 @@ export class SessionStore {
             toolErrors: st.toolErrors ?? [],
             driverKind: typeof st.driverKind === 'string' ? st.driverKind : undefined,
             wdaUrl: typeof st.wdaUrl === 'string' ? st.wdaUrl : undefined,
-            fixtures: st.fixtures ?? [],
+            // Live fixture values come from the project's fixtures.json (+ SWIPIUM_* env at use),
+            // never from state.json — which only holds value-less metadata.
+            fixtures: rehydrateFixtures(st.root, st.fixtures),
             auth: st.auth ?? {},
             milestones: st.milestones ?? { session_start: st.createdAt },
             budgetProfile: st.budgetProfile,

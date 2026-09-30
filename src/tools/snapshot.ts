@@ -12,6 +12,7 @@ import { detectAuthScreen } from '../oracle/auth.js';
 import { dumpRootPackage } from '../oracle/health.js';
 import { blockedDeviceResult, getDriver, REHYDRATE_NOTE } from '../session/attach.js';
 import type { SessionStore } from '../session/store.js';
+import { runWithSignal } from '../lib/abortScope.js';
 
 export function registerSnapshot(server: McpServer, sessions: SessionStore): void {
   server.registerTool(
@@ -46,9 +47,9 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
           })
         );
       }
-      // Cancellation: bind this call's signal to in-flight adb/WDA calls; restore afterwards.
-      const prevSignal = driver.setSignal?.(extra?.signal);
-      try {
+      // Cancellation: this call's signal is scoped to the call (abortScope), so aborting it never
+      // touches a concurrently running job's adb/WDA calls (and vice versa).
+      return runWithSignal(extra?.signal, async () => {
         if (driver.kind === 'simulator') {
           return qaError({
             what: 'A structured UI tree is not available on the iOS simulator backend',
@@ -171,9 +172,7 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
           `${header}\n\n${rendered}${diffText}`,
           { textOmit: ['elements', 'diff'] },
         );
-      } finally {
-        driver.setSignal?.(prevSignal);
-      }
+      });
     },
   );
 

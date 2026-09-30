@@ -25,6 +25,7 @@ import { DirectDriver } from '../drivers/DirectDriver.js';
 import { blockedDeviceResult, getDriver, verifiedEmulatorSerials } from '../session/attach.js';
 import type { Session, SessionStore } from '../session/store.js';
 import type { Driver } from '../drivers/Driver.js';
+import { currentSignal, runWithSignal } from '../lib/abortScope.js';
 
 const SEL_TO_PLATFORM: Record<TargetSelection, 'android' | 'ios'> = {
   'android-emulator': 'android',
@@ -218,22 +219,24 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
         };
       // No unchecked cast: a session left on an iOS (WDA/simctl) driver gets a fresh adb driver.
       const driver = session.driver instanceof DirectDriver ? session.driver : new DirectDriver();
-      driver.setSignal(a.signal);
-      const res = await prepareAndroid(
-        a.sessions,
-        session,
-        driver,
-        {
-          needBoot: target.willBoot,
-          bootTarget: target.bootTarget,
-          serial: target.device,
-          resolvedAppId: appId,
-          apk: effectiveApk,
-          rnDebug: scan.metroNeed === 'likely',
-          allowLaunchWithoutMetro: false,
-          mutationConsent,
-        },
-        { signal: a.signal },
+      // Cancellation is scoped to this call (abortScope), never bound on the shared driver.
+      const res = await runWithSignal(a.signal ?? currentSignal(), () =>
+        prepareAndroid(
+          a.sessions,
+          session,
+          driver,
+          {
+            needBoot: target.willBoot,
+            bootTarget: target.bootTarget,
+            serial: target.device,
+            resolvedAppId: appId,
+            apk: effectiveApk,
+            rnDebug: scan.metroNeed === 'likely',
+            allowLaunchWithoutMetro: false,
+            mutationConsent,
+          },
+          { signal: a.signal },
+        ),
       );
       if (!res.ok)
         return {

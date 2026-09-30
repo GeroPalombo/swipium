@@ -186,7 +186,7 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
       attempted.push('prepare android (boot/install/launch)');
       // No unchecked cast: a session left on an iOS (WDA/simctl) driver gets a fresh adb driver.
       const driver = session.driver instanceof DirectDriver ? session.driver : new DirectDriver();
-      driver.setSignal(signal);
+      // The job's signal is scoped by execute.ts (runWithSignal) — adb calls inherit it.
       const res = await prepareAndroid(
         sessions,
         session,

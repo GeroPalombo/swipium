@@ -28,6 +28,7 @@ import { runtimeScreensFromGraph, loadGraphFromFile, gatherExistingTests } from 
 import { buildAppMap } from '../appMap/build.js';
 import { applyMerge } from '../testSuite/store.js';
 import type { Session, SessionStore, JobRecord } from '../session/store.js';
+import { runWithSignal } from '../lib/abortScope.js';
 
 const EMPTY_INDEX: FeatureIndex = { root: '', symbols: [], routes: [], files: [], scannedFiles: 0, truncated: false };
 
@@ -234,19 +235,21 @@ export function registerFeatureTesting(server: McpServer, sessions: SessionStore
       }
 
       const job = sessions.createJob(session, `test_feature:${effectiveMode}`);
-      void runFeatureTestJob(sessions, session, job, {
-        feature,
-        scopeResult,
-        objective: r.ctx.objective,
-        mode: effectiveMode,
-        platform,
-        creativity: creativity as CreativityLevel | undefined,
-        allowAdversarial: !!allowAdversarial,
-        maxScreens,
-        maxActions,
-        generateCases: generateCases !== false,
-        stopOnAuth: effectiveMode === 'interactive',
-      });
+      void runWithSignal(sessions.abortSignal(session, job.jobId), () =>
+        runFeatureTestJob(sessions, session, job, {
+          feature,
+          scopeResult,
+          objective: r.ctx.objective,
+          mode: effectiveMode,
+          platform,
+          creativity: creativity as CreativityLevel | undefined,
+          allowAdversarial: !!allowAdversarial,
+          maxScreens,
+          maxActions,
+          generateCases: generateCases !== false,
+          stopOnAuth: effectiveMode === 'interactive',
+        }),
+      );
       return qaOk(
         {
           sessionId: session.id,
