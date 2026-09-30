@@ -151,6 +151,16 @@ describe('fingerprint identity: exact start time + per-kind command', () => {
     expect(o.killed).toEqual([7001]);
   });
 
+  it('metro: recorded during the `#!/usr/bin/env node` shebang phase (Linux race), then retitled → killed', () => {
+    // Registration can catch npx before env execs node; the later `npm exec …` title must still match.
+    expect(reg.commandTail('/usr/bin/env node /usr/local/bin/npx sleeper start --port 8081')).toBe('sleeper start --port 8081');
+    const o = ops({ 7001: { cmd: 'npm exec sleeper start --port 8081', start: T1 } });
+    expect(reg.reclaimPid(7001, 'metro', o, entry('metro', '/usr/bin/env node /usr/local/bin/npx sleeper start --port 8081'))).toBe(
+      'killed',
+    );
+    expect(o.killed).toEqual([7001]);
+  });
+
   it('metro: same retitled command but a DIFFERENT start time (recycled pid) → never signalled', () => {
     const o = ops({ 7001: { cmd: 'npm exec react-native start --port 8081', start: T2 } });
     expect(reg.reclaimPid(7001, 'metro', o, entry('metro', 'node /usr/local/bin/npx react-native start --port 8081'))).toBe('recycled');

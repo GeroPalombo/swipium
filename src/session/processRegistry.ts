@@ -241,8 +241,10 @@ export function pidOwnedByLiveServer(pid: number): boolean {
 
 export type ReclaimOutcome = 'killed' | 'adopted' | 'gone' | 'recycled';
 
-/** Leading launcher tokens npx/npm put in front of the real program (and the retitle swaps). */
-const LAUNCHER_TOKEN = /^(?:node|nodejs|npx|npm|npx-cli\.js|npm-cli\.js|exec|--)$/i;
+/** Leading launcher tokens npx/npm put in front of the real program (and the retitle swaps).
+ *  `env` covers the `#!/usr/bin/env node` shebang: on Linux a process registered right after spawn
+ *  can still show as `/usr/bin/env node …/npx expo start` before env execs node. */
+const LAUNCHER_TOKEN = /^(?:env|node|nodejs|npx|npm|npx-cli\.js|npm-cli\.js|exec|--)$/i;
 
 /** A command line with its node/npx/npm launcher prefix stripped: `node /x/bin/npx expo start`
  *  and `npm exec expo start` both become `expo start`. Exported for tests. */

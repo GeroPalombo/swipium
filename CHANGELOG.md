@@ -127,7 +127,7 @@ Items tagged **You** need an action from you. Items tagged **Automatic** happen 
 - App-map and session state writes are atomic and locked. A stale lock is taken over safely (the lock can no longer spin forever and block startup), long app-map scans run outside the lock, and a corrupt `app-map.json` is restored from history.
 - Fixtures are reloaded from `.swipium/fixtures.json` on resume instead of being replayed as `«redacted»` after a restart.
 - Monorepos: answering the "which app?" question selects that app instead of being treated as a device ID, and the question is not asked again.
-- An orphaned Metro started through `npx` is cleaned up after a crash, and a child process that exits before reading its stdin can no longer crash the server.
+- An orphaned Metro started through `npx` is cleaned up after a crash, including on Linux when it was recorded while its `#!/usr/bin/env node` launcher was still starting. A child process that exits before reading its stdin can no longer crash the server.
 
 **Generation**
 
