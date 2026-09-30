@@ -15,9 +15,10 @@ A CI pipeline built on Swipium has three parts, and only one of them needs an ag
 | **Drive the app and decide what to check** | **Yes** | An MCP client running an LLM (for example Claude Code headless, `claude -p`) that calls Swipium tools and ends with `qa_report` |
 | Render JUnit, SARIF and the summary, and fail the job on the release gate | No | `npx swipium report …`: a deterministic CLI with no device and no LLM |
 
-Swipium is an MCP server, not a test runner. Without an agent step, nothing exercises the app. For a
-deterministic replay without an LLM, compile a Flow V2 suite instead; see `swipium suite` and
-`qa_flow_check` with `ci: true`.
+Swipium is an MCP server, not a test runner. Without an MCP client calling its tools, nothing
+exercises the app, and there is no standalone command that runs flows. To replay the same steps on
+every run instead of letting the model decide what to check, have the agent step call `qa_flow_run`
+on committed flows (see [flows.md](flows.md)); that still runs through an MCP client.
 
 ## `swipium report`
 
@@ -228,8 +229,9 @@ Notes on the agent step:
   for the privileged steps it plans, and every app install is among them. With nobody to approve,
   it would end blocked. The low-level path above attaches to the running emulator, and an app that
   is already installed skips the install consent.
-- **Testing more.** `qa_explore { sessionId }` can follow the smoke. It needs consent only before a
-  destructive-looking UI action, which the settings above refuse.
+- **Testing more.** `qa_explore { sessionId }` can follow the smoke. By default it skips
+  destructive-looking actions without asking. It asks for consent only when a call names one
+  explicit `destructiveCandidate` to run, which the settings above would refuse.
 - **Timing** depends on the model and the app. Treat the first runs as calibration, and set
   `timeout-minutes` from them.
 
@@ -295,7 +297,9 @@ remembering to write files.
 ## Release-gate policy
 
 `.swipium/policy.json` decides the verdict in every export and the `--fail-on-gate` exit code. The
-gate looks at every failed workflow and every high-severity finding:
+file's other settings, such as `ciAllowMutations`, are described in
+[flows.md](flows.md#ci-policy). The gate looks at every failed workflow and every high-severity
+finding:
 
 - A failed workflow's code is the failure code of its first failing step, else its category, else
   `UNKNOWN`.
@@ -321,6 +325,4 @@ Each failure is checked in this order:
 
 Tokens match failure codes case-insensitively, with punctuation ignored (`native_crash` matches
 `NATIVE_CRASH`). A few synonyms also work: `crash` means `NATIVE_CRASH`, `app_bug` and
-`visual_diff` mean `ASSERTION_FAILED`. The same file's `ciAllowMutations` list is separate: it
-controls which mutating flow steps `qa_flow_check` with `ci: true` may run, and does not affect the
-gate.
+`visual_diff` mean `ASSERTION_FAILED`. `ciAllowMutations` does not affect the gate.

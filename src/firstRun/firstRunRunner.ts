@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-02 — the first-run driver loop. The ONLY side-effecting part of the first-run lane:
+// The first-run driver loop. The ONLY side-effecting part of the first-run lane:
 // observe → planFirstRun → execute the bounded action(s) → record evidence/app-map → repeat until
 // the requested mode's stop condition. Generated values are recorded as evidence (non-secret) or
 // added to the redaction set (secret); they never appear in the read-only plan.
@@ -441,7 +441,7 @@ export async function runFirstRun(
     void typedCredential;
   }
 
-  // Persist the app-map patches as a forward-compatible artifact (REQ-01 will consume these).
+  // Persist the app-map patches as a forward-compatible artifact (the app map consumes these).
   let mapArtifactUri: string | undefined;
   if (mapUpdates.length) {
     mapArtifactUri = sessions.saveArtifact(

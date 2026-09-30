@@ -1,4 +1,4 @@
-// Feature scope resolution (SWIPIUM-REQ-03 "Feature Scope Model" + "Query and Ranking"). PURE.
+// Feature scope resolution ("Query and Ranking"). PURE.
 // Given a natural-language feature request and the available ground truth — the static code index,
 // the runtime screen graph, and existing tests — rank every plausible code/runtime artifact, group
 // them into feature candidates, and return the best-supported FeatureScope plus disambiguation when

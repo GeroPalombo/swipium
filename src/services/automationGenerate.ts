@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-04 — automation-suite assembly service. Ties the pure automationGen modules to a
+// Automation-suite assembly service. Ties the pure automationGen modules to a
 // session's recorded actions: build the project profile, reuse the canonical Swipium POM as the
 // intermediate model, build the cross-platform Appium model, and emit JS/TS or Python suite files
 // (+ README, optional CI example). Writing to disk is the caller's job (so plan/preview stay pure).

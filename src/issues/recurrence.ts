@@ -1,4 +1,4 @@
-// SWIPIUM Issue Log — lifecycle folding + recurrence messages (SWIPIUM-REQ-07 "Recurrence Behavior").
+// SWIPIUM Issue Log — lifecycle folding + recurrence messages.
 //
 // PURE. `foldEvent` is the single reducer that turns the append-only event stream into the derived
 // index record — so the index can always be rebuilt from `issues-log.jsonl`. `buildRecurrenceMessage`
@@ -181,7 +181,7 @@ export function foldEvent(prev: IssueRecord | null, event: IssueEvent): IssueRec
     }
     case 'linked_run': {
       // Evidence from a run (test case / audit check), not a state change — links already merged.
-      // A `verified_fixed` link records that a passing run confirmed the fix still holds (REQ-08).
+      // A `verified_fixed` link records that a passing run confirmed the fix still holds.
       if (event.relationship === 'verified_fixed' && record.state === 'fixed') {
         record.lastVerifiedFixedAt = event.createdAt;
       }

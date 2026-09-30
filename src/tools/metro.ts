@@ -99,6 +99,7 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
           what: 'Multiple devices online — choose one',
           changedState: false,
           retrySafe: true,
+          failureCode: 'MULTIPLE_DEVICES',
           nextSteps: [`Re-run qa_prepare_target with device="<serial>". Online: ${dev.available.join(', ')}`],
         });
       }
@@ -234,6 +235,7 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
           what: dev.needSelection ? 'Multiple devices online — choose one' : 'No device online — Metro reverse needs a running device',
           changedState: false,
           retrySafe: true,
+          failureCode: dev.needSelection ? 'MULTIPLE_DEVICES' : 'NO_DEVICE',
           nextSteps: dev.needSelection
             ? [`Re-run qa_prepare_target device="<serial>". Online: ${dev.available.join(', ')}`]
             : ['Boot a device first: qa_prepare_target { bindOnly:true } (boots an AVD + sets reverse), then qa_metro start.'],
@@ -292,6 +294,7 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
           commandAttempted: `adb -s ${serial} reverse tcp:${METRO_PORT} tcp:${METRO_PORT}`,
           changedState: true,
           retrySafe: true,
+          failureCode: 'METRO_FAILED',
           nextSteps: ['Check the device is online.'],
         });
       }

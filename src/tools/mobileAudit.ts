@@ -1,4 +1,4 @@
-// SWIPIUM Mobile QA Toolkit MCP tool (SWIPIUM-REQ-07). qa_mobile_audit turns a named profile
+// SWIPIUM Mobile QA Toolkit MCP tool. qa_mobile_audit turns a named profile
 // (smoke | account_cycle | store_compliance | resilience | release_gate) into an ordered, classified
 // checklist plus the account-cycle safety contract the agent executes with the existing driver tools.
 // It also surfaces the issue-ledger recurrence state so a release gate sees regressions. Thin wrapper
@@ -17,7 +17,6 @@ import { consumeConsent, requireConsent } from '../consent/consent.js';
 import { auditRunToMarkdown } from '../mobileAudit/results.js';
 import { generateSessionReport } from '../services/report.js';
 import { queryIssues } from '../issues/index.js';
-import { issuesResourceUri } from '../issues/store.js';
 import { resolveSourceRevision } from '../issues/sourceRevision.js';
 import { loadPolicy } from '../issues/store.js';
 
@@ -152,7 +151,7 @@ export function registerMobileAudit(server: McpServer, sessions: SessionStore): 
           }
           const passed = run.checks.filter((c) => c.status === 'pass').length;
           return qaOk(
-            { ...run, markdown: auditRunToMarkdown(run), resourceUri: issuesResourceUri(root) },
+            { ...run, markdown: auditRunToMarkdown(run) },
             `🔍 mobile audit ${prof}: ${run.state}, release=${run.releaseImpact} — ${passed}/${run.checks.length} pass, ${run.issueIds.length} issue(s)${run.recurrenceWarnings.length ? `, ${run.recurrenceWarnings.length} recurrence` : ''}`,
           );
         } catch (e) {
@@ -202,7 +201,6 @@ export function registerMobileAudit(server: McpServer, sessions: SessionStore): 
           blockedChecks,
           recurrenceWarnings: recurrence,
           sourceRevision: revisionResolved,
-          resourceUri: issuesResourceUri(root),
         },
         summary,
       );

@@ -1,4 +1,4 @@
-// Canonical persistent QA test-case suite schema (SWIPIUM-REQ-06). This is the long-lived,
+// Canonical persistent QA test-case suite schema. This is the long-lived,
 // project-level QA knowledge that grows with the app map — distinct from the per-run test catalog
 // (src/report/testCatalog.ts) and the per-suite POM catalog (src/suite/testcase.ts), which are
 // snapshots. A CanonicalTestCase carries manual + automated coverage, expected vs. actual results,
@@ -37,7 +37,7 @@ export interface ActualResultSummary {
   failureCode?: string;
 }
 
-// SWIPIUM-REQ-08 — links a canonical test case to issue-ledger records. The issue ledger remains the
+// Links a canonical test case to issue-ledger records. The issue ledger remains the
 // source of truth; the suite stores only the issue id + fingerprint + relationship, never events.
 export type TestCaseIssueRelationship = 'caused_failure' | 'blocks_case' | 'verified_fixed' | 'known_noise' | 'improvement';
 export type TestCaseRunIssueRelationship = 'observed' | 'verified_fixed' | 'regressed' | 'suppressed';
@@ -97,7 +97,7 @@ export interface TestRunRef {
   summary?: string;
   source: ProvenanceSource;
   evidence: string[];
-  /** Issue-ledger links observed/verified on this run (SWIPIUM-REQ-08). */
+  /** Issue-ledger links observed/verified on this run. */
   issueLinks?: TestCaseRunIssueLink[];
 }
 
@@ -146,7 +146,7 @@ export interface CanonicalTestCase {
   provenance: ProvenanceEntry[];
   /** True once a human edits the case; protects curated fields from generated overwrites. */
   manuallyEdited?: boolean;
-  /** Durable links to issue-ledger records (SWIPIUM-REQ-08). The ledger is the source of truth. */
+  /** Durable links to issue-ledger records. The ledger is the source of truth. */
   issueRefs?: TestCaseIssueRef[];
 }
 

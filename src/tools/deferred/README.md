@@ -4,7 +4,7 @@ These modules were public tools before 1.5.0. They are kept in case one is reviv
 
 | Module | Former tool | What covers it now |
 | --- | --- | --- |
-| `seed.ts` | `qa_seed` (run a fixture's `seed` spec as its own tool) | The `seed` step in flows (`src/flows/seedExec.ts`), and state profiles in `qa_flow_compile` fresh-state replay (`src/state/profile.ts`). |
+| `seed.ts` | `qa_seed` (run a fixture's `seed` spec as its own tool) | The `seed` step in flows (`src/flows/seedExec.ts`), and state profiles in `qa_generate target:"suite" replay:"fresh_state"` (`src/state/profile.ts`). |
 | `permissions.ts` | `qa_permissions` (list, grant, or revoke Android runtime permissions) | State profiles (`permissions` in `src/state/profile.ts`), `qa_ios` `privacy_reset` on iOS, and `qa_app_control` `clear_data` / `fresh_start`, which reset permissions along with app data. |
 | `screenInfo.ts` | `qa_screen_info` (screen size, density, orientation) | `qa_device_info`, and the `coordinateSpace` metadata on `qa_visual` results. |
 | `locator.ts` | `qa_locator_suggest` (score locators and grade automation readiness) | `qa_flow_repair` and the locator audits in generation (`src/oracle/locator.ts`, `swipium suite lint`). |

@@ -52,7 +52,7 @@ function compactMapSummary(summary: Record<string, unknown> | undefined): Record
 }
 
 // Runtime screen purposes that should trigger first-run autonomy even when static auth detection
-// missed them (SWIPIUM-REQ-02 Fix Group 5).
+// missed them.
 const FIRST_RUN_TRIGGER_PURPOSES: ReadonlySet<ScreenPurpose> = new Set<ScreenPurpose>([
   'login',
   'create_account',
@@ -74,7 +74,7 @@ const SUITE_MIME_BY_EXT: Record<string, string> = {
 };
 
 /**
- * Register generated suite files as session artifacts (SWIP-07). qa_get_artifact and the
+ * Register generated suite files as session artifacts. qa_get_artifact and the
  * swipium:// resource template resolve only URIs recorded via sessions.saveArtifact, so pushing
  * bare `file://` paths into the job artifacts advertised an unfetchable deliverable. Each written
  * file is copied into the session's artifact store and its swipium:// URI pushed into `artifacts`;
@@ -237,7 +237,7 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
     smokeProg.done(`smoke done — flows ${smoke.flowsPassed}/${smoke.flowsTotal}.`);
 
     let pendingQuestion: NeedsInputPayload | undefined;
-    // ---- C1.5 first-run autonomy (SWIPIUM-REQ-02): when the app appears gated AND the environment
+    // ---- C1.5 first-run autonomy: when the app appears gated AND the environment
     //      is a disposable test/staging one where generated accounts are policy-safe, progress
     //      through auth/onboarding before exploring. Safe-by-default: in an unknown/production-like
     //      environment the decision is "not allowed" and this block is skipped (pre-login coverage
@@ -371,7 +371,7 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
       suiteForReport = suite; // embed suite outputs in the report artifact (item 3)
     }
 
-    // ---- D2. App Knowledge Map (SWIPIUM-REQ-01) — update the durable map after runtime execution.
+    // ---- D2. App Knowledge Map — update the durable map after runtime execution.
     // Best-effort: a map failure must never turn a passing run into a blocked one.
     let appMap: { appMapUri?: string; appMapSummary?: Record<string, unknown>; mapCoverageDelta?: Record<string, number> } | undefined;
     try {

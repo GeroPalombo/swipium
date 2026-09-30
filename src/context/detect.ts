@@ -1,4 +1,4 @@
-// Detect the mobile project context under a resolved projectRoot (DESIGN §7).
+// Detect the mobile project context under a resolved projectRoot.
 // Best-effort, file-marker based; never trusts cwd.
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';

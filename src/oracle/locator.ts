@@ -1,4 +1,4 @@
-// Locator suggestions + durability scoring (NEXT-PLAN: Locator And Maintainability). For each
+// Locator suggestions + durability scoring (Locator And Maintainability). For each
 // element, recommend the most durable way to target it and score how brittle that is, following
 // the QA-standard priority: accessibility id / content-desc > resource-id / test tag > stable
 // visible text > relative structure > coordinate/image (last resort). The screen-level

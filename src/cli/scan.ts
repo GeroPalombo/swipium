@@ -1,4 +1,4 @@
-// `swipium scan [path]` (PHASE3-PLAN §3.1) — inspect a project and scaffold its .swipium/.
+// `swipium scan [path]` — inspect a project and scaffold its .swipium/.
 // Writes .swipium/config.json (generated, overwritten), and scaffolds .swipium/fixtures.json
 // (only if absent — never clobbers user fixtures) and .swipium/flows/. Ends with a clear
 // ready | partial | blocked summary and the exact missing items.
@@ -99,7 +99,7 @@ export async function runScan(args: string[]): Promise<void> {
     write ? `        ${fixturesPath} (${fixturesNote})` : `would write: ${configPath}`,
     write ? `        ${flowsDir}/` : `             ${fixturesPath} (${fixturesNote})`,
     ...(write ? [] : [`             ${flowsDir}/`]),
-    `git scope: not touched (Swipium never edits .gitignore or runs Git)`,
+    `git scope: scan does not edit .gitignore (Swipium adds .swipium/ to a Git repo's .gitignore the first time it writes the app map or issue ledger)`,
     '',
     write
       ? 'Next: in your agent, call qa_test_this { mode: "execute" } — or qa_start_session, then qa_resolve_target { sessionId, include: ["plan"] } for READY/BLOCKED/UNSAFE workflows.'

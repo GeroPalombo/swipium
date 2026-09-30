@@ -19,7 +19,7 @@ export interface ExploreElement {
   bounds?: { x: number; y: number; w: number; h: number };
   locator?: LocatorInfo;
   actionType: 'tap' | 'type' | 'toggle' | 'scroll' | 'back' | 'assert_visual';
-  secure?: boolean; // password / secure-text field (SWIPIUM-REQ-02 input planning)
+  secure?: boolean; // password / secure-text field (input planning)
   risk: 'safe' | 'unknown' | 'destructive';
   riskClass?: string;
   stepUp?: boolean;

@@ -2,34 +2,18 @@
 
 Swipium exposes 55 public MCP tools, 5 MCP prompts, and 3 MCP resource templates. It tests apps on local Android Emulators and iOS Simulators only; physical devices are out of scope (see [physical-devices.md](physical-devices.md)).
 
-The default entry point is `qa_test_this`. The other tools are for orientation, recovery, and step-by-step control when the autopilot is not enough.
+This page is the reference: conventions, one section per tool, the failure-code catalog, and the 1.5.0 migration table. Cross-cutting ideas (sessions and jobs, project root, consent, secrets, iOS modes, devices, glossary) are in [concepts.md](concepts.md); the flow file format and CI policy are in [flows.md](flows.md); environment variables are in the [README](../README.md#configuration--environment-variables).
 
 **Contents**
 
-- [Getting started](#getting-started): server instructions, the first call, and the polling loop.
-- [Conventions](#conventions): annotations, common parameters, response modes, result and error envelopes, argument checking, jobs, and cancellation.
+- [Entry points](#entry-points) and [Conventions](#conventions): annotations, common parameters, response modes, the result envelope, and argument checking.
 - [Tool index](#tool-index): one row per tool.
 - Tool reference by capability group: [Start](#start), [Setup](#setup), [Build](#build), [Device](#device), [Drive](#drive), [Run](#run), [App map](#app-map), [Feature](#feature), [Flows](#flows), [Generate](#generate), [Test suite](#test-suite), [Issues](#issues), [First run](#first-run).
-- Cross-cutting topics: [Project root resolution](#project-root-resolution), [Consent and elicitation](#consent-and-elicitation), [Sessions and persistence](#sessions-and-persistence), [Secrets and redaction](#secrets-and-redaction), [Devices and platforms](#devices-and-platforms), [Reports and CI](#reports-and-ci), [MCP resources and prompts](#mcp-resources-and-prompts), [Environment variables](#environment-variables), [Failure codes](#failure-codes).
-- [Migrating from 1.5.0](#migrating-from-150).
+- [MCP resources and prompts](#mcp-resources-and-prompts), [Failure codes](#failure-codes), and [Migrating from 1.5.0](#migrating-from-150).
 
-## Getting started
+## Entry points
 
-The server sends MCP `instructions` when a client connects. In short:
-
-1. **First call**: `qa_test_this {mode:"execute"}`, optionally with a `goal`. It resolves the project, finds or builds an app, prepares an emulator or simulator, tests, and reports, as a background job. It usually asks for consent first (boot, install, or build); after approval it returns `{sessionId, jobId, state:"running"}`. Pass `projectRoot` when the client exposes no workspace root.
-2. **Poll**: `qa_job_status {sessionId, jobId, waitMs:60000}` until `status` is no longer `running` (`done`, `failed`, or `cancelled`). The job `result` carries `state` (`completed`, `blocked`, `unsafe`, or `needs_input`) and `reportUri`; a cancelled job has no result.
-3. **Read the report**: on `completed`, `qa_get_artifact {uri: reportUri}`, then stop unless the user asks for more.
-4. **needs_input**: relay exactly the one returned question to the user, then make the returned `resume` call (`qa_continue_from_blocker`) with the answer. Never invent extra questions.
-5. **blocked / unsafe**: relay `failureCode`, owner, what was tried, and the fix (`qa_explain_blocker {failureCode, sessionId}`). A build failure is not a test failure.
-6. **Consent**: clients with MCP elicitation prompt the user directly. Otherwise, show a `requiresConsent` result to the user and re-call with `consentId` and `approve:true` only after they agree. `CONSENT_DECLINED`, `CONSENT_CANCELLED`, and `CONSENT_REFUSED` mean nothing ran; do not retry without asking. Ask the user only on `needs_input` or a consent request; otherwise keep going.
-7. **iOS without WebDriverAgent** is visual-only: `qa_snapshot` and `qa_act` return `BACKEND_UNSUPPORTED`; use `qa_screenshot` and `qa_visual`, or attach WDA with `qa_wda`.
-8. **Unknown arguments** fail with `INVALID_ARGUMENT` and nothing runs. `STALE_CLIENT` means the client runs an outdated tool list: restart the client.
-9. **Feature work**: read the app map first (`qa_app_map_read`, `qa_app_map_query`, `qa_app_map_feature_scope`), then `qa_test_feature`.
-
-`qa_status` without a `sessionId` returns the same rules as structured data, plus the capability groups: `{orientation:true, swipiumVersion, tools, prompts, firstCall, polling{tool, args, until, terminalStates}, report, goals, rules{needsInput, blocker, consent, stop, iosVisualOnly, appMap}, capabilityGroups[{group, purpose, tools}], nextBestAction}`. Call it when the client dropped the server instructions or the agent lost context.
-
-### Recommended entry points
+The default entry point is `qa_test_this`. The server sends the same rules as MCP `instructions` when a client connects, and `qa_status` without a `sessionId` returns them as structured data (see [qa_status](#qa_status)). The polling loop, job states, and `needs_input` handling are in [Sessions and jobs](concepts.md#sessions-and-jobs).
 
 | User intent | First call |
 | --- | --- |
@@ -47,33 +31,33 @@ The server sends MCP `instructions` when a client connects. In short:
 
 ### Annotations
 
-Every tool carries MCP annotations, so clients can auto-approve the read-only ones. `openWorldHint` is `false` everywhere, because Swipium only talks to local simulators, local toolchains, and the local project.
+Every tool carries explicit MCP annotations, so clients can auto-approve the read-only ones. `openWorldHint` is `false` everywhere, because Swipium only talks to local simulators, local toolchains, and the local project.
 
 | Kind | Annotations | Tools |
 | --- | --- | --- |
-| Read-only | `readOnlyHint:true` | 18 tools, marked **read-only** in the [index](#tool-index). They do not change the device, the app, the project tree, or durable project memory. In-process session bookkeeping (counters, the last snapshot, health findings) does not count as a change. |
-| Write | `readOnlyHint:false, destructiveHint:false, idempotentHint:false` | Everything not listed elsewhere. |
-| Idempotent write | `destructiveHint:false, idempotentHint:true` | `qa_job_cancel`, `qa_orientation`, `qa_geolocation`, `qa_network`, `qa_flow_compile`. |
-| Destructive | `destructiveHint:true` | `qa_ios` (`erase`, `privacy_reset`), `qa_app_control` (`clear_data`, `fresh_start`), `qa_app_map_update` (overwrites entries), `qa_suite_update` (`replace_generated` rewrites curated cases). |
+| Read-only | `readOnlyHint:true, openWorldHint:false` | Marked **RO** in the [index](#tool-index). They do not change the device, the app, the project tree, or durable project memory. In-process session bookkeeping (counters, the last snapshot, health findings) does not count as a change. |
+| Write | `readOnlyHint:false, destructiveHint:false, idempotentHint:false, openWorldHint:false` | Everything not listed elsewhere. |
+| Idempotent write | `readOnlyHint:false, destructiveHint:false, idempotentHint:true, openWorldHint:false` | `qa_job_cancel`, `qa_orientation`, `qa_geolocation`, `qa_network`, `qa_flow_compile`. |
+| Destructive | `readOnlyHint:false, destructiveHint:true, idempotentHint:false, openWorldHint:false` | `qa_ios` (`erase`, `privacy_reset`), `qa_app_control` (`clear_data`, `fresh_start`), `qa_app_map_update` (overwrites entries), `qa_suite_update` (`replace_generated` rewrites curated cases). |
 
-Annotations describe the worst case of a tool. Consent gates (below) are what actually stop a mutation from running unapproved.
+Annotations describe the worst case of a tool. [Consent](concepts.md#consent) gates are what actually stop a mutation from running unapproved.
 
 ### Common parameters
 
 - **`sessionId`**: returned by `qa_test_this` or `qa_start_session`. An unknown `sessionId` returns `INVALID_ARGUMENT` (`Unknown sessionId "…"`) with nothing run.
-- **`projectRoot`**: an absolute path. Tools that work before a session exists (build, artifact, app map, suite, issue ledger, flow check, feature plan) accept it. See [Project root resolution](#project-root-resolution).
-- **`consentId` / `approve`**: the re-call half of a consent request. See [Consent and elicitation](#consent-and-elicitation).
+- **`projectRoot`**: an absolute path. Tools that work before a session exists (build, artifact, app map, suite, issue ledger, flow check, feature plan) accept it. See [Project root](concepts.md#project-root).
+- **`consentId` / `approve`**: the re-call half of a consent request. See [Consent](concepts.md#consent).
 - **`mode:"plan"`**: on `qa_test_this`, `qa_build`, `qa_generate`, `qa_flow_run`, `qa_test_feature`, `qa_first_run`, and `qa_mobile_audit`, the plan mode is a side-effect-free preview. It is the default everywhere except `qa_generate` and `qa_flow_run`.
 
 ### Response modes
 
-`responseMode` controls the **text** channel only. `structuredContent` always carries the complete payload.
+`responseMode` controls the **text** channel only. `structuredContent` always carries the complete payload in every mode.
 
 | Mode | Text channel |
 | --- | --- |
 | `compact` | The summary line plus any `swipium://` URIs (`artifactUri`, `artifactUris`, `screenshotUri`, `reportUri`). No JSON. |
-| `normal` (default) | The summary plus one line of compact JSON. Fields the summary already rendered are left out and listed in `renderedAbove`: `elements` and `diff` for `qa_snapshot`; `elements`, `removed`, `hint`, and `stateChanged` for `qa_act`. |
-| `verbose` | The summary plus the whole payload as JSON. |
+| `normal` (default) | The summary plus one block of JSON. Fields the summary already rendered are left out of that JSON, and a `renderedAbove` key lists them: `elements` and `diff` for `qa_snapshot`; `elements`, `removed`, `hint`, and `stateChanged` for `qa_act`. `renderedAbove` exists only in the text; it is never in `structuredContent`. |
+| `verbose` | The summary plus the full payload as JSON, including the fields `normal` leaves out (so there is no `renderedAbove`). |
 
 The mode is a session setting, set by `qa_start_session` or `qa_test_this` (`responseMode`). Calls without a `sessionId` use the `responseMode` argument when the tool has one, else `normal`. The mode is chosen before a call runs, so `qa_test_this {sessionId, responseMode}` on an existing session takes effect from the next call. Errors always show their heading lines; compact mode drops only the JSON.
 
@@ -86,13 +70,14 @@ An error has `isError:true` and this `structuredContent`:
 | Field | Meaning |
 | --- | --- |
 | `ok` | Always `false`. |
-| `failureCode` | A code from the [catalog](#failure-codes). `UNKNOWN` when unclassified. |
+| `failureCode` | A code from the [catalog](#failure-codes). `UNKNOWN` when the error is not classified. |
 | `what` | One sentence: what went wrong. |
 | `changedState` | Whether anything on the device, app, or project changed before the failure. |
 | `retrySafe` | Whether re-calling unchanged is safe. |
 | `nextSteps` | Concrete recovery steps, usually exact calls. |
-| `bucket`, `owner`, `canSwipiumFix` | Present on failures raised from the catalog: the triage bucket, who fixes it (`app`, `environment`, `swipium`, or `user`), and whether Swipium can plausibly fix it itself. `qa_explain_blocker` returns them for any code. |
 | `commandAttempted`, `artifactUri`, `clientHint` | Optional: the command that failed, evidence (for example a build log), and the stale-client hint. |
+
+Triage fields (`bucket`, `owner`, `canSwipiumFix`) are not part of the error contract: get them from `qa_explain_blocker {failureCode}`, which returns them for any code. A `qa_test_this` terminal result lists its `blockers[]` with `failureCode`, `owner`, `retrySafe`, `canSwipiumFix`, `whatItMeans`, and `howToFix` (no `bucket`).
 
 The text channel renders the same error as `❌ <what>`, then `changedState=… retrySafe=…`, `next: …`, and `hint: …` lines.
 
@@ -101,21 +86,9 @@ The text channel renders the same error as `❌ <what>`, then `changedState=… 
 - **Unknown arguments**: every tool rejects top-level arguments its input schema does not declare, before anything runs. The call returns `INVALID_ARGUMENT` with `unknownArguments` and `acceptedParameters`. For example, `qa_app_control {action:"force_stop", appId:"…"}` is refused: `appId` is not a parameter, and the action always targets the session's app. Deprecated aliases that are still declared (`qa_wda udid`, `qa_suite_generate creativityLevel`, `qa_issue_log until`) are accepted. Nested objects are not checked this way.
 - **Stale clients**: a client started before an upgrade may still send 1.5-era calls. Removed tool names, `qa_ios` with `action:"screenshot"` or `action:"wda_*"`, and `qa_wait` with `for:"job_done"` return `failureCode:"STALE_CLIENT"` with `removedCall`, `replacement` (the call to use), and `clientHint` (restart the client so it reloads the tool list). See [Migrating from 1.5.0](#migrating-from-150). `qa_doctor` with `expectedVersion`, `expectedToolCount`, or `expectedSchemaHash` detects the same condition.
 
-### Jobs
+### Jobs and cancellation
 
-Long operations run as background jobs and return a `jobId`: `qa_test_this` and `qa_test_feature` in `execute` mode, `qa_explore`, `qa_build` in `run` mode, `qa_bundletool`, and the long steps of `qa_prepare_target`.
-
-- **Job status** is `running`, `done`, `failed`, or `cancelled`. There is no `needs_input` job status: a `qa_test_this` job that stops on a question ends `done`, and its `result.state` is `needs_input`.
-- **`qa_test_this` terminal state → job status**: `completed` and `needs_input` → `done`; `blocked` and `unsafe` → `failed`. The envelope is in `result` either way.
-- **Polling**: `qa_job_status {sessionId, jobId, waitMs}` returns `{jobId, kind, status, progress, progressDetail, error, result, artifactUris}`. `waitMs` (default 0, capped at 120000) long-polls: the call returns as soon as the job leaves `running`, and adds `waited:{waitedMs, timedOut}`. An unknown `jobId` is `INVALID_ARGUMENT`.
-- **Cancelling**: `qa_job_cancel {sessionId, jobId}` returns `{jobId, cancelled}`. `cancelled:false` means the job had already finished or is unknown. It aborts child processes (build, boot, install, record). Side effects already applied are not rolled back, and a worker never overwrites a cancelled job's status.
-- **Restarts**: jobs are persisted with the session. A job that was `running` when the server stopped is marked `failed` with `server restarted while job was running (child process gone)`.
-
-### Cancellation
-
-When a tool call is cancelled (MCP `notifications/cancelled`) or its job is cancelled with `qa_job_cancel`, the interrupted work returns `failureCode:"CANCELLED"` with `retrySafe:true`. A call's cancel signal applies to that call only: cancelling an interactive call does not cancel a running job, and the other way round.
-
-`CANCELLED` is not a failure. It is never recorded as a tool error, a snapshot failure, a finding, or a health verdict, and it never switches the session to visual-fallback. Side effects that already happened are not rolled back: a cancelled `qa_act` always reports `changedState:true`, and a cancelled `qa_explore` stops with `stoppedReason:"cancelled"` and records no finding for the screen it was observing.
+Long operations return a `jobId` to poll with [qa_job_status](#qa_job_status); cancelled work returns `CANCELLED`. The job lifecycle, status versus `result.state`, long-polling, and cancellation rules are in [Sessions and jobs](concepts.md#sessions-and-jobs).
 
 ## Tool index
 
@@ -187,31 +160,31 @@ Autopilot, orientation, job polling, blockers, and artifacts.
 
 Autopilot for a low-context request such as "test this app". It resolves the project, finds or builds an artifact, picks a simulator, then plans or executes prepare → smoke → (explore) → report → (suite).
 
-- **`mode`**: `plan` (default) has no side effects and returns the plan, preconditions, and any consent it will need. `execute` returns `state:"running"` and a `jobId` at once. `interactive` asks the credentials question up front (when the project likely has a login) and then runs like `execute`. `waitForCompletion:true` blocks up to `timeoutMs` (default 120000) and returns the terminal result directly.
+- **`mode`**: `plan` (default) has no side effects and returns the plan, preconditions, and any consent it will need. `execute` returns `state:"running"` and a `jobId` at once. `interactive` asks the credentials question up front (when the project likely has a login and no credentials are available) and then runs as a job like `execute`. `waitForCompletion:true` blocks up to `timeoutMs` (default 120000) and returns the terminal result directly.
 - **`goal`** sets default flags; explicit `explore`, `generateSuite`, and `stopOnNeedsInput` win.
 
   | goal | Explore | Suite | Stops for input | Notes |
   | --- | --- | --- | --- | --- |
-  | (none) | no | yes | no | Smoke, then a POM suite when actions were recorded. |
-  | `smoke` | no | no | no | Fastest path. Same as `fastSmoke:true`. |
+  | (none) | no | attempted | no | Smoke, then an attempt at a POM suite (skipped honestly when no actions were recorded). Not the fastest path. |
+  | `smoke` | no | no | no | The fastest path. Same as `fastSmoke:true`. |
   | `explore` | yes | no | no | Maps reachable workflows. |
   | `create_automation_suite` | yes | yes | no | |
   | `release_gate` | yes | no | no | Adds the readiness and release-gate summary. |
   | `test_login` | no | no | yes | Stops for credentials when none are available. |
   | `reproduce_bug` | yes | no | no | Focus with `goalText`. |
 
-- **Other parameters**: `platform` (`android` or `ios`, default inferred), `device`, `buildIfNeeded` (default true), `allowOutsideRoot`, `responseMode`, `consentId`/`approve`. `preferRealDevice` always returns `PHYSICAL_DEVICE_UNSUPPORTED`.
-- **Consent**: one combined `test_this_plan` consent covers build, boot, and install; its risk is the highest of its steps.
-- **Terminal states** (in the `qa_job_status` result): `completed`, `blocked`, `unsafe`, or `needs_input`. Every terminal state writes a report. The result keeps the report compact (`reportSummary`, `reportUri`, suite and app-map counts), plus `nextRecommendedAction`.
-- **needs_input**: the run stopped on one question it was asked to stop for (`stopOnNeedsInput`, `goal:"test_login"`, or `interactive`), such as a login form that needs credentials. The result carries `needsInput` (the question, its fields, and a `resume` call), and `nextRecommendedAction` is that call. Without those flags, the run completes with pre-login coverage and returns the question as `optionalQuestion`. Answering "test pre-login only" sets `loginOutOfScope:true` for the session.
+- **Other parameters**: `platform` (`android` or `ios`, default inferred), `device`, `buildIfNeeded` (default true), `allowOutsideRoot`, `fastSmoke`, `responseMode`, `consentId`/`approve`. `preferRealDevice:true` always returns `PHYSICAL_DEVICE_UNSUPPORTED`, even when no phone is connected (see [Devices](concepts.md#devices)).
+- **Consent**: one combined `test_this_plan` consent covers build, boot, and install; its risk is the highest of its steps. Its envelope carries `sessionId`, so the approving re-call reuses the session.
+- **Terminal states** (in the `qa_job_status` result): `completed`, `blocked`, `unsafe`, or `needs_input`. Every terminal state writes a report. The result keeps the report compact (`reportSummary`, `reportUri`, suite and app-map counts) and adds `attempted`, `workaroundsAttempted`, `artifactChoice`, `targetChoice`, `blockers[]`, and `nextRecommendedAction`.
+- **needs_input**: the run stopped on one question it was asked to stop for (`stopOnNeedsInput`, `goal:"test_login"`, or `interactive`), such as a login form that needs credentials. The result carries `needsInput` (the question, its fields, and a `resume` call), and `nextRecommendedAction` is that call. When the question can be asked before any work starts, `qa_test_this` returns `state:"needs_input"` directly, with no `jobId`. Without those flags, the run completes with pre-login coverage and returns the question as `optionalQuestion`. Answering "test pre-login only" sets `loginOutOfScope:true` for the session.
 - **Resumes**: a blocker resume replays the original `goal`, `goalText`, and flags. Plan steps that route back through `qa_test_this` (a build or an `.aab` conversion) carry `mode:"execute"` and the original goal.
 - **iOS without WebDriverAgent**: the default run skips suite generation and exploration, records a workaround, and runs a visual-only smoke. Only explicitly requested WDA work fails with `WDA_UNREACHABLE`: the `generateSuite` or `explore` flags, or goals `create_automation_suite`, `explore`, `reproduce_bug`, and `test_login`. Its `nextSteps` include a `goal:"smoke"` call.
 - **Consent retries**: an unknown, used, or expired `consentId` is never silently replaced. The result says `consent <id> unknown or expired — new challenge issued` in `consentNote` (with `previousConsentId`) and returns a new challenge.
-- **Failure codes**: `PROJECT_ROOT_UNRESOLVED`, `NOT_MOBILE_PROJECT`, `NO_BUILD_ARTIFACT`, `BUILD_FAILED` and the typed build codes, `PHYSICAL_DEVICE_UNSUPPORTED`, `ADB_NOT_FOUND`, `NO_DEVICE`, `WDA_UNREACHABLE`, `IPA_NEEDS_REAL_DEVICE`.
+- **Failure codes**: `PROJECT_ROOT_UNRESOLVED`, `PROJECT_ROOT_EMPTY`, `NOT_MOBILE_PROJECT`, `NO_BUILD_ARTIFACT`, `BUILD_FAILED` and the typed build codes, `PHYSICAL_DEVICE_UNSUPPORTED`, `ADB_NOT_FOUND`, `NO_DEVICE`, `WDA_UNREACHABLE`, `IPA_NEEDS_REAL_DEVICE`.
 
 ### qa_status
 
-- **Without `sessionId`**: the first-call orientation described in [Getting started](#getting-started).
+- **Without `sessionId`**: first-call orientation, the same rules the server sends as MCP `instructions`: `{orientation:true, swipiumVersion, tools, prompts, firstCall, polling{tool, args, until, terminalStates}, report, goals, rules{needsInput, blocker, consent, stop, iosVisualOnly, appMap}, capabilityGroups[{group, purpose, tools}], nextBestAction}`. Call it when the client dropped the server instructions or the agent lost context.
 - **With `sessionId`**: `{sessionId, root, device, appId, mode, budgetRemaining, counters, recordedActions, findings, notes, workarounds, inputsProvided, readiness, lastJob, nextBestAction}`. `goal` biases the recommendation. After a restart with no live driver, `mode` and the platform come from the persisted `driverKind`.
 - **`nextBestAction`** is `{tool, args, why}`. The first matching rung wins, and every rung checks state that the recommended call changes, so following it never loops:
   1. A job is running: `qa_job_status`.
@@ -226,20 +199,21 @@ Autopilot for a low-context request such as "test this app". It resolves the pro
 
 ### qa_job_status
 
-Poll a job. See [Jobs](#jobs). Parameters: `sessionId`, `jobId`, `waitMs` (0 to 120000).
+Polls a job. Parameters: `sessionId`, `jobId`, `waitMs` (0 to 120000; long-polls until the job leaves `running`). Returns `{jobId, kind, status, progress, progressDetail, error, result, artifactUris}`, plus `waited:{waitedMs, timedOut}` when `waitMs` is set. See [Sessions and jobs](concepts.md#jobs).
 
 ### qa_job_cancel
 
-Cancel a running job. See [Jobs](#jobs) and [Cancellation](#cancellation).
+Cancels a running job and aborts its child processes. Returns `{jobId, cancelled}`; `cancelled:false` means the job had already finished or is unknown. See [Cancellation](concepts.md#cancellation).
 
 ### qa_explain_blocker
 
-Explains any code in the catalog: `{failureCode, bucket, owner, severity, retrySafe, canSwipiumFix, whatItMeans, whoFixesIt, howToFix, context}`. Pass `sessionId` to mark the blocker as explained, so `qa_status` moves past it. `context` is free text echoed back.
+Explains any code in the catalog: `{failureCode, bucket, owner, severity, retrySafe, canSwipiumFix, whatItMeans, whoFixesIt, howToFix, context}`. This is the source for a code's bucket, owner, and `canSwipiumFix`. Parameters: `failureCode` (required), `context` (free text, echoed back), and `sessionId` (marks the blocker as explained, so `qa_status` moves past it). An unknown code is an error.
 
 ### qa_continue_from_blocker
 
-Answers a `needs_input` question. Parameters: `sessionId`, `kind` (for example `credentials` or `monorepo_target`), `values` (field → value), and `secretFields` (default: password-, OTP-, and token-like names).
+Answers a `needs_input` question. Parameters: `sessionId`, `kind` (for example `credentials` or `monorepo_target`), `values` (field → value), and `secretFields`.
 
+- A value is secret when its field name looks like a credential (`pass`, `secret`, `token`, `otp`, `pin`, `cvv`, `key`, or `code`) **or** the field is listed in `secretFields`, which adds to that rule and never replaces it.
 - Secret values join the redaction set immediately and are never echoed or logged. They are held in memory only, so after a server restart a login run asks again.
 - Non-secret choices (`platform`, `device`, `target`, `allowOutsideRoot`) map onto the re-invocation's arguments.
 - Returns `accepted`, `ignored[]` (each with how to apply it), `nextAction`, and `projectRoot` for a `monorepo_target` answer.
@@ -247,7 +221,7 @@ Answers a `needs_input` question. Parameters: `sessionId`, `kind` (for example `
 
 ### qa_get_artifact
 
-Reads a `swipium://session/<id>/<kind>/<name>` artifact, for clients without MCP resources. `mode` defaults to `metadata` for images and `inline` for text. A text artifact whose redaction was `partial` reports `redaction:"partial"` plus `redactionNote` (see [Secrets and redaction](#secrets-and-redaction)).
+Reads a `swipium://session/<id>/<kind>/<name>` artifact, for clients without MCP resources. `mode` defaults to `metadata` for images and `inline` for text. A text artifact whose redaction was `partial` reports `redaction:"partial"` plus `redactionNote` (see [Secrets and redaction](concepts.md#secrets-and-redaction)).
 
 ## Setup
 
@@ -264,7 +238,7 @@ Opens a session. Only needed for low-level tools; `qa_test_this` creates its own
 - **`budget`**: defaults to 8 minutes, 20 actions, 8 screenshots, 3 consecutive snapshot failures (`maxSnapshotFailures`), and 3 no-change actions (`maxNoChangeActions`). `profile` sets the time budget: `guardrail` 8 min, `login_smoke` 10, `full_smoke` 15, `install_smoke` 20. Once a budget is spent, tools return a budget stop.
 - **`responseMode`**: see [Response modes](#response-modes).
 - **`sensitive:true`**: refuses every screenshot, recording, log capture, and other on-screen evidence (`SENSITIVE_MODE_REFUSED`). Sensitive sessions are never listed as MCP resources.
-- **`fixtures`**: declared preconditions, merged with `.swipium/fixtures.json`, so unmet ones report as blocked instead of failed. The schema advertises only `{name, …}`; the full shape is validated server-side, and a bad shape returns `INVALID_ARGUMENT`:
+- **`fixtures`**: declared preconditions, merged with `.swipium/fixtures.json`, so unmet ones report as blocked instead of failed. The schema advertises only `{name, …}`; the full shape is validated server-side, and a bad shape returns `INVALID_ARGUMENT`. Values passed here are held in memory: after a server restart, a fixture that is not also in `.swipium/fixtures.json` comes back without its `value`, field values, or `seed` (see [Sessions](concepts.md#sessions)). The full shape:
 
 ```jsonc
 {
@@ -298,8 +272,8 @@ Prepares an Android Emulator in order: device → Metro → install → launch, 
 
 - **Parameters**: `sessionId`, `apk`, `appId`, `avd`, `device` (required when more than one device is online), `headless` (default true), `force`, `bindOnly` (bind or boot plus `adb reverse` only, which breaks a device/Metro deadlock), `allowLaunchWithoutMetro` (launch a debug RN/Expo build without Metro; it may show a RedBox), `consentId`/`approve`.
 - **Consent**: one combined `prepare_plan` consent for the privileged steps. Every install is gated: an APK inside the project root is risk low, an external one medium (the prompt shows its sha256). Inside-ness is decided on resolved real paths, so `<root>/../x.apk` and symlinks that leave the root count as external. An already-installed app launches without a prompt.
-- **Device selection**: see [Android](#android). With several devices online and no `device`, it returns `MULTIPLE_DEVICES` listing the online serials. Long steps return a `jobId`.
-- **Failure codes**: `PHYSICAL_DEVICE_UNSUPPORTED`, `ADB_NOT_FOUND`, `NO_DEVICE`, `EMULATOR_BOOT_FAILED`, `DEVICE_NOT_READY`, `INSTALL_FAILED`, `APK_ARCH_INCOMPATIBLE`, `ANDROID_MIN_SDK_INCOMPATIBLE`, `ANDROID_SIGNATURE_CONFLICT`, `METRO_REQUIRED`, `APP_LAUNCH_FAILED`.
+- **Device selection**: it acts on the online device rather than planning one. With several devices online (a phone included) and no `device`, it returns `MULTIPLE_DEVICES` listing the online serials; a phone that is the only online device is refused. See [Devices](concepts.md#devices). Boot and install run as a job and return a `jobId`.
+- **Failure codes**: `PHYSICAL_DEVICE_UNSUPPORTED`, `MULTIPLE_DEVICES`, `NO_DEVICE`, `EMULATOR_BOOT_FAILED`, `DEVICE_NOT_READY`, `NO_ARTIFACT` (no APK to install), `INSTALL_FAILED`, `APK_ARCH_INCOMPATIBLE`, `ANDROID_MIN_SDK_INCOMPATIBLE`, `ANDROID_SIGNATURE_CONFLICT`, `METRO_REQUIRED`, `APP_LAUNCH_FAILED`, `INVALID_ARGUMENT` (for example a malformed app id).
 
 ### qa_prepare_ios_target
 
@@ -329,13 +303,13 @@ Screenshots go through `qa_screenshot`, and WebDriverAgent through `qa_wda`. The
 
 ### qa_wda
 
-Diagnoses, attaches, or manages WebDriverAgent for structured iOS automation. Without WDA, iOS stays visual-only and `qa_visual` does the checking.
+Diagnoses, attaches, or manages WebDriverAgent for structured iOS automation. Without WDA, iOS stays visual-only and `qa_visual` does the checking (see [iOS modes](concepts.md#ios-modes)).
 
 - **`action`**: `status`, `doctor`, `diagnose`, `logs`, and `tune` inspect an existing setup. `attach` connects to an external WDA at `webDriverAgentUrl` (default `http://127.0.0.1:8100`). `build` and `start` manage one (consent `wda_build` / `wda_start`, medium) from `wdaProjectPath` (default: an installed Appium WebDriverAgent when one is found), with `derivedDataPath` and `scheme` (default `WebDriverAgentRunner`); build and start output is captured as artifacts. `stop` terminates it.
-- **`device`**: the simulator UDID behind this WDA (default: the session device). `udid` is a deprecated alias. `bundleId` defaults to the session's app.
-- **Failure codes**: `WDA_UNREACHABLE`, `WDA_BUILD_FAILED`, `WDA_SIGNING_FAILED`, `WDA_START_FAILED` (with `managedPid` while a managed WDA is still running: attach to it or `stop` it first), `WDA_SESSION_FAILED`, `STALE_WDA_DEVICE`, `MULTIPLE_DEVICES` (`attach` without a UDID and several booted simulators), `DESTRUCTIVE_REFUSED` (non-loopback URL without approval).
-
-Session capabilities, managed-WDA lifetime, and the remote-URL rule are in [iOS Simulator and WebDriverAgent](#ios-simulator-and-webdriveragent).
+- **`device`**: the simulator UDID behind this WDA (default: the session device). `udid` is a deprecated alias. `bundleId` defaults to the session's app. A non-loopback URL needs `allowNonLoopback:true` plus consent (see [iOS modes](concepts.md#ios-modes)).
+- **Failure codes**:
+  - `attach`: `MULTIPLE_DEVICES` whenever no `device` is given and none is bound to the session (it never guesses), `WDA_UNREACHABLE`, `WDA_SESSION_FAILED`, `STALE_WDA_DEVICE`, `DESTRUCTIVE_REFUSED` (non-loopback URL without approval).
+  - `build` and `start`: `NO_DEVICE` (no UDID given or bound), `BACKEND_UNSUPPORTED` (no Xcode command line tools), `NO_ARTIFACT` (no WebDriverAgent project found), `WDA_BUILD_FAILED`, `WDA_SIGNING_FAILED`, `WDA_START_FAILED` (with `managedPid` while a managed WDA is still running: attach to it or `stop` it first).
 
 ## Build
 
@@ -343,7 +317,9 @@ Pick a target, find an artifact, or build one. Only `qa_build mode:"run"` and `q
 
 ### qa_resolve_target
 
-Picks the best device or simulator deterministically and boots nothing. It honors `platform`, `device` (adb serial, simulator UDID or name, or AVD name), and a platform-specific artifact, prefers an online emulator or simulator, and otherwise plans a boot. Returns `selected`, `reason`, `alternatives`, `preconditions`, and `willBoot`. Physical devices return `PHYSICAL_DEVICE_UNSUPPORTED`, as does `preferRealDevice`.
+Picks the best device or simulator deterministically and boots nothing. It honors `platform`, `device` (adb serial, simulator UDID or name, or AVD name), and a platform-specific artifact, prefers an online emulator or simulator, and otherwise plans a boot. Returns `selected`, `reason`, `alternatives`, `preconditions`, and `willBoot`.
+
+A physical device returns `PHYSICAL_DEVICE_UNSUPPORTED` only when it is requested as `device`, when it is the only option on the chosen platform, or when `preferRealDevice` is set and a phone is visible. Otherwise an emulator or simulator is selected and the phone is mentioned in `reason`. See [Devices](concepts.md#devices).
 
 `include` adds sections:
 
@@ -354,7 +330,7 @@ When target selection itself fails, the requested sections are still attached to
 
 ### qa_resolve_artifact
 
-Finds the best installable build in Gradle, Flutter, and Xcode outputs (DerivedData is opt-in). Parameters: `platform` (`android`, `ios`, `any`), `buildType` (`debug`, `release`, `any`), `path` (short-circuits the search), `allowOutsideRoot`, `requireInstallableOn` (`android-emulator`, `android-real`, `ios-simulator`, `ios-real`). Returns ranked candidates (build type, installability, app id, ABIs, warnings) and the exact locations searched. Failure codes: `NO_BUILD_ARTIFACT` (with a `qa_build` next step), `AAB_NEEDS_BUNDLETOOL`, `ARTIFACT_OUTSIDE_ROOT_REQUIRES_APPROVAL`.
+Finds the best installable build in Gradle, Flutter, and Xcode outputs. Parameters: `platform` (`android`, `ios`, `any`), `buildType` (`debug`, `release`, `any`), `path` (short-circuits the search), `allowOutsideRoot`, `requireInstallableOn` (`android-emulator`, `android-real`, `ios-simulator`, `ios-real`). Xcode's DerivedData (`~/Library/Developer/Xcode/DerivedData`) is outside the project, so it is searched only with `allowOutsideRoot:true`. Returns ranked candidates (build type, installability, app id, ABIs, warnings) and the exact locations searched. Failure codes: `NO_BUILD_ARTIFACT` (with a `qa_build` next step), `AAB_NEEDS_BUNDLETOOL`, `ARTIFACT_OUTSIDE_ROOT_REQUIRES_APPROVAL`.
 
 ### qa_build
 
@@ -369,7 +345,7 @@ Converts an `.aab` (not directly installable) into an installable APK, cached un
 
 - Default: a universal `.apk` signed with the debug keystore. `aab` defaults to the best `.aab` in the project; `force` rebuilds a cached one.
 - `connectedDevice:true` builds a device-specific APK set; with `install:true` it also installs it on `device` (consent `install_app`, medium).
-- **Failure codes**: `BUNDLETOOL_MISSING`, `AAB_NEEDS_BUNDLETOOL`, `AAB_BUILD_APKS_FAILED`, `AAB_DEVICE_SPEC_FAILED`, `AAB_INSTALL_FAILED`, `ANDROID_SIGNING_FAILED`, `NO_BUILD_ARTIFACT`.
+- **Failure codes**: a missing bundletool returns `AAB_NEEDS_BUNDLETOOL` at once, before any job starts (`BUNDLETOOL_MISSING` is effectively unreachable from this tool). The job can end with `AAB_BUILD_APKS_FAILED`, `AAB_DEVICE_SPEC_FAILED` (no connected device for a device-specific set), or `ANDROID_SIGNING_FAILED`, and an install with `ANDROID_SIGNATURE_CONFLICT`, `ANDROID_MIN_SDK_INCOMPATIBLE`, `APK_ARCH_INCOMPATIBLE`, or `AAB_INSTALL_FAILED`. No `.aab` in the project is `NO_BUILD_ARTIFACT`.
 
 ## Device
 
@@ -400,11 +376,13 @@ The Metro bundler (port 8081) for debug React Native and Expo builds. `action`:
 - `start`: consent `start_metro` (medium). Runs `adb reverse tcp:8081 tcp:8081`, spawns Metro detached with a log artifact, and tracks the process. Relaunch the app with `qa_prepare_target` afterwards.
 - `stop`: stops the whole process group and removes the reverse.
 
-Failure codes: `METRO_REQUIRED`, `METRO_FAILED`.
+`qa_metro` errors are typed: `MULTIPLE_DEVICES` or `NO_DEVICE` when it can't pick a device, and `METRO_FAILED` when `adb reverse` fails. It does not return `METRO_REQUIRED`; that code comes from `qa_prepare_target` and `qa_test_this` when a debug build needs a Metro server that isn't running.
 
 ### qa_app_control
 
 `action`: `launch`, `foreground`, `background`, `force_stop`, `restart` (force-stop plus launch, for persistence checks), `clear_data`, or `fresh_start`. The action always targets the session's app. After `background`, the result reports the app that is actually in the foreground.
+
+A success returns `{packageName, action, changedState:true, processKilled, foreground, foregroundIsApp}`. On an error, `changedState` reflects what actually ran: a driver call that failed before any mutation reports `changedState:false`.
 
 `clear_data` and `fresh_start` wipe app data: consent `app_clear_data` / `app_fresh_start` (high). On debug RN/Expo builds they also need `acknowledgeBundleRisk:true`, because a wipe can remove the cached JS bundle; without it the result is `BUNDLE_LOSS_REFUSED`.
 
@@ -455,7 +433,7 @@ Every action also takes `observe` and `timeoutMs` (the settle-wait cap).
 - **Scroll**: a plain `scroll` performs exactly one swipe. With `untilVisible`, visibility is checked before the first swipe, and swiping repeats up to `maxScrolls`. The result reports `swipes`, `untilVisibleFound`, and `endOfList:true` when a swipe no longer changes the screen. Each swipe is anchored inside the largest scrollable container on screen (Android `scrollable="true"`, iOS ScrollView, Table, or CollectionView), 10% inside its edges, so it never starts on a sticky app bar; `anchoredIn` is `scrollable` or `screen`. A match counts as found only when its center is on screen and not under the keyboard.
 - **Back on iOS**: iOS has no back key. On WDA, `press key:"back"` taps the navigation bar's back button when one is on screen, otherwise it swipes from the left edge. `backVia` reports `nav_button` or `edge_swipe`. Without either, `BACKEND_UNSUPPORTED`.
 - **Typing on Android**: text is escaped for the device shell (spaces, braces, brackets, glob characters, a literal `%s`). Characters `adb input text` cannot deliver (non-ASCII or control characters) return `TEXT_INPUT_UNSUPPORTED` with `changedState:false`; the value is checked before the field is focused or cleared.
-- **Placeholders**: `type` expands `${SWIPIUM_*}` placeholders from session inputs (for example credentials given to `qa_continue_from_blocker`), else from the server environment. An unresolvable placeholder returns `MISSING_TEST_DATA` before anything is tapped. Secret handling of typed values is in [Secrets and redaction](#secrets-and-redaction).
+- **Placeholders**: `type` expands `${SWIPIUM_*}` placeholders from session inputs (for example credentials given to `qa_continue_from_blocker`), else from the server environment. An unresolvable placeholder returns `MISSING_TEST_DATA` before anything is tapped. Secret handling of typed values is in [Secrets and redaction](concepts.md#secrets-and-redaction).
 - **Warnings**: non-fatal caveats come back in `warnings[]`, for example `WDA session was re-created (requested without relaunching the app) — verify the screen state`.
 - **Mode recovery**: a successful observation switches a visual-fallback session back to structured mode (`modeRecovered:true`). An observation that never reaches idle switches it to visual-fallback for that screen only.
 - **Device binding**: a device still booting is `DEVICE_NOT_READY`; a physical device is `PHYSICAL_DEVICE_UNSUPPORTED`. A session is only re-bound to its own device: a resumed iOS session re-attaches its simulator (WDA when it had attached WDA and it is reachable, else the simulator backend). An offline device is never replaced by a different online one.
@@ -525,20 +503,36 @@ Bounded, safe-by-default exploration of the launched app, as a job. It observes 
 
 - **Bounds**: `depth` (default 3), `maxActions` (20), `maxScreens` (12), `maxDurationMs` (360000). `goal` is a natural-language focus.
 - **`strategy`**: `crawl` (default, deterministic), `task_planner` (infer QA tasks first), or `hybrid`.
-- **`safeMode`**: `strict` (default); `balanced` (unknown-risk actions allowed); `dry_run_destructive` (lists destructive candidates without tapping); `approved_destructive_candidate` (taps exactly one `destructiveCandidate` from a dry run; consent `destructive_ui_candidate`, high; payment, send, permission, account-delete, and bulk-delete candidates also need `confirmHighImpact:true`). `approved_destructive` is refused with `DESTRUCTIVE_REFUSED`.
-- **Text and data**: `includeTextEntry` (default false) types into fields that have a value source (fixtures). `allowGeneratedData` permits generated disposable test data; `accountCycle` additionally permits logout, only on a disposable generated account.
+- **`safeMode`**: `strict` (default); `balanced` (unknown-risk actions allowed); `dry_run_destructive` (lists destructive candidates without tapping); `approved_destructive_candidate` (taps exactly one candidate from a dry run). `approved_destructive` is refused with `DESTRUCTIVE_REFUSED`.
+- **`approved_destructive_candidate` requirements**: an exact `destructiveCandidate` copied from the dry run (else `DESTRUCTIVE_REFUSED`); disposable test state, meaning a fixture with `disposable:true` or `environment:"test"` (else `MISSING_FIXTURE`); `confirmHighImpact:true` for payment, send, permission, account-delete, and bulk-delete candidates; and the `destructive_ui_candidate` consent (high).
+- **Text and data**: `includeTextEntry` (default false) types into fields that have a value source (fixtures). `allowGeneratedData` permits generated disposable test data; `accountCycle` additionally permits logout, only on a disposable generated account. Generated values are recorded under `SWIPIUM_TEST_*` or `SWIPIUM_GEN_<FIELD>` names (see [Secrets and redaction](concepts.md#generated-output)).
 - **Auth**: `stopOnAuth` (default true) returns `needs_input` at an auth wall without credentials.
 - **`generateSuite:true`** also writes and compiles a POM suite from the promoted paths. `suitePromotion` scoring is always returned.
 
 ### qa_report
 
-Assembles the session report: executive summary (release risk ship, caution, or block, plus the next action), health, outcomes by workflow, findings, evidence links, environment changes and their restoration, and workarounds. Saves the full report as an artifact and returns a summary plus `reportUri`, `manifestUri`, and `dumpUri`. `qa_test_this` calls it automatically.
+Assembles the session report: executive summary (release risk ship, caution, or block, plus the next action), health, outcomes by workflow, findings, evidence links, environment changes and their restoration, the mutation ledger, and workarounds. Saves the full report as an artifact and returns a summary plus `reportUri`, `manifestUri`, and `dumpUri`. `qa_test_this` calls it automatically.
 
-- **`format`** adds an export artifact (`exportUri`, `exportFormat`): `summary` (default, no export), `markdown`, `json`, `junit`, `sarif`, `github-summary`, `playwright`, or `flow` (needs recorded actions). See [Reports and CI](#reports-and-ci).
 - **`baseline`** (a baseline `report.json` path) adds comparison links; **`trendRoot`** (a project root with `.swipium/runs` history) adds trend and flake context.
-- **Verdicts**: the app verdict and the coverage verdict are separate. The tool verdict (`toolVerdict.status`) is `PASS` (no tool errors or limitations), `DEGRADED` (tool errors recorded; the summary gives the count and codes, and `toolErrorsByCode` breaks them down), or `BLOCKED` (a workflow was limited by a Swipium or MCP capability). Tool errors are errors a tool returned in the session (for example a WDA 404 or `UNKNOWN`); consent refusals, missing test data, and `CANCELLED` are not counted. Tool status never changes the app verdict.
+- **Verdicts**: the app verdict, the coverage verdict, and the tool verdict are separate, and tool status never changes the app verdict. The tool verdict (`toolVerdict.status`) is:
+  - `BLOCKED` when a workflow was limited by a Swipium or MCP capability (a `qa_note` with category `mcp_limitation`);
+  - `DEGRADED` when tools returned typed driver or Swipium errors (for example a WDA 404 or a snapshot failure);
+  - `PASS` otherwise.
+
+  Recorded tool errors are listed in `toolErrorsByCode` with `degradingCount`, `uncodedCount`, and `probingCount`. Uncoded errors (`UNKNOWN`, mostly deliberate refusals and guard messages) and agent-probing codes (`ELEMENT_NOT_FOUND`, `STALE_REF`, `AMBIGUOUS_SELECTOR`, `INVALID_ARGUMENT`) are counted but never make the verdict `DEGRADED` on their own. Consent refusals, missing test data, and `CANCELLED` are not recorded as tool errors.
 - **Deduplicated findings**: identical findings (same failure code and kind, severity, layer, screen or foreground, and message) are reported once, with `count`, `firstAt`/`lastAt`, and every distinct `screenshotUris` entry. `findingOccurrences` keeps the raw total; text and markdown show repeats as `(×N)`.
 - **Network restore**: a network change made during the session is restored when the report is generated.
+- **`format`** adds an export artifact (`exportUri`, `exportFormat`). The CI formats carry the `.swipium/policy.json` release-gate verdict ([CI policy](flows.md#ci-policy)). The same files can be rendered outside the agent with the `swipium report` CLI; recipes and exit codes are in [ci-reports.md](ci-reports.md).
+
+| Format | Notes |
+| --- | --- |
+| `summary` (default) | No export. |
+| `markdown`, `json` | The full report. The saved report is deep-redacted with the session's secrets before it is written. |
+| `junit` | Failed workflows and high-severity findings are `<failure>`. Blocked, skipped, and not-applicable outcomes are `<skipped>`. Failures the policy treats as lenient (`warnOn` or `ignoreKnown`) are `<skipped message="policy …">`, so a passing gate never fails CI. |
+| `sarif` | SARIF 2.1.0. Every result is anchored to a real repository file (a `%SRCROOT%`-relative `physicalLocation`, line 1), as GitHub code scanning requires: the app-map source file of the screen or workflow, else the first project manifest that exists (`app.json`, `package.json`, `pubspec.yaml`, Gradle files, `Info.plist`, `README.md`). `swipium://` evidence stays in related locations and properties. `invocations[0].executionSuccessful` is always `true`, because the run itself worked. The gate verdict is `runs[0].properties.releaseGateVerdict` (`pass` or `block`). |
+| `github-summary` | Markdown for `$GITHUB_STEP_SUMMARY`, capped at 900 KB (below GitHub's 1 MiB limit) so the verdict always survives. Truncation is stated in the output. |
+| `playwright` | Playwright JSON-reporter-style results: one spec per workflow outcome, with evidence attachments. |
+| `flow` | The recorded actions as Flow V2 YAML. Needs recorded actions. |
 
 ## App map
 
@@ -578,33 +572,26 @@ A focused test of one named `feature` (natural language).
 
 ## Flows
 
-Validate, run, compile, and repair reusable Flow V2 files under `.swipium/flows/`.
+Validate, run, compile, and repair reusable Flow V2 files under `.swipium/flows/`. The file format, step reference, variables, and CI policy are in [flows.md](flows.md).
 
 Without a session, `qa_flow_check` and `qa_flow_run mode:"plan"` resolve flow names against `projectRoot`, then the session root, then MCP roots, then `SWIPIUM_PROJECT_ROOT` / `CLAUDE_PROJECT_DIR`, then a server working directory that looks like an app. A flow that does not exist returns `FLOW_NOT_FOUND` with the paths checked; a call with neither `flow` nor `flowYaml` returns `INVALID_ARGUMENT`; YAML that does not parse returns `INVALID_FLOW`.
 
 ### qa_flow_check
 
-Statically validates a flow (a lint of the YAML) without running it: syntax and schema errors with the offending step, plus warnings. Pass `flow` (a name under `.swipium/flows` or a path) or `flowYaml`. `platform` (`android`, `ios`, `cross-platform`) adds platform-aware warnings. `ci:true` adds CI preflight warnings: missing variables, and mutating steps the [CI policy](#ci-policy) does not allow.
+Statically validates a flow (a lint of the YAML) without running it: syntax and schema errors with the offending step, plus warnings. Pass `flow` (a name under `.swipium/flows` or a path) or `flowYaml`. `platform` (`android`, `ios`, `cross-platform`) adds platform-aware locator warnings. `ci:true` adds CI preflight warnings: variables a CI run cannot resolve, and mutating steps the [CI policy](flows.md#ci-policy) does not allow.
 
 ### qa_flow_run
 
 - **`mode:"run"`** (default) executes a flow on the prepared session, server-side, with setup and teardown, fail-fast, and no automatic retry of mutating steps. `repeat` (1 to 10) runs it several times to classify flakes. A failure returns the failed step (`failedAtStep`), a screenshot, the `failureCode`, health, and `nextSteps` pointing at `qa_flow_repair {flow, failedStep}` (except when the cause is a missing variable, which is not locator drift).
 - **`mode:"plan"`** previews without a device: per backend (`android-direct`, `ios-raw-simulator`, `ios-wda`, `appium-uiautomator2`, `appium-xcuitest`; `backend` narrows it), whether each step is `native`, `fallback`, `visual_only`, or `unsupported`. `appium` passes Appium session hints.
-- **Variables**: `${NAME}` resolves from `variables`, then the session's stored inputs (for example credentials supplied through a needs-input answer; values are never echoed, only names are listed in `notes`), then the server environment **for `SWIPIUM_*` names only**. Any other environment variable is never read: the step fails with `MISSING_FIXTURE` and a message such as `Variables not available: HOME (flows only read SWIPIUM_* environment variables; pass it via qa_flow_run { variables } or rename it SWIPIUM_HOME)`. Resolved values whose names look like credentials are redacted everywhere.
+- **Variables**: `variables` win over the session's stored inputs, then `SWIPIUM_*` environment variables; no other environment name is ever read (`MISSING_FIXTURE`). See [Flows: variables](flows.md#variables).
 - **Structured flows** (`mode: structured`, the default) on an iOS Simulator without WDA, or in a visual-fallback session, are refused with `BACKEND_UNSUPPORTED`. Use `mode: visual` or `auto`, or attach WDA.
-- **Consent**: the mutating steps `seed`, `networkOffline`, `networkOnline`, `restartApp`, and any `openUrl` whose URL contains a `${VAR}`, plus the OCR steps `tapOcrText` and `assertOcrText` (which pass screenshots to an external provider), need the `flow_mutation_run` consent (risk high for script seeds, otherwise medium). OCR steps are refused in sensitive sessions (`UNSAFE_ACTION_REFUSED`) and report `VISUAL_ONLY_SCREEN` when no OCR provider is configured. The prompt's `exactCommand` and `affects` show each seed's exact argv or URL, labelled as repository-supplied and unreviewed, and each variable `openUrl` destination with credential-like values masked.
-- **Sensitive sessions**: `screenshot`, `assertVisual`, and failure evidence are not captured; the step detail says so, and an `assertVisual` checkpoint is recorded as `skipped`.
-- **Paths**: `tapImage`/`assertImage` templates and `assertDiff` baselines must resolve (after symlinks) inside the project root, otherwise the step fails with `UNSAFE_ACTION_REFUSED`.
+- **Consent**: mutating steps and OCR steps need the `flow_mutation_run` consent (risk high for script seeds, otherwise medium). The prompt's `exactCommand` and `affects` show each seed's exact argv or URL, labelled as repository-supplied and unreviewed, and each variable `openUrl` destination with credential-like values masked. Which steps count is in [Flows: step reference](flows.md#step-reference).
+- **Refusals**: OCR steps are refused in sensitive sessions (`UNSAFE_ACTION_REFUSED`) and report `VISUAL_ONLY_SCREEN` when no OCR provider is configured. Image templates and baselines outside the project root fail with `UNSAFE_ACTION_REFUSED`.
 
 ### Flow steps
 
-A flow is YAML with a `name` and a non-empty `steps` list. Optional top-level keys: `appId`, `budgetProfile`, `fixtures`, `setup`, `teardown` (teardown always runs), and `mode` (`structured` (default), `visual`, or `auto`). Variables are referenced inline as `${NAME}`; there is no top-level variables block. Runs are fail-fast; mutating steps are never retried automatically.
-
-Step kinds:
-
-`prepareTarget`, `tap`, `tapAt`, `tapImage`, `tapOcrText`, `inputText` (also `{into, text}` to focus a named field), `assertVisible`, `assertNotVisible`, `assertImage`, `assertOcrText`, `assertVisual`, `assertDiff`, `swipe` (device-relative `{direction, area, distance}`), `scrollTo`, `press` (`back`, `home`, `enter`), `openUrl`, `wait`, `waitForIdle`, `waitForVisible`, `clearOverlay`, `networkOffline`, `networkOnline`, `restartApp`, `seed`, `note`, `screenshot`.
-
-**`clearOverlay`** hides an open keyboard and does nothing else. Otherwise, on Android it presses BACK only when a BACK-dismissible overlay is actually open (a dialog, sheet, permission prompt, or RN LogBox or RedBox), never on a bare screen and never for a snackbar or banner; with nothing to clear it reports `nothingCleared:true`. On iOS it dismisses alerts and sheets with the native alert API. When the backend has no alert API or the overlay survives, the step reports `nothingCleared:false` with a note instead of claiming success.
+Moved to [Flows: step reference](flows.md#step-reference), with the file format and a full example.
 
 ### qa_flow_compile
 
@@ -614,28 +601,11 @@ Compiles an existing POM suite on disk (`suite`, relative to `.swipium/`, defaul
 
 Given a failed step (`failedStep`, zero-based, from `qa_flow_run`) and the current screen, suggests a stronger locator plus app code changes (such as adding `accessibilityIdentifier` or `testID`). An exact id, label, or text match on the current screen is high confidence. Otherwise candidates are restricted to the failed target's role (a tap stays on a button, an `inputText` stays on a text field) and ranked by text similarity (medium for a contained match, low for a similar one), so a button renamed from "Sign in" to "Log in" is never repaired to the "Email" field. `apply:true` patches simple YAML selector steps in a flow file only at high or medium confidence, and records the patch in the mutation ledger; at low confidence it returns the proposal with `applied:false` and a note, and it never patches inline `flowYaml`. The flow must resolve inside the project root, otherwise `UNSAFE_ACTION_REFUSED`.
 
-### CI policy
-
-`qa_flow_check ci:true`, the flow CI preflight, and the report release gate read an optional `.swipium/policy.json`:
-
-```json
-{
-  "ciAllowMutations": ["network", "seed", "restart_app"],
-  "blockOn": ["native_crash", "app_error_boundary", "failed_required_flow"],
-  "warnOn": ["visual_diff"],
-  "ignoreKnown": ["REVENUECAT_BILLING_UNAVAILABLE_ON_EMULATOR"]
-}
-```
-
-- `ciAllowMutations` lists the mutating step kinds allowed in CI (for example `network`, `seed`, `clear_data`, `openUrl`; `"all"` allows everything). Others are flagged as policy violations. An `openUrl` that interpolates a `${VAR}` counts as mutating, and the CI variable preflight treats non-`SWIPIUM_*` environment names as missing, because flows never read them.
-- `blockOn`, `warnOn`, and `ignoreKnown` classify failures for the release gate. `ignoreKnown` suppresses an exact (normalized) code, `blockOn` blocks, and `warnOn` only warns. Tokens match failure codes case-insensitively; `crash` means `NATIVE_CRASH`, and `visual_diff` and `app_bug` mean `ASSERTION_FAILED`.
-- The gate is strict by default: without a policy file every failure blocks, and a failure not listed in any key also blocks. `failed_required_flow` matches every failure, so with it in `blockOn`, `warnOn` never applies; list specific codes in `blockOn` when you need warn-only classes.
-
 ## Generate
 
 ### qa_generate
 
-Turns the actions recorded in a session (`qa_act`, `qa_smoke`, `qa_explore`) into per-run assets. For the durable repository suite, use `qa_suite_generate`. `mode:"plan"` is a read-only preview. Parameters for other targets are ignored with a note. A session with no recorded actions returns `NO_RECORDED_ACTIONS`.
+Turns the actions recorded in a session (`qa_act`, `qa_smoke`, `qa_explore`) into per-run assets. For the durable repository suite, use `qa_suite_generate`. `mode:"plan"` is a read-only preview. Parameters for other targets are ignored with a note. Every target returns `NO_RECORDED_ACTIONS` when the session has recorded nothing (for `appium`, `bootstrap` records a run first).
 
 | target | Output | Target-specific parameters |
 | --- | --- | --- |
@@ -648,9 +618,9 @@ Turns the actions recorded in a session (`qa_act`, `qa_smoke`, `qa_explore`) int
 `name` sets the asset name (default from the app id). `save` writes files (default true for `suite` and `appium`, false otherwise). `sessionId` is required except for `appium`, which can plan or `bootstrap` (smoke plus explore) from `projectRoot`.
 
 - **Appium code**: every recorded step becomes real code. Swipes and scrolls are real gestures (bounded scroll-until-visible loops). A step that cannot be expressed fails generation with `UNEMITTABLE_STEP` instead of emitting a silent no-op. Class, method, and file names are sanitized, so they are always valid identifiers in the target language.
-- **Platform**: the generated suite's default `SWIPIUM_PLATFORM` is resolved from the explicit `platform` argument, then the platform of the session's device, then the project profile, then Android. `ios` means Appium XCUITest and `android` means UiAutomator2. The plan reports `primaryPlatform` and `platformSource`.
+- **Platform**: the generated suite's default `SWIPIUM_PLATFORM` is resolved from the explicit `platform` argument, then the platform of the session's device, then the project profile, then Android. `ios` means Appium XCUITest and `android` means UiAutomator2. The plan reports `primaryPlatform` and `platformSource`. Generated suites also read `SWIPIUM_NO_RESET` at run time.
 - **Visual assertions**: a `qa_visual mode:"assert"` step is free-form prose, not on-screen text, so it becomes a clearly marked manual checkpoint: a `TODO(manual visual check — not automated)` comment in code, a `visualCheck` POM step, an evidence-capturing `assertVisual` step in compiled flows, and "MANUAL visual check" in test cases. Only real text assertions become `assertTextVisible`.
-- **Secrets**: see [Secrets and redaction](#secrets-and-redaction). If a registered secret value would still be written, generation fails with `SECRET_IN_GENERATED_OUTPUT` and nothing is written. The Appium `validation.secretsClean` check scans every generated file, comments included.
+- **Secrets**: recorded secrets become `${SWIPIUM_*}` placeholders (see [Generated output](concepts.md#generated-output)). If a registered secret value would still be written, generation fails with `SECRET_IN_GENERATED_OUTPUT` and nothing is written. The Appium `validation.secretsClean` check scans every generated file, comments included.
 
 ## Test suite
 
@@ -709,7 +679,7 @@ Plans or executes a named release audit. `profile` (required):
 | `resilience` | Offline, relaunch, and rotation. |
 | `release_gate` | All of the above, plus locator readiness and issue recurrence. |
 
-`mode:"plan"` (default) returns the checklist and safety contract without a device. `mode:"execute"` needs a prepared session, runs every check, logs failed and blocked checks to the issue ledger with evidence, and returns the release impact. No check passes without evidence. `allowTestAccountDeletion` permits deleting disposable test accounts (never a real account).
+`mode:"plan"` (default) returns the checklist and safety contract without a device. `mode:"execute"` needs a prepared session, runs every check, logs failed and blocked checks to the issue ledger with evidence, and returns the release impact. It always runs to completion. No check passes without evidence. `allowTestAccountDeletion` permits deleting disposable test accounts (never a real account). `offlineMode` hints that resilience checks should drive offline state; `targetApp` and `sourceRevision` (`{commit, buildVersion, branch}`) identify what was audited.
 
 Executing `resilience` or `release_gate` (which runs all four other profiles) needs the `network_change` consent (medium), the same gate as `qa_network`, because it toggles airplane mode. The tool returns the consent request before running anything. With consent, the original airplane state is recorded first and restored afterwards, even if a check fails.
 
@@ -722,151 +692,6 @@ Gets past a first-run gate: login, sign-up, OTP, onboarding, permissions, or a p
 - **`mode:"plan"`** (default, read-only) classifies the current screen and returns the safe plan. `until`, `maxSteps`, and `maxDurationMs` are ignored with a note.
 - **`mode:"continue"`** runs bounded steps. `until`: `one_step` (default), `until_gate` (stop at a paywall, OTP, or permission), or `until_home`. In test or staging environments it fills forms with generated data (the password is kept secret), advances onboarding, and records paywalls without purchasing. It refuses sign-up in production-like environments and returns one `needs_input` question on an OTP.
 - `testDataPolicyPath` (default `.swipium/test-data-policy.json`) and `allowGeneratedAccount` control whether a throwaway account may be created.
-
-## Project root resolution
-
-Tools that need a project resolve it in this order:
-
-1. The `projectRoot` argument. It must be an absolute, existing directory. An invalid value is an error, never silently replaced.
-2. MCP roots, when the client exposes a workspace. The first root with a project marker wins, else the first root that is not `/` or `$HOME`.
-3. `SWIPIUM_PROJECT_ROOT` from the server environment.
-4. `CLAUDE_PROJECT_DIR`, which Claude Code sets for stdio servers.
-5. The server's working directory, but never `/` or `$HOME`, and only when it contains a project marker.
-
-Project markers are `package.json`, `app.json`, `pubspec.yaml`, `build.gradle(.kts)`, `settings.gradle(.kts)`, `Podfile`, an `.xcodeproj` or `.xcworkspace`, or an `android/` or `ios/` directory. The environment variables are trusted as given (absolute and existing, no marker check).
-
-When nothing resolves, tools fail with `PROJECT_ROOT_UNRESOLVED`: pass an absolute `projectRoot`, or set `SWIPIUM_PROJECT_ROOT` in the MCP server config's `env`.
-
-Results built from a freshly resolved root carry `projectRoot` and `rootSource` (`arg`, `mcp-roots`, `env:SWIPIUM_PROJECT_ROOT`, `env:CLAUDE_PROJECT_DIR`, or `cwd`). When the root came from the working directory, the text also says `project root taken from server cwd: <path>; pass projectRoot to override`. Calls that reuse a session's root do not re-resolve it and carry no `rootSource`.
-
-## Consent and elicitation
-
-Privileged actions (build, boot, install, Metro start, wipes, recordings, network changes, location spoofing, OCR, flow mutations, destructive exploration, remote WDA, writing into the project's test directory) are consent-gated. Nothing gated runs without approval.
-
-**Mechanisms**
-
-- **Elicitation**: when the client supports MCP form elicitation, the server asks the user directly and the tool continues on approval. The model never sees a `consentId`.
-- **Consent envelope**: otherwise the tool returns `{requiresConsent, consentId, risk, action, affects, explain, exactCommand, sessionId}`. The agent must show it to the user and re-call the same tool with the same arguments plus `consentId` and `approve:true`, only after they agree. Because the envelope carries `sessionId`, the re-call reuses the session without `projectRoot`.
-
-**Outcomes** (nothing runs in any of these, and a `refused` row is written to the report's mutation ledger):
-
-| Code | When | Retry-safe |
-| --- | --- | --- |
-| `CONSENT_DECLINED` | The user declined the prompt. | no |
-| `CONSENT_CANCELLED` | The prompt was dismissed, timed out (10 minutes), failed in transport, or the call was aborted; also when the action changed while the user was deciding. Re-calling shows a fresh prompt. | yes |
-| `CONSENT_REFUSED` | `SWIPIUM_REQUIRE_ELICITATION=1` is set and the client cannot elicit. | no |
-
-**Rules**
-
-- **Require elicitation**: with `SWIPIUM_REQUIRE_ELICITATION=1` in the server environment, a consent-gated action runs only after a real user prompt. For a client that cannot elicit, every gated action returns `CONSENT_REFUSED` before the model sees a `consentId`, so the `consentId`/`approve` path cannot be used. It has no effect on clients that support elicitation.
-- **Single use and binding**: a `consentId` works once, for the same action and targets it was issued for, and only in the session it was issued in (a `consentId` from session A cannot approve a call in session B, and a replay from B does not use up A's consent). It expires after 30 minutes. At most 200 consents can be pending; the oldest is dropped beyond that.
-- **Stale ids**: an unknown, used, or expired `consentId` is refused, never silently replaced (`qa_test_this` issues a new challenge; see [qa_test_this](#qa_test_this)).
-- **Prompt sanitising**: the elicitation prompt quotes every repository-derived value (flow names, queries, URLs, commands) as JSON, strips control characters, newlines, line separators, zero-width and bidirectional characters, and caps each field (for example 500 characters per command step, at most 4 steps, 2000 characters overall), so repository content cannot fake extra prompt lines.
-- **Unreviewed sources**: commands and URLs that come from the repository (seed commands, `.swipium/config.json` providers, a configured WDA URL) are labelled as repository-supplied and unreviewed.
-
-**Consent actions and risk levels**
-
-| Action | Risk | Raised by |
-| --- | --- | --- |
-| `test_this_plan` | highest of its steps: build high, external APK install medium, install from the project low, boot low | `qa_test_this` |
-| `prepare_plan` | medium for an external APK, else low | `qa_prepare_target` |
-| `build_from_source` | high | `qa_build mode:"run"` |
-| `install_app` | medium (`qa_ios`, `qa_bundletool`); low or medium by path (`qa_prepare_ios_target`) | `qa_ios install`, `qa_bundletool install`, `qa_prepare_ios_target` |
-| `erase_device` | high | `qa_ios erase` |
-| `privacy_reset` | low | `qa_ios privacy_reset` |
-| `wda_build`, `wda_start` | medium | `qa_wda` |
-| `wda_non_loopback` | medium | `qa_wda` with a remote URL |
-| `app_clear_data`, `app_fresh_start` | high | `qa_app_control` |
-| `start_metro` | medium | `qa_metro start` |
-| `network_change` | medium | `qa_network`, `qa_mobile_audit` resilience |
-| `geo_set` | medium | `qa_geolocation` |
-| `screen_record` | medium | `qa_screen_record start` |
-| `ocr_run` | medium | `qa_visual find_text` |
-| `flow_mutation_run` | high for script seeds, else medium | `qa_flow_run` |
-| `destructive_ui_candidate` | high | `qa_explore safeMode:"approved_destructive_candidate"` |
-| `suite_fresh_state_replay` | highest of its prepare and teardown steps | `qa_generate target:"suite" replay:"fresh_state"` |
-| `automation_project_write` | medium | `qa_generate target:"appium" integrateIntoProject:true` |
-
-Booting a simulator with `qa_ios boot` is not gated (low-risk and reversible). Inside `qa_test_this` and `qa_prepare_target`, a boot is one step of the combined consent.
-
-## Sessions and persistence
-
-- **Location**: each session lives in `~/.swipium/runs/<project-hash>/<sessionId>/`, with `state.json` and artifact folders inside. Files are written atomically with mode 0600 (directories 0700). `~/.swipium/registry.json` lists up to 200 reloadable sessions.
-- **What is persisted**: notes, findings, tool errors, jobs, environment changes, and mutations, all redacted with the session's secrets before writing. Recorded actions are persisted in their secret-safe form (see [Secrets and redaction](#secrets-and-redaction)). Fixture values and seed specs are never written, only metadata; secret generated values are stored as `<redacted>`.
-- **What is never persisted**: secret values and the values of supplied inputs (credentials, OTPs). They live in memory only, so after a server restart a login run asks for them again even though the stored metadata still lists them.
-- **Rehydration**: after a restart, a session reloads on first use. The device, app id, `driverKind`, `wdaUrl`, jobs, artifacts, findings, notes, and mutations are restored, and fixtures are reloaded from `.swipium/fixtures.json`. The device is re-attached with the saved driver kind (WDA when the session had attached it and it is reachable). Jobs that were running are marked `failed`. If the old state shows secret activity, the session is flagged `redactionDegraded`, because the secret set cannot be rebuilt.
-- **Retention**: at startup, session directories are pruned when all of these hold: older than `SWIPIUM_RETENTION_DAYS` (default 30; `0` or `off` disables the automatic prune), not in the registry, not live, and not among the newest `SWIPIUM_RETENTION_KEEP` (default 20) sessions of that project. `swipium gc` applies the same rule on demand.
-- **Artifacts** are addressed as `swipium://session/{sessionId}/{kind}/{name}` and read with `qa_get_artifact` or as MCP resources.
-
-## Secrets and redaction
-
-**What becomes a secret**
-
-- Text typed into a secure field (a password field, or a field whose label or id reads like password, OTP, PIN, CVV, card number, secret, token, or security code). This applies to native-selector typing too.
-- Values answered through `qa_continue_from_blocker` for fields in `secretFields` or with credential-like names.
-- Resolved flow variables and `${SWIPIUM_*}` values from the environment whose names contain `pass`, `secret`, `token`, `otp`, `pin`, `cvv`, `key`, or `code` (a plain substring match, case-insensitive).
-- Fixture field values read from the environment (`fields.<name>.var`).
-- A typed value that equals or contains a value already registered as a secret, even in an ordinary text field.
-
-**How redaction works**
-
-- Registered secrets are scrubbed from tool text, structured results, persisted state, reports, text artifacts, OCR text, and provider `stderr`. JSON- and XML-escaped spellings are matched too.
-- Values of 4 or more characters are matched anywhere. A 3-character value, or an all-digit value shorter than 8 characters, is matched only as a standalone token, so a PIN does not scrub unrelated numbers.
-- **Values shorter than 3 characters are not scrubbed.** A text artifact written while such a secret was registered reports `redaction:"partial"` with a `redactionNote`; other artifacts report `applied`, and binary files `not-applied`.
-- `qa_act type` never echoes the typed value. `redacted:true` and `secret:true` appear only when the value was treated as a secret; ordinary text omits both, and the recorded step keeps the text, so a generated suite contains it.
-- **Placeholders in `qa_act`**: `${SWIPIUM_*}` names are expanded (only that prefix). The value is typed but never echoed (`placeholders` lists the names), and the action is recorded with the placeholder. A typed literal that equals a stored session input is recorded as that input's placeholder.
-
-**Environment access**
-
-Flows and fixture `fields.var` read the server environment only for `SWIPIUM_*` names. Other names are never read (flows fail the step with `MISSING_FIXTURE`; fixtures log a warning). Pass other values explicitly (`qa_flow_run variables`) or rename them.
-
-**Generated output**
-
-Every `qa_generate` target, `qa_suite_generate`, and the persisted state rewrite recorded secrets into environment placeholders at emit time, marked as needing human data. The placeholder is `SWIPIUM_TEST_PASSWORD`, `SWIPIUM_TEST_OTP`, `SWIPIUM_TEST_TOKEN`, or `SWIPIUM_TEST_PIN` by field kind, else `SWIPIUM_SECRET_<n>`. An existing `${VAR}` is kept, prefixed with `SWIPIUM_` when needed.
-
-Form data that `qa_explore` and `qa_first_run` generate is recorded under `SWIPIUM_TEST_EMAIL`, `SWIPIUM_TEST_USERNAME`, `SWIPIUM_TEST_PASSWORD`, or `SWIPIUM_TEST_OTP`, else `SWIPIUM_GEN_<FIELD>`.
-
-Registered secret values never reach `test-suite.json`, `TC-*.yaml`, or `state.json`. A final guard scans the output against the session's registered values (not only name heuristics); if one would still be written, generation fails with `SECRET_IN_GENERATED_OUTPUT` and nothing is written.
-
-**Sensitive sessions**: `qa_start_session {sensitive:true}` goes further and refuses all pixel, video, and log capture (`SENSITIVE_MODE_REFUSED`).
-
-## Devices and platforms
-
-Swipium drives Android Emulators and iOS Simulators on the local machine. Physical devices are refused with `PHYSICAL_DEVICE_UNSUPPORTED`, including when `preferRealDevice` is set.
-
-### Android
-
-- **Emulator detection**: an `emulator-NNNN` serial is an emulator. Any other serial, such as an adb-over-TCP `localhost:5555` or `127.0.0.1:<port>`, counts as an emulator only when one `getprop` probe shows an emulator (`ro.kernel.qemu=1`, `ro.boot.qemu=1`, a goldfish or ranchu `ro.hardware`, or Genymotion). If the properties cannot be read, the device is refused as `DEVICE_NOT_READY`; if they show real hardware, `PHYSICAL_DEVICE_UNSUPPORTED`.
-- **Booting**: when an AVD must be booted (headless by default), Swipium records the serials online before the boot and uses only a new serial that is a verified emulator, then waits for `sys.boot_completed` (up to 180 s). So when a phone is connected and an AVD exists, it boots the AVD and installs only on the new emulator. A boot that never comes up is `EMULATOR_BOOT_FAILED`; an online device that never finishes booting is `DEVICE_NOT_READY`.
-- **Toolchain**: a missing `adb` is `ADB_NOT_FOUND`. `qa_network` needs Android 11+.
-
-### iOS Simulator and WebDriverAgent
-
-- **Two modes**: with a reachable WebDriverAgent (WDA), iOS gets a structured UI tree (`qa_snapshot`, `qa_act` by ref, text, id, or native selector). Without it the session is **visual-only**: no UI tree, `qa_visual` for checks, and coordinate taps through `idb` when it is installed. `qa_test_this` and `qa_prepare_ios_target` fall back to visual-only automatically unless WDA was explicitly required.
-- **Artifacts**: only simulator `.app` bundles install. A `.ipa` targets a real device and is refused with `IPA_NEEDS_REAL_DEVICE`.
-- **Session capabilities**: every WDA session created for an app sends `shouldTerminateApp:false` (unless `ios.wda.capabilities` in `.swipium/config.json` sets it), because WDA tears down the previous session with that session's setting. Re-binding a resumed session after a restart, and recovering from an invalid-session error, also send `forceAppLaunch:false`, so the running app is reused; the latter adds a warning to verify the screen state.
-- **Managed WDA lifetime**: `qa_wda start` spawns WDA (`xcodebuild test-without-building`) and records it in `~/.swipium/processes.json`; `stop` terminates it, including one adopted from a previous server run. A normal server shutdown does not stop managed WDA, so a resumed iOS session can keep using it. At the next startup, a managed WDA from a previous run is adopted only when it is less than 12 hours old (from its original start) and `GET /status` reports ready; older or unhealthy ones are stopped, as are orphaned Metro bundlers and screen recorders. A process owned by another running Swipium server is never touched. Each registered process records its start time and full command line, and an orphan is signalled or adopted only when both still match, so a recycled pid is never touched. The startup sweep runs in the background after the server connects.
-- **Remote WDA**: loopback means `localhost`, `127.0.0.0/8`, or `[::1]`. A non-loopback `webDriverAgentUrl` needs `allowNonLoopback:true` plus the `wda_non_loopback` consent, otherwise `DESTRUCTIVE_REFUSED`. The only pre-approval is user-level: `SWIPIUM_ALLOW_REMOTE_WDA`, a comma-separated list of exact WDA base URLs in the MCP server's environment. The repository's `.swipium/config.json` cannot pre-approve one: `ios.wda.allowNonLoopbackUrls` only adds a note, and a non-loopback `ios.wda.url` is labelled "configured by the repository (.swipium/config.json) — unreviewed" in the prompt. `qa_prepare_ios_target` and `qa_test_this` never connect to a non-loopback configured URL on their own.
-- **Not available on iOS**: `qa_orientation`, `qa_geolocation`, and `qa_network`.
-
-### Interaction details
-
-- **Keyboard**: `qa_act` hides a keyboard that covers the target instead of pressing BACK, and `qa_clear_overlay hide_keyboard` reports `KEYBOARD_NOT_DISMISSIBLE` when the backend cannot dismiss it. See [qa_act](#qa_act).
-- **Gestures**: scrolls are anchored in the largest scrollable container, and flow `swipe` steps are device-relative (`{direction, area, distance}`).
-- **Rotation**: `qa_orientation` (Android) is logged as an environment change; `qa_mobile_audit resilience` includes a rotation check.
-
-## Reports and CI
-
-`qa_report format` exports the session report for CI. The CI formats carry the `.swipium/policy.json` release-gate verdict (see [CI policy](#ci-policy)). The same files can be rendered outside the agent with the deterministic `swipium report` CLI (`--format junit|sarif|github-summary|markdown|json`, `--fail-on-gate`). Recipes and exit codes are in [ci-reports.md](ci-reports.md).
-
-| Format | Notes |
-| --- | --- |
-| `markdown`, `json` | The full report. The saved report is deep-redacted with the session's secrets before it is written. |
-| `junit` | Failed workflows and high-severity findings are `<failure>`. Blocked, skipped, and not-applicable outcomes are `<skipped>`. Failures the policy treats as lenient (`warnOn` or `ignoreKnown`) are `<skipped message="policy …">`, so a passing gate never fails CI. |
-| `sarif` | SARIF 2.1.0. Every result is anchored to a real repository file (a `%SRCROOT%`-relative `physicalLocation`, line 1), as GitHub code scanning requires: the app-map source file of the screen or workflow, else the first project manifest that exists (`app.json`, `package.json`, `pubspec.yaml`, Gradle files, `Info.plist`, `README.md`). `swipium://` evidence stays in related locations and properties. `invocations[0].executionSuccessful` is always `true`, because the run itself worked. The gate verdict is `runs[0].properties.releaseGateVerdict` (`pass` or `block`). |
-| `github-summary` | Markdown for `$GITHUB_STEP_SUMMARY`, capped at 900 KB (below GitHub's 1 MiB limit) so the verdict always survives. Truncation is stated in the output. |
-| `playwright` | Playwright JSON-reporter-style results: one spec per workflow outcome, with evidence attachments. |
-| `flow` | The recorded actions as Flow V2 YAML. Needs recorded actions. |
 
 ## MCP resources and prompts
 
@@ -890,133 +715,146 @@ Swipium drives Android Emulators and iOS Simulators on the local machine. Physic
 | `swipium_bug_repro` | Drive to a described bug, capture deterministic evidence, and record it as a structured outcome. |
 | `swipium_convert_run_to_flow` | Draft a `.swipium/flows/*.yaml` from the steps just performed, then validate it. |
 
-## Environment variables
+## Moved topics
 
-Set these in the MCP server's `env`.
+These sections used to live on this page:
 
-| Variable | Effect |
-| --- | --- |
-| `SWIPIUM_PROJECT_ROOT` | Project root when the client exposes none. |
-| `SWIPIUM_REQUIRE_ELICITATION=1` | Refuse consent-gated actions unless the client can show a real prompt. |
-| `SWIPIUM_ALLOW_REMOTE_WDA` | Comma-separated exact WDA base URLs pre-approved for non-loopback use. |
-| `SWIPIUM_OCR_CMD`, `SWIPIUM_VISUAL_MASK_CMD` | OCR and mask providers when `.swipium/config.json` sets none. |
-| `SWIPIUM_RETENTION_DAYS`, `SWIPIUM_RETENTION_KEEP` | Session retention (defaults 30 days, 20 per project). |
-| `SWIPIUM_TEST_EMAIL`, `SWIPIUM_TEST_PASSWORD`, other `SWIPIUM_*` | Test data readable by flows, fixtures, and `qa_act` placeholders. Flows read no other environment variables. |
-
-Generated Appium suites read `SWIPIUM_PLATFORM` (`android` or `ios`) and `SWIPIUM_NO_RESET` at run time.
+- Project root resolution: [concepts.md#project-root](concepts.md#project-root).
+- Consent, elicitation, and the consent-action table: [concepts.md#consent](concepts.md#consent).
+- Sessions, persistence, retention, jobs, and cancellation: [concepts.md#sessions-and-jobs](concepts.md#sessions-and-jobs).
+- Secrets and redaction: [concepts.md#secrets-and-redaction](concepts.md#secrets-and-redaction).
+- Devices, iOS Simulator, and WebDriverAgent: [concepts.md#devices](concepts.md#devices) and [concepts.md#ios-modes](concepts.md#ios-modes).
+- Flow steps and CI policy: [flows.md](flows.md).
+- Report formats: [qa_report](#qa_report) and [ci-reports.md](ci-reports.md).
+- Environment variables: [README](../README.md#configuration--environment-variables).
 
 ## Failure codes
 
-Every code a tool can return is in the catalog, and `qa_explain_blocker` explains any of them. Each code has a bucket (how to triage it), an owner (who fixes it), a severity, and a default retry safety.
+Every code a tool can return is in the catalog, and `qa_explain_blocker` explains any of them. Each code has a **bucket** (how to triage it: `app_bug`, `environment`, `missing_data`, `mcp_limitation`, or `unsafe_refused`), an **owner** (who fixes it: `app`, `environment`, `swipium`, or `user`), a severity, and a default retry safety. The tables below are grouped by bucket; owner is per code.
 
-Codes marked **reserved** are defined for classifying evidence, reports, and policy rules (so `blockOn`, `warnOn`, `ignoreKnown`, and report consumers can name them stably) but no tool returns them in 2.0.0. A reserved code may start being returned in a minor release. Codes marked **finding** appear as health findings in reports rather than as tool errors.
+Codes marked **reserved** are defined for classifying evidence, reports, and policy rules (so `blockOn`, `warnOn`, `ignoreKnown`, and report consumers can name them stably), but no tool returns them in 2.0.0. A reserved code may start being returned in a minor release. Codes marked **finding** appear as health findings in reports rather than as tool errors.
 
-**App bugs** (owner: app)
+### Bucket: app_bug
 
-| Code | Meaning |
-| --- | --- |
-| `NATIVE_CRASH` | The native process crashed. Finding. |
-| `ANR` | App not responding. Finding. |
-| `ERROR_BOUNDARY` | An app error screen, error boundary, or WebView error. Finding. |
-| `REDBOX` | A framework red-box error. Finding. |
-| `LOGBOX` | A framework warning overlay. Finding. |
-| `BACKEND_ERROR` | An error surface shown to the user. Finding. |
-| `ASSERTION_FAILED` | Expected UI was not present. |
-| `WDA_MAIN_THREAD_BUSY` | The app's main thread appears busy during WDA automation. |
-| `BUILD_FAILED`, `GRADLE_FAILED`, `XCODEBUILD_FAILED`, `FLUTTER_BUILD_FAILED` | Build from source failed (environment bucket, app-owned). |
-| `MISSING_DURABLE_LOCATOR` | An element has no durable locator (`testID`, `accessibilityIdentifier`, resource-id). |
-| `COORDINATE_ONLY_FLOW` | A flow relies on coordinate taps. |
-| `BLANK_SCREEN`, `INFINITE_SPINNER` | Blank screen; stuck loading indicator. Reserved. |
+| Code | Owner | Meaning |
+| --- | --- | --- |
+| `NATIVE_CRASH` | app | The native process crashed. Finding. |
+| `ANR` | app | App not responding. Finding. |
+| `ERROR_BOUNDARY` | app | An app error screen, error boundary, or WebView error. Finding. |
+| `REDBOX` | app | A framework red-box error. Finding. |
+| `LOGBOX` | app | A framework warning overlay. Finding. |
+| `BACKEND_ERROR` | app | An error surface shown to the user. Finding. |
+| `ASSERTION_FAILED` | app | Expected UI was not present. |
+| `WDA_MAIN_THREAD_BUSY` | app | The app's main thread appears busy during WDA automation. |
+| `BLANK_SCREEN`, `INFINITE_SPINNER` | app | Blank screen; stuck loading indicator. Reserved. |
 
-**Environment: device and simulator**
+### Bucket: environment
 
-| Code | Meaning |
-| --- | --- |
-| `NO_DEVICE` | No online device or bootable emulator. |
-| `ADB_NOT_FOUND` | `adb` is not installed or not on PATH. |
-| `DEVICE_NOT_READY` | The device exists but is not ready (booting, or properties unreadable). |
-| `EMULATOR_BOOT_FAILED` | The emulator failed to boot. |
-| `SIMULATOR_RUNTIME_MISSING`, `SIMULATOR_BOOT_FAILED`, `SIMULATOR_BOOT_TIMEOUT` | No usable iOS runtime; simulator boot failed or timed out. |
-| `MULTIPLE_DEVICES` | More than one device or simulator matches; pass one explicitly. |
-| `WRONG_FOREGROUND`, `PERMISSION_DIALOG`, `NATIVE_ALERT` | Another app, a permission dialog, or a native alert is in front. Finding. |
-| `WDA_UNREACHABLE`, `WDA_BUILD_FAILED`, `WDA_SIGNING_FAILED`, `WDA_START_FAILED`, `WDA_SESSION_FAILED`, `WDA_PORT_CONFLICT` | WebDriverAgent could not be reached, built, signed, started, or given a session, or its port is taken. |
-| `STALE_WDA_DEVICE` | WDA appears bound to a different device than the session. |
-| `DEV_SERVER_DOWN`, `NETWORK_SERVICE_UNAVAILABLE`, `NETWORK_OFFLINE`, `DEVICE_BOOT_FAILED` | Reserved. |
+Device, simulator, and WebDriverAgent:
 
-**Environment: project, artifact, and build**
+| Code | Owner | Meaning |
+| --- | --- | --- |
+| `NO_DEVICE` | environment | No online device or bootable emulator, or no device UDID for a WDA build or start. |
+| `ADB_NOT_FOUND` | environment | `adb` is not installed or not on PATH. |
+| `DEVICE_NOT_READY` | environment | The device exists but is not ready (booting, or properties unreadable). |
+| `EMULATOR_BOOT_FAILED` | environment | The emulator failed to boot. |
+| `SIMULATOR_RUNTIME_MISSING`, `SIMULATOR_BOOT_FAILED`, `SIMULATOR_BOOT_TIMEOUT` | environment | No usable iOS runtime; simulator boot failed or timed out. |
+| `MULTIPLE_DEVICES` | environment | More than one device matches, or a WDA attach has no device; pass one explicitly. |
+| `WRONG_FOREGROUND`, `PERMISSION_DIALOG`, `NATIVE_ALERT` | environment | Another app, a permission dialog, or a native alert is in front. Finding. |
+| `WDA_UNREACHABLE`, `WDA_BUILD_FAILED`, `WDA_SIGNING_FAILED`, `WDA_START_FAILED`, `WDA_SESSION_FAILED`, `WDA_PORT_CONFLICT` | environment | WebDriverAgent could not be reached, built, signed, started, or given a session, or its port is taken. |
+| `STALE_WDA_DEVICE` | environment | WDA appears bound to a different device than the session. |
+| `DEV_SERVER_DOWN`, `NETWORK_SERVICE_UNAVAILABLE`, `NETWORK_OFFLINE` | environment | Reserved. |
+| `DEVICE_BOOT_FAILED` | swipium | Reserved. |
 
-| Code | Meaning |
-| --- | --- |
-| `PROJECT_ROOT_UNRESOLVED`, `PROJECT_ROOT_EMPTY` | No usable project root; the root is empty. |
-| `NOT_MOBILE_PROJECT`, `UNSUPPORTED_FRAMEWORK` | No supported mobile project at the root; unsupported framework. |
-| `NO_BUILD_ARTIFACT`, `NO_ARTIFACT` | No installable artifact found. |
-| `ARTIFACT_OUTSIDE_ROOT_REQUIRES_APPROVAL` | The best artifact is outside the project root; pass `allowOutsideRoot`. |
-| `BUNDLETOOL_MISSING`, `AAB_NEEDS_BUNDLETOOL`, `AAB_BUILD_APKS_FAILED`, `AAB_DEVICE_SPEC_FAILED`, `AAB_INSTALL_FAILED` | `.aab` conversion problems. |
-| `INSTALL_FAILED`, `WRONG_ARCH`, `APK_ARCH_INCOMPATIBLE`, `ANDROID_MIN_SDK_INCOMPATIBLE`, `ANDROID_SIGNATURE_CONFLICT`, `ANDROID_SIGNING_FAILED` | Android install problems. |
-| `IPA_NEEDS_REAL_DEVICE`, `IPA_INSTALL_UNSUPPORTED`, `IOS_APP_WRONG_ARCH`, `IOS_SIMULATOR_APP_MISSING` | iOS artifact problems. |
-| `BUNDLE_ID_NOT_FOUND` | The bundle id is not installed on the device. |
-| `APP_LAUNCH_FAILED` | Installed, but the app did not launch. |
-| `BUILD_COMMAND_UNAVAILABLE`, `DEPENDENCY_INSTALL_REQUIRED`, `EXPO_PREBUILD_REQUIRED`, `BUILD_TIMED_OUT`, `BUILD_ARTIFACT_UNRESOLVED_AFTER_SUCCESS` | Build prerequisites and outcomes. |
-| `METRO_REQUIRED`, `METRO_FAILED` | A debug RN/Expo build needs Metro; Metro failed. |
-| `INVALID_FLOW`, `FLOW_NOT_FOUND` | A flow is invalid or does not exist. |
-| `SEED_FAILED` | Seeding a precondition failed (setup, not an app bug). |
-| `OCR_NOT_CONFIGURED`, `OCR_PROVIDER_FAILED` | No OCR provider; the OCR or mask provider failed or timed out. |
-| `MONOREPO_TARGET_AMBIGUOUS`, `MULTIPLE_ARTIFACTS_AMBIGUOUS`, `ARTIFACT_PATH_UNWRITABLE`, `REPORT_UPLOAD_SKIPPED`, `IPA_SIGNING_REQUIRED`, `REAL_DEVICE_NOT_CONNECTED`, `REAL_DEVICE_UDID_NOT_PROVISIONED`, `REAL_DEVICE_BUNDLE_ID_MISMATCH`, `REAL_DEVICE_TEAM_MISMATCH` | Reserved. |
+Project, artifact, install, and build:
 
-**Missing data** (owner: user, unless noted)
+| Code | Owner | Meaning |
+| --- | --- | --- |
+| `PROJECT_ROOT_UNRESOLVED`, `PROJECT_ROOT_EMPTY` | user | No usable project root; the root is empty. |
+| `NOT_MOBILE_PROJECT`, `UNSUPPORTED_FRAMEWORK` | user | No supported mobile project at the root; unsupported framework. |
+| `NO_BUILD_ARTIFACT` | swipium | No installable artifact found (Swipium can often build one). |
+| `NO_ARTIFACT` | environment | A required file is missing (an APK to install, a WebDriverAgent project, an app id for a flow). |
+| `ARTIFACT_OUTSIDE_ROOT_REQUIRES_APPROVAL` | user | The best artifact is outside the project root; pass `allowOutsideRoot`. |
+| `AAB_NEEDS_BUNDLETOOL`, `BUNDLETOOL_MISSING`, `AAB_BUILD_APKS_FAILED`, `AAB_DEVICE_SPEC_FAILED`, `AAB_INSTALL_FAILED` | environment | `.aab` conversion problems. |
+| `INSTALL_FAILED`, `WRONG_ARCH`, `APK_ARCH_INCOMPATIBLE`, `ANDROID_MIN_SDK_INCOMPATIBLE`, `ANDROID_SIGNING_FAILED` | environment | Android install and signing problems. |
+| `ANDROID_SIGNATURE_CONFLICT` | swipium | An installed app with a different signature blocks the install. |
+| `IPA_NEEDS_REAL_DEVICE` | user | A `.ipa` targets a real device; build a simulator `.app`. |
+| `IPA_INSTALL_UNSUPPORTED`, `IOS_APP_WRONG_ARCH` | environment | iOS artifact problems. |
+| `IOS_SIMULATOR_APP_MISSING` | swipium | No simulator `.app` found (Swipium can often build one). |
+| `BUNDLE_ID_NOT_FOUND` | environment | The bundle id is not installed on the device. |
+| `APP_LAUNCH_FAILED` | environment | Installed, but the app did not launch. |
+| `BUILD_FAILED`, `GRADLE_FAILED`, `XCODEBUILD_FAILED`, `FLUTTER_BUILD_FAILED` | app | Build from source failed. |
+| `BUILD_COMMAND_UNAVAILABLE`, `DEPENDENCY_INSTALL_REQUIRED`, `BUILD_TIMED_OUT` | environment | Build prerequisites and outcomes. |
+| `EXPO_PREBUILD_REQUIRED`, `BUILD_ARTIFACT_UNRESOLVED_AFTER_SUCCESS` | swipium | Expo prebuild needed; the build succeeded but its artifact was not found. |
+| `METRO_REQUIRED` | swipium | A debug RN/Expo build needs Metro. |
+| `METRO_FAILED` | environment | Metro failed. |
+| `INVALID_FLOW` | environment | A flow is invalid. |
+| `FLOW_NOT_FOUND` | user | A flow does not exist. |
+| `SEED_FAILED` | environment | Seeding a precondition failed (setup, not an app bug). |
+| `OCR_NOT_CONFIGURED`, `OCR_PROVIDER_FAILED` | user | No OCR provider; the OCR or mask provider failed or timed out. |
+| `ARTIFACT_PATH_UNWRITABLE`, `REPORT_UPLOAD_SKIPPED` | environment | Reserved. |
+| `MONOREPO_TARGET_AMBIGUOUS`, `MULTIPLE_ARTIFACTS_AMBIGUOUS`, `IPA_SIGNING_REQUIRED`, `REAL_DEVICE_NOT_CONNECTED`, `REAL_DEVICE_UDID_NOT_PROVISIONED`, `REAL_DEVICE_BUNDLE_ID_MISMATCH`, `REAL_DEVICE_TEAM_MISMATCH` | user | Reserved. |
 
-| Code | Meaning |
-| --- | --- |
-| `AUTH_GATE` | Login required and no usable credentials. |
-| `MISSING_FIXTURE` | A required precondition, fixture, or flow variable is absent. |
-| `MISSING_TEST_DATA` | Required test data (for example an unresolvable `${SWIPIUM_*}` placeholder). |
-| `NO_APP_MAP`, `NO_RECORDED_ACTIONS` | No app map yet; no recorded actions to generate from (owner: Swipium). |
-| `ISSUE_LOG_TOO_VAGUE`, `ISSUE_NOT_FOUND`, `ISSUE_EVIDENCE_REQUIRED` | Issue-ledger input problems. |
-| `MISSING_SECRET`, `AUTH_REQUIRED` | Reserved. |
+### Bucket: missing_data
 
-**Automation limitations** (owner: Swipium, unless noted)
+| Code | Owner | Meaning |
+| --- | --- | --- |
+| `AUTH_GATE` | user | Login required and no usable credentials. |
+| `MISSING_FIXTURE` | user | A required precondition, fixture, disposable test state, or flow variable is absent. |
+| `MISSING_TEST_DATA` | user | Required test data (for example an unresolvable `${SWIPIUM_*}` placeholder). |
+| `ISSUE_LOG_TOO_VAGUE`, `ISSUE_NOT_FOUND`, `ISSUE_EVIDENCE_REQUIRED` | user | Issue-ledger input problems. |
+| `NO_APP_MAP` | swipium | No app map yet; build it with `qa_app_map_build`. |
+| `NO_RECORDED_ACTIONS` | swipium | No recorded actions to generate from. |
+| `MISSING_SECRET`, `AUTH_REQUIRED` | user | Reserved. |
 
-| Code | Meaning |
-| --- | --- |
-| `VISUAL_ONLY_SCREEN` | No usable UI tree; the session is in visual-fallback for this screen. |
-| `SNAPSHOT_FAILED` | The UI tree could not be captured. |
-| `STALE_REF` | The `@eN` ref is from an older screen. |
-| `ELEMENT_NOT_FOUND`, `ELEMENT_NOT_HITTABLE` | No match; a match that cannot be tapped. |
-| `AMBIGUOUS_SELECTOR`, `INVALID_SELECTOR` | The selector matched several elements, or is malformed. |
-| `KEYBOARD_OBSTRUCTION`, `KEYBOARD_NOT_DISMISSIBLE`, `OVERLAY_OBSTRUCTION` | The keyboard or an overlay covers the target, or the keyboard cannot be dismissed. |
-| `TEXT_INPUT_UNSUPPORTED` | The backend cannot type this text. |
-| `BACKEND_UNSUPPORTED` | The operation is not supported on this backend (for example iOS rotation). |
-| `UI_IDLE_TIMEOUT`, `ANIMATION_IDLE_BLOCKED` | The UI did not settle. |
-| `WDA_SOURCE_SLOW`, `WDA_APP_NOT_IDLE`, `WDA_HIERARCHY_TOO_LARGE`, `WDA_XPATH_REFUSED` | WDA performance and locator limits. |
-| `WEBVIEW_UNAVAILABLE` | WebView content is not reachable by native automation. |
-| `VISUAL_LOCATOR_DRIFT` | A visual or OCR locator drifted. |
-| `UNEMITTABLE_STEP` | A recorded step cannot be expressed as Appium code. |
-| `STALE_CLIENT` | The client runs an old tool list; restart it. |
-| `UNKNOWN` | Unclassified. |
-| `SNAPSHOT_TOO_DEEP`, `NO_CHANGE_LOOP`, `VISUAL_ONLY_ASSERTION`, `VISUAL_MASKING_STATUS_MISSING`, `EVIDENCE_RETENTION_UNDECLARED` | Reserved. |
+### Bucket: mcp_limitation
 
-**Refused on purpose** (owner: user, unless noted; expected guardrails, not bugs)
+| Code | Owner | Meaning |
+| --- | --- | --- |
+| `VISUAL_ONLY_SCREEN` | swipium | No usable UI tree; the session is in visual-fallback for this screen. |
+| `SNAPSHOT_FAILED` | swipium | The UI tree could not be captured. |
+| `STALE_REF` | swipium | The `@eN` ref is from an older screen. |
+| `ELEMENT_NOT_FOUND`, `ELEMENT_NOT_HITTABLE` | swipium | No match; a match that cannot be tapped. |
+| `AMBIGUOUS_SELECTOR`, `INVALID_SELECTOR` | swipium | The selector matched several elements, or is malformed. |
+| `KEYBOARD_OBSTRUCTION`, `KEYBOARD_NOT_DISMISSIBLE`, `OVERLAY_OBSTRUCTION` | swipium | The keyboard or an overlay covers the target, or the keyboard cannot be dismissed. |
+| `TEXT_INPUT_UNSUPPORTED` | swipium | The backend cannot type this text. |
+| `BACKEND_UNSUPPORTED` | swipium | The operation is not supported on this backend (for example iOS rotation, or iOS without WDA). |
+| `UI_IDLE_TIMEOUT`, `ANIMATION_IDLE_BLOCKED` | swipium | The UI did not settle. |
+| `WDA_SOURCE_SLOW`, `WDA_APP_NOT_IDLE`, `WDA_HIERARCHY_TOO_LARGE`, `WDA_XPATH_REFUSED` | swipium | WDA performance and locator limits. |
+| `WEBVIEW_UNAVAILABLE` | swipium | WebView content is not reachable by native automation. |
+| `VISUAL_LOCATOR_DRIFT` | swipium | A visual or OCR locator drifted. |
+| `UNEMITTABLE_STEP` | swipium | A recorded step cannot be expressed as Appium code. |
+| `STALE_CLIENT` | swipium | The client runs an old tool list; restart it. |
+| `UNKNOWN` | swipium | Unclassified. |
+| `MISSING_DURABLE_LOCATOR` | app | An element has no durable locator (`testID`, `accessibilityIdentifier`, resource-id). |
+| `COORDINATE_ONLY_FLOW` | app | A flow relies on coordinate taps. |
+| `SNAPSHOT_TOO_DEEP`, `NO_CHANGE_LOOP`, `VISUAL_ONLY_ASSERTION` | swipium | Reserved. |
+| `VISUAL_MASKING_STATUS_MISSING`, `EVIDENCE_RETENTION_UNDECLARED` | user | Reserved. |
 
-| Code | Meaning |
-| --- | --- |
-| `INVALID_ARGUMENT` | A malformed, missing, or undeclared argument, or an unknown `sessionId` or `jobId`. Nothing ran. |
-| `CANCELLED` | The call or job was cancelled. Not a failure. |
-| `CONSENT_DECLINED`, `CONSENT_CANCELLED`, `CONSENT_REFUSED` | See [Consent and elicitation](#consent-and-elicitation). |
-| `DESTRUCTIVE_REFUSED` | A destructive action without approval (including a remote WDA URL). |
-| `UNSAFE_ACTION_REFUSED` | An unsafe action or a path outside the project root. |
-| `BUNDLE_LOSS_REFUSED` | A wipe that would remove a debug build's JS bundle, without `acknowledgeBundleRisk`. |
-| `PHYSICAL_DEVICE_UNSUPPORTED` | Physical devices are out of scope. |
-| `CAPTURE_WITHHELD_SECURE` | A password or OTP field is on screen; pass `force:true` to capture anyway. |
-| `SENSITIVE_MODE_REFUSED` | The session is in sensitive mode. |
-| `VISUAL_PATH_REFUSED` | A baseline name or template path escapes the allowed directory. |
-| `GIT_SCOPE_FORBIDDEN` | Git commands are outside Swipium's scope (for example a Git executable as OCR provider). |
-| `ISSUE_STATE_INVALID` | The issue transition is not allowed from its current state. |
-| `SECRET_IN_GENERATED_OUTPUT` | Generated output would contain a secret; nothing was written (owner: Swipium). |
-| `SECRET_ARTIFACT_IN_EVIDENCE` | Reserved. |
+### Bucket: unsafe_refused
+
+Expected guardrails, not bugs.
+
+| Code | Owner | Meaning |
+| --- | --- | --- |
+| `INVALID_ARGUMENT` | user | A malformed, missing, or undeclared argument, or an unknown `sessionId` or `jobId`. Nothing ran. |
+| `CANCELLED` | user | The call or job was cancelled. Not a failure. |
+| `CONSENT_DECLINED`, `CONSENT_CANCELLED`, `CONSENT_REFUSED` | user | See [Consent](concepts.md#consent). |
+| `DESTRUCTIVE_REFUSED` | user | A destructive action without approval (including a remote WDA URL). |
+| `UNSAFE_ACTION_REFUSED` | user | An unsafe action or a path outside the project root. |
+| `BUNDLE_LOSS_REFUSED` | user | A wipe that would remove a debug build's JS bundle, without `acknowledgeBundleRisk`. |
+| `PHYSICAL_DEVICE_UNSUPPORTED` | user | Physical devices are out of scope. |
+| `CAPTURE_WITHHELD_SECURE` | user | A password or OTP field is on screen; pass `force:true` to capture anyway. |
+| `SENSITIVE_MODE_REFUSED` | user | The session is in sensitive mode. |
+| `VISUAL_PATH_REFUSED` | user | A baseline name or template path escapes the allowed directory. |
+| `GIT_SCOPE_FORBIDDEN` | user | Git commands are outside Swipium's scope (for example a Git executable as OCR provider). |
+| `ISSUE_STATE_INVALID` | user | The issue transition is not allowed from its current state. |
+| `SECRET_IN_GENERATED_OUTPUT` | swipium | Generated output would contain a secret; nothing was written. |
+| `SECRET_ARTIFACT_IN_EVIDENCE` | user | Reserved. |
 
 ## Migrating from 1.5.0
 
-A client still running a pre-upgrade tool list, or an agent that remembers old names, gets a typed `STALE_CLIENT` error with `replacement` and `clientHint` instead of a raw "Tool not found" (see [Unknown arguments and stale clients](#unknown-arguments-and-stale-clients)). The current schemas do not list the old values.
+A client still running a pre-upgrade tool list, or an agent that remembers old names, gets a typed `STALE_CLIENT` error with `replacement` and `clientHint` instead of a raw "Tool not found" (see [Unknown arguments and stale clients](#unknown-arguments-and-stale-clients)). Removed tools and actions are gone from the schemas; two renamed arguments are still listed as deprecated aliases: `qa_wda.udid` and `qa_suite_generate.creativityLevel`.
 
 | Removed | Use instead |
 | --- | --- |
@@ -1029,15 +867,13 @@ A client still running a pre-upgrade tool list, or an agent that remembers old n
 | `qa_ios` `wda_status` / `wda_attach` | `qa_wda` `status` / `attach` (with `device`) |
 | `qa_ios` `screenshot` | `qa_screenshot` |
 | `qa_wait {for:"job_done", jobId}` | `qa_job_status {jobId, waitMs}` |
-| `qa_wda {udid}` | `qa_wda {device}` (`udid` is still accepted) |
-| `qa_suite_generate {creativityLevel}` | `qa_suite_generate {creativity}` (`creativityLevel` is still accepted) |
-| `qa_mobile_audit {waitForCompletion}` | Remove it: `execute` always runs to completion. The argument is now rejected with `INVALID_ARGUMENT`. |
+| `qa_wda {udid}` | `qa_wda {device}` (`udid` still accepted) |
+| `qa_suite_generate {creativityLevel}` | `qa_suite_generate {creativity}` (`creativityLevel` still accepted) |
+| `qa_mobile_audit {waitForCompletion}` | removed; passing it returns `INVALID_ARGUMENT` |
 
 Other 2.0.0 changes an upgrading agent should know:
 
 - Undeclared arguments are rejected with `INVALID_ARGUMENT` instead of being silently ignored.
 - Manually logged issues use a new identity (see [qa_issue_log](#qa_issue_log)); 1.5.x issues keep their old fingerprint.
 
-## Extension pattern
-
-When adding a tool, add it to `TOOL_NAMES` (`src/version.ts`), `CAPABILITY_GROUPS` (`src/core/capabilityGroups.ts`), the annotation table (`src/lib/toolAnnotations.ts`), and exactly one row in the [tool index](#tool-index), plus a section under its group. The startup assertion and `test/publicSurface.test.ts` enforce the first three and the index row. Document the tool's purpose and when to use it, key parameters and defaults, consent behavior, notable failure codes, and the result fields agents rely on.
+Adding or changing a tool: see [CONTRIBUTING.md](../CONTRIBUTING.md#adding-a-tool).

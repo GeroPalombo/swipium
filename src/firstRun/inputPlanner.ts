@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-02 — planInputForField(): decide what (if anything) to type into a field, with a
+// planInputForField(): decide what (if anything) to type into a field, with a
 // strict priority order so Swipium never invents data unless policy + environment allow it.
 //
 // Priority:

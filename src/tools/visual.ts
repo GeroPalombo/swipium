@@ -1,4 +1,4 @@
-// qa_visual (OPP-04) — consolidated local visual intelligence for screens with no usable UI
+// qa_visual — consolidated local visual intelligence for screens with no usable UI
 // tree (maps/canvases/games) and for visual regression. Its whole point is that it stays
 // backend-neutral: only driver.screenshot() is required, so it works in visual-only iOS
 // simulator mode (no WDA) where qa_act / qa_snapshot are rejected. Modes:
@@ -8,7 +8,7 @@
 //   find_image — locate a reference PNG in the current screen → tappable coordinates
 //   assert     — record a visual pass/fail with screenshot evidence (a qa_note with
 //                verifiedVisually=true; a pass is also recorded as a semantic IR step)
-// Every result declares its coordinateSpace (PHASE3-PLAN §8.1) so screenshot-pixel hits convert
+// Every result declares its coordinateSpace so screenshot-pixel hits convert
 // honestly to device (tap) coordinates — POINTS on iOS (WDA and the idb fallback), pixels on
 // Android. Policy matches qa_screenshot: refuse in sensitive mode, and
 // withhold capture when a secure field is (or may be) on screen unless force:true

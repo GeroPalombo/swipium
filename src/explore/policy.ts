@@ -91,7 +91,7 @@ export function allowedUnder(risk: Risk, mode: SafeMode): boolean {
   return mode === 'balanced'; // unknown controls are only allowed in explicit balanced exploration.
 }
 
-/** Context for the controlled mobile-audit account-cycle workflow (SWIPIUM-REQ-07). */
+/** Context for the controlled mobile-audit account-cycle workflow. */
 export interface AccountCycleContext {
   /** True only inside the named account-cycle / release-gate mobile-audit workflow. */
   accountCycle: boolean;

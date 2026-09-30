@@ -1,4 +1,4 @@
-// qa_test_this goal routing (Developer 1, roadmap §3.1 Milestone C). A `goal` adjusts ORCHESTRATION
+// qa_test_this goal routing (Developer 1, Milestone C). A `goal` adjusts ORCHESTRATION
 // FLAGS and REQUIRED OUTPUTS only — it never duplicates suite/report/platform logic (those stay in
 // the services Developer 2/3 own). Keeping the mapping a pure, exported helper makes goal behavior
 // unit-testable without a device, and keeps `qa_test_this` an orchestrator rather than a switchboard.

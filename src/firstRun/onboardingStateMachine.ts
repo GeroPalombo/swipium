@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-02 — onboarding progression. Prefer non-destructive forward/skip controls
+// Onboarding progression. Prefer non-destructive forward/skip controls
 // (Next / Continue / Skip / Get started / Done) and never tap a destructive or unknown control.
 // PURE: returns the single best forward action (or none) for a classified onboarding screen.
 

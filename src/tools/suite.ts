@@ -134,6 +134,7 @@ function requireActions(session: Session): CallToolResult | null {
       what: 'No actions recorded in this session yet',
       changedState: false,
       retrySafe: true,
+      failureCode: 'NO_RECORDED_ACTIONS',
       nextSteps: ['Drive the app with qa_act first (each action is recorded), then regenerate the suite.'],
     });
   }

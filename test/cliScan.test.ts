@@ -90,4 +90,16 @@ describe('swipium scan', () => {
     expect(text).toContain('qa_start_session');
     expect(text).not.toContain('swipium plan');
   });
+
+  it('describes .gitignore handling accurately (scan does not edit it; app map / issue ledger writes do)', async () => {
+    scanState.readiness = 'ready';
+    const dir = mkdtempSync(join(tmpdir(), 'swipium-scan-'));
+    const out = capture();
+    await runScan([dir]);
+    const text = out.join('');
+    expect(text).not.toContain('never edits .gitignore');
+    expect(text).toContain('scan does not edit .gitignore');
+    expect(text).toMatch(/adds \.swipium\/ .*first time it writes the app map or issue ledger/);
+    expect(existsSync(join(dir, '.gitignore'))).toBe(false);
+  });
 });

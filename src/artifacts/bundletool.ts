@@ -1,4 +1,4 @@
-// bundletool integration (roadmap §4.3 / hardening P0.2) — an .aab is not installable; it must be
+// bundletool integration — an .aab is not installable; it must be
 // converted to a universal APK first. This module detects bundletool (a `bundletool` launcher on
 // PATH, a `$BUNDLETOOL_JAR` run via java, or a jar in common locations), builds a universal APK
 // set with the debug keystore, extracts universal.apk, and caches it under .swipium/artifacts/.

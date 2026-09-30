@@ -1,4 +1,4 @@
-// SWIPIUM Issue Log MCP tools (SWIPIUM-REQ-07/08). qa_issue_log is still the only exposed issue
+// SWIPIUM Issue Log MCP tools. qa_issue_log is still the only exposed issue
 // tool, but it now carries the full ledger lifecycle via `mode`:
 //   history (default) — list current issues + counts + recurrence candidates (original behavior)
 //   log               — record a new observation (re-observing a fixed fingerprint reopens it)
@@ -29,7 +29,7 @@ import {
 } from '../issues/index.js';
 import { fingerprintTokens, hasIdentitySignal } from '../issues/fingerprint.js';
 import { computeIssueMetrics, type MetricsGroupBy } from '../issues/metrics.js';
-import { issuesResourceUri, readEvents } from '../issues/store.js';
+import { readEvents } from '../issues/store.js';
 import {
   ALL_ISSUE_CATEGORIES,
   ALL_ISSUE_SEVERITIES,
@@ -233,7 +233,6 @@ export function registerIssues(server: McpServer, sessions: SessionStore): void 
             isNew: res.isNew,
             reopened: res.reopened,
             recurrenceMessage: res.recurrenceMessage,
-            resourceUri: issuesResourceUri(root),
           },
           res.reopened
             ? `Reopened ${res.issueId} — ${res.recurrenceMessage}`
@@ -257,7 +256,6 @@ export function registerIssues(server: McpServer, sessions: SessionStore): void 
               topRecurringIssues: m.topRecurringIssues.map(lifecycleRecord),
               topAgingIssues: m.topAgingIssues.map(lifecycleRecord),
             },
-            resourceUri: issuesResourceUri(root),
           },
           `Issue metrics — opened=${m.opened} fixed=${m.fixed} reopened=${m.reopened} verifiedFixed=${m.verifiedFixed} suppressed=${m.suppressed} reopenRate=${m.reopenRatePct}% fixVerification=${m.fixVerificationRatePct}%`,
         );
@@ -336,7 +334,7 @@ export function registerIssues(server: McpServer, sessions: SessionStore): void 
               : args.unsuppress
                 ? `Unsuppressed ${r.issueId} (now ${r.state})`
                 : `Suppressed ${r.issueId}${r.suppressionReason ? ` — ${r.suppressionReason}` : ''} (hidden from default history${r.suppressedUntil ? ` until ${r.suppressedUntil}` : ''}; still visible under known-noise)`;
-        return qaOk({ mode, issue: lifecycleRecord(r), resourceUri: issuesResourceUri(root) }, summary);
+        return qaOk({ mode, issue: lifecycleRecord(r) }, summary);
       }
 
       // --- history (default): the original query/list behavior --------------------------------
@@ -358,7 +356,7 @@ export function registerIssues(server: McpServer, sessions: SessionStore): void 
         lastSeenAt: r.lastSeenAt,
         observationCount: r.observationCount,
         recurrence: r.lastRecurrenceMessage,
-        // REQ-08: linked app-map screens/features, test cases, and fix-verification status.
+        // Linked app-map screens/features, test cases, and fix-verification status.
         linkedScreens: r.appMapRefs?.map((a) => a.screenId).filter(Boolean) ?? [],
         linkedFeatures: r.appMapRefs?.map((a) => a.featureId).filter(Boolean) ?? [],
         linkedTestCases: r.testRefs?.map((t) => t.testCaseId) ?? [],
@@ -370,7 +368,6 @@ export function registerIssues(server: McpServer, sessions: SessionStore): void 
           issues: compact,
           counts: res.counts,
           recurrenceCandidates: res.recurrenceCandidates.map((r) => r.issueId),
-          resourceUri: issuesResourceUri(root),
         },
         `${res.counts.total} issue(s) — ${Object.entries(res.counts.byState)
           .map(([k, v]) => `${k}=${v}`)

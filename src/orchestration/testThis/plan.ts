@@ -1,4 +1,4 @@
-// qa_test_this plan-phase resolution (roadmap §3.1) — the cheap, side-effect-free half of the
+// qa_test_this plan-phase resolution — the cheap, side-effect-free half of the
 // orchestration state machine. Resolves the session/project, finds (or plans a build for) an
 // artifact, picks a target, and returns an ordered plan with the EXACT next tool call to make —
 // or a typed blocker / one concise NeedsInput question. Execute/interactive modes are dispatched

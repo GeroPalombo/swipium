@@ -1,5 +1,5 @@
-// SWIPIUM-REQ-04 — generated-code validation. Pure: validates emitted files WITHOUT a device.
-// Checks (REQ-04 validation, formerly qa_automation_validate; now run via qa_generate + acceptance criteria):
+// Generated-code validation. Pure: validates emitted files WITHOUT a device.
+// Checks (formerly qa_automation_validate; now run via qa_generate + acceptance criteria):
 //   - no inlined secrets (env-only),
 //   - locator durability threshold (fails on brittle-only above threshold unless candidate-only),
 //   - capability config presence,

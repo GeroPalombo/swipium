@@ -1,4 +1,4 @@
-// qa_device_info + qa_orientation (PHASE3-PLAN §4.2) — device-parity introspection and rotation,
+// qa_device_info + qa_orientation — device-parity introspection and rotation,
 // without raw adb. Read-only info needs no consent; orientation is a logged, non-destructive
 // environment change.
 

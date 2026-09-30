@@ -1,4 +1,4 @@
-// Portable consent state machine (DESIGN §10.2). Works WITHOUT client elicitation:
+// Portable consent state machine. Works WITHOUT client elicitation:
 // a privileged action returns { requiresConsent, consentId, ... }; the agent surfaces
 // it, the user approves, and the same tool is re-called with { consentId, approve:true }.
 //

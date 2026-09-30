@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-08 — executable mobile-audit checks. Each check observes the device through the
+// Executable mobile-audit checks. Each check observes the device through the
 // Driver + evidence helpers and returns an honest result: it only reports `pass` when Swipium
 // actually observed the evidence; otherwise `blocked`/`not_applicable`/`skipped`/`fail`. The runner
 // (runner.ts) wraps these with id/title/profile and records issues for fail/blocked outcomes.
@@ -333,7 +333,7 @@ export async function findAndTapLogout(ctx: AuditEvidenceCtx, disposableAccount:
  * Evaluate the forgot-password entrypoint from the LOGGED-OUT auth surface (captured right after
  * logout, before any re-login). Pass when a forgot/reset link is present; a confirmed login screen
  * without one is an improvement; if logout couldn't reach an auth surface, return blocked rather than
- * falsely failing (REQ-08 account-cycle bug fix).
+ * falsely failing (account-cycle bug fix).
  */
 export function checkForgotPassword(loggedOutText: string): RawCheckResult {
   const isAuthSurface = /sign\s?in|log\s?in|email|password|username|forgot|create account/.test(loggedOutText);

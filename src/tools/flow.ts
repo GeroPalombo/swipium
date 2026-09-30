@@ -1,4 +1,4 @@
-// qa_flow_check + qa_flow_run (PHASE3-PLAN §3.4) — turn exploration into repeatable QA.
+// qa_flow_check + qa_flow_run — turn exploration into repeatable QA.
 // Flows live as .swipium/flows/*.yaml. check = parse + static validation (no device).
 // run (mode:"run", default) = the orchestrator (src/flows/run.ts), reporting the exact failing
 // step + evidence. run (mode:"plan", 1.5.0 consolidation) = read-only execution preview:
@@ -547,7 +547,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
         );
       }
 
-      // Backend/mode gate (NEXT-PLAN: catch unsupported combos before running). A structured-mode
+      // Backend/mode gate (catch unsupported combos before running). A structured-mode
       // flow needs a UI tree, which the iOS simulator and a visual-fallback session don't have.
       if (parsed.mode === 'structured' && (driver.kind === 'simulator' || session.mode === 'visual-fallback')) {
         return qaAnnotate(

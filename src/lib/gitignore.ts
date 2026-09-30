@@ -1,6 +1,7 @@
-// Keep Swipium's generated artifacts out of the user's VCS. Both `swipium scan` and every
-// session (which writes .swipium/<id>/…) call this, so merely using Swipium never dirties a
-// developer's git tree. Idempotent; only touches a real git repo's .gitignore.
+// Keep Swipium's generated artifacts out of the user's VCS. Called when Swipium writes the app
+// map (src/appMap/store.ts) or the issue ledger (src/issues/store.ts), so the first such write
+// appends `.swipium/` to the project's .gitignore. `swipium scan` itself does not call this.
+// Idempotent; only touches a real git repo's .gitignore (it never runs Git).
 
 import { existsSync, readFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';

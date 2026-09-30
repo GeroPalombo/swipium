@@ -1,4 +1,4 @@
-// Suite linting (roadmap §6 / §12 `swipium suite lint`) — flag page objects whose locators are
+// Suite linting (`swipium suite lint`) — flag page objects whose locators are
 // brittle (coordinate-only), copy/locale-fragile (text), or dynamic-looking. Reads the generated
 // .swipium/pages/*.page.yaml; shared by the suite CLI.
 

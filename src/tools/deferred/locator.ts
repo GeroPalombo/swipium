@@ -1,4 +1,4 @@
-// qa_locator_suggest (NEXT-PLAN: Locator And Maintainability) — for the current screen, recommend
+// qa_locator_suggest (Locator And Maintainability) — for the current screen, recommend
 // the most durable locator for each element + score it, and grade the screen's "automation
 // readiness" (how much of the interactive UI has a durable testID/accessibility handle). This
 // tells a developer exactly which controls need testIDs to make flows non-brittle.

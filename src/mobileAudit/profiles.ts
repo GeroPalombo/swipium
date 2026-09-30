@@ -1,4 +1,4 @@
-// SWIPIUM Mobile QA Toolkit — profile + check definitions (SWIPIUM-REQ-07 "Mobile QA Toolkit").
+// SWIPIUM Mobile QA Toolkit — profile + check definitions.
 //
 // A named, profile-based mobile-release audit. PURE data + selection logic: the qa_mobile_audit tool
 // turns a chosen profile into an ordered checklist (with expected behavior + report classification)

@@ -1,4 +1,4 @@
-// Persistence for the App Knowledge Map (SWIPIUM-REQ-01). The canonical map lives at
+// Persistence for the App Knowledge Map. The canonical map lives at
 // `.swipium/app-map.json`; timestamped snapshots accumulate under `.swipium/app-map.history/`; the
 // code-symbol + feature indexes live under `.swipium/app-map.index/`. Loading ALWAYS routes through
 // migrateAppMap() so an older on-disk shape keeps working. We never commit the map automatically

@@ -1,4 +1,4 @@
-// Sensitive-mode refusal (NEXT-PLAN: Security — sensitive-mode session option). A single, honest
+// Sensitive-mode refusal (Security — sensitive-mode session option). A single, honest
 // refusal for any pixel/video/log capture when the session opted into sensitive mode, so a
 // privacy-sensitive project can run Swipium with no screen contents leaving the device.
 

@@ -1,4 +1,4 @@
-// iOS Simulator helpers (PHASE3-PLAN Phase 11) via `xcrun simctl` — local, macOS host only. Covers
+// iOS Simulator helpers via `xcrun simctl` — local, macOS host only. Covers
 // the lifecycle + screenshot + deep links + privacy/erase that simctl supports natively. UI-tree
 // reads and input injection are NOT available through simctl (they need an XCUITest backend, a
 // attach WebDriverAgent for structured iOS automation, so SimctlDriver reports those as

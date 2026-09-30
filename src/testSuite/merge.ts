@@ -1,4 +1,4 @@
-// Merge engine for the persistent suite (SWIPIUM-REQ-06 "Merge and Maintenance Requirements"). PURE
+// Merge engine for the persistent suite. PURE
 // + deterministic: given the existing suite and a batch of incoming cases, decide what is created,
 // updated, deprecated, and which fields conflict with human edits. Every run that observes or
 // generates QA knowledge funnels through here so stable IDs, dedup, provenance, and the per-case run

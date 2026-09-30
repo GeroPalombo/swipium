@@ -1,10 +1,9 @@
-// SWIPIUM-REQ-04 — Automation project profile. Pure-ish module (filesystem reads only, no device,
+// Automation project profile. Pure-ish module (filesystem reads only, no device,
 // no mutation) that inspects a project root and decides HOW an "Automate my app" suite should be
 // generated: which automation language (TS/JS/Python), which test framework, which Appium backend
 // is the fast-feedback default, and what existing automation already lives in the repo.
 //
-// The selection rules are taken verbatim from SWIPIUM-REQ-04 §"Automation Project Profile
-// Requirements" so the behavior is testable without a device and stable across runs.
+// The selection rules below are fixed and deterministic so the behavior is testable without a device and stable across runs.
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -296,7 +295,7 @@ export function buildProjectProfile(root: string, inputs: ProfileInputs = {}): A
   const hasJsProject = exists(root, 'package.json');
   const hasTs = exists(root, 'tsconfig.json') || hasDep(d, /^typescript$/);
 
-  // ---- automation language selection (REQ-04 selection rules) ----
+  // ---- automation language selection (selection rules) ----
   let automationLanguage: AutomationLanguage;
   if (inputs.language && inputs.language !== 'auto') {
     automationLanguage = inputs.language;

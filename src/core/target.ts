@@ -1,4 +1,4 @@
-// Shared target resolution (PHASE3-PLAN §2.3 core extraction). Both qa_act and the flow
+// Shared target resolution (core extraction). Both qa_act and the flow
 // runner resolve a target the SAME way — extracting it here is the "one IR, no drift" rule:
 // a ref | selector | coords becomes a tappable point with the resolved @eN (for obstruction
 // checks) and secure-field awareness (for redaction). Selector resolution re-snapshots and

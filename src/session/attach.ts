@@ -144,7 +144,7 @@ export function setDriverFactoryForTests(factory?: (session: Session) => Driver 
 }
 
 export async function resolveDevice(session: Session, prefer?: string): Promise<DeviceResolution> {
-  // Test-isolation hook (SWIPIUM-REQ-08 regression requirement): when set, device auto-discovery is
+  // Test-isolation hook: when set, device auto-discovery is
   // disabled so "no device" tests assert no-device behavior even on a machine with a live emulator.
   if (process.env.SWIPIUM_DISABLE_DEVICE_DISCOVERY) {
     return { sessionDevice: undefined, available: [], effective: undefined, needSelection: false, source: 'none' };

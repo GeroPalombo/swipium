@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-04 — CI example emitter. Pure: produces a LOCAL-Appium CI template (GitHub Actions)
+// CI example emitter. Pure: produces a LOCAL-Appium CI template (GitHub Actions)
 // for the generated JS or Python suite. Per the non-goals, this is a starting example only (no cloud
 // device-farm config), and the tool writes it as `ci.example.yml` — never an active workflow.
 

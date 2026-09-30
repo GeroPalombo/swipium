@@ -1,6 +1,6 @@
-// Flow runner v2 (NEXT-PLAN: Flow System V2). Drives a parsed Flow step-by-step using core
+// Flow runner v2 (Flow System V2). Drives a parsed Flow step-by-step using core
 // primitives + the driver directly, WITHOUT re-entering through the model. Fail-fast, never
-// auto-retries (DESIGN §6). v2 adds: setup/teardown phases (teardown always runs), selector-bound
+// auto-retries. v2 adds: setup/teardown phases (teardown always runs), selector-bound
 // inputText, visual steps (image match / diff / visual evidence), device-relative gestures,
 // overlay/network/lifecycle/seed/note steps, and typed per-step failure codes. On failure it
 // captures a screenshot + health so the result stands alone.
@@ -27,7 +27,7 @@ import {
   type FlowProvenanceEntry,
   type FlowStep,
 } from './schema.js';
-// Shared with qa_act (SWIP-02): flow replay keeps the default inset 0 so recorded flows
+// Shared with qa_act: flow replay keeps the default inset 0 so recorded flows
 // reproduce their historical vectors byte-for-byte.
 import { swipeVector } from '../lib/gestures.js';
 import { configuredOcrCommand, findOcrRegion, runOcr } from '../visual/ocr.js';

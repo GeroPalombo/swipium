@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-02 — safe generated-data policy + environment classifier + built-in safe generators.
+// Safe generated-data policy + environment classifier + built-in safe generators.
 //
 // Controlled autonomy: Swipium will only invent values for input fields (to create a throwaway
 // account, fill onboarding, etc.) when policy AND the classified environment say it is safe. The

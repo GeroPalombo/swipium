@@ -1,4 +1,4 @@
-// Release-gate policy (NEXT-PLAN: Reporting V3 / P1 release gate). A project can declare
+// Release-gate policy (Reporting V3 / P1 release gate). A project can declare
 // .swipium/policy.json to decide what blocks a release, what only warns, and which known issues
 // to suppress. Consumed by the CI mutation gate: `qa_flow_check` with `ci:true` (src/tools/flow.ts),
 // the CI preflight (src/ci/preflight.ts), and flow lint (src/flows/lint.ts) all consult
@@ -6,7 +6,7 @@
 // helper (blockOn/warnOn/ignoreKnown → pass/fail) for reports/CI.
 //
 //   {
-//     "blockOn":   ["native_crash", "app_error_boundary", "failed_required_flow"],
+//     "blockOn":   ["native_crash", "error_boundary", "failed_required_flow"],
 //     "warnOn":    ["visual_diff", "missing_test_data"],
 //     "ignoreKnown": ["REVENUECAT_BILLING_UNAVAILABLE_ON_EMULATOR"]
 //   }

@@ -1,5 +1,5 @@
-// Lightweight text/symbol index over source files (SWIPIUM-REQ-01 "All frameworks: build a
-// lightweight text/symbol index over source files for feature queries"). Dependency-free: it
+// Lightweight text/symbol index over source files (all frameworks), used for feature
+// queries. Dependency-free: it
 // extracts exported/declared symbol names + a small token bag per file so qa_app_map_query can
 // rank source candidates without re-reading the tree. Persisted under .swipium/app-map.index/.
 

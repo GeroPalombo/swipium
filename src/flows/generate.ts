@@ -1,4 +1,4 @@
-// qa_generate target:"flow" core (PHASE3-PLAN §4.1 / DESIGN §8). Two pure pieces:
+// qa_generate target:"flow" core. Two pure pieces:
 //   - recordableTap: at qa_act time, turn a resolved tap target into a replayable descriptor +
 //     exportability tag (translating an @ref into its visible text/label where possible — the
 //     key durability insight: a ref is run-time-only, but its label survives).

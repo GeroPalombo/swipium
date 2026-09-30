@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-04 — Python Appium emitter. Pure: turns the shared Appium model into a runnable
+// Python Appium emitter. Pure: turns the shared Appium model into a runnable
 // Python Appium-Python-Client POM suite (pytest when the project uses it, else unittest). POM
 // classes centralize selectors; AppiumBy strategies prefer accessibility id / id; iOS predicate /
 // class-chain only where required; XPath is never emitted. Aligns with the Appium Python quickstart.

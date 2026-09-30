@@ -1,5 +1,5 @@
 // qa_screenshot — capture the screen, save as a session artifact, return a resource URI
-// (not inline bytes, DESIGN §4). Sensitive-mode: if a secure field is on screen, withhold
+// (not inline bytes). Sensitive-mode: if a secure field is on screen, withhold
 // by default (pixels can't be redacted) unless force:true.
 
 import { z } from 'zod';

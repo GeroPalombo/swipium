@@ -1,4 +1,4 @@
-// Build-from-source planner (roadmap §4.5) — propose the EXACT commands that turn a source
+// Build-from-source planner — propose the EXACT commands that turn a source
 // project into an installable artifact, per framework + platform, with prerequisites
 // (dependency install, Expo prebuild, CocoaPods) and the artifact globs the build will produce.
 //

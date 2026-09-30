@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-02 / REQ-01 Fix Group 5 — apply first-run classifications to the durable app map.
+// Apply first-run classifications to the durable app map.
 // runFirstRun() emits AppMapPatch[] (per-screen purpose + auth/onboarding/paywall signals + observed
 // transitions). Historically these were written ONLY as a detached session artifact. This module
 // folds them into AppKnowledgeMap so a runtime login/onboarding/paywall screen durably updates the

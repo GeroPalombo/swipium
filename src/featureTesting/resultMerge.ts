@@ -1,5 +1,5 @@
-// Merge a focused feature run back into cases + the durable feature map (SWIPIUM-REQ-03
-// "App Map Update Requirements" + "Runtime Execution Requirements"). PURE. Given the scope, the
+// Merge a focused feature run back into cases + the durable feature map
+// after runtime execution. PURE. Given the scope, the
 // generated cases, and the signals a run produced (qa_note outcomes, runtime screens visited,
 // evidence, exploration terminal state), it fills each case's actual result/status/evidence and
 // computes the feature's coverage delta for persistence. Honest: a feature blocked by a gate

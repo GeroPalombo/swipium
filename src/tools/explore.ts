@@ -358,7 +358,7 @@ async function runExploreJob(
       summary: res.summary,
     };
     sessions.setExploration(session, record);
-    // SWIPIUM-REQ-01: merge this exploration into the durable App Knowledge Map by default. Best-effort
+    // Merge this exploration into the durable App Knowledge Map by default. Best-effort
     // — a map failure must never fail the exploration job.
     try {
       buildAppMap(session.root, {

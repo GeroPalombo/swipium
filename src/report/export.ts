@@ -1,4 +1,4 @@
-// Report 2.0 exporters (PHASE3-PLAN §3.5). Turn the assembled report into formats a developer
+// Report 2.0 exporters. Turn the assembled report into formats a developer
 // can use without the agent transcript: an issue-ready Markdown doc and a CI-ready JUnit XML.
 // (a third-party-format exporter is deferred — out of scope here.)
 //
@@ -102,7 +102,7 @@ export interface ReportData {
   environmentChanges: string[];
   ciMutations?: string[];
   mutationLedger?: ReportMutation[];
-  /** SWIP-13: session was rehydrated after a server restart with prior secret-bearing state —
+  /** Session was rehydrated after a server restart with prior secret-bearing state —
    * pre-restart secrets are no longer in the redaction set for artifacts written since. */
   redactionDegraded?: boolean;
   guardrailOverrides: string[];
@@ -146,7 +146,7 @@ export interface ReportData {
   }>;
   prSummary?: { text: string };
   flakeClassification?: FlakeClassification;
-  /** Issue-memory markdown block (SWIPIUM-REQ-07), pre-rendered by the issues report bridge. */
+  /** Issue-memory markdown block, pre-rendered by the issues report bridge. */
   issuesMarkdown?: string;
   issueRecurrences?: string[];
 }
@@ -442,7 +442,7 @@ export function toMarkdown(r: ReportData): string {
     L.push('');
     for (const reason of r.executiveSummary.reasons) L.push(`- ${reason}`);
   }
-  // Issue memory (SWIPIUM-REQ-07): durable, cross-run issue ledger summary + recurrence warnings.
+  // Issue memory: durable, cross-run issue ledger summary + recurrence warnings.
   if (r.issuesMarkdown) {
     L.push('');
     L.push(r.issuesMarkdown);

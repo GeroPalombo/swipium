@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-08 — link persistent test cases to issue-ledger records.
+// Link persistent test cases to issue-ledger records.
 //
 // The issue ledger (src/issues) stays the source of truth for issue lifecycle. This layer records,
 // on a canonical test case, WHICH issues caused/blocked it and — crucially — lets a passing run that

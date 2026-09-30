@@ -1,4 +1,4 @@
-// qa_resolve_target (roadmap §5) — gather live device/simulator/artifact inputs and pick the
+// qa_resolve_target — gather live device/simulator/artifact inputs and pick the
 // best target with an explained reason, alternatives, preconditions, and whether a boot is
 // needed. Pure decision logic lives in src/core/targetPlan.ts. `include` folds in what used to be
 // the (formerly separate, now removed) qa_detect_context tool (project context: framework, artifacts, Android devices + iOS simulators,
@@ -68,7 +68,8 @@ export function registerResolveTarget(server: McpServer, sessions: SessionStore)
       title: 'Resolve the best test target',
       description:
         'Pick the best device/simulator deterministically: honors platform/device and a platform-specific artifact, prefers an ' +
-        'online emulator/simulator, else plans a boot; physical devices → PHYSICAL_DEVICE_UNSUPPORTED. Returns selected, ' +
+        'online emulator/simulator, else plans a boot; PHYSICAL_DEVICE_UNSUPPORTED only if a phone is the sole option (or ' +
+        'preferRealDevice sees one). Returns selected, ' +
         'reason, alternatives, preconditions, willBoot. include:["context"] adds framework, artifacts, Android devices + iOS ' +
         'simulators, toolchain, blockers; include:["plan"] adds READY / BLOCKED / UNSAFE workflows (session fixtures/auth when ' +
         'sessionId is given). Boots nothing.',
@@ -77,7 +78,7 @@ export function registerResolveTarget(server: McpServer, sessions: SessionStore)
         projectRoot: z.string().optional(),
         platform: z.enum(['android', 'ios']).optional(),
         device: z.string().optional().describe('Explicit adb serial / simulator udid or name / AVD name.'),
-        preferRealDevice: z.boolean().optional().describe('Out of scope: returns PHYSICAL_DEVICE_UNSUPPORTED.'),
+        preferRealDevice: z.boolean().optional().describe('Refused (PHYSICAL_DEVICE_UNSUPPORTED) when a phone is visible.'),
         include: z
           .array(z.enum(['context', 'plan']))
           .optional()

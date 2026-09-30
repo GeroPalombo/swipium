@@ -1,4 +1,4 @@
-// Flow packs (NEXT-PLAN: Flow System V2). A pack (.swipium/packs/*.yaml) names an ordered set of
+// Flow packs (Flow System V2). A pack (.swipium/packs/*.yaml) names an ordered set of
 // flows to run as one release suite. v1 runs them sequentially on the one attached device
 // (parallel:true is accepted but ignored with a warning — parallel on a single device is unsafe).
 

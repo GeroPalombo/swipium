@@ -683,8 +683,8 @@ function appMapRoots(sessions: SessionStore): string[] {
   return [...roots].filter((r) => existsSync(appMapPath(r)));
 }
 
-/** Enumerate the actually-readable app-map resource URIs for the MCP resources/list callbacks
- *  (OPP-02). `full` → one complete-map URI per known project; `sections` → the per-feature /
+/** Enumerate the actually-readable app-map resource URIs for the MCP resources/list callbacks.
+ * `full` → one complete-map URI per known project; `sections` → the per-feature /
  *  per-screen / test-suite section URIs served by readAppMapResource above (same URI shapes
  *  qa_app_map_read emits). Section ids are percent-encoded (encodeUriSegment) so ids containing
  *  `/`, spaces or `(` still match the `{kind}/{id}` template; the read handlers decode them.

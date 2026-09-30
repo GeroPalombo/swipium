@@ -1,4 +1,4 @@
-// Target Resolver (roadmap §5) — pick the best available device/simulator for a first run,
+// Target Resolver — pick the best available device/simulator for a first run,
 // deterministically, so "test this" does not depend on agent improvisation. PURE: callers
 // gather the live inputs (online adb devices, AVDs, simulators, the resolved artifact's
 // platform) and pass them in; this module applies the decision order and explains the choice.

@@ -1,4 +1,4 @@
-// Swipium flow format v2 (NEXT-PLAN: Flow System V2). A readable YAML authoring surface that
+// Swipium flow format v2 (Flow System V2). A readable YAML authoring surface that
 // compiles to a normalized step list (the action IR). v2 adds: selector-bound inputText, visual
 // steps (image/diff/visual), device-relative gestures, waits, overlay/network/lifecycle/seed/note
 // steps, a structured|visual|auto mode, and setup/teardown. One parse, shared by check + run.

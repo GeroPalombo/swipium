@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-02 — firstRunPlanner(): the per-screen brain of the first-run state machine. Given an
+// firstRunPlanner(): the per-screen brain of the first-run state machine. Given an
 // observed screen, the session, the test-data policy, and the generated-account decision, it
 // classifies the screen and returns a bounded, safe FirstRunPlan: the actions to take, the expected
 // next screens, the stop conditions, and the app-map updates. PURE — no device access; the driver

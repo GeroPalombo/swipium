@@ -1,5 +1,5 @@
-// Safe process execution: arg arrays only (never shell strings → injection-safe,
-// DESIGN §10.1), with timeout + AbortSignal threading.
+// Safe process execution: arg arrays only (never shell strings → injection-safe),
+// with timeout + AbortSignal threading.
 
 import { spawn } from 'node:child_process';
 import { basename } from 'node:path';

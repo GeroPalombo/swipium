@@ -1,4 +1,4 @@
-// qa_seed (PHASE3-PLAN §4.4 / roadmap §9) — turn a declared precondition into one Swipium can
+// qa_seed — turn a declared precondition into one Swipium can
 // actually create, OPT-IN and consent-gated. A fixture may carry a `seed` spec: a deep link, a
 // project-root script, or an API call. Every seed is a mutation → explicit consent, exact action
 // shown. The raw execution lives in src/flows/seedExec.ts (shared with the flow `seed` step). If

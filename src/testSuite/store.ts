@@ -1,4 +1,4 @@
-// Persistent-suite store (SWIPIUM-REQ-06 "Suite Store Requirements"). The ONLY module here that does
+// Persistent-suite store. The ONLY module here that does
 // IO: it owns `.swipium/test-suite.json`, the per-functionality `.swipium/test-suite/<func>/<id>.yaml`
 // mirror, and the `.swipium/test-runs/<runId>.json` ledger. Everything it persists is produced by the
 // pure modules (schema/merge/generator/history) so the on-disk format is deterministic and testable.

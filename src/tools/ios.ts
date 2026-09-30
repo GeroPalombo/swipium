@@ -1,4 +1,4 @@
-// qa_ios (PHASE3-PLAN Phase 11) — iOS Simulator control via simctl. Boots/selects a simulator,
+// qa_ios — iOS Simulator control via simctl. Boots/selects a simulator,
 // installs a .app, launches/terminates, opens deep links, resets privacy, and erases. Booting/
 // launching binds a SimctlDriver into the session so the shared visual tools (qa_screenshot,
 // qa_visual, qa_report) work on iOS unchanged. Screenshots go through qa_screenshot (secure-field

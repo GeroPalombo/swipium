@@ -1,4 +1,4 @@
-// qa_screen_record (PHASE3-PLAN §4.2 / NEXT-PLAN Fix 5) — capture a screen video on Android
+// qa_screen_record — capture a screen video on Android
 // (adb screenrecord) or the iOS Simulator (simctl io recordVideo). start spawns the recorder
 // (consent-gated, sensitive-screen warning); status reports whether one is active; stop finalizes
 // it gracefully (SIGINT so the mp4 isn't corrupted), saves an artifact, and cleans up. Active

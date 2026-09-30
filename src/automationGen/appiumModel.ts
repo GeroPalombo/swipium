@@ -1,9 +1,9 @@
-// SWIPIUM-REQ-04 — Cross-platform Appium POM model. Pure transform of the canonical Swipium POM
+// Cross-platform Appium POM model. Pure transform of the canonical Swipium POM
 // (src/suite/pom.ts) into an Appium-ready, language-agnostic screen model that the JS and Python
 // emitters share. This is the "shared intermediate model" the requirement asks for so generated
 // JS/Python cannot drift from Swipium YAML semantics.
 //
-// Locator policy (REQ-04 §Generated * Suite Requirements + Appium locator-strategy guidance):
+// Locator policy (follows Appium locator-strategy guidance):
 //   accessibility id > resource-id/id > iOS predicate/class-chain/name > text > coordinate.
 //   XPath is NEVER emitted; coordinate is the explicit non-release-grade fallback.
 

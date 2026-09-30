@@ -1,4 +1,4 @@
-// Screen/Page Object Model generation (roadmap §6) — turn a linear action recording into a
+// Screen/Page Object Model generation — turn a linear action recording into a
 // MAINTAINABLE suite where selectors live in page objects and tests reference them by name,
 // instead of duplicating raw selectors. PURE: no filesystem, no device — callers serialize the
 // returned files. Also produces a locator audit (durable vs brittle) with app-code remediation,

@@ -1,4 +1,4 @@
-// Runtime merge (SWIPIUM-REQ-01 "Runtime Merge Requirements"). Folds a SerializedGraph from
+// Runtime merge. Folds a SerializedGraph from
 // src/explore/graph.ts into AppKnowledgeMap.runtimeTopology. Node matching uses MULTIPLE signals
 // (route/screen name, foreground owner, structured signature, visual signature, visible text
 // tokens, locator/accessibility ids, screenshot, action label) so revisits dedupe instead of
@@ -23,7 +23,7 @@ export interface MergeResult {
 
 /** Static screens declared in code but not yet linked by any runtime screen. Shared so it can be
  *  recomputed after EVERY static scan (not only after a runtime merge) — otherwise a static-only
- *  map knows about static screens but reports zero unvisited (SWIPIUM-REQ-01). */
+ *  map knows about static screens but reports zero unvisited. */
 export function computeUnvisitedStaticScreens(map: AppKnowledgeMap): string[] {
   const linkedStaticIds = new Set(map.runtimeTopology.screens.map((r) => r.linkedStaticScreenId).filter(Boolean) as string[]);
   return map.staticTopology.screens.filter((s) => !linkedStaticIds.has(s.id)).map((s) => s.id);

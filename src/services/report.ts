@@ -381,7 +381,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     observed: readiness.includes('observed'),
   });
 
-  // Persistent QA test suite (SWIPIUM-REQ-06): a report run observes QA knowledge, so update the
+  // Persistent QA test suite: a report run observes QA knowledge, so update the
   // canonical suite under .swipium/test-suite.json and embed the per-run delta + canonical case ids.
   // Best-effort — a suite-merge failure must never break report generation.
   let persistentSuite: Record<string, unknown> | null = null;
@@ -460,7 +460,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     })),
     workaroundsAttempted: session.workarounds,
     inputsProvided: session.inputs.map((i) => ({ varName: i.varName, secret: i.secret, source: i.source })),
-    // SWIP-13: disclose degraded redaction after a server restart (secrets are never persisted).
+    // Disclose degraded redaction after a server restart (secrets are never persisted).
     redactionDegraded: session.redactionDegraded === true,
     generatedValues: session.generatedValues.map((g) => ({
       ...g,
@@ -536,7 +536,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     artifacts: session.artifacts.map((art) => ({ uri: art.uri, kind: art.kind, mime: art.mime, label: art.label })),
     counters: session.counters,
   };
-  // Issue memory (SWIPIUM-REQ-07): fold this run's findings + app-bug outcomes into the durable
+  // Issue memory: fold this run's findings + app-bug outcomes into the durable
   // `.swipium/issues-log.jsonl`, reopen previously-fixed fingerprints, and attach the issue-memory
   // section (+ recurrence markdown) to the report. Best-effort — the ledger never breaks a report.
   try {
@@ -577,7 +577,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     });
 
     // Link recorded issues to persistent test cases, and verify fixed issues that a PASSING case
-    // covers this run (REQ-08). The case→workflow key is the workflow string the suite generator
+    // covers this run. The case→workflow key is the workflow string the suite generator
     // folds into actualResult.summary.
     let verifiedFixedIds = new Set<string>();
     if (mergedSuite) {
@@ -616,14 +616,14 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
       saveSuite(session.root, mergedSuite);
     }
 
-    // Rebuild the section honoring verified-fixed evidence (REQ-08 honest fix verification).
+    // Rebuild the section honoring verified-fixed evidence (honest fix verification).
     const finalIdx = getIssueIndex(session.root, issuesNow, appId ?? undefined);
     const finalSection = buildReportIssuesSection(finalIdx.records, new Set(bridge.recordedIssueIds), verifiedFixedIds);
     (report as Record<string, unknown>).issues = finalSection;
     (report as Record<string, unknown>).issuesMarkdown = issuesSectionToMarkdown(finalSection);
     if (bridge.recurrences.length) (report as Record<string, unknown>).issueRecurrences = bridge.recurrences;
 
-    // Compact quality metrics when enough history exists (REQ-08): this run's new/reopened/verified
+    // Compact quality metrics when enough history exists: this run's new/reopened/verified
     // counts + open blocker/high totals + reopen/fix-verification rates.
     const allEvents = readIssueEvents(session.root);
     if (allEvents.length >= 2) {
@@ -640,7 +640,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
       };
     }
 
-    // Refresh app-map issue summaries from the freshly-updated ledger (REQ-08) — only when a map
+    // Refresh app-map issue summaries from the freshly-updated ledger — only when a map
     // already exists, and WITHOUT a static rescan (runtime_merge load → apply summaries → save).
     if (existsSync(appMapPath(session.root))) {
       buildAppMap(session.root, { mode: 'runtime_merge', at: issuesNow, includeCodeIndex: false, persist: true });

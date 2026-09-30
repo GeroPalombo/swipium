@@ -1,4 +1,4 @@
-// qa_test_feature (SWIPIUM-REQ-03 "MCP Tool Requirements").
+// qa_test_feature MCP tool.
 // Feature-focused testing from the durable app map: map a natural-language feature request to code +
 // runtime + existing tests, model its objective, generate scoped cases, optionally execute a focused
 // run, and update the feature map. Thin wrappers — all logic lives in src/featureTesting/* + src/appMap.

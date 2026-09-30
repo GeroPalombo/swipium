@@ -1,4 +1,4 @@
-// Feature-focused test case generation (SWIPIUM-REQ-03 "Test Case Generation Requirements"). PURE.
+// Feature-focused test case generation. PURE.
 // Turns a FeatureScope + FeatureObjective into industry-style test cases (TestRail-aligned: each case
 // connects preconditions, inputs, steps, and expected results to the documented objective). Cases are
 // linked to featureId + map screens + evidence, carry a creativity level, and start with empty actual

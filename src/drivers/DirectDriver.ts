@@ -1,5 +1,5 @@
 // DirectDriver — the v1 Android backend. Reads the accessibility tree via
-// the platform UI-dump tool and acts via `adb shell input` (DESIGN §11). No external
+// the platform UI-dump tool and acts via `adb shell input`. No external
 // automation server.
 //
 // The shell-tap / `input text` approach is the same one proven in the Inn suite for

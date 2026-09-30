@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-04 — README emitter. Pure: documents the generated suite, the required environment
+// README emitter. Pure: documents the generated suite, the required environment
 // variables (app id/path, device, Appium host/port, credentials, test data), and the exact run
 // commands. Honest about platform coverage and non-release-grade fallbacks.
 

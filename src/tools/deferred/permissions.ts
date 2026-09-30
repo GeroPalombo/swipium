@@ -1,4 +1,4 @@
-// qa_permissions (PHASE3-PLAN §4.2) — list / grant / revoke Android runtime permissions without
+// qa_permissions — list / grant / revoke Android runtime permissions without
 // raw adb. grant is low-risk (commonly used to pre-approve and skip a dialog) and only logged;
 // revoke can break app state, so it is consent-gated. Every mutation is recorded as an
 // environment change for qa_report.

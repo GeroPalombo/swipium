@@ -1,4 +1,4 @@
-// Failure taxonomy (PHASE3-PLAN §4.3 / roadmap §6). Every failure Swipium can detect maps to a
+// Failure taxonomy. Every failure Swipium can detect maps to a
 // stable code with: a bucket (so qa_report can group failures the way a developer triages them),
 // a severity, a default retry-safety, and an actionable recovery line. This turns "something
 // failed" into "this class of failure, here's whether to retry, here's the fix" — the
@@ -13,7 +13,7 @@
 
 export type FailureBucket = 'app_bug' | 'environment' | 'missing_data' | 'mcp_limitation' | 'unsafe_refused';
 
-// Likely owner of a failure (roadmap §10): who acts to fix it. Distinct from the bucket,
+// Likely owner of a failure: who acts to fix it. Distinct from the bucket,
 // which is how a developer triages it. `swipium` = Swipium can often fix it itself.
 export type FailureOwner = 'app' | 'environment' | 'swipium' | 'user';
 
@@ -107,13 +107,13 @@ export type FailureCode =
   | 'VISUAL_PATH_REFUSED'
   | 'CAPTURE_WITHHELD_SECURE'
   | 'SENSITIVE_MODE_REFUSED'
-  // --- roadmap §10: project detection ---
+  // --- project detection ---
   | 'NOT_MOBILE_PROJECT'
   | 'MONOREPO_TARGET_AMBIGUOUS'
   | 'PROJECT_ROOT_EMPTY'
   | 'PROJECT_ROOT_UNRESOLVED'
   | 'UNSUPPORTED_FRAMEWORK'
-  // --- roadmap §10: artifact resolution / install ---
+  // --- artifact resolution / install ---
   | 'NO_BUILD_ARTIFACT'
   | 'MULTIPLE_ARTIFACTS_AMBIGUOUS'
   | 'ARTIFACT_OUTSIDE_ROOT_REQUIRES_APPROVAL'
@@ -136,7 +136,7 @@ export type FailureCode =
   | 'REAL_DEVICE_UDID_NOT_PROVISIONED'
   | 'REAL_DEVICE_BUNDLE_ID_MISMATCH'
   | 'REAL_DEVICE_TEAM_MISMATCH'
-  // --- roadmap §10: build-from-source ---
+  // --- build-from-source ---
   | 'BUILD_COMMAND_UNAVAILABLE'
   | 'BUILD_FAILED'
   | 'BUILD_ARTIFACT_UNRESOLVED_AFTER_SUCCESS'
@@ -146,12 +146,12 @@ export type FailureCode =
   | 'GRADLE_FAILED'
   | 'XCODEBUILD_FAILED'
   | 'FLUTTER_BUILD_FAILED'
-  // --- roadmap §10: runtime ---
+  // --- runtime ---
   | 'METRO_REQUIRED'
   | 'METRO_FAILED'
   | 'DEVICE_BOOT_FAILED'
   | 'APP_LAUNCH_FAILED'
-  // --- roadmap §10: automation / durability ---
+  // --- automation / durability ---
   | 'MISSING_DURABLE_LOCATOR'
   | 'COORDINATE_ONLY_FLOW'
   | 'VISUAL_ONLY_ASSERTION'
@@ -177,10 +177,10 @@ export interface FailureInfo {
   retrySafe: boolean;
   summary: string;
   recovery: string;
-  /** Likely owner of the fix (roadmap §10). Optional — defaults are derived from the bucket
+  /** Likely owner of the fix. Optional — defaults are derived from the bucket
    *  by `failureOwner()`; set explicitly where it differs from the bucket default. */
   owner?: FailureOwner;
-  /** Whether Swipium can plausibly resolve this itself (roadmap §3.4 "can Swipium fix this?"). */
+  /** Whether Swipium can plausibly resolve this itself. */
   selfFixable?: boolean;
 }
 
@@ -813,7 +813,7 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
       'Expected scope guardrail (THREAT_MODEL.md non-goals, docs/physical-devices.md) — real devices carry real user data. Test on an emulator/simulator, or unplug the device if it was selected by accident.',
   },
 
-  // --- roadmap §10: project detection ---
+  // --- project detection ---
   NOT_MOBILE_PROJECT: {
     bucket: 'environment',
     severity: 'high',
@@ -855,7 +855,7 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     recovery: 'Swipium supports Expo, bare React Native, native Android, native iOS, and Flutter. File a request for other frameworks.',
   },
 
-  // --- roadmap §10: artifact resolution / install ---
+  // --- artifact resolution / install ---
   NO_BUILD_ARTIFACT: {
     bucket: 'environment',
     severity: 'high',
@@ -1034,7 +1034,7 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     recovery: 'Re-sign the .ipa so the codesign team identifier matches the provisioning profile team, then retry.',
   },
 
-  // --- roadmap §10: build-from-source ---
+  // --- build-from-source ---
   BUILD_COMMAND_UNAVAILABLE: {
     bucket: 'environment',
     severity: 'high',
@@ -1112,7 +1112,7 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     recovery: 'Open the flutter build log artifact and fix the reported error, then retry.',
   },
 
-  // --- roadmap §10: runtime ---
+  // --- runtime ---
   METRO_REQUIRED: {
     bucket: 'environment',
     severity: 'high',
@@ -1148,7 +1148,7 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     recovery: 'Confirm the bundle/app id, check the device log for the launch error, and verify Metro (for debug builds) is reachable.',
   },
 
-  // --- roadmap §10: automation / durability ---
+  // --- automation / durability ---
   MISSING_DURABLE_LOCATOR: {
     bucket: 'mcp_limitation',
     severity: 'medium',
@@ -1277,13 +1277,13 @@ const OWNER_BY_BUCKET: Record<FailureBucket, FailureOwner> = {
   unsafe_refused: 'user',
 };
 
-/** Likely owner of a failure code's fix (roadmap §10). */
+/** Likely owner of a failure code's fix. */
 export function failureOwner(code: FailureCode): FailureOwner {
   const info = FAILURES[code];
   return info.owner ?? OWNER_BY_BUCKET[info.bucket];
 }
 
-/** Whether Swipium can plausibly fix this itself (roadmap §3.4). */
+/** Whether Swipium can plausibly fix this itself. */
 export function isSelfFixable(code: FailureCode): boolean {
   return FAILURES[code].selfFixable ?? false;
 }

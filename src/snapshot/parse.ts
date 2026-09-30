@@ -1,5 +1,5 @@
 // Parse a uiautomator dump into @eN-referenced elements + a snapshotQuality verdict.
-// (DESIGN §4, §11.) The dump is the Android accessibility tree, so quality is a property
+// The dump is the Android accessibility tree, so quality is a property
 // of the target app — we measure it rather than pretend a weak tree is strong.
 
 import { XMLParser } from 'fast-xml-parser';

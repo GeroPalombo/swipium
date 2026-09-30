@@ -1,4 +1,4 @@
-// Exporters for the persistent suite (SWIPIUM-REQ-06 "qa_suite_export"). PURE: serialize the
+// Exporters for the persistent suite. PURE: serialize the
 // canonical suite to Markdown (review-ready), a per-functionality YAML directory, JSON, and a
 // JUnit-like results doc. TestRail CSV / Jira-Xray are explicitly deferred (Non-Goals) — the shapes
 // here are the v1 surface other tools can build on.

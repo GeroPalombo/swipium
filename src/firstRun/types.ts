@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-02 — shared types for the first-run smoke / auth / onboarding / safe-test-data lane.
+// Shared types for the first-run smoke / auth / onboarding / safe-test-data lane.
 // These describe the data exchanged between the screen classifier, the input planner, the auth /
 // onboarding / paywall state machines, and the firstRunPlanner. They are intentionally
 // backend-neutral (no Driver references) so the planning layer stays pure + unit-testable; the
@@ -91,7 +91,7 @@ export interface ScreenClassification {
   mapLinks: MapLink[];
 }
 
-/** A forward-compatible patch into the durable app map (SWIPIUM-REQ-01). Until that module lands
+/** A forward-compatible patch into the durable app map. Until that module lands
  *  these are persisted as a session artifact + note and returned to the caller, so a later app-map
  *  implementation can replay them without changing this contract. */
 export interface AppMapPatch {

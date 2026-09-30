@@ -1,4 +1,4 @@
-// MCP prompts (PHASE3-PLAN §2.4 / §3.3) — the spec's third server capability (after tools +
+// MCP prompts — the spec's third server capability (after tools +
 // resources). Prompts are reusable workflow templates a prompt-capable client (e.g. Claude)
 // can invoke by name, so common QA runs don't need a hand-written prompt each time.
 //

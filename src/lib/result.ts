@@ -1,10 +1,10 @@
-// Tool result envelopes (DESIGN §3 "Every tool is self-diagnosing", §2.1 contract).
+// Tool result envelopes: every tool is self-diagnosing.
 //
 // Recoverable failures are returned as isError:true with a structured, actionable
 // payload — NOT thrown. Thrown/JSON-RPC errors are reserved for malformed calls or a
 // broken server (the model can't act on those).
 //
-// Response modes (PHASE3-PLAN §2.1): a session can ask for `compact | normal | verbose`
+// Response modes: a session can ask for `compact | normal | verbose`
 // output. The human-readable text is rendered per mode; `structuredContent` is ALWAYS the
 // full payload, so a client that reads structured data loses nothing in compact mode. The
 // active mode is carried in AsyncLocalStorage so EVERY tool inherits it without touching a
@@ -34,12 +34,12 @@ export type QaErrorPayload = {
   ok: false;
   what: string;
   commandAttempted?: string;
-  changedState: boolean; // did we mutate device/app/fs? feeds retry-safety (DESIGN §6)
+  changedState: boolean; // did we mutate device/app/fs? feeds retry-safety
   retrySafe: boolean;
   nextSteps: string[];
   artifactUri?: string;
   clientHint?: string;
-  failureCode: string; // typed failure class (PHASE3-PLAN §4.3); UNKNOWN is the fallback
+  failureCode: string; // typed failure class; UNKNOWN is the fallback
 };
 
 type QaErrorInput = Omit<QaErrorPayload, 'ok' | 'failureCode'> & { failureCode?: string };

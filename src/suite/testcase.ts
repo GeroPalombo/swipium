@@ -1,4 +1,4 @@
-// Test-case documentation (roadmap §7) — turn a generated POM suite + the session's observed
+// Test-case documentation — turn a generated POM suite + the session's observed
 // state into an industry-style test case catalog (TC-xxx) with preconditions, steps, expected
 // result, automation status, known blockers, and last-run evidence. PURE; callers serialize.
 

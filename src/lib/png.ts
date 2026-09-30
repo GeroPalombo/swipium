@@ -1,4 +1,4 @@
-// Minimal zero-dependency PNG decode (PHASE3-PLAN §8). Device screenshots come from
+// Minimal zero-dependency PNG decode. Device screenshots come from
 // `screencap -p` as non-interlaced 8-bit truecolor(+alpha) PNGs, so we support exactly that
 // (color types 2 and 6, bit depth 8, interlace 0) and error clearly on anything else. Uses
 // Node's built-in zlib — no image library, no third-party code.

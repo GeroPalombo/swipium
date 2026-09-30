@@ -1,4 +1,4 @@
-// Artifact Resolver V2 (roadmap §4) — find the build a developer actually has, wherever it
+// Artifact Resolver V2 — find the build a developer actually has, wherever it
 // lives. detectContext() only looked under the project root and apps/android|ios; most real
 // builds land deep under Gradle/Flutter/Xcode output trees. This module does a bounded
 // recursive walk of the project (plus opt-in DerivedData), classifies every .apk/.aab/.ipa/.app
@@ -434,7 +434,7 @@ export async function resolveArtifact(opts: ResolveOptions, enrich = true): Prom
   }
 
   let best: ArtifactCandidate | null = ranked[0] ?? null;
-  // Outside-root gate (roadmap §10).
+  // Outside-root gate.
   if (best && best.outsideRoot && !opts.allowOutsideRoot) {
     const inside = ranked.find((c) => !c.outsideRoot);
     if (inside) {

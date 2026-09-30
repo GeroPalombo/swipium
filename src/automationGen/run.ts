@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-04 — "Automate my app". Generates a runnable JS/TS or Python Appium POM suite from a
+// "Automate my app". Generates a runnable JS/TS or Python Appium POM suite from a
 // session's recorded actions, adapting to the project's language/platform/test stack.
 //
 //   runAutomationPlan      — read-only core for qa_generate target:"appium" mode:"plan":

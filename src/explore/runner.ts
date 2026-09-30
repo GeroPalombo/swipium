@@ -56,11 +56,11 @@ export interface ExploreOptions {
   includeTextEntry?: boolean;
   stopOnAuth?: boolean;
   generateSuite?: boolean;
-  /** SWIPIUM-REQ-02: allow built-in safe generators to fill fields when the environment is a
+  /** Allow built-in safe generators to fill fields when the environment is a
    *  disposable test/staging one (off by default — exploration never invents values otherwise). */
   allowGeneratedData?: boolean;
   testDataPolicyPath?: string;
-  /** SWIPIUM-REQ-07: the controlled mobile-audit account-cycle workflow. When enabled on a
+  /** The controlled mobile-audit account-cycle workflow. When enabled on a
    *  disposable generated account, LOGOUT (and only logout) is permitted as an expected step;
    *  delete/pay/send stay refused. Off by default — broad exploration keeps logout destructive. */
   accountCycle?: { enabled: boolean; disposableAccount: boolean };
@@ -112,7 +112,7 @@ function hasCredentials(session: Session): boolean {
 }
 
 /**
- * Find a safe value to type into a field. Priority (the input planner, SWIPIUM-REQ-02):
+ * Find a safe value to type into a field. Priority (the input planner):
  * secure inputs → declared fixtures → built-in safe generator (ONLY when `gen.allowed`, i.e. the
  * environment is a disposable test/staging one) → otherwise undefined (the runner skips honestly).
  * Default behavior is unchanged: with no generation context, values are never invented.
@@ -248,7 +248,7 @@ export async function runExplore(
   const maxScreens = opts.maxScreens ?? 12;
   const depth = opts.depth ?? 3;
   const stopOnAuth = opts.stopOnAuth ?? true;
-  // SWIPIUM-REQ-02: resolve the generated-data decision once. Only "allowed" when policy + the
+  // Resolve the generated-data decision once. Only "allowed" when policy + the
   // classified environment (test/staging) permit safe throwaway data; otherwise generation is off.
   const genCtx: GeneratedDataContext | undefined = opts.allowGeneratedData
     ? (() => {
@@ -397,7 +397,7 @@ export async function runExplore(
 
   const allowedCandidate = (candidate: RankedCandidate, node: ScreenNode): boolean => {
     if (candidate.risk !== 'destructive') return allowedUnder(candidate.risk, safeMode);
-    // Controlled account-cycle exception (REQ-07): logout — and only logout — is an expected step
+    // Controlled account-cycle exception: logout — and only logout — is an expected step
     // on a disposable generated account inside the mobile-audit account-cycle workflow.
     if (
       opts.accountCycle?.enabled &&

@@ -1,4 +1,4 @@
-// qa_generate target:"flow" core (PHASE3-PLAN §4.1 / DESIGN §8) — turn the actions recorded during
+// qa_generate target:"flow" core — turn the actions recorded during
 // this session (via qa_act) into a durable flow YAML, with a durability grade and the brittle
 // steps that need testIDs. Optionally saves it to .swipium/flows/<name>.yaml so it shows up
 // in the workflow plan (qa_resolve_target include:["plan"]) and can be replayed with qa_flow_run. Registered through src/tools/generate.ts.
@@ -33,6 +33,7 @@ export async function runFlowGenerate(
       what: 'No actions recorded in this session yet',
       changedState: false,
       retrySafe: true,
+      failureCode: 'NO_RECORDED_ACTIONS',
       nextSteps: ['Drive the app with qa_act first (each action is recorded), then qa_generate target:"flow".'],
     });
   }

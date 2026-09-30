@@ -1,4 +1,4 @@
-// App map builder (SWIPIUM-REQ-01 qa_app_map_build orchestration). Resolves project identity, runs
+// App map builder (qa_app_map_build orchestration). Resolves project identity, runs
 // the framework-aware static scan, loads + migrates any existing map, optionally merges a runtime
 // explore graph, recomputes coverage/confidence, and persists. Additive: a static rescan refreshes
 // the static topology while PRESERVING runtime observations, tickets, the test suite, and automation
@@ -84,7 +84,7 @@ function projectIdentity(root: string, fw: Framework, packageName: string | null
 
 function recomputeCoverage(map: AppKnowledgeMap): void {
   // Recompute unvisited static screens here so it is correct after EVERY build path — including a
-  // static-only scan where mergeRuntimeGraph never runs (SWIPIUM-REQ-01 Fix Group 6).
+  // static-only scan where mergeRuntimeGraph never runs.
   map.runtimeTopology.unvisitedStaticScreens = computeUnvisitedStaticScreens(map);
   const staticScreens = map.staticTopology.screens.length;
   const runtimeScreens = map.runtimeTopology.screens.length;
@@ -258,7 +258,7 @@ function buildAppMapLocked(root: string, opts: BuildOptions, prescanned: StaticS
 
   recomputeCoverage(map);
   recomputeConfidence(map);
-  // Derived issue summaries from the durable issue ledger (SWIPIUM-REQ-08). Best-effort — the issue
+  // Derived issue summaries from the durable issue ledger. Best-effort — the issue
   // ledger is an additive context layer and must never break an app-map build.
   try {
     applyIssueSummariesToAppMap(map, root, opts.at);

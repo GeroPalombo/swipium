@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-04 — JS/TS WebdriverIO + Appium emitter. Pure: turns the shared Appium model into a
+// JS/TS WebdriverIO + Appium emitter. Pure: turns the shared Appium model into a
 // runnable WebdriverIO POM suite (page/screen classes with locator getters + action methods, env-
 // driven capabilities, structured waits). No XPath is ever emitted; coordinate fallbacks are marked
 // non-release-grade. Aligns with the Appium JS quickstart (WebdriverIO) locator-strategy guidance.

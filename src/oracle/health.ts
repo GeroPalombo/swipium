@@ -1,4 +1,4 @@
-// Tier-1 deterministic health oracle (DESIGN §6). Phase 2.2: classifies BOTH layers —
+// Tier-1 deterministic health oracle. Phase 2.2: classifies BOTH layers —
 // NATIVE health (process: crash dialog / ANR / wrong foreground) and APP health (JS/UI:
 // RN RedBox / LogBox error / error-boundary fallback / WebView error). A green native
 // process with a broken app UI (e.g. an ErrorBoundary screen) is now a first-class finding,

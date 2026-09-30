@@ -16,7 +16,7 @@ Email hi@swipium.com for:
 
 Never post vulnerabilities, credentials, or private project data in a public issue.
 
-Before opening an issue, check [Troubleshooting](README.md#troubleshooting) in the README. Many setup problems are solved by restarting the MCP client after an upgrade, or by setting `SWIPIUM_PROJECT_ROOT` or `ANDROID_HOME` in the server's `env` block.
+Before opening an issue, check [Troubleshooting](README.md#troubleshooting) in the README, the [failure-code catalog](docs/tools.md#failure-codes), and, for client setup, [docs/mcp-server.md](docs/mcp-server.md). After an upgrade, work through [Upgrading from 1.5](README.md#upgrading-from-15). Many setup problems are solved by restarting the MCP client, or by setting `SWIPIUM_PROJECT_ROOT` or `ANDROID_HOME` in the server's `env` block.
 
 ## What to include
 
@@ -34,6 +34,6 @@ Remove real credentials, production tokens, private app binaries, customer data,
 
 ## Support scope
 
-Supported: the public Swipium tool surface on Android Emulators (macOS and Linux) and iOS Simulators (macOS). Windows is experimental.
+Supported: the public Swipium tool surface on Android Emulators (macOS and Linux) and iOS Simulators (macOS). Windows is experimental and untested.
 
 Physical devices are out of scope and are refused by design (see [docs/physical-devices.md](docs/physical-devices.md)). Questions about them, or about debugging a specific private app, are welcome but not guaranteed an answer.

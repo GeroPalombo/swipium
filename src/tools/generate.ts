@@ -1,4 +1,4 @@
-// qa_generate (P0 §1 tool-surface consolidation) — the single entry point for "generate test
+// qa_generate (tool-surface consolidation) — the single entry point for "generate test
 // assets from this session's recorded actions". Dispatches by `target` to the existing core
 // handlers (services/flowGenerate.ts, suite.ts, automationGen/run.ts) so behavior, consent gates, and
 // error envelopes are unchanged; only the tool surface is unified.

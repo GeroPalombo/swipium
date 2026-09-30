@@ -1,20 +1,30 @@
 # Physical devices
 
 Status: **not supported in Swipium 2.0.** Swipium runs only on Android Emulators and iOS
-Simulators. A physical device is visible to Swipium, but every path that could act on it refuses it
-with the typed failure code `PHYSICAL_DEVICE_UNSUPPORTED` (bucket `unsafe_refused`), so an agent can
-explain *why* instead of reporting a bare "no device". The refusal is server-side policy. A client
-cannot opt in by passing a flag. This page describes the current behavior and what support would
-need.
+Simulators. A physical device is visible to Swipium, but Swipium never installs on it, launches on it
+or drives it. The policy is server-side; a client cannot opt in by passing a flag. This page
+describes the current behavior and what support would need.
+
+## The refusal rule
+
+A connected phone does not stop a run by itself:
+
+- **An emulator or simulator is viable** (one is online, or an AVD or simulator can be booted):
+  Swipium picks it, and the plan's `reason` mentions that the phone is visible but out of scope.
+- **The phone is the only option, or it is requested** (its serial passed as `device`, or
+  `preferRealDevice: true` while a phone is visible): the call fails with
+  `PHYSICAL_DEVICE_UNSUPPORTED` (bucket `unsafe_refused`), so the agent can explain *why* instead
+  of reporting a bare "no device". A viable emulator or simulator, if any, is offered as the
+  alternative.
 
 ## Current behavior
 
 | Path | What happens with a physical device |
 | --- | --- |
-| `qa_resolve_target` | Lists it but never selects it. If it is the only candidate, or is requested with `device`, the plan is blocked with `PHYSICAL_DEVICE_UNSUPPORTED` and a viable emulator or simulator is offered as the alternative. `preferRealDevice:true` always returns the refusal. |
-| `qa_test_this` | Refuses `preferRealDevice:true`, an explicit physical `device` serial, and iOS artifacts that only install on real hardware (device-only `.ipa` or `.app` builds). |
-| `qa_prepare_target` | Refuses a physical serial before anything is installed or launched. When it boots an emulator, it binds only a serial that was not online before the boot, so a phone that happens to be plugged in is never picked up. |
-| Device auto-attach (any tool that needs a device) | Before binding the single online device, Swipium probes it. A physical device is refused, a still-booting emulator returns `DEVICE_NOT_READY`, and a device whose properties cannot be read (offline or unauthorized) is not bound. |
+| `qa_resolve_target` | Lists it but never selects it. It follows the refusal rule above: an emulator is chosen when one is viable, and `PHYSICAL_DEVICE_UNSUPPORTED` is returned when the phone is the only candidate, is passed as `device`, or `preferRealDevice: true` is set while it is visible. |
+| `qa_test_this` | Follows the same rule, and also refuses `preferRealDevice: true` whether or not a phone is visible, and iOS artifacts that only install on real hardware (device-only `.ipa` or `.app` builds). |
+| `qa_prepare_target` | Refuses a physical serial passed as `device`, or a phone that is the only online device, before anything is installed or launched. With a phone and an emulator online and no `device`, it returns `MULTIPLE_DEVICES`. When it boots an emulator, it binds only a serial that was not online before the boot, so a phone that happens to be plugged in is never picked up. |
+| Device auto-attach (any tool that needs a device) | Only a single online device is bound automatically, and Swipium probes it first. A physical device is refused, a still-booting emulator returns `DEVICE_NOT_READY`, and a device whose properties cannot be read (offline or unauthorized) is not bound. |
 | iOS | Swipium enumerates simulators only, through `xcrun simctl`. Real iPhones and iPads are never listed or targeted. |
 
 ## How Android emulators are recognized

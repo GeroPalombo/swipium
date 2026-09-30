@@ -1,4 +1,4 @@
-// Mobile app discovery for low-context roots (Developer 1, roadmap §3.1 / §3.7). When a developer
+// Mobile app discovery for low-context roots (Developer 1). When a developer
 // or agent points Swipium at a monorepo root, a parent directory, or any folder that is not itself
 // a mobile app, this locates the candidate app(s) so `qa_test_this` can either proceed with the one
 // strong candidate (recording a workaround) or ask ONE disambiguation question — instead of failing

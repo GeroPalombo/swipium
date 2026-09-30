@@ -1,5 +1,5 @@
-// qa_suite_* — the MCP surface for the persistent, project-level QA test-case suite
-// (SWIPIUM-REQ-06). These query, update, generate, export, and lint the canonical suite under
+// qa_suite_* — the MCP surface for the persistent, project-level QA test-case suite.
+// These query, update, generate, export, and lint the canonical suite under
 // `.swipium/test-suite.json` independently of per-run asset generation (qa_generate). All
 // persistence + merge logic lives in src/testSuite/* (pure); these tools resolve a root/session,
 // call that layer, and surface the result. Time is read once per call here (the pure layer never

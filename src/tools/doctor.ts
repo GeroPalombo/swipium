@@ -1,4 +1,4 @@
-// qa_doctor — proactive environment self-diagnosis (DESIGN §3, §7). Run first.
+// qa_doctor — proactive environment self-diagnosis. Run first.
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';

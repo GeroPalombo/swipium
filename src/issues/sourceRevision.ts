@@ -1,4 +1,4 @@
-// SWIPIUM Issue Log — source revision resolution (SWIPIUM-REQ-07 "Source revision").
+// SWIPIUM Issue Log — source revision resolution.
 //
 // Fix attribution is strongest when issues link to a commit/release. But Swipium intentionally does
 // NOT execute Git in spawned providers. So we resolve a SourceRevision in priority order WITHOUT

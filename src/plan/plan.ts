@@ -126,7 +126,7 @@ export function buildPlan(i: PlanInput): Plan {
   }
 
   // Fixtures that declare an unmet requiredState surface as blocked workflows so "no saved
-  // flight to delete" reads as setup guidance, not a failure (DESIGN §6 / qa_note semantics).
+  // flight to delete" reads as setup guidance, not a failure (qa_note semantics).
   for (const f of i.fixtures) {
     if (f.requiredState && !LOGIN_FIXTURE.test(f.name) && !f.testAccount) {
       blocked.push({

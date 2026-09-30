@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-08 — evidence + observation helpers for the executable mobile audit.
+// Evidence + observation helpers for the executable mobile audit.
 //
 // Thin wrappers over the Driver + SessionStore so audit checks can capture a screenshot, read the
 // current screen's visible text, and run a health check without each check duplicating that plumbing.

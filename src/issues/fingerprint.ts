@@ -1,4 +1,4 @@
-// SWIPIUM Issue Log — stable fingerprinting (SWIPIUM-REQ-07 "Fingerprinting Rules").
+// SWIPIUM Issue Log — stable fingerprinting.
 //
 // A fingerprint must be STABLE across sessions, timestamps, artifact paths, and random ids, but
 // SPECIFIC enough not to merge unrelated defects. We build a normalized token list from the

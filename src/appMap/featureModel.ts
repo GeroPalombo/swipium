@@ -1,4 +1,4 @@
-// Feature-NODE inference (SWIPIUM-REQ-01 FeatureNode). Complements featureIndex.ts (the lightweight
+// Feature-NODE inference (FeatureNode). Complements featureIndex.ts (the lightweight
 // code symbol/route index): this maps the static topology + library signals into candidate
 // FeatureNodes for the AppKnowledgeMap. Inference is conservative — a feature backed by a single
 // weak signal is a HYPOTHESIS, not a fact (Non-Goals § "Do not treat low-confidence feature

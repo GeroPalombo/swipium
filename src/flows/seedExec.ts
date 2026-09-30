@@ -1,4 +1,4 @@
-// Shared seed executor (NEXT-PLAN: Seeded State + Flow V2). The raw, no-consent execution of a
+// Shared seed executor (Seeded State + Flow V2). The raw, no-consent execution of a
 // fixture seed (deeplink / script / api), used by flow
 // runner's `seed` step (a flow is the author's explicit consent surface). It performs the action,
 // persists a redacted artifact for scripts, logs the env change on success, and returns a result —

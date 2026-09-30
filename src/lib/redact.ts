@@ -1,4 +1,4 @@
-// Sensitive-mode redaction (DESIGN §9.7, M6). Two mechanisms:
+// Sensitive-mode redaction. Two mechanisms:
 //  1. isSecureNode → a field whose VALUE must never be shown (password/OTP/etc.).
 //  2. makeRedactor → scrub known secret values (things typed into secure fields) from any
 //     string we emit (snapshots, inspect, report, dump-xml artifacts, logs).
@@ -20,7 +20,7 @@ export type Redactor = ((s?: string) => string | undefined) & {
 export const REDACTED = '«redacted»';
 
 /** Values of at least this length are scrubbed as plain SUBSTRINGS (catches a password embedded
- * in a URL, argv or JSON blob). SWIP-13 floor: anything shorter matches ordinary text everywhere. */
+ * in a URL, argv or JSON blob). Floor: anything shorter matches ordinary text everywhere. */
 export const SUBSTRING_REDACTION_MIN = 4;
 /** Digit-only values shorter than this (PINs, OTPs, CVVs) are scrubbed as whole TOKENS instead:
  * a 4-digit PIN "2026" must not blank the year inside "20260928" or a build number. */

@@ -1,4 +1,4 @@
-// Ground-truth gathering for feature scope (SWIPIUM-REQ-03 "Feature Scope Model" sources). Reads the
+// Ground-truth gathering for feature scope. Reads the
 // durable, on-disk Swipium artifacts so the pure scope ranker has runtime screens + existing tests to
 // search: the latest exploration screen graph (runtime nodes) and authored flows / generated test
 // cases. Best-effort and defensive — a malformed file is skipped, never fatal.

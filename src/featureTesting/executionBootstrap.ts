@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-03 Fix Group 4 — bootstrap a prepared device session for qa_test_feature execute/
+// Bootstrap a prepared device session for qa_test_feature execute/
 // interactive when no prepared session exists. Reuses the SAME resolver/planner/prepare path as
 // qa_test_this (resolveArtifact → planTarget → prepareAndroid/prepareIos), with the SAME consent
 // gate so the high-level feature tool is never less safe than the lower-level prepare tools. When a

@@ -1,4 +1,4 @@
-// Provenance + confidence helpers (SWIPIUM-REQ-01). Every fact in the app map must be traceable
+// Provenance + confidence helpers. Every fact in the app map must be traceable
 // to a source (code scan, app config, runtime, ticket, user note, test case, report) and carry a
 // confidence with machine-readable reason codes. These pure helpers keep that bookkeeping uniform.
 

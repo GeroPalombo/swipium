@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-02 — auth/create-account reasoning across screens. Given a classified auth screen and
+// Auth/create-account reasoning across screens. Given a classified auth screen and
 // the per-field input plans, decide the intent (login vs. create-account) and assemble the ordered
 // actions: fill every required field, then tap the matching submit control. PURE.
 

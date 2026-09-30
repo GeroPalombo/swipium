@@ -1,4 +1,4 @@
-// qa_resolve_artifact (roadmap §4.2) — find the best installable build for the project, wherever
+// qa_resolve_artifact — find the best installable build for the project, wherever
 // it lives, and explain exactly where Swipium looked. Wraps src/artifacts/resolve.ts and returns
 // a typed NO_BUILD_ARTIFACT / AAB_NEEDS_BUNDLETOOL / outside-root blocker instead of guessing.
 

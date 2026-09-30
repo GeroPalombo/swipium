@@ -43,7 +43,8 @@ The agent may follow instructions planted in a web page, an issue, the app's own
 MCP server's tool description. It then tries to run a destructive or exfiltrating action through
 Swipium.
 
-- **Consent state machine** (`src/consent/consent.ts`). Every privileged action returns a
+- **Consent state machine** (`src/consent/consent.ts`; the user-facing flow is in
+  [docs/concepts.md](docs/concepts.md#consent)). Every privileged action returns a
   consent challenge instead of running. This covers builds from source, starting Metro, booting
   emulators and simulators, every app install (including APKs inside the project), data wipes,
   seeds and state profiles, recordings, network changes, OCR, and non-loopback WDA. Each challenge
@@ -123,9 +124,12 @@ The app under test, or a server it talks to, shows text designed to steer the ag
   must match the package-name grammar, and are checked before they reach `adb shell` (`INVALID_ARGUMENT`
   otherwise). Values passed to the device shell, such as the app id, component, deep links and
   launch extras, are single-quoted so `&`, `;` and quotes stay literal.
-- **Secure screens**. Visual text and diff operations are withheld when a password, OTP or payment
-  field is on screen, unless the call passes `force:true`. Screenshots taken while a secure field is
-  visible carry a warning.
+- **Secure screens** (`src/tools/screenshot.ts`, `src/tools/visual.ts`). When the latest UI tree
+  shows a secure field (password, OTP, PIN), `qa_screenshot` and `qa_visual` refuse the capture with
+  `CAPTURE_WITHHELD_SECURE` unless the call passes `force:true`. A forced capture succeeds with a
+  warning and `sensitiveForced: true`, because the pixels are not redacted. When no fresh UI tree is
+  available, `qa_visual` withholds OCR text that reads like a credential screen, and refuses to save
+  a baseline in a session that has handled credentials, again unless `force:true`.
 
 ### 4. Other local users and processes
 
@@ -142,6 +146,10 @@ The app under test, or a server it talks to, shows text designed to steer the ag
   `/status`, are adopted instead of killed.
 
 ## Secret handling and redaction
+
+How secrets are registered and supplied is described in
+[docs/concepts.md](docs/concepts.md#secrets-and-redaction). This section lists the controls and
+their limits.
 
 - **Registration**. Values typed into secure fields, secrets supplied through
   `qa_continue_from_blocker`, secret flow variables, and fixture values read from `SWIPIUM_*`
@@ -213,9 +221,10 @@ The app under test, or a server it talks to, shows text designed to steer the ag
 Swipium is simulator- and emulator-local. The following are intentionally out of scope until each
 has its own design and an extension to this document:
 
-- **Physical devices**. They are visible but refused with `PHYSICAL_DEVICE_UNSUPPORTED`
-  everywhere, including device auto-attach and target preparation. See
-  `docs/physical-devices.md`.
+- **Physical devices**. Swipium never acts on one. Target planning picks an emulator or simulator
+  when one is viable, and returns `PHYSICAL_DEVICE_UNSUPPORTED` when a phone is the only option or
+  is explicitly requested. Device auto-attach and target preparation refuse a phone the same way.
+  See `docs/physical-devices.md`.
 - Remote or HTTP transport, authentication, and multi-tenant operation.
 - Integrations that send data off the machine, such as issue trackers or hosted CI back ends.
 - Remote AI vision that sends screenshots to a third-party service by default. OCR and masking use

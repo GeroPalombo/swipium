@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-08 — executable mobile-audit result model + release-impact rollup.
+// Executable mobile-audit result model + release-impact rollup.
 
 import {
   combineReleaseImpact,

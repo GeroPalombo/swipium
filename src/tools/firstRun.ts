@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-02 — first-run MCP tool (1.5.0 consolidation: the former plan/continue
+// First-run MCP tool (1.5.0 consolidation: the former plan/continue
 // twins are one qa_first_run with a mode enum).
 //   mode:"plan"      read-only: classify the current screen + return the safe plan (no acting).
 //   mode:"continue"  execute one bounded step or a bounded first-run sequence (until-driven).

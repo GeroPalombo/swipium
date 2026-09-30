@@ -541,7 +541,7 @@ export class WdaDriver implements Driver {
   adbReverseMetro(): Promise<void> {
     return this.no('dev-server port reverse');
   }
-  // SWIP-17: size in points via GET /window/size instead of dumping the entire page source.
+  // Size in points via GET /window/size instead of dumping the entire page source.
   // Cached per WDA session (a new session naturally misses it) WITHOUT a per-call /orientation
   // round trip: the cache is dropped when a page source shows the axes swapped (rotation), when
   // Swipium changes the orientation (invalidateScreenSizeCache epoch), and after
@@ -628,7 +628,7 @@ export class WdaDriver implements Driver {
     });
   }
 
-  // SWIP-03: real secure-field signal for native-selector typing — resolve the element and
+  // Real secure-field signal for native-selector typing — resolve the element and
   // read its `type` attribute (XCUIElementTypeSecureTextField), accepting a boolean `secure`
   // attribute where a WDA build exposes one instead.
   async isSecureBySelector(using: NativeSelectorStrategy, value: string): Promise<boolean> {

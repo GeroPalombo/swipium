@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-08 — executable mobile-audit runner. Orchestrates the existing driver capabilities
+// Executable mobile-audit runner. Orchestrates the existing driver capabilities
 // (health, snapshot, network, first-run, guided exploration) into a profile-based audit that
 // produces honest, evidence-backed check results and records issue-ledger entries. It NEVER claims
 // a check passed without observed evidence, never purchases / bypasses OTP / deletes real accounts,
@@ -322,7 +322,7 @@ async function runAccountCycle(
   if (createResult.status === 'pass') {
     // Controlled logout: find + tap a logout control (disposable account only) and READ the resulting
     // logged-out auth surface immediately — without a full exploration that would auto-re-login via the
-    // stored generated credentials and hide the forgot-password entrypoint (REQ-08 account-cycle bug).
+    // stored generated credentials and hide the forgot-password entrypoint (account-cycle bug).
     const ev: AuditEvidenceCtx = { sessions, session, driver, appId: session.appId };
     let loggedOutText = '';
     try {

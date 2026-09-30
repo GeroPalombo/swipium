@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-04 — package/dependency patch computation. Pure: computes WHAT would need to change
+// Package/dependency patch computation. Pure: computes WHAT would need to change
 // in the user's package.json / requirements to run a project-native suite, WITHOUT mutating anything.
 // Per the non-goals, Swipium never silently installs deps or edits package.json/pyproject.toml
 // outside .swipium — this just describes the diff so the tool can request explicit consent.

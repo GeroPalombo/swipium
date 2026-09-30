@@ -1,4 +1,4 @@
-// Shared screen-relative gesture geometry (SWIP-02). qa_act and the flow runner derive
+// Shared screen-relative gesture geometry. qa_act and the flow runner derive
 // swipe/scroll vectors the SAME way: anchored as fractions of the real screen size and
 // clamped on-screen, with fixed legacy coordinates ONLY as the fallback when the driver
 // cannot report a size. WDA swipes are in POINTS (a modern iPhone is ≤~440pt wide), so any
@@ -68,7 +68,7 @@ export function swipeVector(
 
 /** Swipe starting at an explicit point (a resolved qa_act target). The start is used
  * VERBATIM — it is a real element the caller asked to swipe from, and 0 is a legitimate
- * coordinate (SWIP-08) — while the derived end point is clamped on-screen. */
+ * coordinate — while the derived end point is clamped on-screen. */
 export function swipeFromPoint(
   size: { width: number; height: number } | null,
   from: { x: number; y: number },

@@ -1,4 +1,4 @@
-// Canonical-case generator (SWIPIUM-REQ-06 "qa_suite_generate" + integration hooks). PURE:
+// Canonical-case generator (qa_suite_generate + integration hooks). PURE:
 // turns a generated POM, the session's observed outcomes (notes), declared fixtures, and guided
 // exploration coverage into CanonicalTestCase candidates with a blank id (`''`) — merge.ts assigns a
 // stable id and dedupes. Mirrors src/suite/testcase.ts's intent vs. actual discipline but emits the

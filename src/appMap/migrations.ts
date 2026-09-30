@@ -1,5 +1,5 @@
-// Schema migration + versioning for long-lived project QA knowledge (SWIPIUM-REQ-01 "No schema
-// migration/versioning exists" gap). Loading a map ALWAYS routes through migrate(): an unknown or
+// Schema migration + versioning for long-lived project QA knowledge, so an app map
+// written by an older Swipium keeps working. Loading a map ALWAYS routes through migrate(): an unknown or
 // older shape is normalized to APP_MAP_SCHEMA_VERSION, filling any newly-added fields with safe
 // defaults so a map written by an older Swipium keeps working. Acceptance: "Map schema migration
 // tests cover at least v1 -> latest."

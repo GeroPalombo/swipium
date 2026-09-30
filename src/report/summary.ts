@@ -1,4 +1,4 @@
-// Release assessment (PHASE3-PLAN §3.5 Report 2.0) — turn the accumulated health + outcomes
+// Release assessment (Report 2.0) — turn the accumulated health + outcomes
 // into a single verdict a non-QA developer can act on: ship | caution | block, with reasons
 // and the one most important next action. Pure + deterministic so it's unit-testable.
 

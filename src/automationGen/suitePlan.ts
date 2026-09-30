@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-04 — suite-generation plan. Pure: assembles the read-only plan behind
+// Suite-generation plan. Pure: assembles the read-only plan behind
 // the qa_generate target:"appium" plan from the project profile + (optional) Appium model. No device, no writes.
 // Honest about prerequisites (map/recorded actions) and locator readiness.
 
@@ -40,7 +40,7 @@ export interface AutomationSuitePlan {
   nextAction: string;
 }
 
-/** .swipium/automation/<dir> — js for TS/JS, python for Python (matches REQ-04 layout). */
+/** .swipium/automation/<dir> — js for TS/JS, python for Python (the generated-suite layout). */
 export function outputDirFor(language: AutomationLanguage): string {
   return `.swipium/automation/${language === 'python' ? 'python' : 'js'}`;
 }

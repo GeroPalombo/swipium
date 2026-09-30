@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-08 — derive compact app-map issue summaries from the durable issue ledger.
+// Derive compact app-map issue summaries from the durable issue ledger.
 //
 // The issue ledger (`.swipium/issues-log.jsonl`) stays the source of truth. This module reads the
 // issue index + events and attaches a small `AppMapIssueSummary` to the screens/features an issue is
@@ -76,7 +76,7 @@ export function buildAppMapIssueSummary(records: IssueRecord[], now: string): Ap
 }
 
 /**
- * Build per-issue screen/feature associations from the event log (mapping rules in REQ-08 order):
+ * Build per-issue screen/feature associations from the event log (mapping rules in order):
  *   1. explicit links.appMapRefs (screenId/featureId)
  *   2. observation.screenId matching a runtime/static screen id
  *   3. observation.screenPurpose matching a runtime screen purpose
@@ -128,7 +128,7 @@ export function issueAssociations(root: string, map: AppKnowledgeMap): Map<strin
 
   // 4. observation.workflow → test-suite case → feature. Read the persistent suite's COMPACT issue
   // links (issue id + featureId only — never case history) so an issue attached only to a test case
-  // still shows up on the owning feature's summary (REQ-08 follow-up).
+  // still shows up on the owning feature's summary.
   try {
     const suite = loadSuite(root, map.appIdentity?.androidPackage ?? undefined);
     for (const c of suite.cases) {

@@ -1,4 +1,4 @@
-// Session + job + artifact store with DISK PERSISTENCE (DESIGN §3, M6).
+// Session + job + artifact store with DISK PERSISTENCE.
 // Live, non-serializable bits (driver, lastSnapshot, abort controllers) stay in memory;
 // a serializable subset is written to <sessionDir>/state.json on mutation (debounced;
 // synchronous for the mutation ledger + session creation + shutdown flush), and a small
@@ -106,7 +106,7 @@ export interface FindingRecord {
   evidence?: string; // the visible on-screen text that matched
   screen?: string; // source screen (foreground owner) when the finding fired
   screenshotUri?: string; // evidence screenshot, when captured
-  failureCode?: string; // typed failure class (PHASE3-PLAN §4.3); else derived from kind in qa_report
+  failureCode?: string; // typed failure class; else derived from kind in qa_report
 }
 
 // Phase 2.2: a structured test outcome the agent records via qa_note — distinguishes a real
@@ -127,14 +127,14 @@ export interface TestNote {
   recommendedSetup?: string;
   artifactUris?: string[];
   verifiedVisually?: boolean; // Phase 2.2: passed via screenshot evidence (animated/canvas screen)
-  method?: 'visual' | 'ocr' | 'structured'; // PHASE3-PLAN §8 — how the assertion was verified
+  method?: 'visual' | 'ocr' | 'structured'; // How the assertion was verified
   evidenceKind?: TestEvidenceKind;
   confidence?: number;
   minConfidence?: number;
   decision?: string;
 }
 
-// Action IR (DESIGN §8 / PHASE3-PLAN §4.1): qa_act appends a tagged step here as the agent
+// Action IR: qa_act appends a tagged step here as the agent
 // explores, so a successful run can be serialized into a durable flow (qa_generate target:"flow"). The
 // exportability tag drives the durability grade: semantic (text/id) replays anywhere;
 // coordinate is brittle; needs-human-data is a credential that must become a ${VAR}.
@@ -194,7 +194,7 @@ export interface ToolErrorRecord {
 // Phase 2.2 P1.4: a declared test precondition / fixture. Swipium does NOT mutate app state;
 // it surfaces what a workflow needs so an unmet precondition reads as "blocked + setup guidance"
 // rather than a failure. Loaded from qa_start_session { fixtures } and/or .swipium/fixtures.json.
-// Phase 9 (PHASE3-PLAN §4.4): an OPT-IN, consent-gated seed spec that turns a declared
+// Phase 9: an OPT-IN, consent-gated seed spec that turns a declared
 // precondition into one Swipium can actually create. Mutating; runs only on explicit consent.
 export interface FixtureSeedAction {
   type: 'deeplink' | 'script' | 'api';
@@ -261,7 +261,7 @@ export interface GeneratedValueRecord {
   artifactUri?: string;
 }
 
-// Security model (REQ-02): raw secret values (generated passwords/OTPs/tokens) must never touch
+// Security model: raw secret values (generated passwords/OTPs/tokens) must never touch
 // disk. In memory we keep the raw value (for same-session reuse via inputValues), but the
 // serialized form sent to state.json redacts secret values while preserving all reproducibility
 // metadata (varName/field/generator/secret/artifactUri/timestamps). Non-secret generated values
@@ -381,11 +381,11 @@ export interface Session {
   /** The ORIGINAL qa_test_this arguments of this session's last run (goal, goalText, flags), so a
    *  resume / re-run can replay the user's intent. Persisted (secret values redacted) + rehydrated. */
   lastTestThisArgs?: TestThisArgsRecord;
-  workarounds: string[]; // resourcefulness trail (roadmap §11): safe fallbacks Swipium tried (visual fallback, build-from-source, pre-login) — surfaced in qa_report
+  workarounds: string[]; // resourcefulness trail: safe fallbacks Swipium tried (visual fallback, build-from-source, pre-login) — surfaced in qa_report
   exploration?: ExplorationRecord; // last guided-exploration result (Phase 3.3) — surfaced in qa_report
   mode: SessionMode; // structured (uiautomator) vs visual-fallback (screenshots)
-  responseMode: ResponseMode; // compact | normal | verbose — shrinks the text channel (PHASE3-PLAN §2.1)
-  sensitive: boolean; // NEXT-PLAN: when true, refuse screenshots/video/logcat (no pixels/logs leave the device)
+  responseMode: ResponseMode; // compact | normal | verbose — shrinks the text channel
+  sensitive: boolean; // When true, refuse screenshots/video/logcat (no pixels/logs leave the device)
   budget: Budget;
   counters: Counters;
   screenshotCount: number;
@@ -394,14 +394,14 @@ export interface Session {
   findings: FindingRecord[];
   notes: TestNote[]; // structured test outcomes (qa_note) — Phase 2.2
   mutations: MutationRecord[]; // central mutation ledger for consent-bound side effects
-  recordedActions: RecordedAction[]; // action IR for qa_generate target:"flow" (PHASE3-PLAN §4.1)
+  recordedActions: RecordedAction[]; // action IR for qa_generate target:"flow"
   toolErrors?: ToolErrorRecord[]; // tool calls that returned an error (bounded) — qa_report tool status
   fixtures: Fixture[]; // declared preconditions — Phase 2.2 P1.4
   auth: AuthState; // observed auth state — Phase 2.2 P1.5
   milestones: Record<string, number>; // phase timing markers — Phase 2.2 P1.6
   budgetProfile?: string; // chosen budget class, if any
   secrets: Set<string>; // values typed into secure fields → redacted everywhere (not persisted)
-  // SWIP-13: true on rehydrated sessions whose persisted state shows prior secret-bearing
+  // True on rehydrated sessions whose persisted state shows prior secret-bearing
   // activity — secrets are (deliberately) never persisted, so after a restart the redaction
   // set is empty and NEW artifacts are no longer scrubbed. Disclosed in qa_report; recomputed
   // on every reload, never written to state.json.
@@ -797,7 +797,7 @@ export class SessionStore {
     s.envChanges.push(`${new Date().toISOString()} ${note}`);
     this.persist(s);
   }
-  /** Record a safe fallback Swipium chose (roadmap §11 "workarounds attempted"). De-duped. */
+  /** Record a safe fallback Swipium chose. De-duped. */
   addWorkaround(s: Session, note: string): void {
     if (!s.workarounds.includes(note)) {
       s.workarounds.push(note);
@@ -999,7 +999,7 @@ export class SessionStore {
             }
             st.metroPid = undefined; // reaped, gone, recycled, or another live server's — never ours
           }
-          // SWIP-13: raw secret values never touch disk, so a rehydrated session cannot rebuild
+          // Raw secret values never touch disk, so a rehydrated session cannot rebuild
           // its redaction set. If the persisted state shows prior secret-bearing activity
           // (secret inputs, secret generated values, or a performed login), flag the session so
           // qa_report discloses that artifacts written after the restart are no longer scrubbed.

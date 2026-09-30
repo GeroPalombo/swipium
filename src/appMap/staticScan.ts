@@ -1,4 +1,4 @@
-// Framework-aware STATIC scanner (SWIPIUM-REQ-01). Additive + confidence-based: it never fails a
+// Framework-aware STATIC scanner. Additive + confidence-based: it never fails a
 // run because one framework can't be parsed — parser problems are recorded in `parserNotes` and
 // surface as reduced confidence. For JS/TS the TypeScript compiler API (Vision Gap Fix 10) is the
 // PRIMARY parser — it resolves route-constant references, navigator <Stack.Screen> declarations, and

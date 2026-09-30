@@ -1,4 +1,4 @@
-// Feature test plan (SWIPIUM-REQ-03, served by qa_test_feature mode:"plan"). PURE. Read-only plan
+// Feature test plan (served by qa_test_feature mode:"plan"). PURE. Read-only plan
 // generation: it assembles the scope, objective, generated cases, required fixtures, risks,
 // automation readiness, and the EXACT ordered execution plan an agent (or qa_test_feature) would
 // run. Useful before execution and for PR review.

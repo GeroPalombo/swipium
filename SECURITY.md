@@ -43,7 +43,8 @@ describes the full model, including its residual risks. In short:
 
 - **Consent for privileged actions.** Builds, Metro, emulator and simulator boots, app installs,
   data wipes, seeds, recordings, network changes, OCR and non-loopback WebDriverAgent all need
-  consent. Each consent is single-use and bound to the exact action, target and session.
+  consent. Each consent is single-use, bound to the exact action, target and session, and expires
+  after 30 minutes. See [docs/concepts.md](docs/concepts.md#consent).
 - **Real user prompts where possible.** If your MCP client supports elicitation, Swipium asks you
   directly, and only an explicit approval runs the action. On other clients the agent relays the
   approval. Set `SWIPIUM_REQUIRE_ELICITATION=1` to refuse every consent-gated action unless the
@@ -55,12 +56,14 @@ describes the full model, including its residual risks. In short:
   accidents. It is not a sandbox.
 - **Redaction.** Registered secrets of 3 or more characters are redacted from text artifacts,
   reports, state and generated code. Shorter ones are not, and the artifact is marked
-  `redaction: "partial"`. Screenshots and recordings are pixels and are never redacted. Use
-  sensitive mode (`qa_start_session { sensitive: true }`) to refuse all pixel and log capture.
+  `redaction: "partial"`. Screenshots and recordings are pixels and are never redacted, so a
+  screenshot with a secure field on screen is refused (`CAPTURE_WITHHELD_SECURE`) unless the call
+  passes `force: true`. Use sensitive mode (`qa_start_session { sensitive: true }`) to refuse all
+  pixel and log capture. See [docs/concepts.md](docs/concepts.md#secrets-and-redaction).
 - **Local only.** Session data lives under `~/.swipium/runs/` with owner-only permissions on POSIX.
   Swipium opens no network listener.
-- **No physical devices.** They are refused with `PHYSICAL_DEVICE_UNSUPPORTED`. See
-  `docs/physical-devices.md`.
+- **No physical devices.** Swipium never acts on a phone. When a phone is the only option or is
+  explicitly requested, it returns `PHYSICAL_DEVICE_UNSUPPORTED`. See `docs/physical-devices.md`.
 
 ## Handling sensitive data
 

@@ -1,4 +1,4 @@
-// State-profile mutation metadata (SWIP-14: extracted from the retired qa_state_* tool module).
+// State-profile mutation metadata (extracted from the retired qa_state_* tool module).
 // Computes the consent `affects` payload, mutation detection, and risk grade for applying a
 // .swipium/state/*.yaml profile — used by the qa_suite_* replay path (src/tools/suite.ts) to
 // gate state-profile mutations exactly like the original tools did.

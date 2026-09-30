@@ -1,4 +1,4 @@
-// SWIPIUM Issue Log — persistence (SWIPIUM-REQ-07 "New storage").
+// SWIPIUM Issue Log — persistence.
 //
 // `.swipium/issues-log.jsonl`   — canonical, append-only event ledger. NEVER pruned by default.
 // `.swipium/issues/index.json`  — derived cache, rebuildable from the log if deleted/corrupt.
@@ -14,7 +14,7 @@
 // log's size/mtime it was derived from — a cache whose stamp no longer matches the log (another
 // process appended) is rebuilt instead of trusted.
 
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ensureGitignored } from '../lib/gitignore.js';
@@ -40,12 +40,6 @@ export function issuesPolicyPath(root: string): string {
 }
 export function issuesArtifactsDir(root: string): string {
   return join(issuesDir(root), 'artifacts');
-}
-export function issuesProjectId(root: string): string {
-  return createHash('sha256').update(root).digest('hex').slice(0, 16);
-}
-export function issuesResourceUri(root: string): string {
-  return `swipium://project/${issuesProjectId(root)}/issues`;
 }
 
 /** The on-disk policy file (`.swipium/issues/policy.json`). */
@@ -175,7 +169,7 @@ export function saveIndex(
   root: string,
   index: IssueIndex,
   stamp: { logSize: number; logMtimeMs: number } | null = logStamp(root),
-): { path: string; resourceUri: string } {
+): { path: string } {
   mkdirSync(issuesDir(root), { recursive: true });
   ensureGitignored(root);
   const path = issuesIndexPath(root);
@@ -184,7 +178,7 @@ export function saveIndex(
   const tmp = `${path}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
   writeFileSync(tmp, JSON.stringify(index, null, 2));
   renameSync(tmp, path);
-  return { path, resourceUri: issuesResourceUri(root) };
+  return { path };
 }
 
 /** Load the index from disk; null when absent/corrupt/stale versus the log (caller should rebuild). */

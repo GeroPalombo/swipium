@@ -1,4 +1,4 @@
-// Linter for the persistent suite (SWIPIUM-REQ-06 "qa_suite_lint"). PURE. Catches the failure
+// Linter for the persistent suite. PURE. Catches the failure
 // modes that make a maintained suite untrustworthy: missing expected/actual results, unlinked or
 // stale map links, duplicate ids, brittle automation above threshold, and — most importantly —
 // `adversarial` cases that lack the safety metadata Swipium requires before it will ever run them.

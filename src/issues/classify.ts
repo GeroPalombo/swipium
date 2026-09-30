@@ -1,4 +1,4 @@
-// SWIPIUM Issue Log — policy-trained issue classifier (SWIPIUM-REQ-07 "Classifier Rules").
+// SWIPIUM Issue Log — policy-trained issue classifier.
 //
 // Runs AFTER raw health/log extraction and BEFORE report rendering. Turns a normalized observation
 // into a category + severity + owner + release impact, distinguishing real product defects from

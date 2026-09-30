@@ -1,4 +1,4 @@
-// qa_test_this (roadmap §3.1) — the "just test this" entry point. A DETERMINISTIC orchestration
+// qa_test_this — the "just test this" entry point. A DETERMINISTIC orchestration
 // state machine so a first run does not depend on the agent's skill or token budget. It resolves
 // the project, finds (or plans a build for) an artifact, picks a target, and returns an ordered
 // plan with the EXACT next tool call to make — or a typed blocker / one concise NeedsInput
@@ -38,7 +38,9 @@ export function registerTestThis(server: McpServer, sessions: SessionStore): voi
         goal: z
           .enum(['smoke', 'explore', 'create_automation_suite', 'release_gate', 'test_login', 'reproduce_bug'])
           .optional()
-          .describe('Intent (default smoke); sets explore/generateSuite/stopOnNeedsInput defaults. Explicit flags win.'),
+          .describe(
+            'Intent. Omitted: smoke, then tries a suite; "smoke" is fastest. Sets explore/generateSuite/stopOnNeedsInput; flags win.',
+          ),
         goalText: z.string().optional().describe('reproduce_bug: the bug/flow to focus on.'),
         fastSmoke: z.boolean().optional().describe('Just launch + smoke; skip suite generation (ignored with goal/generateSuite).'),
         platform: z.enum(['android', 'ios']).optional().describe('Force a platform (default inferred).'),

@@ -1,4 +1,4 @@
-// qa_act — the single consolidated action tool (DESIGN §3 locked schema).
+// qa_act — the single consolidated action tool (locked schema).
 // Resolves a target (ref | selector | coords), performs the action, waits for the screen
 // to settle, then returns the post-action snapshot + a deterministic health check. So one
 // call both acts AND observes the result.
@@ -56,7 +56,7 @@ const nativeSelectorSchema = z.object({
   value: z.string(),
 });
 
-/** SWIP-18: after the focus tap, wait for the soft keyboard instead of a fixed sleep — poll
+/** After the focus tap, wait for the soft keyboard instead of a fixed sleep — poll
  * imeShown() in ~100ms steps up to capMs (the old sleep), proceeding as soon as it's up.
  * The tap stays a REAL touch (RN ignores synthetic focus, so tap-then-type is required);
  * backends whose imeShown() throws get the original fixed sleep. */
@@ -350,7 +350,7 @@ async function guardKeyboard(
   };
 }
 
-// OPP-06 (per-action schema contract) feasibility note: SDK ^1.19 registerTool DOES accept an
+// Per-action schema contract feasibility note: SDK ^1.19 registerTool DOES accept an
 // arbitrary ZodType (AnySchema) as inputSchema, and validateToolInput parses unions correctly —
 // but the tools/list serializer goes through normalizeObjectSchema(), which only understands
 // plain object schemas / raw shapes and silently falls back to an EMPTY object schema for a
@@ -367,7 +367,7 @@ const REQUIRED_BY_ACTION: Partial<Record<string, readonly ('text' | 'direction' 
   open_url: ['url'],
 };
 
-/** OPP-06: the ONE cross-field validation layer — names both the action and the missing field. */
+/** The ONE cross-field validation layer — names both the action and the missing field. */
 function missingRequiredField(action: string, args: Record<string, unknown>): CallToolResult | undefined {
   for (const field of REQUIRED_BY_ACTION[action] ?? []) {
     // `text` may legitimately be '' (typing nothing in replace mode); the other fields may not.
@@ -617,7 +617,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
         let settleSeed: { xml: string; at: number } | undefined;
         // I: set when the soft keyboard was hidden because it covered the target.
         let keyboardHidden = false;
-        // OPP-07: observation mode is fixed at action start — diff needs a pre-action baseline.
+        // Observation mode is fixed at action start — diff needs a pre-action baseline.
         const observe: 'diff' | 'full' | 'none' = args.observe ?? (session.lastSnapshot ? 'diff' : 'full');
         let meta: Record<string, unknown> = {};
         // remembered so a no-change tap can be retried as a longer press (RN tap quirk)
@@ -696,7 +696,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               break;
             }
             case 'type': {
-              // presence enforced by missingRequiredField (OPP-06)
+              // presence enforced by missingRequiredField
               // P1: `${SWIPIUM_*}` placeholders expand from session inputs (qa_continue_from_blocker) or the env,
               // so credentials never have to pass through the agent transcript.
               const secretVars = new Set(session.inputs.filter((i) => i.secret).map((i) => i.varName));
@@ -750,7 +750,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
                     failureCode: 'BACKEND_UNSUPPORTED',
                     nextSteps: ['Use append mode, or attach a WDA backend that supports element clear.'],
                   });
-                // SWIP-03: this path must capture secrets exactly like the generic path below, or a
+                // This path must capture secrets exactly like the generic path below, or a
                 // password typed by native selector is recorded VERBATIM into generated flows.
                 // Heuristic first (selector value looks secret — same SECRET_RE the generic
                 // resolver applies to ids), then the real signal: probe the resolved element's
@@ -819,7 +819,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               await d.inputText(text);
               if (args.submit) await d.pressKey('enter');
               // Never echo the typed value — it may be a password/OTP/email/token and would
-              // leak into the agent transcript + artifacts (DESIGN §9.7 sensitive-mode).
+              // leak into the agent transcript + artifacts (sensitive-mode).
               const recordSecret = !!t.secure || knownSecret;
               meta = {
                 typedChars: text.length,
@@ -876,11 +876,11 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               break;
             }
             case 'swipe': {
-              const direction = args.direction!; // presence enforced by missingRequiredField (OPP-06)
-              // SWIP-02: derive the gesture from the real screen size — WDA swipes are in POINTS
+              const direction = args.direction!; // presence enforced by missingRequiredField
+              // Derive the gesture from the real screen size — WDA swipes are in POINTS
               // (≤~440pt wide), so the old fixed 540/1200 constants were off-screen on iOS; the
               // legacy constants survive only inside the shared fallback for screenSize()===null.
-              // SWIP-08: a supplied target that fails to resolve is a structured error (not a
+              // A supplied target that fails to resolve is a structured error (not a
               // silent default swipe), and a resolved point is used verbatim — 0 is a legitimate
               // coordinate. Endpoints keep an ~8% inset clear of iOS system-gesture zones.
               const size = await d.screenSize().catch(() => null);
@@ -900,10 +900,10 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
             case 'scroll': {
               const max = args.maxScrolls ?? 8;
               // scroll down = FINGER swipes up (same for the other directions where finger ==
-              // content axis). SWIP-02: screen-relative + clamped vector, size fetched once.
+              // content axis). Screen-relative + clamped vector, size fetched once.
               const finger = { down: 'up', up: 'down', left: 'left', right: 'right' } as const;
               const size = await d.screenSize().catch(() => null);
-              const dir = args.direction!; // presence enforced by missingRequiredField (OPP-06)
+              const dir = args.direction!; // presence enforced by missingRequiredField
               const u = args.untilVisible;
               // A match only counts as FOUND when its center is on screen and not under the soft
               // keyboard: a row just crossing the bottom edge is "in the tree" but a center tap on it
@@ -996,7 +996,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               break;
             }
             case 'press': {
-              const key = args.key!; // presence enforced by missingRequiredField (OPP-06)
+              const key = args.key!; // presence enforced by missingRequiredField
               await d.pressKey(key);
               meta = { key };
               // iOS has no back key: WdaDriver taps the nav-bar back button or edge-swipes — say which.
@@ -1008,7 +1008,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               break;
             }
             case 'open_url': {
-              const url = args.url!; // presence enforced by missingRequiredField (OPP-06)
+              const url = args.url!; // presence enforced by missingRequiredField
               await d.openUrl(url);
               meta = { url };
               toRecord = { action: 'open_url', url, exportability: 'semantic' };
@@ -1115,7 +1115,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
                 .join('\n')
             : '';
 
-          // OPP-07: `observe` changes ONLY the element presentation below — everything above
+          // `observe` changes ONLY the element presentation below — everything above
           // (lastSnapshot bookkeeping, press retry, health recording, counters, budget lines)
           // is identical in all modes.
           let elementPayload: Record<string, unknown> = {};

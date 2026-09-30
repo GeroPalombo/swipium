@@ -1,4 +1,4 @@
-// SWIPIUM Issue Log / Error Tracking (SWIPIUM-REQ-07). Type definitions, enums, and validation
+// SWIPIUM Issue Log / Error Tracking. Type definitions, enums, and validation
 // helpers for the durable, project-level issue ledger.
 //
 // The ledger is Swipium's mobile-QA memory: an append-only event log (`.swipium/issues-log.jsonl`)
@@ -152,11 +152,11 @@ export interface IssueEvent {
   classification?: IssueClassification;
   lifecycle?: IssueLifecyclePatch;
   links?: IssueLinks;
-  /** Relationship carried on a `linked_run` event (REQ-08): how this run relates to the issue. */
+  /** Relationship carried on a `linked_run` event: how this run relates to the issue. */
   relationship?: IssueRunRelationship;
 }
 
-/** How a run relates to an issue on a `linked_run` event (REQ-08 test-suite / audit linking). */
+/** How a run relates to an issue on a `linked_run` event (test-suite / audit linking). */
 export type IssueRunRelationship = 'observed' | 'verified_fixed' | 'regressed' | 'suppressed';
 
 /** A derived index record (one per issue), rebuildable from the event log. */
@@ -192,7 +192,7 @@ export interface IssueRecord {
   reportRefs?: ReportRef[];
   evidenceRefs?: EvidenceRef[];
   lastRecurrenceMessage?: string;
-  /** When a `verified_fixed` linked_run last confirmed the fix held (REQ-08). */
+  /** When a `verified_fixed` linked_run last confirmed the fix held. */
   lastVerifiedFixedAt?: string;
 }
 

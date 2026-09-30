@@ -254,8 +254,8 @@ async function routePendingConsent(
 }
 
 /**
- * Wrap every tool handler so it runs inside the calling session's response mode
- * (PHASE3-PLAN §2.1). Resolved once, centrally — individual tools stay mode-agnostic.
+ * Wrap every tool handler so it runs inside the calling session's response mode.
+ * Resolved once, centrally — individual tools stay mode-agnostic.
  * `compact` shrinks the text channel; `structuredContent` is always full.
  * The same wrapper also routes requiresConsent envelopes through out-of-band elicitation
  * (routePendingConsent), so every consent-gated tool inherits it with zero per-tool changes.
@@ -416,7 +416,7 @@ function installProtocolShims(server: McpServer, paramNames: ReadonlyMap<string,
   wrapRequestHandler(server, 'tools/list', (orig) => async (request, extra) => stripSchemaDialect(await orig(request, extra)));
 }
 
-/** Startup assertion (P0 §2 "silent tool-drop gate"): every registerTool() call must be
+/** Startup assertion: every registerTool() call must be
  * allowlisted in TOOL_NAMES, and every TOOL_NAMES entry must actually get registered.
  * Without this, a tool missing from the allowlist is silently discarded by the wrapper
  * above, and a stale TOOL_NAMES entry silently over-reports the surface. Fail LOUDLY. */
@@ -437,7 +437,7 @@ function assertToolSurface(attempted: ReadonlySet<string>): void {
   );
 }
 
-/** resources/list size cap (OPP-02). The SDK aggregates every template's list callback into one
+/** resources/list size cap. The SDK aggregates every template's list callback into one
  * un-paginated resources/list response, so each listing stays bounded. */
 const RESOURCE_LIST_CAP = 100;
 
@@ -582,7 +582,7 @@ export function createServer(): ServerContext {
   registerPrompts(server);
 
   // Artifacts as MCP resources (clients that support them); qa_get_artifact is the fallback.
-  // The list callback (OPP-02) lets resource-aware clients BROWSE artifacts instead of mining
+  // The list callback lets resource-aware clients BROWSE artifacts instead of mining
   // URIs out of tool text: newest RESOURCE_LIST_CAP across the sessions of the CURRENT project
   // root(s) (currentProjectRoots), straight from the in-memory ledger — no device calls.
   // Sensitive-mode sessions are never listed (their artifacts stay readable by exact URI only).
@@ -618,9 +618,9 @@ export function createServer(): ServerContext {
     },
   );
 
-  // App Knowledge Map as MCP resources (SWIPIUM-REQ-01) — full map + per-feature / per-screen /
+  // App Knowledge Map as MCP resources — full map + per-feature / per-screen /
   // test-suite sections, so large map data is read by URI instead of flooding a tool's text result.
-  // Both app-map templates list what is ACTUALLY readable right now (OPP-02): section/full URIs
+  // Both app-map templates list what is ACTUALLY readable right now: section/full URIs
   // for every project root known to this run that has a map on disk; no map → empty list, never
   // an error. Enumeration is a local JSON load (listAppMapResources), scoped to the current project
   // root(s) and cached on map mtime (makeAppMapLister) — no device calls. Listed section ids are

@@ -1,4 +1,4 @@
-// qa_smoke (PHASE3-PLAN §7.2) — server-side smoke orchestration. Runs the whole loop WITHOUT
+// qa_smoke — server-side smoke orchestration. Runs the whole loop WITHOUT
 // the model mediating each step (the context-efficiency + determinism win): launch the app,
 // run the deterministic baseline (snapshot quality + Tier-1 health + an evidence screenshot),
 // then run every saved flow (.swipium/flows/*.yaml). Records a structured qa_note per workflow

@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-02 — paywall policy. Swipium NEVER purchases. It records paywall coverage and only
+// Paywall policy. Swipium NEVER purchases. It records paywall coverage and only
 // closes/skips when there is a clearly safe visible dismiss/restore/skip path. PURE.
 
 import type { SnapshotElement } from '../drivers/Driver.js';

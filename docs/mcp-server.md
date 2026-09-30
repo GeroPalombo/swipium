@@ -9,13 +9,30 @@ JSON-RPC over its stdin and stdout. Nothing listens on the network.
 - Host OS: macOS for the iOS Simulator and Android; Linux for Android. Android on Windows is
   experimental and untested.
 - Android: platform-tools (`adb`), the Android Emulator package, and at least one AVD, usually
-  installed through Android Studio. If `adb` or `emulator` is not on `PATH`, Swipium adds the SDK
-  copy from `$ANDROID_HOME`, `$ANDROID_SDK_ROOT` or the default SDK directory
-  (`~/Library/Android/sdk`, `~/Android/Sdk`, `%LOCALAPPDATA%\Android\Sdk`). This helps GUI clients
-  that don't inherit your shell `PATH`. A copy already on `PATH` always wins.
+  installed through Android Studio. Build-tools (`aapt2`) are optional; Swipium uses them to read
+  an APK's package name and SDK level. See [How Android tools are found](#how-android-tools-are-found).
 - iOS: Xcode with an iOS Simulator runtime and at least one simulator. WebDriverAgent is needed for
   the structured UI tree, taps, typing and swipes. Visual-only checks work through `simctl` without
   it: `qa_visual` baselines and diffs, OCR `find_text`, and template `find_image`.
+
+### How Android tools are found
+
+Swipium looks for an Android SDK in `$ANDROID_HOME`, then `$ANDROID_SDK_ROOT`, then the default
+directory (`~/Library/Android/sdk` on macOS, `~/Android/Sdk` on Linux,
+`%LOCALAPPDATA%\Android\Sdk` on Windows).
+
+- **`adb`**: the copy on `PATH` is used when there is one. Otherwise Swipium appends the SDK's
+  `platform-tools` to its own `PATH` at startup. It never shadows your `adb`, because a different
+  adb version would kill the adb server you are running.
+- **`emulator`**: booting an AVD runs the SDK copy (`emulator/emulator`) first, and falls back to
+  `emulator` on `PATH` only when no SDK copy exists. Listing AVDs and the `qa_doctor` check follow
+  the `adb` rule (`PATH` first, then the SDK copy).
+- **`aapt2`**: taken from the newest version under the SDK's `build-tools`. There is no `PATH`
+  fallback.
+
+This matters for GUI-launched clients (Claude Desktop, Cursor started from the Dock), which don't
+inherit your shell `PATH`. If Swipium still can't find the tools, set `ANDROID_HOME` in the server
+`env`.
 
 ## Server command
 
@@ -32,19 +49,12 @@ instead. From a source checkout, run `npm run build` and use
 
 ## Project root
 
-Each tool call resolves the app repository in this order:
-
-1. The `projectRoot` tool argument (must be absolute).
-2. MCP roots from the client. Claude Code, Cursor and VS Code provide them.
-3. The `SWIPIUM_PROJECT_ROOT` environment variable.
-4. `CLAUDE_PROJECT_DIR`, which Claude Code sets for its stdio servers.
-5. The server's working directory, but only if it is not `/` or `$HOME` and it contains a project
-   marker: `package.json`, `app.json`, `pubspec.yaml`, Gradle files, a `Podfile`, an
-   `.xcodeproj`/`.xcworkspace`, or an `android/` or `ios/` directory.
-
-Results report where the root came from (`rootSource`). If nothing resolves, the tool fails with
-`failureCode: "PROJECT_ROOT_UNRESOLVED"`. On clients without roots or a `cwd` setting (Claude
-Desktop, Windsurf), set `SWIPIUM_PROJECT_ROOT` in the server `env`.
+Every tool call works in one app repository. Swipium takes it from the `projectRoot` argument, then
+the client's MCP roots, then `SWIPIUM_PROJECT_ROOT`, then `CLAUDE_PROJECT_DIR`, then the server's
+working directory when that looks like an app. The full rules are in
+[concepts.md](concepts.md#project-root). For client setup, the practical rule is: if your client
+neither sends MCP roots nor lets you set a `cwd` (Claude Desktop, Windsurf), set
+`SWIPIUM_PROJECT_ROOT` in the server `env`.
 
 ## Client setup
 
@@ -109,7 +119,8 @@ The `--` keeps Gemini from reading `-y` as its own flag. `init gemini` also sugg
 `"timeout": 600000` in the settings entry.
 
 Cursor (`.cursor/mcp.json`). For VS Code (`.vscode/mcp.json`), use the same entry under a top-level
-`"servers"` key instead of `"mcpServers"`:
+`"servers"` key instead of `"mcpServers"`. This is the entry `swipium init cursor` and
+`swipium init vscode` write:
 
 ```json
 {
@@ -123,6 +134,12 @@ Cursor (`.cursor/mcp.json`). For VS Code (`.vscode/mcp.json`), use the same entr
   }
 }
 ```
+
+Why the entry sets `SWIPIUM_PROJECT_ROOT` even though these editors can send MCP roots: roots come
+first in the resolution order, so when the editor sends them, Swipium uses them and ignores the
+variable. The variable is a fallback for an editor version or window that sends no roots. The editor
+replaces `${workspaceFolder}` with the open folder; if it is left unexpanded, the value is not an
+absolute path and Swipium skips it.
 
 Claude Desktop and Windsurf:
 
@@ -139,12 +156,15 @@ Claude Desktop and Windsurf:
 ```
 
 Environment variables (test credentials, OCR provider, remote WDA allowlist, elicitation policy,
-retention) are listed in the README's configuration section.
+retention) are listed in the
+[README's configuration section](../README.md#configuration--environment-variables).
 
 ## What the server exposes
 
-- **Tools**: 55, listed in [tools.md](tools.md). Every tool carries explicit MCP annotations
-  (`readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint: false`).
+- **Tools**: listed in [tools.md](tools.md). Run `swipium verify` to see the exact list and count
+  your installed version serves. Every tool carries MCP annotations: read-only tools set
+  `readOnlyHint: true` and `openWorldHint: false`, and the others also set `destructiveHint` and
+  `idempotentHint`.
 - **Server instructions**: sent on `initialize`. They give the first call
   (`qa_test_this { mode: "execute" }`), the polling loop (`qa_job_status … waitMs`), how to relay
   `needs_input`, blockers and consent, and the project-root order. `qa_status` without a
@@ -178,13 +198,10 @@ retention) are listed in the README's configuration section.
   shape (`qa_ios` `wda_*` or `screenshot` actions, `qa_wait for:"job_done"`), returns
   `STALE_CLIENT` with the replacement call and a hint to restart the client. `qa_doctor` accepts
   `expectedVersion`, `expectedToolCount` and `expectedSchemaHash` and reports a mismatch.
-- **Consent.** Privileged actions return `requiresConsent` with a `consentId` instead of running.
-  These include builds, Metro, emulator and simulator boots, every app install, data wipes, seeds,
-  recordings, network changes, OCR, mutating flow steps, writing generated Appium code into the
-  project, and non-loopback WDA. If the client supports MCP elicitation, Swipium asks the user directly, and a decline or
-  dismissal returns `CONSENT_DECLINED` or `CONSENT_CANCELLED`. Otherwise the agent shows the
-  request to the user and re-calls the same tool with `consentId` and `approve: true`.
-  `SWIPIUM_REQUIRE_ELICITATION=1` removes that fallback (`CONSENT_REFUSED`). See
+- **Consent.** Privileged actions (builds, boots, installs, data wipes and similar) return
+  `requiresConsent` with a `consentId` instead of running. On clients that support MCP elicitation,
+  Swipium asks the user directly. How consent works, and what each outcome returns, is in
+  [concepts.md](concepts.md#consent); the security reasoning is in
   [THREAT_MODEL.md](../THREAT_MODEL.md).
 - **Startup and shutdown.** The version and tool count are logged to stderr at startup, and
   processes left behind by a crashed earlier server are reaped in the background. On shutdown or
@@ -194,7 +211,7 @@ retention) are listed in the README's configuration section.
 ## Scope
 
 Swipium supports the Android Emulator and the iOS Simulator, with optional WebDriverAgent for
-structured iOS automation. Physical devices are refused with `PHYSICAL_DEVICE_UNSUPPORTED`. See
+structured iOS automation. Swipium never acts on a physical device. See
 [physical-devices.md](physical-devices.md).
 
 ## Verification
@@ -203,8 +220,8 @@ structured iOS automation. Physical devices are refused with `PHYSICAL_DEVICE_UN
 swipium verify
 ```
 
-This starts a Swipium server over stdio, checks that all 55 tools and 5 prompts are listed, prints
-their names and the schema hash, and calls `qa_doctor`. It exits with status 1 if a tool is missing
+This starts a Swipium server over stdio, checks that every tool and prompt this version declares is
+listed, prints their names, count and schema hash, and calls `qa_doctor`. It exits with status 1 if a tool is missing
 or `qa_doctor` errors. It starts the copy of Swipium you ran it with, not the command your client is
 configured with.
 
@@ -219,8 +236,8 @@ one is) and Android elsewhere. Pass `platform: "android" | "ios" | "both"` to be
 | `PROJECT_ROOT_UNRESOLVED` | Pass an absolute `projectRoot`, or set `SWIPIUM_PROJECT_ROOT` in the server `env` (needed on Claude Desktop and Windsurf). |
 | The server times out on first start (Codex, Gemini) | The first `npx` run downloads the package. Raise the startup timeout (Codex `startup_timeout_sec = 30`), or install globally and point the client at `swipium`. |
 | Long tool calls time out | Raise the client's tool timeout (Codex `tool_timeout_sec = 600`, Gemini `timeout: 600000`). For builds and runs, prefer `qa_test_this { mode: "execute" }` plus `qa_job_status` polling. |
-| `adb` or `emulator` not found from a GUI client | Set `ANDROID_HOME` in the server `env`, or install the SDK in its default location. |
+| `adb` or `emulator` not found from a GUI client | Set `ANDROID_HOME` in the server `env`, or install the SDK in its default location. See [How Android tools are found](#how-android-tools-are-found). |
 | `INVALID_ARGUMENT` listing accepted parameters | Remove the undeclared argument. If the tool list looks outdated, restart the client. |
 | Tools missing in Codex Desktop threads | Known Codex Desktop issue ([openai/codex#19425](https://github.com/openai/codex/issues/19425)). Use the Codex CLI. |
 | `swipium init cursor --apply` or `init vscode --apply` exits with status 2 | The existing file isn't plain JSON. Add the printed entry by hand. |
-| `PHYSICAL_DEVICE_UNSUPPORTED` | Start an emulator or simulator. See [physical-devices.md](physical-devices.md). |
+| `PHYSICAL_DEVICE_UNSUPPORTED` | A phone was the only device, or was requested explicitly. Start an emulator or simulator. See [physical-devices.md](physical-devices.md). |

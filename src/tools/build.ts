@@ -1,4 +1,4 @@
-// qa_build (roadmap §4.5; 1.5.0 consolidation: the former plan/build twins are one tool with a mode enum).
+// qa_build (1.5.0 consolidation: the former plan/build twins are one tool with a mode enum).
 //
 // mode:"plan" (default): side-effect-free. Proposes the exact prerequisite + build commands and the
 // artifact globs the build will produce. An agent shows this and asks before compiling.

@@ -1,4 +1,4 @@
-// SWIPIUM Issue Log — report integration bridge (SWIPIUM-REQ-07 "Integration Points → Reports").
+// SWIPIUM Issue Log — report integration bridge.
 //
 // Converts a finished run's health findings + structured test outcomes into normalized issue
 // observations, records them in the durable ledger (so recurrence works across runs), and returns
@@ -51,7 +51,7 @@ export interface BridgeMeta {
   sourceRevision?: SourceRevision;
 }
 
-/** One issue recorded from this run, with the linking context callers need (REQ-08). */
+/** One issue recorded from this run, with the linking context callers need. */
 export interface BridgeRecorded {
   issueId: string;
   fingerprint: string;
@@ -67,7 +67,7 @@ export interface BridgeResult {
   section: ReportIssuesSection;
   recordedIssueIds: string[];
   recurrences: string[];
-  /** Per-issue linking context so the caller can attach issues to test cases (REQ-08). */
+  /** Per-issue linking context so the caller can attach issues to test cases. */
   recorded: BridgeRecorded[];
 }
 
@@ -116,7 +116,7 @@ function noteToObservation(n: BridgeNote): IssueObservation {
   };
 }
 
-// A blocked/failed note in any of these categories is a real REQ-07 issue-ledger entry (not just
+// A blocked/failed note in any of these categories is a real issue-ledger entry (not just
 // app bugs): hard gates, store-compliance/privacy gaps, readiness improvements, missing data, etc.
 // Intentional skips and not-applicable / passing outcomes are NOT recorded.
 const RECORDED_NOTE_CATEGORIES = new Set([

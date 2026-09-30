@@ -1,4 +1,4 @@
-// Device-parity adb helpers (PHASE3-PLAN §4.2 / roadmap §5). Serial-based (Android/adb-specific)
+// Device-parity adb helpers. Serial-based (Android/adb-specific)
 // rather than on the Driver interface, so the iOS/native-backend swap seam stays lean — when iOS
 // lands it provides its own device-parity implementations. All spawns use arg arrays, but `adb shell`
 // re-joins them for the device-side sh — so app ids / permissions are validated AND quoted (M1).

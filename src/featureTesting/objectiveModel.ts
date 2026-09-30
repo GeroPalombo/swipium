@@ -1,4 +1,4 @@
-// Feature objective model (SWIPIUM-REQ-03 "Objective Model Requirements"). PURE, best-effort,
+// Feature objective model. PURE, best-effort,
 // deterministic. From a resolved FeatureScope it derives what the feature is *for* — happy path,
 // expected outputs, inputs, business rules (marked as hypotheses when low-confidence), negative and
 // edge cases, destructive boundaries, and the oracle strategy. Every claim carries provenance and a

@@ -1,4 +1,4 @@
-// Code-aware feature index (SWIPIUM-REQ-03, foundation from SWIPIUM-REQ-01). A deterministic,
+// Code-aware feature index (also the foundation of the app map). A deterministic,
 // LLM-free static index over the project's source so a natural-language feature request can be
 // mapped to concrete code: screen/component/service/hook symbols, navigation route names, and
 // per-file token sets. Pure logic lives in tokenize/extractSymbols/extractRoutes (unit-tested

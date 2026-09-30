@@ -101,7 +101,7 @@ steps:
 mode: auto
 budgetProfile: guardrail
 steps:
-  - openUrl: "\${TEST_DEEP_LINK}"
+  - openUrl: "\${SWIPIUM_TEST_DEEP_LINK}"
   - waitForIdle: 8000
   - screenshot: "deep link evidence"
   - assertVisual: "Deep link opened the expected destination."

@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-02 — first-screen / runtime-screen classifier.
+// First-screen / runtime-screen classifier.
 //
 // classifyCurrentScreen() decides what a screen IS (login, create-account, onboarding, paywall,
 // permissions, home, …) from BOTH the runtime UI snapshot and any static app-map/code context.

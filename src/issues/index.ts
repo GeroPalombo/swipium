@@ -1,4 +1,4 @@
-// SWIPIUM Issue Log — high-level service + query layer (SWIPIUM-REQ-07).
+// SWIPIUM Issue Log — high-level service + query layer.
 //
 // This is the single entry point callers (health oracle, reports, explore, mobile audit, tools)
 // use to record observations and mutate lifecycle. It ties together fingerprinting, classification,
@@ -256,7 +256,7 @@ export interface LinkRunOptions {
 /**
  * Append a `linked_run` event tying a run (test case / audit check) to an issue with a relationship
  * (observed / verified_fixed / regressed / suppressed) and optional evidence. The issue ledger stays
- * the source of truth; this records HOW a run related to the issue (REQ-08).
+ * the source of truth; this records HOW a run related to the issue.
  */
 export function linkRun(
   root: string,
@@ -304,7 +304,7 @@ function linkRunLocked(
 }
 
 /**
- * Verify a FIXED issue with current-run evidence (REQ-08; `qa_issue_log` mode:"verify_fixed"). Requires the issue
+ * Verify a FIXED issue with current-run evidence (`qa_issue_log` mode:"verify_fixed"). Requires the issue
  * to be in state `fixed` and at least one evidence reference (report/test/audit). Appends a
  * `verified_fixed` linked_run event so reports can honestly claim "verified this run".
  */

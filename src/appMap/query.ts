@@ -1,4 +1,4 @@
-// Map query (SWIPIUM-REQ-01 qa_app_map_query). Searches the feature index, static topology, runtime
+// Map query (qa_app_map_query). Searches the feature index, static topology, runtime
 // graph, and tests, returning RANKED results with provenance, confidence, source files,
 // screens, and a recommended next Swipium tool call. Pure + deterministic so it is unit-testable.
 

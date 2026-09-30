@@ -1,6 +1,6 @@
 // Cross-restart registry of the long-lived child processes Swipium spawns (Metro bundler,
 // managed WDA xcodebuild, screen recorders, emulators) in ~/.swipium/processes.json, so a
-// crashed server's orphans can be reaped on the next startup (P0 §2 "orphaned processes").
+// crashed server's orphans can be reaped on the next startup.
 //
 // Safety rules:
 //  - Every entry records the OWNING server pid. A child whose owner is still a live

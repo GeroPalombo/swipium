@@ -1,4 +1,4 @@
-// Local, deterministic visual ops (PHASE3-PLAN §8.2) — baseline diff + template matching on
+// Local, deterministic visual ops — baseline diff + template matching on
 // decoded pixels. No AI, no network, no third-party code: just arithmetic over PNG bytes.
 
 import { decodePng, toGray } from './png.js';

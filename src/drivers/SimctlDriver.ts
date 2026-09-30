@@ -1,4 +1,4 @@
-// SimctlDriver — the iOS Simulator backend behind the same Driver seam (PHASE3-PLAN Phase 11).
+// SimctlDriver — the iOS Simulator backend behind the same Driver seam.
 // It implements exactly what `simctl` supports (screenshot, lifecycle, deep links) so the shared
 // visual tools (qa_screenshot, qa_visual) work on iOS unchanged. Operations that
 // require a UI tree or input injection are honestly UNSUPPORTED here. Attach WebDriverAgent

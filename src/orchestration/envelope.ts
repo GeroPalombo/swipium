@@ -1,4 +1,4 @@
-// Uniform terminal result envelope for qa_test_this (Developer 1, roadmap §3.1 Milestone B).
+// Uniform terminal result envelope for qa_test_this (Developer 1, Milestone B).
 // Every terminal orchestration state — completed | blocked | unsafe | needs_input | running —
 // is summarizable from STRUCTURED output, with no log parsing: what was attempted, what safe
 // fallbacks were taken, which artifact/target was chosen and why, typed blockers with owner +

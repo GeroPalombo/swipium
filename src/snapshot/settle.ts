@@ -1,4 +1,4 @@
-// Settle oracle (DESIGN §5): wait until the accessibility tree stops changing.
+// Settle oracle: wait until the accessibility tree stops changing.
 // With OS animations disabled this converges fast. Bounded — never waits forever.
 //
 // Latency: a uiautomator dump itself takes ~1–2 s on real devices, so the poll interval is

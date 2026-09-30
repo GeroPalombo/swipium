@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-08 — issue quality metrics, derived from the append-only EVENT log (not just current
+// Issue quality metrics, derived from the append-only EVENT log (not just current
 // index state) so trends are honest: opened / fixed / reopened / verified-fixed counts, issue aging,
 // reopen rate (fixed issues that later reopened), fix-verification rate (fixed issues with a
 // verified_fixed event), and a time/version/category series. PURE — `until` is the reference clock.
@@ -92,7 +92,7 @@ export function computeIssueMetrics(events: IssueEvent[], opts: MetricsOptions =
   const records = rebuildRecords(events);
 
   // First-observation EVENT per issue → "opened". Track the event id (not just the timestamp) so
-  // two same-timestamp observations of one fingerprint count as a single open (REQ-08 follow-up).
+  // two same-timestamp observations of one fingerprint count as a single open.
   const firstObserved = new Map<string, { at: string; eventId: string }>();
   for (const e of events) {
     if (e.eventType !== 'observed') continue;

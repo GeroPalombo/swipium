@@ -1,4 +1,4 @@
-// QA level (Developer-3 plan Deliverable 6 / roadmap §3.11) — the single, deterministic, product-facing
+// QA level (Developer-3 plan Deliverable 6) — the single, deterministic, product-facing
 // QA verdict label every Swipium run earns. This is DISTINCT from the automation `ReadinessLabel`
 // (which scores the *generated suite*): the QA level answers "how far did QA actually get on this app?"
 // — the rung a developer, QA engineer, reviewer, and CI all read straight off the report.
