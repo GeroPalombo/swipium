@@ -113,7 +113,7 @@ export function registerIssues(server: McpServer, sessions: SessionStore): void 
       title: 'Project issue ledger (list + lifecycle)',
       description:
         'Durable project issue ledger (.swipium/issues-log.jsonl). mode: history (default; list + counts + recurrence, filterable), ' +
-        'log (record an observation; identity = normalized title + category + platform + app; re-observing a fixed issue reopens it), ' +
+        'log (record an observation; identity = normalized title + category + platform; re-observing a fixed issue reopens it), ' +
         'mark_fixed (active issues only), verify_fixed (needs current-run evidence), suppress (suppressedUntil auto-expires; ' +
         'unsuppress:true lifts it), metrics (trends from the event log). Transitions take issueId (or fingerprint).',
       inputSchema: {

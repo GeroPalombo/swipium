@@ -22,7 +22,7 @@ export function registerResolveArtifact(server: McpServer, sessions: SessionStor
         'NO_BUILD_ARTIFACT / AAB_NEEDS_BUNDLETOOL / ARTIFACT_OUTSIDE_ROOT_REQUIRES_APPROVAL when relevant. Side-effect free.',
       inputSchema: {
         sessionId: z.string().optional().describe("Use this session's projectRoot if given."),
-        projectRoot: z.string().optional().describe('Absolute path; else resolved via MCP roots.'),
+        projectRoot: z.string().optional().describe('Absolute path; else the usual root resolution.'),
         platform: z.enum(['android', 'ios', 'any']).optional(),
         buildType: z.enum(['debug', 'release', 'any']).optional(),
         path: z.string().optional().describe('Explicit artifact path — short-circuits the search.'),

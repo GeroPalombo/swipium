@@ -165,8 +165,8 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
       title: 'WebDriverAgent diagnostics and attach',
       description:
         'Diagnose, attach, or manage an iOS WebDriverAgent backend for structured iOS tap/type/snapshot. External WDA: ' +
-        'action:"attach" with webDriverAgentUrl (default http://127.0.0.1:8100). Managed WDA: wdaProjectPath (+ device) for ' +
-        'build/start (consent-gated); output is captured as artifacts. status/doctor/diagnose/logs/tune inspect an existing setup.',
+        'action:"attach" with webDriverAgentUrl (default http://127.0.0.1:8100). Managed WDA: build/start (consent-gated) from ' +
+        'wdaProjectPath or an installed Appium WDA; stop ends it. status/doctor/diagnose/logs/tune inspect a setup.',
       inputSchema: {
         sessionId: z.string(),
         action: z.enum(['status', 'doctor', 'build', 'start', 'stop', 'attach', 'diagnose', 'logs', 'tune']),
@@ -174,7 +174,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
         device: z.string().optional().describe('Simulator UDID behind this WDA (default: the session device).'),
         udid: z.string().optional().describe('Deprecated alias of device.'),
         bundleId: z.string().optional().describe('Default: the session appId.'),
-        wdaProjectPath: z.string().optional().describe('WebDriverAgent.xcodeproj for managed build/start.'),
+        wdaProjectPath: z.string().optional().describe('WebDriverAgent.xcodeproj (default: Appium WDA if found).'),
         derivedDataPath: z.string().optional().describe('xcodebuild -derivedDataPath for reuse.'),
         scheme: z.string().optional().describe('WDA xcodebuild scheme. Defaults to WebDriverAgentRunner.'),
         allowNonLoopback: z.boolean().optional().describe('Required to use a non-loopback external WDA URL.'),

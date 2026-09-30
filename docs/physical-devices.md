@@ -1,54 +1,74 @@
-# Physical Devices — Scoping Design (Roadmap)
+# Physical devices
 
-Status: **out of scope** for the current release. This document scopes what first-class
-physical-device support would require, so the boundary is deliberate rather than accidental.
-Until everything in "Required before shipping" lands, Swipium refuses physical devices with the
-typed failure code `PHYSICAL_DEVICE_UNSUPPORTED` (bucket `unsafe_refused`) — visible but refused,
-so agents can explain *why* instead of reporting a bare "no device".
+Status: **not supported in Swipium 2.0.** Swipium runs only on Android Emulators and iOS
+Simulators. A physical device is visible to Swipium, but every path that could act on it refuses it
+with the typed failure code `PHYSICAL_DEVICE_UNSUPPORTED` (bucket `unsafe_refused`), so an agent can
+explain *why* instead of reporting a bare "no device". The refusal is server-side policy. A client
+cannot opt in by passing a flag. This page describes the current behavior and what support would
+need.
 
 ## Current behavior
 
-- `qa_resolve_target` sees physical devices (adb enumerates them) but never selects one. If a
-  physical device is the only candidate — or is explicitly requested via `device`/
-  `preferRealDevice` — the plan is blocked with `PHYSICAL_DEVICE_UNSUPPORTED` and, when an
-  emulator/simulator is viable, lists it as the alternative.
-- `qa_test_this` blocks real-device requests and real-device-only iOS artifacts the same way.
-- The refusal is server-side policy, not client-negotiable: a client cannot opt into physical
-  devices by assertion (consistent with the consent model in `THREAT_MODEL.md`).
+| Path | What happens with a physical device |
+| --- | --- |
+| `qa_resolve_target` | Lists it but never selects it. If it is the only candidate, or is requested with `device`, the plan is blocked with `PHYSICAL_DEVICE_UNSUPPORTED` and a viable emulator or simulator is offered as the alternative. `preferRealDevice:true` always returns the refusal. |
+| `qa_test_this` | Refuses `preferRealDevice:true`, an explicit physical `device` serial, and iOS artifacts that only install on real hardware (device-only `.ipa` or `.app` builds). |
+| `qa_prepare_target` | Refuses a physical serial before anything is installed or launched. When it boots an emulator, it binds only a serial that was not online before the boot, so a phone that happens to be plugged in is never picked up. |
+| Device auto-attach (any tool that needs a device) | Before binding the single online device, Swipium probes it. A physical device is refused, a still-booting emulator returns `DEVICE_NOT_READY`, and a device whose properties cannot be read (offline or unauthorized) is not bound. |
+| iOS | Swipium enumerates simulators only, through `xcrun simctl`. Real iPhones and iPads are never listed or targeted. |
+
+## How Android emulators are recognized
+
+adb lists emulators and phones side by side, so Swipium classifies each online serial
+(`src/session/attach.ts`, `src/core/targetPlan.ts`):
+
+1. A serial of the form `emulator-<port>` is an emulator.
+2. Any other serial, for example `localhost:5555`, `127.0.0.1:<port>` or a Genymotion address, is
+   probed once with `adb -s <serial> shell getprop`. It is treated as an emulator when any of these
+   is true:
+   - `ro.kernel.qemu` or `ro.boot.qemu` is `1`;
+   - `ro.hardware` is `goldfish` or `ranchu`;
+   - `ro.genymotion.version` is set, or `ro.product.manufacturer` is `Genymotion`.
+3. Everything else whose properties could be read is physical and is refused.
+4. An emulator is used only once `sys.boot_completed` is `1`.
+
+`qa_test_this`, `qa_resolve_target`, `qa_prepare_target` and device auto-attach all use this
+property probe, so a network-attached emulator (`localhost:5555`, Genymotion) is accepted everywhere.
 
 ## Why the line is drawn here
 
-A developer's simulator/emulator is a disposable sandbox. A physical device usually is not:
+A developer's emulator or simulator is a disposable sandbox. A physical device usually is not:
 
-1. **Real user data.** Personal accounts, photos, messages, payment instruments, and 2FA apps
-   live on real hardware. `clear_data`, fresh installs, permission resets, and exploratory
-   tapping have real blast radius.
-2. **Non-restorable environment mutations.** `wm size`/density overrides, airplane-mode toggles,
-   geolocation spoofing, and animation-scale changes are harmless on an emulator that gets
-   recreated, but leave a person's phone in a broken-feeling state if a run dies mid-restore.
-3. **Identity and signing.** iOS real devices require Apple code signing and device trust;
-   automation identity (WDA on-device) has store/account implications the simulator path avoids.
-4. **Fleet variance.** OEM skins, battery optimizers, and vendor permission dialogs multiply the
-   overlay/interstitial matrix that the oracle currently models for AOSP-like emulators.
+1. **Real user data.** Personal accounts, photos, messages, payment methods and 2FA apps live on
+   real hardware. Data wipes, fresh installs, permission resets and exploratory tapping have real
+   consequences there.
+2. **Changes that can't be undone.** Screen size and density overrides, airplane-mode toggles,
+   location spoofing and animation-scale changes do no harm on an emulator you can recreate. On a
+   person's phone they leave it feeling broken if a run dies before restoring them.
+3. **Identity and signing.** Real iOS devices need Apple code signing and device trust. Running
+   WebDriverAgent on hardware brings account and provisioning questions that the simulator path
+   avoids.
+4. **Fleet variance.** OEM skins, battery optimizers and vendor permission dialogs multiply the
+   overlays and interstitials that Swipium's oracle currently models for AOSP-like emulators.
 
-## Required before shipping (design contract)
+## Roadmap: what support would require
 
-Same tool surface — `deviceClass: "physical"` as an explicit opt-in on target resolution, plus:
+Physical-device support is not scheduled. It would keep the same tool surface, with an explicit
+opt-in on target resolution, and it would need at least:
 
-- **Threat-model addendum** (extend `THREAT_MODEL.md` per its "Explicit Non-Goals" clause):
-  real-user-data adversary analysis; consent escalation for every mutation that touches device
-  state; explicit non-support for carrier/eSIM/payment surfaces.
-- **Mutation policy:** no `wm size`/density overrides; no geolocation spoof without per-action
-  consent; `clear_data`/uninstall gated on the app-under-test's applicationId only, never
-  system or third-party packages; mandatory restore verification at session end.
-- **Data-safety preflight:** refuse when the device reports accounts/profiles that indicate a
-  personal (non-lab) device unless the user affirms it is a test device; document the heuristics.
-- **iOS reality check:** WDA on real hardware needs signing assets; decide between "bring your
-  own signed WDA" and full signing automation before promising iOS parity.
-- **Evidence hygiene:** screenshots/OCR from a personal device can capture other apps'
-  notifications; sensitive-mode must default stricter on physical hardware.
+- **A threat-model extension** (per the out-of-scope clause in `THREAT_MODEL.md`): analysis of the
+  real-user-data adversary, stronger consent for every change to device state, and explicit
+  non-support for carrier, eSIM and payment surfaces.
+- **A mutation policy:** no screen size or density overrides; no location spoofing without consent
+  for each action; data wipes and uninstalls limited to the app under test, never system or
+  third-party packages; and a mandatory check at session end that everything was restored.
+- **A data-safety preflight:** refuse devices whose accounts or profiles suggest a personal phone
+  rather than a lab device, unless the user confirms it is a test device, with the heuristics
+  documented.
+- **An iOS decision:** "bring your own signed WebDriverAgent" versus full signing automation,
+  before promising parity with iOS Simulator support.
+- **Evidence hygiene:** screenshots and OCR on a personal device can capture other apps'
+  notifications, so sensitive mode would need stricter defaults on hardware.
 
-## Non-goals even then
-
-Remote device farms, multi-tenant device brokering, and anything that ships device data off the
-machine remain out of scope (see `THREAT_MODEL.md` non-goals).
+Remote device farms, multi-tenant device brokering, and anything that sends device data off the
+machine stay out of scope even then.

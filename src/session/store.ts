@@ -866,7 +866,8 @@ export class SessionStore {
   }
   /** Store a user-provided input (hardening P0.5). The VALUE stays in-memory only; secrets are
    *  added to the redaction set. Persists metadata so reports can say it was provided.
-   *  Secrets are redacted whatever their length (short ones as whole tokens — src/lib/redact.ts). */
+   *  Secrets of 3+ characters are redacted (short ones as whole tokens); 1–2 character values are
+   *  not matched and are reported as partial redaction (src/lib/redact.ts). */
   setInput(s: Session, varName: string, value: string, secret: boolean, source: string): void {
     s.inputValues.set(varName, value);
     if (secret) s.secrets.add(value);

@@ -18,8 +18,8 @@ export function registerJobs(server: McpServer, sessions: SessionStore): void {
     {
       title: 'Job status (optionally wait)',
       description:
-        'Status of a background job (qa_test_this execute, qa_prepare_target, qa_explore, qa_build run, …): status, ' +
-        'progressDetail, and result/error when finished (for qa_test_this: state completed/blocked/unsafe/needs_input, ' +
+        'Status of a background job (qa_test_this, qa_prepare_target, qa_explore, qa_build run, …): status ' +
+        '(running/done/failed/cancelled), progressDetail, and result/error when finished (for qa_test_this: state completed/blocked/unsafe/needs_input, ' +
         'reportUri, suite, smoke, health). waitMs long-polls: returns once the job leaves "running", or with ' +
         'waited.timedOut:true.',
       inputSchema: {

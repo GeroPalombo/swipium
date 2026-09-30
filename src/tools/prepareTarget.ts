@@ -17,7 +17,7 @@ import { listAvds, resolveApk, apkPackageId } from '../lib/android.js';
 import { DirectDriver, assertAndroidAppId } from '../drivers/DirectDriver.js';
 import { detectFramework } from '../context/detect.js';
 import { metroReadiness, reverseSet } from '../lib/metroState.js';
-import { resolveDevice, bindDevice } from '../session/attach.js';
+import { resolveDevice, bindDevice, verifiedEmulatorSerials } from '../session/attach.js';
 import { prepareAndroid } from '../services/prepareAndroid.js';
 import { planTarget } from '../core/targetPlan.js';
 import type { Session, SessionStore, JobRecord } from '../session/store.js';
@@ -36,7 +36,7 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
       title: 'Prepare a target device + app',
       description:
         'Prepare an Android Emulator target in order: device → Metro → install → launch, with one combined consent for ' +
-        'privileged steps (boot, external APK). Binds the single online device (asks if several), sets adb reverse for RN/Expo, ' +
+        'privileged steps (boot, install). Binds the single online device (asks if several), sets adb reverse for RN/Expo, ' +
         'waits for Metro to serve, installs if needed, launches, verifies. Long operations return a jobId. bindOnly binds/boots ' +
         'without install/launch.',
       inputSchema: {
@@ -107,7 +107,7 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
       if (res.effective) {
         // Same policy + wording as qa_test_this's target planner (src/core/targetPlan.ts): a physical
         // device is refused with PHYSICAL_DEVICE_UNSUPPORTED, not a generic backend error.
-        const refusal = physicalDeviceRefusalFor(res.effective);
+        const refusal = await physicalDeviceRefusalFor(res.effective);
         if (refusal) {
           return qaError({
             what: refusal.what,
@@ -126,6 +126,7 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
           what: 'Multiple devices online — choose one',
           changedState: false,
           retrySafe: true,
+          failureCode: 'MULTIPLE_DEVICES',
           nextSteps: [`Re-call with device="<serial>". Online: ${res.available.join(', ')}`],
         });
       }
@@ -424,11 +425,15 @@ export function apkWithinRoot(apkPath: string, root: string): boolean {
 }
 
 /** Physical-device refusal for an online adb serial, delegated to the shared target planner so
- *  qa_prepare_target and qa_test_this classify serials identically. Null when it is an emulator. */
-export function physicalDeviceRefusalFor(serial: string): { what: string } | null {
+ *  qa_prepare_target and qa_test_this classify serials identically. Null when it is an emulator
+ *  (by serial pattern or by device properties). */
+export async function physicalDeviceRefusalFor(serial: string): Promise<{ what: string } | null> {
+  // Property-verified emulators (localhost:5555, Genymotion) are accepted like `emulator-N`
+  // serials — the same getprop probe qa_test_this / qa_resolve_target / auto-attach use.
+  const emulators = await verifiedEmulatorSerials([serial]);
   const plan = planTarget({
     requestedDevice: serial,
-    android: { online: [serial], avds: [] },
+    android: { online: [serial], avds: [], emulators },
     ios: { bootedSimulators: [], availableSimulators: [] },
   });
   if (plan.blocked?.failureCode !== 'PHYSICAL_DEVICE_UNSUPPORTED') return null;

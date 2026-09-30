@@ -31,6 +31,8 @@ const getDriverMock = vi.fn();
 vi.mock('../src/session/attach.js', async (orig) => ({
   ...(await orig<typeof import('../src/session/attach.js')>()),
   getDriver: (...a: unknown[]) => getDriverMock(...a),
+  // Stand-in for the getprop probe: localhost:5555 plays a network-attached (Genymotion) emulator.
+  verifiedEmulatorSerials: async (serials: string[]) => serials.filter((x) => /^emulator-\d+$/.test(x) || x === 'localhost:5555'),
 }));
 
 const { nextBestAction, sessionPlatform } = await import('../src/tools/agent.js');
@@ -150,12 +152,15 @@ describe('qa_device_info / qa_orientation on iOS (H9)', () => {
 });
 
 describe('qa_prepare_target physical-device policy (H9)', () => {
-  it('refuses a physical serial with the planner’s PHYSICAL_DEVICE_UNSUPPORTED wording', () => {
-    const r = physicalDeviceRefusalFor('R58M12345');
+  it('refuses a physical serial with the planner’s PHYSICAL_DEVICE_UNSUPPORTED wording', async () => {
+    const r = await physicalDeviceRefusalFor('R58M12345');
     expect(r?.what).toMatch(/simulator\/emulator-only by policy/);
     expect(r?.what).not.toMatch(/1\.0\.0/);
   });
-  it('lets an emulator through', () => {
-    expect(physicalDeviceRefusalFor('emulator-5554')).toBeNull();
+  it('lets an emulator through', async () => {
+    expect(await physicalDeviceRefusalFor('emulator-5554')).toBeNull();
+  });
+  it('lets a property-verified network emulator (localhost:5555) through', async () => {
+    expect(await physicalDeviceRefusalFor('localhost:5555')).toBeNull();
   });
 });

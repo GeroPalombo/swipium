@@ -23,10 +23,11 @@ export function registerTestThis(server: McpServer, sessions: SessionStore): voi
     {
       title: 'Test this app (autopilot)',
       description:
-        'Autopilot for "test this app": resolves the project, finds or builds an artifact, picks a device/simulator, then plans ' +
+        'Autopilot for "test this app": finds or builds an artifact, picks a device/simulator, then plans ' +
         '(mode:"plan", default, no side effects) or executes prepare → smoke → (explore) → report → (suite). execute returns ' +
         'state:"running" + jobId; the terminal state (completed/blocked/unsafe/needs_input) and reportUri are in the ' +
-        'qa_job_status result. One combined consent covers boot/install/build. A report in every terminal state.',
+        'qa_job_status result. One combined consent covers boot/install/build. A report in every terminal state. iOS without WDA ' +
+        'falls back to a visual-only smoke.',
       inputSchema: {
         sessionId: z.string().optional().describe('Reuse a session; otherwise one is created.'),
         projectRoot: z.string().optional(),

@@ -109,6 +109,28 @@ describe('needs_input terminal state', () => {
     expect(session.milestones.report_generated).toBeTypeOf('number');
     expect(nextBestAction(session).tool).toBe('qa_continue_from_blocker');
   });
+
+  it('a blocked run points at qa_explain_blocker WITH sessionId (so qa_status can see it was explained)', async () => {
+    const sessions = new SessionStore();
+    const session = sessions.create(root);
+    const job = sessions.createJob(session, 'test_this:execute');
+    const finish = createFinisher({
+      sessions,
+      session,
+      job,
+      a: { requiredOutputs: ['reportUri'], releaseGate: false } as unknown as ExecuteArgs,
+      attempted: ['install'],
+      artifacts: [],
+      getSuiteForReport: () => undefined,
+      upd: (patch) => sessions.updateJobIfRunning(session, job, patch),
+    });
+    await finish('blocked', 'INSTALL_FAILED', 'install failed');
+    const r = session.jobs.get(job.jobId)!.result as Record<string, unknown>;
+    expect(r.nextRecommendedAction).toMatchObject({
+      tool: 'qa_explain_blocker',
+      args: { failureCode: 'INSTALL_FAILED', sessionId: session.id },
+    });
+  });
 });
 
 describe('runExecutePipeline surfaces the first-run question', () => {

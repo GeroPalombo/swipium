@@ -62,7 +62,7 @@ export function registerNetwork(server: McpServer, sessions: SessionStore): void
     {
       title: 'Network state control',
       description:
-        'Offline/online testing via airplane mode (Android 11+). action: status, offline, online (consent-gated), restore. The ' +
+        'Offline/online testing via airplane mode (Android 11+). action: status, offline/online (consent-gated), restore. The ' +
         'original state is restored on qa_report, on restore, and on server shutdown.',
       inputSchema: {
         sessionId: z.string(),
@@ -82,6 +82,17 @@ export function registerNetwork(server: McpServer, sessions: SessionStore): void
         );
       }
 
+      // Airplane-mode control is an Android emulator feature (`cmd connectivity airplane-mode`); iOS
+      // simulators have no equivalent, so answer with a typed refusal instead of a raw driver error.
+      if (d.kind !== 'direct') {
+        return qaError({
+          what: 'qa_network is supported on Android emulators only (iOS simulators have no airplane-mode control)',
+          changedState: false,
+          retrySafe: false,
+          failureCode: 'BACKEND_UNSUPPORTED',
+          nextSteps: ['On iOS, test offline behavior by disconnecting the Mac from the network or with a network link conditioner.'],
+        });
+      }
       const airplane = await d.airplaneOn();
       if (action === 'status') {
         return qaOk(
@@ -131,15 +142,17 @@ export function registerNetwork(server: McpServer, sessions: SessionStore): void
         consent: { required: true, consentId, approved: true, payloadHash: action },
         status: 'approved',
       });
-      if (!session.network?.changed) {
+      const firstChange = !session.network?.changed;
+      if (firstChange) {
         session.network = { changed: true, originalAirplane: airplane };
       }
       sessions.persist(session);
       try {
         await d.setAirplane(wantAirplane);
       } catch (e) {
-        // Older images / no `cmd connectivity airplane-mode` (pre-Android 11).
-        if (!session.network.changed) session.network = undefined;
+        // Older images / no `cmd connectivity airplane-mode` (pre-Android 11). Nothing changed, so
+        // drop the restore record this call just created (an earlier change's record is kept).
+        if (firstChange) session.network = undefined;
         sessions.persist(session);
         return qaError({
           what: `Network control unsupported on this device: ${String(e)}`,

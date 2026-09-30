@@ -27,7 +27,7 @@ export function registerSmoke(server: McpServer, sessions: SessionStore): void {
         sessionId: z.string(),
         launch: z.boolean().optional().describe('Launch first (default true with an appId).'),
         runFlows: z.boolean().optional().describe('Run saved .swipium/flows (default true).'),
-        variables: z.record(z.string()).optional().describe('${VAR} values for flows (over process.env).'),
+        variables: z.record(z.string()).optional().describe('${VAR} values for flows (over stored inputs, SWIPIUM_* env).'),
       },
     },
     async ({ sessionId, launch, runFlows, variables }) => {

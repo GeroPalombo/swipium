@@ -1,59 +1,90 @@
-# MCP Server
+# MCP server reference
 
-Swipium runs as a local stdio MCP server. The MCP client starts the process and sends tool calls over stdin and stdout.
+Swipium is a local stdio MCP server. Your MCP client starts it as a child process and talks
+JSON-RPC over its stdin and stdout. Nothing listens on the network.
 
 ## Requirements
 
 - Node.js 20 or newer.
-- Host OS: macOS for iOS Simulator and Android; Linux for Android; Windows for Android is experimental and untested.
-- Android: platform-tools (`adb`), the Android Emulator package, and at least one AVD, usually from Android Studio. Swipium resolves `adb`/`emulator` from `$ANDROID_HOME`, `$ANDROID_SDK_ROOT`, and the default SDK dir (`~/Library/Android/sdk`, `~/Android/Sdk`, `%LOCALAPPDATA%\Android\Sdk`) before `PATH`, so GUI clients that don't inherit your shell `PATH` still find them.
-- iOS: Xcode with an iOS Simulator runtime and at least one simulator. WebDriverAgent is needed for structured UI-tree access, taps, typing, and swipes. Visual-only iOS checks (`qa_visual` baseline/diff, OCR `find_text`, template `find_image`) work through `simctl` without WDA.
+- Host OS: macOS for the iOS Simulator and Android; Linux for Android. Android on Windows is
+  experimental and untested.
+- Android: platform-tools (`adb`), the Android Emulator package, and at least one AVD, usually
+  installed through Android Studio. If `adb` or `emulator` is not on `PATH`, Swipium adds the SDK
+  copy from `$ANDROID_HOME`, `$ANDROID_SDK_ROOT` or the default SDK directory
+  (`~/Library/Android/sdk`, `~/Android/Sdk`, `%LOCALAPPDATA%\Android\Sdk`). This helps GUI clients
+  that don't inherit your shell `PATH`. A copy already on `PATH` always wins.
+- iOS: Xcode with an iOS Simulator runtime and at least one simulator. WebDriverAgent is needed for
+  the structured UI tree, taps, typing and swipes. Visual-only checks work through `simctl` without
+  it: `qa_visual` baselines and diffs, OCR `find_text`, and template `find_image`.
 
-## Server Command
+## Server command
 
-`npx -y swipium` is the canonical command (or `swipium` after `npm install -g swipium`). From a source checkout, run `npm run build` and use `node /absolute/path/to/swipium/dist/index.js`.
+`npx -y swipium` is the portable command. After `npm install -g swipium` you can run `swipium`
+instead. From a source checkout, run `npm run build` and use
+`node /absolute/path/to/swipium/dist/index.js`.
 
-With no arguments (or `swipium serve`), the binary runs the stdio server. `swipium --help` lists the CLI subcommands, and an unknown subcommand exits with status 2 instead of starting a server.
+| Invocation | Behavior |
+| --- | --- |
+| `swipium` or `swipium serve` | Runs the stdio MCP server. |
+| `swipium --stdio` (flags only, no subcommand) | Runs the server and warns on stderr that the flags were ignored. |
+| `swipium init`, `verify`, `scan`, `suite`, `report`, `gc` | CLI subcommands. See `swipium --help`. |
+| `swipium <unknown word>` | Prints usage and exits with status 2 instead of starting a server. |
 
-## Project Root
+## Project root
 
-Tools resolve the app repository in this order:
+Each tool call resolves the app repository in this order:
 
 1. The `projectRoot` tool argument (must be absolute).
-2. MCP roots from the client (Claude Code, Cursor, and VS Code provide them).
+2. MCP roots from the client. Claude Code, Cursor and VS Code provide them.
 3. The `SWIPIUM_PROJECT_ROOT` environment variable.
-4. `CLAUDE_PROJECT_DIR` (set by Claude Code for every stdio server).
-5. The server process's working directory, unless it is `/` or `$HOME`, and only when it contains a project marker (`package.json`, `app.json`, `pubspec.yaml`, Gradle files, `Podfile`, an `.xcodeproj`/`.xcworkspace`, or an `android/` or `ios/` directory).
+4. `CLAUDE_PROJECT_DIR`, which Claude Code sets for its stdio servers.
+5. The server's working directory, but only if it is not `/` or `$HOME` and it contains a project
+   marker: `package.json`, `app.json`, `pubspec.yaml`, Gradle files, a `Podfile`, an
+   `.xcodeproj`/`.xcworkspace`, or an `android/` or `ios/` directory.
 
-If none of these resolves, the tool fails with `failureCode: "PROJECT_ROOT_UNRESOLVED"`. On clients without roots or `cwd` support (Claude Desktop, Windsurf), set `SWIPIUM_PROJECT_ROOT` in the server `env`.
+Results report where the root came from (`rootSource`). If nothing resolves, the tool fails with
+`failureCode: "PROJECT_ROOT_UNRESOLVED"`. On clients without roots or a `cwd` setting (Claude
+Desktop, Windsurf), set `SWIPIUM_PROJECT_ROOT` in the server `env`.
 
-## Client Setup
+## Client setup
 
-`swipium init <client>` prints the exact registration. Add `--apply` to perform it.
+`swipium init <client>` prints the exact registration and changes nothing. Add `--apply` to
+perform it. After a successful apply it runs `swipium verify`. Options: `--scope local|user|project`
+(default `local`) and `--cwd <app dir>` (default: the directory you run it from).
 
-| Client | Command | Where it goes |
+| Client | `swipium init` does | Where it lands |
 | --- | --- | --- |
-| Claude Code | `swipium init claude --scope project --apply` or `claude mcp add swipium --scope project -- npx -y swipium` | `.mcp.json` (project), `~/.claude.json` (local/user) |
-| Codex | `swipium init codex --apply` (from the app repo, or `--cwd <dir>`) | `~/.codex/config.toml` |
-| Gemini CLI | `swipium init gemini --apply` or `gemini mcp add --scope project swipium npx -- -y swipium` | `.gemini/settings.json` (project), `~/.gemini/settings.json` (user) |
-| Cursor | `swipium init cursor --apply` | `.cursor/mcp.json` |
-| VS Code | `swipium init vscode --apply`, or `code --add-mcp '{"name":"swipium","command":"npx","args":["-y","swipium"]}'` for the user profile | `.vscode/mcp.json` |
-| Claude Desktop | manual | `claude_desktop_config.json` |
-| Windsurf | manual | `mcp_config.json` (Cascade → MCP settings) |
+| Claude Code | Runs `claude mcp add swipium [--scope …] -- <command>` | `local` / `user`: `~/.claude.json`; `project`: `.mcp.json` |
+| Codex | Appends a `[mcp_servers.swipium]` block with `cwd` and timeouts (refuses if `--cwd` doesn't exist; leaves an existing block alone) | `~/.codex/config.toml` |
+| Gemini CLI | Runs `gemini mcp add --scope project\|user swipium …`; prints a manual block if that fails | `.gemini/settings.json` (project, the default), `~/.gemini/settings.json` (`--scope user`) |
+| Cursor | Merges a `swipium` entry under `mcpServers` | `.cursor/mcp.json` (for all projects, add the same entry to `~/.cursor/mcp.json` yourself) |
+| VS Code | Merges a `swipium` entry under `servers`; prints a `code --add-mcp …` line for the user profile | `.vscode/mcp.json` |
+| Claude Desktop | Not supported by `init`; configure manually | `claude_desktop_config.json` |
+| Windsurf | Not supported by `init`; configure manually | `mcp_config.json` (Cascade → MCP settings) |
 
-Anything written to a team-shared project file uses the portable `npx -y swipium`. Machine-local registrations (Claude local/user, Gemini user, Codex) use this machine's `node` and install path, except when Swipium itself runs from the npx cache.
+Which command gets written:
 
-Keys each client supports for a stdio server:
+- **Team-shared files** get the portable `npx -y swipium`. That covers Claude `--scope project`,
+  Gemini project scope, `.cursor/mcp.json` and `.vscode/mcp.json`.
+- **Machine-local registrations** get this machine's `node` and the absolute path of the installed
+  `dist/index.js`. That covers Claude local and user scope, Gemini user scope, and Codex. The
+  exception is when Swipium itself runs from the npx cache; that path would disappear, so these
+  also get `npx -y swipium`.
 
-- **Claude Code** (`.mcp.json`): `command`, `args`, `env`, `cwd`, with `${VAR}` / `${VAR:-default}` expansion. Per-tool `timeout` is in ms.
-- **Codex** (`[mcp_servers.swipium]`): `command`, `args`, `env`, `cwd`, `startup_timeout_sec` (default 10), `tool_timeout_sec` (default 60). `init codex` sets 30 and 600.
-- **Gemini CLI**: `command`, `args`, `env`, `cwd`, `timeout` (ms; default 600000), `trust`.
-- **Cursor**: `type`, `command`, `args`, `env`, `envFile`, with `${workspaceFolder}`, `${userHome}`, and `${env:NAME}` interpolation. There is no `cwd` or timeout key.
-- **VS Code**: top-level `servers` (not `mcpServers`); `type`, `command`, `args`, `env`, `envFile`, `cwd`, with `${workspaceFolder}`.
-- **Claude Desktop**: `command`, `args`, `env`. There is no `cwd` or timeout key.
-- **Windsurf**: `command`, `args`, `env`, with `${env:NAME}` interpolation.
+For Cursor and VS Code, `init` refuses to edit a file that isn't plain JSON (for example JSONC with
+comments), prints the entry to add by hand, and exits with status 2. An existing `swipium` entry
+is left unchanged.
 
-Codex manual config:
+### Manual configuration
+
+Claude Code:
+
+```bash
+claude mcp add swipium --scope project -- npx -y swipium
+```
+
+Codex (`~/.codex/config.toml`). Codex's defaults of 10 s to start and 60 s per tool call are too
+short for a first `npx` run and for builds and boots:
 
 ```toml
 [mcp_servers.swipium]
@@ -64,9 +95,21 @@ startup_timeout_sec = 30
 tool_timeout_sec = 600
 ```
 
-Known caveat: in the Codex Desktop app, custom stdio MCP tools can be discovered by `/mcp` but not exposed to threads ([openai/codex#19425](https://github.com/openai/codex/issues/19425), open). The Codex CLI is not reported as affected.
+Known caveat: in the Codex Desktop app, custom stdio MCP tools can show up in `/mcp` without being
+available in threads ([openai/codex#19425](https://github.com/openai/codex/issues/19425)). If that
+happens, use the Codex CLI.
 
-Cursor (`.cursor/mcp.json`) / VS Code (`.vscode/mcp.json`, with `"servers"` in place of `"mcpServers"`):
+Gemini CLI:
+
+```bash
+gemini mcp add --scope project swipium npx -- -y swipium
+```
+
+The `--` keeps Gemini from reading `-y` as its own flag. `init gemini` also suggests
+`"timeout": 600000` in the settings entry.
+
+Cursor (`.cursor/mcp.json`). For VS Code (`.vscode/mcp.json`), use the same entry under a top-level
+`"servers"` key instead of `"mcpServers"`:
 
 ```json
 {
@@ -81,7 +124,7 @@ Cursor (`.cursor/mcp.json`) / VS Code (`.vscode/mcp.json`, with `"servers"` in p
 }
 ```
 
-Claude Desktop / Windsurf:
+Claude Desktop and Windsurf:
 
 ```json
 {
@@ -95,48 +138,89 @@ Claude Desktop / Windsurf:
 }
 ```
 
-Environment variables (test credentials, OCR provider, SDK paths, elicitation policy) are listed in the README under [Configuration & environment variables](../README.md#configuration--environment-variables).
+Environment variables (test credentials, OCR provider, remote WDA allowlist, elicitation policy,
+retention) are listed in the README's configuration section.
+
+## What the server exposes
+
+- **Tools**: 55, listed in [tools.md](tools.md). Every tool carries explicit MCP annotations
+  (`readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint: false`).
+- **Server instructions**: sent on `initialize`. They give the first call
+  (`qa_test_this { mode: "execute" }`), the polling loop (`qa_job_status … waitMs`), how to relay
+  `needs_input`, blockers and consent, and the project-root order. `qa_status` without a
+  `sessionId` returns the same orientation plus the tool groups.
+- **Prompts** (5): `swipium_setup_check`, `swipium_guardrail_validation`, `swipium_full_smoke`,
+  `swipium_bug_repro`, `swipium_convert_run_to_flow`.
+- **Resources**:
+  - `swipium://session/{sessionId}/{kind}/{name}`: session artifacts (screenshots, dumps, reports,
+    logs).
+  - `swipium://project/{projectId}/app-map`: the full app map.
+  - `swipium://project/{projectId}/app-map/{kind}/{id}`: one feature, screen or test-suite section.
+
+  `resources/list` shows only the current client's project roots (its MCP roots plus roots of
+  sessions in this server process), never lists sensitive-mode sessions, and is capped at 100
+  entries per template, with the cap stated on the last entry. Anything not listed can still be
+  read by URI. Clients without resource support use `qa_get_artifact` and `qa_app_map_read`.
+
+## Server behavior
+
+- **Response modes.** Pass `responseMode: "compact" | "normal" | "verbose"` on `qa_start_session`
+  or `qa_test_this`, and every later call in that session uses it. `compact` shortens only the
+  text channel to a summary plus URIs. `structuredContent` always carries the full payload.
+- **Artifacts.** Evidence is stored under `~/.swipium/runs/` and returned as `swipium://` URIs.
+  `qa_get_artifact` returns metadata for images by default. Pass `mode: "inline"` only when you
+  need the pixels.
+- **Unknown arguments are rejected.** A top-level argument a tool doesn't declare returns
+  `INVALID_ARGUMENT` with the accepted parameter list, and nothing runs. Swipium doesn't silently
+  drop it.
+- **Stale clients.** A call to a tool removed in 2.0 (`qa_agent_brief`, `qa_capabilities`,
+  `qa_next_best_action`, `qa_detect_context`, `qa_plan`, `qa_assert_visual`), or a legacy call
+  shape (`qa_ios` `wda_*` or `screenshot` actions, `qa_wait for:"job_done"`), returns
+  `STALE_CLIENT` with the replacement call and a hint to restart the client. `qa_doctor` accepts
+  `expectedVersion`, `expectedToolCount` and `expectedSchemaHash` and reports a mismatch.
+- **Consent.** Privileged actions return `requiresConsent` with a `consentId` instead of running.
+  These include builds, Metro, emulator and simulator boots, every app install, data wipes, seeds,
+  recordings, network changes, OCR, mutating flow steps, writing generated Appium code into the
+  project, and non-loopback WDA. If the client supports MCP elicitation, Swipium asks the user directly, and a decline or
+  dismissal returns `CONSENT_DECLINED` or `CONSENT_CANCELLED`. Otherwise the agent shows the
+  request to the user and re-calls the same tool with `consentId` and `approve: true`.
+  `SWIPIUM_REQUIRE_ELICITATION=1` removes that fallback (`CONSENT_REFUSED`). See
+  [THREAT_MODEL.md](../THREAT_MODEL.md).
+- **Startup and shutdown.** The version and tool count are logged to stderr at startup, and
+  processes left behind by a crashed earlier server are reaped in the background. On shutdown or
+  client disconnect, Swipium restores changed network state and stops screen recorders and Metro.
+  Managed WebDriverAgent keeps running so the next server can reuse it; `qa_wda stop` stops it.
+
+## Scope
+
+Swipium supports the Android Emulator and the iOS Simulator, with optional WebDriverAgent for
+structured iOS automation. Physical devices are refused with `PHYSICAL_DEVICE_UNSUPPORTED`. See
+[physical-devices.md](physical-devices.md).
 
 ## Verification
-
-Run:
 
 ```bash
 swipium verify
 ```
 
-This starts the server over stdio, checks that every expected tool is listed, prints the tool names, and runs `qa_doctor`. Inside the MCP client, call `qa_doctor`. It defaults to both platforms on macOS (ready if either platform is ready) and to Android elsewhere. Pass `platform:"android" | "ios" | "both"` to be explicit.
+This starts a Swipium server over stdio, checks that all 55 tools and 5 prompts are listed, prints
+their names and the schema hash, and calls `qa_doctor`. It exits with status 1 if a tool is missing
+or `qa_doctor` errors. It starts the copy of Swipium you ran it with, not the command your client is
+configured with.
 
-If the client lists fewer tools than `swipium verify`, restart the MCP client. Clients often keep an old server process alive after a package upgrade. The current tool list is in [tools.md](tools.md).
+Inside the client, call `qa_doctor`. It checks both platforms by default on macOS (ready if either
+one is) and Android elsewhere. Pass `platform: "android" | "ios" | "both"` to be explicit.
 
-## Artifacts
+## Troubleshooting
 
-Swipium stores evidence as local artifacts and returns `swipium://` URIs. Use:
-
-- `qa_get_artifact` to read an artifact by URI.
-- `qa_report` to generate report artifacts.
-- `qa_screenshot` to capture screenshot artifacts.
-- `qa_app_map_read` to read app-map sections.
-
-Images default to metadata through `qa_get_artifact`. Request inline mode only when pixels are needed.
-
-## Consent
-
-Swipium requests consent before high-impact local actions such as:
-
-- Booting an Android emulator when required by the plan.
-- Installing external app artifacts.
-- Writing generated automation into a project directory.
-- Running mutating flow steps.
-
-The consent result includes a `consentId`. Re-call the same tool with `approve: true` and that `consentId` to continue.
-
-## Simulator Scope
-
-Public scope supports:
-
-- Android Emulator.
-- iOS Simulator.
-- Optional WebDriverAgent for structured iOS simulator automation.
-
-The public build does not support real-device execution.
+| Symptom | Fix |
+| --- | --- |
+| The client lists fewer or different tools than `swipium verify`, or calls return `STALE_CLIENT` | The client is still running a server it started before the upgrade. Restart the client, or reload its MCP server list. |
+| `PROJECT_ROOT_UNRESOLVED` | Pass an absolute `projectRoot`, or set `SWIPIUM_PROJECT_ROOT` in the server `env` (needed on Claude Desktop and Windsurf). |
+| The server times out on first start (Codex, Gemini) | The first `npx` run downloads the package. Raise the startup timeout (Codex `startup_timeout_sec = 30`), or install globally and point the client at `swipium`. |
+| Long tool calls time out | Raise the client's tool timeout (Codex `tool_timeout_sec = 600`, Gemini `timeout: 600000`). For builds and runs, prefer `qa_test_this { mode: "execute" }` plus `qa_job_status` polling. |
+| `adb` or `emulator` not found from a GUI client | Set `ANDROID_HOME` in the server `env`, or install the SDK in its default location. |
+| `INVALID_ARGUMENT` listing accepted parameters | Remove the undeclared argument. If the tool list looks outdated, restart the client. |
+| Tools missing in Codex Desktop threads | Known Codex Desktop issue ([openai/codex#19425](https://github.com/openai/codex/issues/19425)). Use the Codex CLI. |
+| `swipium init cursor --apply` or `init vscode --apply` exits with status 2 | The existing file isn't plain JSON. Add the printed entry by hand. |
+| `PHYSICAL_DEVICE_UNSUPPORTED` | Start an emulator or simulator. See [physical-devices.md](physical-devices.md). |

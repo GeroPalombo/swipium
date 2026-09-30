@@ -102,7 +102,8 @@ export function createFinisher(ctx: FinishContext): Finish {
             : { tool: 'qa_report', args: { sessionId: session.id }, why: 'Generate the report' }
           : {
               tool: 'qa_explain_blocker',
-              args: { failureCode: failureCode ?? 'UNKNOWN' },
+              // sessionId lets qa_explain_blocker stamp the blocker as explained, so qa_status moves on.
+              args: { failureCode: failureCode ?? 'UNKNOWN', sessionId: session.id },
               why: 'Understand the blocker and how to fix it',
             };
     // Uniform terminal envelope (Milestone B): summarizable from structured output, no log parsing.

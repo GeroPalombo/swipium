@@ -1,25 +1,27 @@
 # Swipium Docs
 
-This directory contains public documentation for the Swipium MCP server.
+Public documentation for the Swipium MCP server. Start with the top-level [README](../README.md) for requirements, installation, client setup, configuration, the CLI, and troubleshooting.
 
-## Index
+## Reference
 
-- [MCP Server](mcp-server.md): server command, project-root resolution, client setup (Claude Code, Codex, Gemini CLI, Cursor, VS Code, Claude Desktop, Windsurf), and verification.
-- [Tool Reference](tools.md): public MCP tools grouped by workflow (the authoritative tool list).
-- [CI Reports](ci-reports.md): exporting run reports as JUnit, SARIF, or a GitHub job summary.
-- [Physical Devices](physical-devices.md): roadmap and scoping for real-device support (currently refused with `PHYSICAL_DEVICE_UNSUPPORTED`).
+- [Tool Reference](tools.md): every public MCP tool, grouped by capability, with parameters, consent behavior, and the 1.5.0 migration table. This is the authoritative tool list.
+- [MCP Server](mcp-server.md): the server command, project-root resolution, per-client setup, verification, artifacts, and consent.
+- [CI Reports](ci-reports.md): `swipium report` output formats (JUnit, SARIF, GitHub summary, Markdown, JSON), a GitHub Actions recipe, and the release-gate policy.
+- [Physical Devices](physical-devices.md): why real devices are refused today (`PHYSICAL_DEVICE_UNSUPPORTED`) and what supporting them would require.
 
-Environment variables and host-OS support are covered in the top-level [README](../README.md#configuration--environment-variables).
+## Elsewhere in the repository
 
-Security: [Threat Model](../THREAT_MODEL.md) and [Security Policy](../SECURITY.md). Release history: [CHANGELOG](../CHANGELOG.md); upgrading from 1.x, see [Migrating from 1.5.0](../CHANGELOG.md#migrating-from-150) (also mirrored at the end of [tools.md](tools.md)).
+- Environment variables and host-OS support: [README](../README.md#configuration--environment-variables).
+- Security: [Threat Model](../THREAT_MODEL.md) and [Security Policy](../SECURITY.md).
+- Release history: [CHANGELOG](../CHANGELOG.md). Upgrading from 1.x: [Migrating from 1.5.0](../CHANGELOG.md#migrating-from-150).
+- Development: [Contributing](../CONTRIBUTING.md). Getting help: [Support](../SUPPORT.md).
 
 ## Scope
 
-Swipium is simulator-only:
+Swipium is a local stdio MCP server for emulators and simulators:
 
-- Android Emulator (macOS, Linux; Windows experimental).
-- iOS Simulator (macOS).
-- Local MCP stdio server.
-- Local artifacts and app-map memory.
+- Android Emulator on macOS and Linux (Windows is experimental).
+- iOS Simulator on macOS.
+- Evidence, app maps, flows, and test suites stored locally.
 
-Real devices, cloud execution, and certification are outside the current public scope.
+Real devices and cloud execution are outside the current scope.

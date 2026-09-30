@@ -215,18 +215,20 @@ export function nextBestAction(s: Session, goal?: string): { tool: string; why: 
 export const SERVER_INSTRUCTIONS = [
   'Swipium runs mobile QA on local Android Emulators and iOS Simulators (physical devices are out of scope).',
   '',
-  'First call: qa_test_this {mode:"execute"} (add goal, e.g. "explore" or "release_gate"). It resolves the project, finds or builds an app, prepares a simulator, tests, and reports as a background job.',
-  'Polling: qa_job_status {sessionId, jobId, waitMs:60000} until status is no longer "running". The job result carries state: completed | blocked | unsafe | needs_input, plus reportUri. Then read the report with qa_get_artifact {uri: reportUri}; make no further Swipium calls unless nextRecommendedAction asks for one.',
-  'Orientation: qa_status without sessionId returns these rules and the tool groups; with sessionId it returns session state and nextBestAction (pass goal to bias it).',
+  'First call: qa_test_this {mode:"execute"} (add goal, e.g. "release_gate"). It finds or builds the app, prepares an emulator/simulator, tests, and reports in a background job. It usually returns requiresConsent first (boot/install/build, see Consent), then {sessionId, jobId, state:"running"}.',
+  'Polling: qa_job_status {sessionId, jobId, waitMs:60000} until status is no longer "running". Then result.state is completed | blocked | unsafe | needs_input (none if cancelled), with reportUri. On completed, read it (qa_get_artifact {uri: reportUri}) and stop unless the user asks for more.',
+  'Orientation: qa_status without sessionId returns these rules + tool groups; with sessionId, session state and nextBestAction (goal biases it).',
   '',
   'needs_input: relay exactly the one returned question (fields, secret flags) to the user, then make the returned `resume` call (qa_continue_from_blocker) with their answer and follow its nextAction. Never invent extra questions.',
-  'blocked / unsafe: relay failureCode, owner, what Swipium tried, and the fix (qa_explain_blocker {failureCode}). A build failure is not a test failure.',
-  'Stop and ask the user only on needs_input (credentials, monorepo target, destructive approval, signing, external service) or a consent request; otherwise keep going.',
-  'Consent: a result with requiresConsent must be shown to the user; re-call with consentId + approve:true only after they agree. CONSENT_DECLINED / CONSENT_CANCELLED / CONSENT_REFUSED mean nothing ran - do not retry without asking.',
+  'blocked / unsafe: relay failureCode, owner, what Swipium tried, and the fix (qa_explain_blocker {failureCode, sessionId}). A build failure is not a test failure.',
+  'Ask the user only on needs_input or a consent request; otherwise keep going.',
+  'Consent: clients with MCP elicitation prompt the user directly. Otherwise show a requiresConsent result to the user and re-call with consentId + approve:true only after they agree. CONSENT_DECLINED / CONSENT_CANCELLED / CONSENT_REFUSED mean nothing ran - do not retry without asking.',
   '',
   'Project root: projectRoot arg, else MCP roots, else SWIPIUM_PROJECT_ROOT, else CLAUDE_PROJECT_DIR, else the server cwd if it is not / or $HOME and contains a project marker (package.json, app.json, pubspec.yaml, Gradle/Xcode files, Podfile, android/, ios/). On PROJECT_ROOT_UNRESOLVED pass an absolute projectRoot.',
+  'iOS Simulator without WebDriverAgent is visual-only: qa_snapshot/qa_act return BACKEND_UNSUPPORTED; use qa_screenshot + qa_visual, or attach WebDriverAgent via qa_wda. qa_test_this then runs a visual-only smoke.',
+  'Unknown arguments fail with INVALID_ARGUMENT (nothing runs). STALE_CLIENT means the client runs an outdated server: restart the client.',
   'Feature work: read the app map first (qa_app_map_read / qa_app_map_query / qa_app_map_feature_scope); qa_test_feature tests one feature.',
-  'Low-level tools (qa_start_session, qa_prepare_target / qa_prepare_ios_target, qa_snapshot, qa_act, qa_visual, qa_flow_run) are escape hatches when the autopilot is not enough.',
+  'Low-level escape hatches: qa_start_session, qa_prepare_target / qa_prepare_ios_target, qa_snapshot, qa_act, qa_visual, qa_flow_run.',
 ].join('\n');
 
 /** qa_status without a sessionId: first-call orientation (the operating rules + capability groups
@@ -240,11 +242,12 @@ export function orientation(goal?: TestGoal) {
     firstCall: {
       tool: 'qa_test_this',
       args: { mode: 'execute', ...(goal ? { goal } : {}) },
-      note: 'Pass projectRoot="/abs/path" if the client exposes no workspace root. Runs as a background job.',
+      note: 'Pass projectRoot="/abs/path" if the client exposes no workspace root. Usually returns requiresConsent first (boot/install/build); after approval it runs as a background job.',
     },
     polling: {
       tool: 'qa_job_status',
       args: { sessionId: '<from firstCall>', jobId: '<from firstCall>', waitMs: 60000 },
+      until: 'status is no longer "running" (done | failed | cancelled; a cancelled job has no result)',
       terminalStates: ['completed', 'blocked', 'unsafe', 'needs_input'],
     },
     report: { tool: 'qa_get_artifact', args: { uri: '<reportUri from the terminal result>' } },
@@ -252,8 +255,13 @@ export function orientation(goal?: TestGoal) {
     rules: {
       needsInput:
         'Relay exactly the one returned question; make its `resume` call (qa_continue_from_blocker) with the answer, then follow nextAction.',
-      blocker: 'Relay failureCode, owner, what was tried, and the fix (qa_explain_blocker). A build failure is not a test failure.',
-      stop: 'Ask the user only on needs_input or a consent request; otherwise continue.',
+      blocker:
+        'Relay failureCode, owner, what was tried, and the fix (qa_explain_blocker {failureCode, sessionId}). A build failure is not a test failure.',
+      consent:
+        'Clients with MCP elicitation prompt the user directly. Otherwise show requiresConsent to the user; re-call with consentId + approve:true only after they agree. CONSENT_DECLINED / CANCELLED / REFUSED: nothing ran, do not retry without asking.',
+      stop: 'Ask the user only on needs_input or a consent request; otherwise continue. After a completed job, read the report and stop.',
+      iosVisualOnly:
+        'An iOS Simulator without WebDriverAgent is visual-only: use qa_screenshot + qa_visual, or attach WebDriverAgent via qa_wda.',
       appMap: 'Before feature testing, read the app map (qa_app_map_read / qa_app_map_query / qa_app_map_feature_scope).',
     },
     capabilityGroups: CAPABILITY_GROUPS.map((g) => ({ group: g.group, purpose: g.purpose, tools: [...g.tools] })),
@@ -289,9 +297,9 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
         const summary =
           `Swipium v${o.swipiumVersion} (${o.tools} tools, ${o.prompts} prompts)\n` +
           `1. ${o.firstCall.tool} ${JSON.stringify(o.firstCall.args)}\n` +
-          `2. ${o.polling.tool} {sessionId, jobId, waitMs} until state ∈ {${o.polling.terminalStates.join(', ')}}\n` +
-          `3. ${o.report.tool} { uri: reportUri }\n` +
-          'needs_input → ask the one returned question; otherwise continue.\n' +
+          `2. ${o.polling.tool} {sessionId, jobId, waitMs} until status ≠ running; result.state ∈ {${o.polling.terminalStates.join(', ')}}\n` +
+          `3. ${o.report.tool} { uri: reportUri }, then stop\n` +
+          'requiresConsent → show it to the user; needs_input → ask the one returned question; otherwise continue.\n' +
           o.capabilityGroups.map((g) => `[${g.group}] ${g.tools.join(', ')}`).join('\n');
         return qaOk(o, summary);
       }

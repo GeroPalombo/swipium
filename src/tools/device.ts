@@ -22,7 +22,7 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
     {
       title: 'Device info',
       description:
-        'Read-only device introspection (no consent needed): model/manufacturer/Android SDK+release, supported ABIs, locale, timezone, screen size/density, current orientation, and installed third-party app count. Pass listPackages:true (optionally packageFilter) to include package names.',
+        'Read-only device info (no consent). Android: model/manufacturer/SDK+release, ABIs, locale, timezone, screen size/density, orientation, third-party app count (listPackages:true, optionally packageFilter, adds names). iOS Simulator: name, runtime, state, screen size.',
       inputSchema: {
         sessionId: z.string(),
         listPackages: z.boolean().optional().describe('Include installed third-party package names.'),
@@ -106,7 +106,7 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
     {
       title: 'Set orientation',
       description:
-        'Set screen orientation: portrait | landscape | auto (re-enables auto-rotate). Non-destructive; logged as an environment change and surfaced in qa_report. Useful for testing rotation handling.',
+        'Set screen orientation (Android Emulator only): portrait | landscape | auto (re-enables auto-rotate). Non-destructive; logged as an environment change and surfaced in qa_report.',
       inputSchema: {
         sessionId: z.string(),
         orientation: z.enum(['portrait', 'landscape', 'auto']),
@@ -174,7 +174,7 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
     {
       title: 'Set location',
       description:
-        'Spoof the device GPS location (emulator only). Consent-gated and logged as an environment change. Useful for testing location-dependent apps (maps, nearby, geofencing). Pass lat + lng (decimal degrees).',
+        'Spoof the GPS location (Android Emulator only). Consent-gated and logged as an environment change. For location-based apps (maps, nearby, geofencing). Pass lat + lng (decimal degrees).',
       inputSchema: {
         sessionId: z.string(),
         lat: z.number().describe('Latitude in decimal degrees.'),

@@ -2,9 +2,23 @@
 
 All notable public changes to Swipium are documented here.
 
-## 2.0.0 - 2026-09-28
+## 2.0.0 - 2026-09-30
 
-This release fixes the typing, gesture, and secret-handling defects in the core loop, adds CI exports and a consolidated visual tool, and narrows the public surface from 61 to 55 tools. **It removes and renames public tools** — see [Migrating from 1.5.0](#migrating-from-150) below and the same table at the end of `docs/tools.md`.
+Swipium 2.0.0 fixes the typing, gesture, and secret-handling defects in the core test loop, makes iOS Simulator sessions and background jobs more reliable, adds CI report exports and one visual tool, and narrows the public surface from 61 to 55 tools. **It removes and renames public tools and tightens several defaults** — read Breaking changes before upgrading, and restart your MCP client afterwards so it loads the new tool list.
+
+### Breaking changes
+
+- **Removed and renamed tools.** See the migration table below (also at the end of `docs/tools.md`). A client still running a pre-upgrade server, or a saved prompt that calls a removed tool, gets a typed `STALE_CLIENT` error that names the replacement.
+- **Environment variables in flows and fixtures.** Flows and `.swipium/fixtures.json` resolve `${VAR}` from the server environment only for names starting with `SWIPIUM_`. Explicit `variables` and inputs stored in the session still work. Generated flows and suites use `SWIPIUM_TEST_*` for stored inputs and `SWIPIUM_SECRET_N` for other secrets, and `swipium init flows` templates use `SWIPIUM_TEST_EMAIL` / `SWIPIUM_TEST_PASSWORD`. Rename any other variables your flows read from the environment.
+- **Every app install asks for consent**, including an APK inside the project (Android now matches iOS). Only an app already installed on a running emulator skips the prompt.
+- **Unknown tool arguments are rejected** with `INVALID_ARGUMENT`, which lists the accepted parameters, and nothing runs. They used to be ignored silently, so a call such as `qa_app_control {appId:"other.app"}` ran against the session's app.
+- **CLI:** an unknown subcommand prints usage and exits `2` instead of starting the server. Unknown `--flags` (such as `--stdio`) still start the server, with a warning.
+- **`qa_status`** without `sessionId` returns first-call orientation instead of an error. With a session, it follows the last job: after a finished run it recommends that run's next action (read the report, explain the blocker, answer the question) instead of `qa_smoke` again, and it stops repeating advice that was already followed.
+- **`qa_test_this`:**
+  - It never installs on a physical phone. With a phone connected it waits for the emulator it planned to boot; with only a phone connected it returns `PHYSICAL_DEVICE_UNSUPPORTED`.
+  - `needs_input` is a terminal job state. A credentials question found during a run is returned instead of dropped.
+  - On iOS without WebDriverAgent it no longer blocks by default. It skips suite generation and exploration and runs a visual-only smoke. It still blocks when you explicitly ask for work that needs WebDriverAgent.
+- **Response format in normal mode:** the JSON block in the text channel is compact and omits data already shown in the text (a 32-element `qa_snapshot` is under half its 1.5.0 size). `structuredContent` still carries the full payload. `qa_act` returns only the elements that changed once a snapshot exists (`observe:"diff"`), and falls back to the full list when most of the screen changed.
 
 ### Migrating from 1.5.0
 
@@ -22,118 +36,110 @@ This release fixes the typing, gesture, and secret-handling defects in the core 
 | `qa_suite_generate {creativityLevel}` | `qa_suite_generate {creativity}` (`creativityLevel` still accepted) |
 | `qa_mobile_audit {waitForCompletion}` | removed (was reserved and unused) |
 
-MCP clients pick up the new tool list after a restart. Saved prompts or scripts that name removed tools need the replacements above.
-
 ### Added
 
-- `qa_visual`: one visual-intelligence tool with `mode:"baseline"|"diff"|"find_text"|"find_image"|"assert"`. It works from screenshots only, so it also works on an iOS simulator without WebDriverAgent, where `qa_act`/`qa_snapshot` are unavailable. `find_text`/`find_image` return tappable device coordinates (points on iOS) and can tap them (`tap:true`, via `idb` on a WDA-less simulator); those taps are recorded and budgeted like `qa_act` taps. `find_text` needs a local OCR command (`SWIPIUM_OCR_CMD` or `ocrCommand` in `.swipium/config.json`); without one it returns `OCR_NOT_CONFIGURED` with the provider contract and a tesseract example.
-- `qa_issue_log` lifecycle: `mode:"history"` (default, the 1.5.0 behavior), `"log"`, `"mark_fixed"`, `"verify_fixed"`, `"suppress"` (with `suppressedUntil` expiry and `unsuppress:true`), and `"metrics"`. An issue marked fixed and seen again is classified as a regression.
-- CI exports: `qa_report format:"junit"|"sarif"|"github-summary"`, and a new `swipium report` CLI (`--latest --format … --out … --fail-on-gate`) that renders the last saved report and exits `1` when the `.swipium/policy.json` release gate blocks. SARIF results are anchored to real repository files so GitHub code scanning shows them. `docs/ci-reports.md` has a complete GitHub Actions recipe (Android emulator, headless Claude Code, report, SARIF upload, JUnit).
-- `qa_act observe:"diff"|"full"|"none"`: return only the elements that changed after an action (`diff` is the default once a snapshot exists).
-- `qa_status` without `sessionId` returns first-call orientation; with `goal` it biases `nextBestAction`. `qa_job_status waitMs` long-polls until the job finishes (up to 120 s).
-- MCP tool annotations on every tool (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint:false`), so clients can auto-approve read-only calls, and server `instructions` with the operating guide. The `tools/list` payload is about 26% smaller.
+- `qa_visual`: one screenshot-based tool with `mode:"assert"|"baseline"|"diff"|"find_text"|"find_image"`. Because it needs only screenshots, it also works on an iOS Simulator without WebDriverAgent, where `qa_snapshot` and `qa_act` are unavailable. `find_text` and `find_image` return tappable device coordinates (points on iOS) and can tap them (`tap:true`, through `idb` on a simulator without WebDriverAgent). Those taps are recorded and budgeted like `qa_act` taps. `find_text` is consent-gated and needs a local OCR command (`SWIPIUM_OCR_CMD` or `ocrCommand` in `.swipium/config.json`). Without one it returns `OCR_NOT_CONFIGURED` with the provider contract and a tesseract example.
+- `qa_issue_log` lifecycle: `mode:"history"` (default, the 1.5.0 behavior), `"log"`, `"mark_fixed"`, `"verify_fixed"`, `"suppress"` (with a `suppressedUntil` expiry and `unsuppress:true`), and `"metrics"`. An issue marked fixed and seen again is classified as a regression.
+- CI exports: `qa_report format:"junit"|"sarif"|"github-summary"`, and a `swipium report` CLI (`--latest --format … --out … --fail-on-gate`) that renders the last saved report and exits `1` when the `.swipium/policy.json` release gate blocks. SARIF results point at real repository files so GitHub code scanning shows them. `docs/ci-reports.md` has a complete GitHub Actions recipe (Android emulator, headless Claude Code, report, SARIF upload, JUnit).
+- `qa_act observe:"diff"|"full"|"none"`, and `warnings[]` in `qa_act` results.
+- `qa_job_status waitMs` long-polls until the job leaves `running` (up to 120 s). `qa_status` accepts `goal` to bias `nextBestAction`.
+- `qa_test_this`: `responseMode`, and a compact report summary in the terminal result.
+- MCP tool annotations on every tool (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint:false`), so clients can auto-approve read-only calls, and server `instructions` with the operating guide.
 - MCP resource listing for session artifacts and app-map sections, scoped to the current project and excluding sensitive-mode sessions.
 - Consent through MCP elicitation: on clients that support it, privileged actions are approved in a real user prompt, and the mutation ledger records how each action was approved (`elicitation`, `client-assertion`, or `policy`). `SWIPIUM_REQUIRE_ELICITATION=1` refuses every consent-gated action on clients without elicitation.
-- CLI: `swipium --help`, `--version`, `swipium serve`; an unknown subcommand prints usage and exits `2` instead of starting the server (unknown `--flags` such as `--stdio` still start the server, with a warning). New `swipium init cursor` and `swipium init vscode`; `init` accepts `--cwd <dir>`.
-- Disk retention: at startup Swipium prunes `~/.swipium/runs` session folders older than 30 days that are not in the session registry, always keeping the newest 20 per project (`SWIPIUM_RETENTION_DAYS`, `SWIPIUM_RETENTION_KEEP`; `0`/`off` disables). `swipium gc [--dry-run] [--days N] [--keep N]` reclaims space on demand, and `~/.swipium/projects.json` drops entries for deleted projects.
-- `qa_test_this` accepts `responseMode`, has a `needs_input` terminal job state (a credentials question found during a run is returned instead of dropped), and its terminal result carries a compact report summary.
-- `qa_device_info` on iOS simulators returns name, runtime, state, and screen size. `qa_resolve_target include:["context"]` lists booted and available iOS simulators.
+- CLI: `swipium --help`, `--version`, `swipium serve`, `swipium init cursor`, `swipium init vscode`, and `init --cwd <dir>`.
+- Disk retention: at startup Swipium prunes `~/.swipium/runs` session folders older than 30 days that are not in the session registry, always keeping the newest 20 per project (`SWIPIUM_RETENTION_DAYS`, `SWIPIUM_RETENTION_KEEP`; `0` or `off` disables). `swipium gc [--dry-run] [--days N] [--keep N]` reclaims space on demand, and `~/.swipium/projects.json` drops entries for deleted projects.
+- `qa_device_info` on iOS Simulators returns name, runtime, state, and screen size. `qa_resolve_target include:["context"]` lists booted and available iOS Simulators.
+- `qa_wda build` and `start` find an Appium-installed WebDriverAgent project when `wdaProjectPath` is not given.
 
 ### Changed
 
-- Project root resolution: explicit `projectRoot` → MCP roots → `SWIPIUM_PROJECT_ROOT` → `CLAUDE_PROJECT_DIR` → the server's working directory, only when it contains a project marker (`package.json`, `app.json`, `pubspec.yaml`, Gradle or Xcode files, `android/`, `ios/`). Results report where the root came from (`rootSource`). Unresolved roots fail with `PROJECT_ROOT_UNRESOLVED`.
-- `swipium init` writes a portable `npx -y swipium` command for project-scoped registrations (shared `.mcp.json`, Gemini project settings, Cursor, VS Code); absolute paths are used only for user/local scope. Codex registrations include `startup_timeout_sec = 30` and `tool_timeout_sec = 600`.
-- `adb` and `emulator` are found through `ANDROID_HOME`, `ANDROID_SDK_ROOT`, or the default SDK location for the OS when they are not on `PATH` (useful for GUI-launched clients).
+- Project root resolution: explicit `projectRoot` → MCP roots → `SWIPIUM_PROJECT_ROOT` → `CLAUDE_PROJECT_DIR` → the server's working directory, which is used only when it is not `/` or `$HOME` and contains a project marker (`package.json`, `app.json`, `pubspec.yaml`, Gradle or Xcode files, `Podfile`, `android/`, `ios/`). Results report where the root came from (`rootSource`). An unresolved root fails with `PROJECT_ROOT_UNRESOLVED`. `qa_flow_check` and `qa_flow_run mode:"plan"` resolve the root the same way.
+- `swipium init` writes a portable `npx -y swipium` command for project-scoped registrations (shared `.mcp.json`, Gemini project settings, Cursor, VS Code). Absolute paths are used only for user or local scope. Codex registrations include `startup_timeout_sec = 30` and `tool_timeout_sec = 600`.
+- `adb` and `emulator` are found through `ANDROID_HOME`, `ANDROID_SDK_ROOT`, or the OS default SDK location when they are not on `PATH` (useful for GUI-launched clients).
 - `qa_doctor` checks both platforms by default on macOS, and checks the Node version against `engines`.
-- `build_from_source` consent is now high risk and `start_metro` medium.
-- Generated Appium suites perform real scroll and swipe gestures; steps that cannot be generated fail with `UNEMITTABLE_STEP` instead of producing no-op code. A scroll recorded without a target is now replayed in the correct direction.
-- `qa_continue_from_blocker` returns `ignored[]` for answers the resumed tool cannot use, instead of dropping them silently, and replays the original goal and flags of the interrupted `qa_test_this` call.
-- Flows resolve `${VAR}` from the server environment only for names starting with `SWIPIUM_` (explicit variables and stored session inputs still work). Generated flows and suites always use `SWIPIUM_`-prefixed names (`SWIPIUM_TEST_*` for stored inputs, `SWIPIUM_SECRET_N` otherwise), and `qa_flow_run` fills in the session's stored inputs. `swipium init flows` templates use `SWIPIUM_TEST_EMAIL`/`SWIPIUM_TEST_PASSWORD`.
-- Every app install is consent-gated, including an APK inside the project (Android now matches iOS). `qa_mobile_audit` `resilience`/`release_gate` profiles ask for network-change consent before toggling airplane mode, and restore its original state afterwards.
-- `qa_status` follows the last job: after a finished run it returns that run's next action instead of re-suggesting `qa_smoke`; smoke and report milestones are remembered.
-- Responses are smaller: the JSON block in normal response mode is compact and omits data already shown in the text (a 32-element `qa_snapshot` went from about 8.6k to 1.9k characters), and `qa_act`'s default diff falls back to the full list when most of the screen changed.
-- Fewer device round trips per action: adaptive settle interval, bounded screen-dump timeouts, a cheaper foreground/health check, longer-lived screen-size caches, one keyboard lookup per action, and the MCP cancel signal reaches the device call.
+- Consent risk: `build_from_source` is high risk and `start_metro` medium. `qa_mobile_audit` `resilience` and `release_gate` profiles ask for network-change consent before toggling airplane mode, and restore its original state afterwards.
+- `qa_continue_from_blocker` returns `ignored[]` for answers the resumed tool cannot use, and replays the goal and flags of the interrupted `qa_test_this` call.
+- `qa_flow_repair` proposes elements of the same kind ranked by text similarity and refuses to apply low-confidence repairs. A failed `qa_flow_run` points to it.
+- `qa_report` merges identical findings into one with a count, and reports `DEGRADED` tool status when tools failed during the run. Cancelled calls, unknown sessions, invalid app IDs, and deliberate refusals do not count as tool errors.
+- Errors that returned `UNKNOWN` now carry typed codes (`INVALID_ARGUMENT`, `FLOW_NOT_FOUND`, `KEYBOARD_NOT_DISMISSIBLE`, `CAPTURE_WITHHELD_SECURE`, `SENSITIVE_MODE_REFUSED`, `NO_DEVICE`, `CANCELLED`).
+- Fewer device round trips per action: adaptive settle interval, bounded screen-dump timeouts, a cheaper foreground and health check, longer-lived screen-size caches, and one keyboard lookup per action.
 
 ### Fixed
 
-- Android typing escapes every shell metacharacter (including `{ } [ ]`), types a literal `%s` correctly, and treats empty text as a no-op. Characters `adb input text` cannot deliver fail with `TEXT_INPUT_UNSUPPORTED`.
-- Deep links and launch extras containing `&`, spaces, or `;` reach the app intact on Android.
-- Swipe and scroll geometry comes from the live screen size, accounts for rotation, and keeps clear of screen edges; the old fixed 1080×2400 coordinates were off-screen on iOS.
-- Tapping a control hidden under the soft keyboard no longer types into the field: when the keyboard area is known and covers the target, Swipium hides the keyboard, re-finds the target, and returns `KEYBOARD_OBSTRUCTION` if it is still covered; when the area is unknown it taps and returns a warning. `qa_act` results now include `warnings[]`.
-- `qa_act scroll untilVisible` checks before the first swipe and stops at the end of a list (`endOfList`).
-- Flow `clearOverlay` no longer presses BACK on a plain screen (which could leave the app); it dismisses dialogs, sheets, and dev overlays and reports when there was nothing to clear.
-- A single USB phone, or an emulator that is still booting, is no longer bound automatically; tools return `PHYSICAL_DEVICE_UNSUPPORTED` or `DEVICE_NOT_READY`. Network-attached emulators (e.g. `localhost:5555`) are accepted.
-- Monorepo projects: answering the "which app?" question now selects that app instead of being treated as a device ID, and the question is not asked again.
-- iOS: platform-aware next steps after `qa_ios boot`, simulators counted in target plans, keyboard detection on WebDriverAgent, request timeouts on every WebDriverAgent call, and recovery from an expired WebDriverAgent session that asks WebDriverAgent not to relaunch or terminate the app (`forceAppLaunch:false`, `shouldTerminateApp:false`).
-- `qa_issue_log mode:"log"` no longer merges unrelated issues into one; each issue's identity includes its title and category. Titles with no identifying words return `ISSUE_LOG_TOO_VAGUE`. Issues logged manually by 1.5.x keep their old identity and can be closed with `mark_fixed` or `suppress`.
-- The issue ledger is locked across processes and rebuilds its index when another process changed it.
-- JUnit exports are always well-formed XML (control characters from device logs are replaced), and failures the release-gate policy ignores are reported as skipped instead of failed. GitHub step summaries are capped below GitHub's 1 MiB limit.
-- Generated JavaScript suites no longer contain TypeScript-only syntax, and generated JavaScript/Python suites compile when element labels are keywords ("Continue", "Return"), start with digits, or contain quotes or backslashes.
-- App-map and session state writes are atomic and locked; a stale lock is taken over safely, long app-map scans run outside the lock, and a corrupt `app-map.json` is restored from history.
-- Generated suite files from `qa_test_this generateSuite:true` are fetchable `swipium://` artifacts.
-- `swipium scan` writes nothing when it cannot identify a project; the docs and CLI no longer reference the nonexistent `swipium plan` and `swipium ci` commands.
-- A child process exiting before reading its stdin can no longer crash the server; iOS screen size no longer downloads the full UI tree.
-- Found by device testing on an Android 16 emulator and an iOS 18 simulator:
-  - A resumed iOS session is rebound to its own simulator (through WebDriverAgent when it was attached), never to another online device, and the rebind reuses the running app instead of relaunching it. `state.json` now records the driver kind and WebDriverAgent URL.
-  - A managed WebDriverAgent started by a previous server run is no longer stopped at startup when it is less than 12 hours old and healthy: the new server adopts it, so a resumed iOS session keeps structured automation instead of falling back to visual-only. `qa_wda stop` can stop an adopted WebDriverAgent.
-  - Scrolls start inside the scrollable list instead of the screen center (in landscape, the center could be on the app bar), a plain `scroll` performs one swipe, and `changed` also reflects content that moved.
-  - Snapshots skip rows that Android reports as scrolled off the list (empty or inverted bounds) or that lie off-screen, so `scroll untilVisible` no longer reports an off-screen row as found and taps no longer land on the list edge. `untilVisible` only reports `endOfList` when the list stopped moving, not when it moved but showed the same labels.
-  - Replace-mode typing of text `adb` cannot deliver is refused before the field is cleared.
-  - iOS snapshots include accessibility identifiers and search/text fields, so typed values can be read back.
-  - `press key:"back"` on iOS taps the navigation bar's back button or swipes from the left edge, instead of calling a WebDriverAgent endpoint that does not exist.
-  - The documented tesseract OCR setup works: the provider runs from the project root, a crashing provider returns `OCR_PROVIDER_FAILED` instead of "not found", and screenshots are written to a path macOS tesseract can open.
-  - Navigation bars, list rows, and text fields are no longer reported as banner or snackbar overlays.
-  - A password field's show/hide button keeps its label in snapshots; only secure values are masked.
-  - Generated suites default to the session's platform (iOS sessions get XCUITest), the Python generator passes its own validation, and `qa_visual mode:"assert"` steps become marked manual checks instead of failing text assertions.
-  - `qa_report` collapses identical findings into one with a count, and reports `DEGRADED` tool status when tools failed during the run.
-  - `qa_flow_check` and `qa_flow_run mode:"plan"` resolve the project root like other tools (`projectRoot`, MCP roots, `SWIPIUM_PROJECT_ROOT`, working directory).
-  - Several errors that returned `UNKNOWN` now carry typed codes (`INVALID_ARGUMENT`, `FLOW_NOT_FOUND`, `KEYBOARD_NOT_DISMISSIBLE`, `CAPTURE_WITHHELD_SECURE`, `SENSITIVE_MODE_REFUSED`, `NO_DEVICE`).
-  - `qa_status` reports a simulator session without WebDriverAgent as `visual-only`.
-- Found in pre-release review:
-  - With a physical phone connected, `qa_test_this` could install the app on the phone instead of the emulator it planned to boot. It now waits for the new emulator and never targets a physical device; a phone alone returns `PHYSICAL_DEVICE_UNSUPPORTED`, and a missing `adb` returns `ADB_NOT_FOUND`.
-  - `qa_test_this` on iOS without WebDriverAgent no longer blocks by default: it skips suite generation and runs visual-only. Plan-mode "next" calls include `mode:"execute"` so they don't repeat the plan.
-  - The file lock could spin forever on a stale lock it could not take over, blocking server startup.
-  - Common-word passwords ("test", "password") no longer rewrite selectors or block generation on template text.
-  - Apps whose package name contains `debug` or `alert` no longer show false banner/snackbar overlays.
-  - Tapping a switch or checkbox is detected as a change, instead of being retried and toggled back.
-  - `qa_flow_repair` proposes elements of the same kind, ranked by text similarity, and refuses to apply low-confidence repairs; a failed `qa_flow_run` points to it.
-  - Flow `clearOverlay` dismisses iOS alerts with the alert API. A brief WebDriverAgent outage while resuming no longer downgrades an iOS session permanently.
-  - Unknown sessions, invalid app IDs, and deliberate refusals return typed failure codes, and the report's tool status no longer counts them as tool errors.
-  - `qa_status` no longer repeats advice that was already followed (an answered question, a report generated after the run, an explained blocker). `qa_explain_blocker` accepts `sessionId`.
-  - Cancelling one call no longer cancels another: each tool call and background job carries its own cancel signal, so cancelling a `qa_snapshot` cannot stop a running install, and a cancelled job cannot break later calls.
-  - An orphaned Metro started through `npx` is cleaned up after a crash (npm renames its process title), and process start times are read in a fixed locale.
-  - Fixtures are no longer saved to `state.json` in redacted form and replayed as `«redacted»` after a restart; a resumed session reloads them from `.swipium/fixtures.json`.
-  - iOS `press back` only reuses a page source from the last few seconds, and app launches through `qa_ios` reset it.
-- Found in device smoke tests of the release candidate:
-  - A managed WebDriverAgent is recognized after a server restart even though Xcode's `xcodebuild` shim re-executes under its full path, so it is adopted (or cleaned up) and `qa_wda stop` can stop it, including when its registry entry was lost.
-  - `qa_ios launch`/`terminate` work while WebDriverAgent is attached, and sending the app to the background on iOS uses WebDriverAgent's session-less home-screen endpoint. `qa_app_control background` waits for the home-screen transition and reports the real foreground app; if WebDriverAgent cannot say which app is in front, it reports `unknown` instead of assuming the app under test.
-  - Cancelled calls and jobs return `CANCELLED` and are never recorded as tool errors or findings (a cancelled job no longer produces a release-blocking finding).
-  - A session that fell back to visual-only on one slow screen returns to structured mode once screen dumps work again.
-  - Unknown tool arguments are rejected with `INVALID_ARGUMENT` listing the accepted parameters, instead of being silently ignored.
-  - `qa_wda build` finds an Appium-installed WebDriverAgent project automatically.
+**Android**
+
+- Typing escapes every shell metacharacter (including `{ } [ ]`), types a literal `%s` correctly, and treats empty text as a no-op. Characters `adb input text` cannot deliver fail with `TEXT_INPUT_UNSUPPORTED`, and replace-mode typing refuses them before clearing the field.
+- Deep links and launch extras containing `&`, spaces, or `;` reach the app intact.
+- A single USB phone, or an emulator that is still booting, is no longer bound automatically; tools return `PHYSICAL_DEVICE_UNSUPPORTED` or `DEVICE_NOT_READY`. Network-attached emulators (such as `localhost:5555`) are accepted. A missing `adb` returns `ADB_NOT_FOUND`.
+- Snapshots skip rows Android reports as scrolled off the list or that lie off-screen, so `scroll untilVisible` no longer reports an off-screen row as found and taps no longer land on the list edge.
+- Apps whose package name contains `debug` or `alert` no longer show false banner or snackbar overlays.
+
+**Gestures and actions (both platforms)**
+
+- Swipe and scroll geometry comes from the live screen size, accounts for rotation, and keeps clear of screen edges. The old fixed 1080×2400 coordinates were off-screen on iOS.
+- Scrolls start inside the scrollable list rather than the screen center, a plain `scroll` performs one swipe, and `changed` also reflects content that moved. `scroll untilVisible` checks before the first swipe and reports `endOfList` only when the list stopped moving.
+- Tapping a control hidden under the soft keyboard no longer types into the field. When the keyboard covers the target, Swipium hides the keyboard, finds the target again, and returns `KEYBOARD_OBSTRUCTION` if it is still covered. When the keyboard area is unknown, it taps and returns a warning.
+- Tapping a switch or checkbox is detected as a change instead of being retried and toggled back.
+- Navigation bars, list rows, and text fields are no longer reported as banner or snackbar overlays. A password field's show/hide button keeps its label in snapshots; only secure values are masked.
+- Flow `clearOverlay` no longer presses BACK on a plain screen (which could leave the app). It dismisses dialogs, sheets, and dev overlays (iOS alerts through the alert API) and reports when there was nothing to clear.
+
+**iOS**
+
+- A resumed iOS session is rebound to its own simulator (through WebDriverAgent when it was attached), never to another device, and reuses the running app instead of relaunching it.
+- A managed WebDriverAgent started by a previous server run is adopted at startup when it is healthy and less than 12 hours old, so a resumed session keeps structured automation. It is recognized even though Xcode's `xcodebuild` shim re-executes under its full path, and `qa_wda stop` can stop it, including when its registry entry was lost.
+- Recovery from an expired WebDriverAgent session no longer relaunches or terminates the app, every WebDriverAgent call has a request timeout, and a brief outage while resuming no longer downgrades the session permanently.
+- A session that fell back to visual-only on one slow screen returns to structured mode once screen dumps work again. `qa_status` reports a simulator session without WebDriverAgent as `visual-only`.
+- `qa_ios launch` and `terminate` work while WebDriverAgent is attached. `qa_app_control background` waits for the home screen and reports the real foreground app, or `unknown` when WebDriverAgent cannot tell.
+- `press key:"back"` taps the navigation bar's back button or swipes from the left edge.
+- Snapshots include accessibility identifiers and search and text fields, so typed values can be read back. Keyboard detection works through WebDriverAgent.
+- After `qa_ios boot`, next steps point at iOS tools, and target plans count simulators.
+
+**Sessions and jobs**
+
+- Cancelling one call no longer cancels another: each tool call and background job carries its own cancel signal. Cancelled calls and jobs return `CANCELLED` and are never recorded as tool errors or findings.
+- App-map and session state writes are atomic and locked. A stale lock is taken over safely (the lock can no longer spin forever and block startup), long app-map scans run outside the lock, and a corrupt `app-map.json` is restored from history.
+- Fixtures are reloaded from `.swipium/fixtures.json` on resume instead of being replayed as `«redacted»` after a restart.
+- Monorepos: answering the "which app?" question selects that app instead of being treated as a device ID, and the question is not asked again.
+- An orphaned Metro started through `npx` is cleaned up after a crash, and a child process that exits before reading its stdin can no longer crash the server.
+
+**Generation**
+
+- Generated Appium suites perform real scroll and swipe gestures, and a scroll recorded without a target replays in the right direction. Steps that cannot be generated fail with `UNEMITTABLE_STEP` instead of producing no-op code.
+- Generated JavaScript suites contain no TypeScript-only syntax, and JavaScript and Python suites compile when element labels are keywords, start with digits, or contain quotes or backslashes. The Python generator passes its own validation.
+- Generated suites default to the session's platform (iOS sessions get XCUITest), and `qa_visual mode:"assert"` steps become marked manual checks.
+- Common-word passwords ("test", "password") no longer rewrite selectors or block generation on template text.
+- Suite files from `qa_test_this generateSuite:true` are fetchable `swipium://` artifacts.
+
+**Reports and issues**
+
+- JUnit exports are always well-formed XML, and failures the release-gate policy ignores are reported as skipped. GitHub step summaries stay below GitHub's 1 MiB limit.
+- `qa_issue_log mode:"log"` no longer merges unrelated issues: identity includes the title and category, and titles with no identifying words return `ISSUE_LOG_TOO_VAGUE`. Issues logged by 1.5.x keep their identity and can be closed with `mark_fixed` or `suppress`. The ledger is locked across processes.
+- The documented tesseract OCR setup works: the provider runs from the project root, a crashing provider returns `OCR_PROVIDER_FAILED`, and screenshots are written where macOS tesseract can read them.
+
+**CLI**
+
+- `swipium scan` writes nothing when it cannot identify a project, and the docs and CLI no longer mention the nonexistent `swipium plan` and `swipium ci` commands.
 
 ### Security
 
-- A consent prompt the user dismisses or leaves unanswered is a refusal (`CONSENT_CANCELLED`); the agent cannot approve that action itself. An open prompt cannot be bypassed with `approve:true`.
-- Secrets never appear in error messages: a failed `adb input text` no longer echoes the typed value, and `qa_act`/flow errors are redacted.
+- A consent prompt the user dismisses or leaves unanswered is a refusal (`CONSENT_CANCELLED`); the agent cannot approve that action itself, and an open prompt cannot be bypassed with `approve:true`. Consent prompts strip control characters and are bound to the session that requested them.
+- A cloned repository is treated as untrusted input. Flows and `.swipium/fixtures.json` cannot read server environment variables outside `SWIPIUM_*`, and values read from the environment are treated as secrets. An `openUrl` containing a variable is consent-gated. Consent shows the exact commands of flow seed steps and of repository-configured OCR and mask commands, labelled as unreviewed. A project config can no longer point iOS automation at a non-loopback WebDriverAgent (set `SWIPIUM_ALLOW_REMOTE_WDA` to allow specific URLs).
+- Secrets never appear in error messages: a failed `adb input text` no longer echoes the typed value, and `qa_act` and flow errors are redacted.
+- Values typed into secure fields (passwords, PINs, OTPs, CVVs) are redacted regardless of length with whole-token matching. JSON and XML artifacts are redacted structurally so they stay valid. Secrets shorter than 3 characters are reported as not redacted instead of blanking unrelated text, and a session resumed after a restart is flagged `redactionDegraded` in `qa_report`.
 - Report exports (JUnit, SARIF, GitHub summary, Markdown, JSON) are redacted field by field before rendering, so escaping cannot defeat redaction.
-- Values typed into secure fields (passwords, PINs, OTPs, CVVs) are redacted regardless of length using whole-token matching, JSON and XML artifacts are redacted structurally so they stay valid, and secrets shorter than 3 characters are reported as not redacted instead of blanking unrelated text. A session resumed after a restart is flagged `redactionDegraded` in `qa_report`.
-- Typing through a native selector into a secure field registers the value as a secret; generated flows use `${SWIPIUM_TEST_PASSWORD}` instead of the plaintext.
-- A registered secret typed into an ordinary (non-password) field is recorded as a secret too, and every generator checks its output against the session's secrets: generation fails with `SECRET_IN_GENERATED_OUTPUT` and writes nothing rather than emit a secret. `state.json`, `test-suite.json`, and test cases no longer store secret values.
-- `qa_visual` baseline names and template paths are confined to the project (`VISUAL_PATH_REFUSED`); artifact names can no longer escape the session directory. On screens Swipium cannot inspect, OCR results that look like credentials are withheld.
+- A value typed through a native selector into a secure field, or a registered secret typed into an ordinary field, is recorded as a secret (generated flows use `${SWIPIUM_TEST_PASSWORD}` instead of the plaintext), and every generator checks its output against the session's secrets: generation fails with `SECRET_IN_GENERATED_OUTPUT` and writes nothing rather than emit one. `state.json`, `test-suite.json`, and test cases no longer store secret values.
+- `qa_visual` baseline names and template paths are confined to the project (`VISUAL_PATH_REFUSED`), and artifact names cannot escape the session directory. On screens Swipium cannot inspect, OCR results that look like credentials are withheld.
+- Orphan-process cleanup only signals a process whose recorded start time and command still match, so a reused process ID can no longer be killed.
+- App IDs are validated and quoted for the device shell. Sensitive mode suppresses screenshots in flows and smoke runs. `qa_issue_log` redacts session secrets before writing the ledger. Session folders and files are private (`0700` / `0600`), and OCR temp files live in private per-call directories.
 - `THREAT_MODEL.md` documents the limits of the re-call consent convention and the stronger elicitation path.
-- A cloned repository is treated as untrusted input: flows and `.swipium/fixtures.json` cannot read server environment variables outside `SWIPIUM_*` (values read from the environment are treated as secrets), and an `openUrl` containing a variable is consent-gated; consent shows the exact commands of flow seed steps and of repository-configured OCR/mask commands, labelled as unreviewed; a project config can no longer point iOS automation at a non-loopback WebDriverAgent (use `SWIPIUM_ALLOW_REMOTE_WDA` to allow specific URLs).
-- Consent prompts strip control characters and are bound to the session that requested them.
-- Orphan-process cleanup only signals a process whose recorded start time and command still match, so a reused process ID can no longer be killed; it runs after the server connects.
-- App IDs are validated and quoted for the device shell. Sensitive mode suppresses screenshots in flows and smoke runs. `qa_issue_log` redacts session secrets before writing the ledger. Session folders and files are private (`0700`/`0600`), and OCR temp files live in private per-call directories.
-- CI workflows pin third-party actions to commit SHAs.
-- Production dependencies updated for advisories in transitive MCP SDK dependencies (`fast-uri`, `hono`, `@hono/node-server`, `body-parser`).
+- CI workflows pin third-party actions to commit SHAs. Production dependencies are updated for advisories in transitive MCP SDK dependencies (`fast-uri`, `hono`, `@hono/node-server`, `body-parser`).
 
 ### Removed
 
-- The tools listed in the migration table above.
-- Unregistered pre-1.5.0 tool modules that still shipped in `dist/`. `qa_seed`, `qa_permissions`, `qa_screen_info`, and `qa_locator_suggest` moved to `src/tools/deferred/` (excluded from the build and the npm package).
-- Maestro import/export is out of scope; flows recorded with `source: "maestro_import"` remain valid.
+- The tools listed in the migration table.
+- Unregistered pre-1.5.0 tool modules that still shipped in `dist/`. `qa_seed`, `qa_permissions`, `qa_screen_info`, and `qa_locator_suggest` moved to `src/tools/deferred/`, which is excluded from the build and the npm package.
+- Maestro import and export are out of scope; flows recorded with `source: "maestro_import"` remain valid.
 
 ## 1.5.0 - 2026-07-03
 

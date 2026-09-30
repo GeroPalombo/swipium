@@ -244,7 +244,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
         'step, plus warnings. Pass flow (name or path) or flowYaml. For an execution preview per backend use qa_flow_run mode:"plan".',
       inputSchema: {
         sessionId: z.string().optional(),
-        projectRoot: z.string().optional().describe('Absolute app root (default: session root → MCP roots → SWIPIUM_PROJECT_ROOT → cwd).'),
+        projectRoot: z.string().optional().describe('Absolute app root (default: session root → MCP roots → env → cwd).'),
         flow: z.string().optional().describe('Flow name under .swipium/flows, or a path to a .yaml file.'),
         flowYaml: z.string().optional().describe('Inline flow YAML (instead of a file).'),
         platform: z.enum(['android', 'ios', 'cross-platform']).optional().describe('Authoring target for platform-aware warnings.'),

@@ -4,7 +4,7 @@
 
 # Swipium
 
-MCP server for simulator-based mobile QA agents.
+An MCP server that lets coding agents QA mobile apps on Android Emulators and iOS Simulators.
 
 [![npm version](https://img.shields.io/npm/v/swipium.svg)](https://www.npmjs.com/package/swipium)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -12,64 +12,33 @@ MCP server for simulator-based mobile QA agents.
 [![MCP](https://img.shields.io/badge/MCP-server-black.svg)](https://modelcontextprotocol.io)
 [![Platform](https://img.shields.io/badge/platform-Android%20Emulator%20%2B%20iOS%20Simulator-blue.svg)](https://swipium.com)
 
-Swipium lets an AI agent run practical mobile QA from a local MCP client: launch an app in an Android Emulator or iOS Simulator, inspect screens, act on the UI, run smoke checks, collect evidence, build an app knowledge map, generate reports, and create reusable test assets.
+Swipium gives an AI coding agent (Claude Code, Codex, Gemini CLI, Cursor, VS Code, and other MCP clients) the tools to test your app the way a QA engineer would: build or find the app, boot a simulator, install and launch it, read the screen, tap and type through real user flows, and come back with a report backed by screenshots, logs, and UI dumps. Runs can be turned into repeatable flows, a persistent test suite, and generated Appium code.
+
+It is for mobile developers who want their agent to catch the broken login screen on a local simulator, before a TestFlight or Play Console build.
+
+- **Local.** A stdio process on your machine that drives local simulators. There is no network listener and no cloud service.
+- **Direct.** Swipium drives devices through `adb`, `simctl`, and WebDriverAgent. It does not run on Appium; Appium is one of its export formats.
+- **Explicit about risk.** Builds, installs, data wipes, and other side effects need your consent, and secrets are redacted from everything Swipium writes.
 
 Website: [swipium.com](https://swipium.com)
 
-## About
+## Contents
 
-The goal of the MCP is to give your agent a ready-to-use suite of tools so it can test your application using an emulator and real user flows, not directly against the code, with the experience of a QA. Avoid reaching TestFlight or production only to find an error that could have been caught before making the build.
+- [Requirements](#requirements)
+- [Quickstart](#quickstart)
+- [Client setup](#client-setup)
+- [How it works](#how-it-works)
+- [Tools](#tools)
+- [Configuration & environment variables](#configuration--environment-variables)
+- [CLI reference](#cli-reference)
+- [CI](#ci)
+- [Security](#security)
+- [Upgrading from 1.5](#upgrading-from-15)
+- [Troubleshooting](#troubleshooting)
+- [Disk usage](#disk-usage)
+- [Documentation](#documentation)
 
-Focused on mobile applications, for now.
-
-## What is Swipium?
-
-Swipium is not a replacement for a test runner. It is an agent-facing QA harness.
-
-It helps an agent answer requests like:
-
-- "Test it."
-- "Test this e2e flow."
-- "Create test automation for this app."
-- "Smoke test this app."
-- "Explore the login flow."
-- "Generate a report with evidence."
-- "Turn this run into a reusable flow."
-- "Create an automation suite from what you observed."
-
-The MCP server keeps the workflow deterministic where possible and explicit where risk exists. Heavy steps such as booting simulators, installing apps, writing files, or generating automation are exposed as tools with structured outputs, blockers, artifacts, and consent prompts.
-
-Swipium does not run on Appium. It drives devices directly via `adb`, `simctl`, and WebDriverAgent; Appium is one of the export formats for generated tests (`qa_generate` with `target:"appium"`), not the execution engine.
-
-## QuickStart
-
-From your mobile app repository:
-
-```bash
-npx -y swipium verify                          # server starts, tools inject, qa_doctor runs
-npx -y swipium init claude --scope project     # preview; add --apply to register (writes .mcp.json)
-```
-
-Other clients: `swipium init codex | gemini | cursor | vscode` (preview by default, `--apply` to write). Manual configs are in [Agent Integration](#agent-integration).
-
-Then ask the agent:
-
-```text
-Use Swipium to smoke test this app on an Android Emulator or iOS Simulator:
-run qa_doctor, then qa_test_this with goal "smoke", and finish with qa_report.
-```
-
-If the agent reports `PROJECT_ROOT_UNRESOLVED`, add "the project root is /absolute/path/to/app" to the prompt, or set `SWIPIUM_PROJECT_ROOT` in the server config (see [Project root](#project-root)).
-
-## Installation
-
-```bash
-npx -y swipium verify              # run without installing
-npm install -g swipium             # or install globally: `swipium verify`
-npm install --save-dev swipium     # or per project: `npx swipium verify`
-```
-
-### Host OS support
+## Requirements
 
 | Host | Android Emulator | iOS Simulator |
 | --- | --- | --- |
@@ -77,92 +46,66 @@ npm install --save-dev swipium     # or per project: `npx swipium verify`
 | Linux | Supported | Not available (needs Xcode) |
 | Windows | Experimental: untested, and some process-cleanup helpers rely on `ps` | Not available |
 
-### Prerequisites
+Swipium works with emulators and simulators only. Physical devices are refused with `PHYSICAL_DEVICE_UNSUPPORTED` (see [docs/physical-devices.md](docs/physical-devices.md)).
 
-- Node.js 20 or newer.
-- Android: platform-tools (`adb`) and the Android Emulator with at least one AVD (or an emulator already online), usually via Android Studio; plus an APK or a buildable Android project. Swipium looks for `adb`/`emulator` in `$ANDROID_HOME`, `$ANDROID_SDK_ROOT`, then the default SDK location (`~/Library/Android/sdk` on macOS, `~/Android/Sdk` on Linux, `%LOCALAPPDATA%\Android\Sdk` on Windows) before `PATH`. That matters for GUI clients such as Claude Desktop, which don't inherit your shell `PATH`. Java is only needed for native build-from-source.
-- iOS (macOS only): Xcode with an iOS Simulator runtime and at least one simulator, and a simulator `.app`. For taps, typing, and `qa_snapshot` you also need WebDriverAgent: install `appium-webdriveragent`, or configure `ios.wda.derivedDataPath` / `wdaProjectPath`, then let `qa_wda` build and start it.
+- **Node.js 20 or newer.**
+- **Android:** platform-tools (`adb`), the Android Emulator, and at least one AVD, usually installed through Android Studio. You also need an APK or a buildable Android project (`.aab` files are converted with bundletool). Swipium looks for `adb` and `emulator` in `$ANDROID_HOME`, then `$ANDROID_SDK_ROOT`, then the default SDK location (`~/Library/Android/sdk` on macOS, `~/Android/Sdk` on Linux, `%LOCALAPPDATA%\Android\Sdk` on Windows), and only then on `PATH`. This matters for GUI clients such as Claude Desktop, which don't inherit your shell `PATH`. Java is needed only to build from source.
+- **iOS (macOS only):** Xcode with an iOS Simulator runtime, at least one simulator, and a simulator `.app` (a device `.ipa` is refused). Taps, typing, and UI-tree snapshots also need WebDriverAgent; see [iOS: visual-only and WebDriverAgent](#ios-visual-only-and-webdriveragent).
 
-#### iOS runs in two modes
+## Quickstart
 
-- **Visual-only** (no WebDriverAgent): install, launch, deep links, screenshots, logs, and visual assertions via `simctl`. `qa_visual` covers visual assertions (`mode:"assert"`), baseline/diff, OCR `find_text`, and template `find_image`. UI-tree snapshots, taps, typing, and swipes are rejected with an error that points to `qa_wda`.
-- **Full interaction** (WebDriverAgent running): structured snapshots and input work the same way they do on Android.
-
-Android has full interaction out of the box through `adb`.
-
-## Usage
-
-Start with the autopilot tool:
-
-```text
-qa_test_this {
-  "projectRoot": "/absolute/path/to/app",
-  "mode": "execute",
-  "goal": "smoke"
-}
-```
-
-Common workflow:
-
-1. `qa_doctor` checks toolchain readiness. It defaults to both platforms on macOS and Android elsewhere.
-2. `qa_test_this` resolves the project, artifact, and simulator target.
-3. `qa_job_status` polls long-running work (`waitMs` long-polls until the job finishes).
-4. `qa_smoke` or `qa_explore` runs the app.
-5. `qa_report` produces the evidence report, with separate app and coverage verdicts.
-6. `qa_app_map_read` or `qa_app_map_query` reads the durable app map.
-7. `qa_generate` creates reusable QA assets from the run (flow, page objects, POM suite, test cases, or Appium code).
-
-CLI (`swipium --help` lists everything):
+**1. Check that the server runs.** From your mobile app repository:
 
 ```bash
-swipium                        # start the stdio MCP server (what clients run; alias: swipium serve)
-swipium verify                 # start the server, list its tools, run qa_doctor
-swipium init <client>          # claude | codex | gemini | cursor | vscode — preview; --apply to write
-swipium init flows             # create starter flow templates
-swipium scan [path] [--check]  # readiness report; scaffolds .swipium/ unless BLOCKED or --check/--dry-run
-swipium suite lint|compile     # audit / compile a generated POM suite into runnable flows
-swipium report --latest --format junit|sarif|github-summary [--out file] [--fail-on-gate]
-swipium --version
+npx -y swipium verify
 ```
 
-`swipium verify` only reports whether the server starts and its tools inject. Fix hints (platform-tools, Xcode, WebDriverAgent) come from the `qa_doctor` tool inside your MCP client.
+This starts the server, lists its tools, and runs `qa_doctor`. You can also install it: `npm install -g swipium` (then run `swipium verify`), or `npm install --save-dev swipium` (then `npx swipium verify`).
 
-## MCP Server
+**2. Register it with your MCP client.** `swipium init <client>` prints the exact registration and changes nothing. Add `--apply` to perform it. For Claude Code:
 
-Swipium is a stdio MCP server: the client launches it as a local process and talks JSON-RPC over stdin/stdout. `npx -y swipium` is the canonical command. From a source checkout, run `npm run build` and use `node /absolute/path/to/swipium/dist/index.js` instead.
+```bash
+npx -y swipium init claude --scope project           # preview
+npx -y swipium init claude --scope project --apply   # writes .mcp.json, then runs verify
+```
 
-### Project root
+Other clients (`codex`, `gemini`, `cursor`, `vscode`) and manual configs are in [Client setup](#client-setup).
 
-Every tool needs to know which app repository it's testing. Swipium resolves it in this order:
+**3. Restart the client** and confirm it lists `qa_test_this`, `qa_doctor`, and `qa_report`.
 
-1. The `projectRoot` argument on the tool call.
-2. MCP roots, when the client provides them (Claude Code, Cursor, VS Code).
-3. `SWIPIUM_PROJECT_ROOT` in the server's environment.
-4. `CLAUDE_PROJECT_DIR`, which Claude Code sets automatically.
-5. The server's working directory, if it is not `/` or your home directory **and** it contains a project marker (`package.json`, `app.json`, `pubspec.yaml`, Gradle files, `Podfile`, an `.xcodeproj`/`.xcworkspace`, or an `android/` or `ios/` directory). Set it with `cwd` in clients that support it (Codex, Gemini CLI) or with `init --cwd <dir>`.
+**4. Ask the agent to test the app:**
 
-If none of these resolves, tools fail with `failureCode: "PROJECT_ROOT_UNRESOLVED"`.
+```text
+Use Swipium to smoke test this app on an Android Emulator or iOS Simulator.
+Run qa_doctor, then qa_test_this with mode "execute" and goal "smoke",
+poll qa_job_status until the job finishes, and summarize the report.
+```
 
-After installing or upgrading, restart the MCP client. Run `qa_doctor` if tools are missing or stale. More detail: [docs/mcp-server.md](docs/mcp-server.md).
+If a tool returns `PROJECT_ROOT_UNRESOLVED`, add "the project root is /absolute/path/to/app" to the prompt, or set `SWIPIUM_PROJECT_ROOT` in the server config (see [Project root](#project-root)).
 
-## Agent Integration
+## Client setup
+
+`swipium init <client> [--apply] [--scope local|user|project] [--cwd <dir>]` supports `claude`, `codex`, `gemini`, `cursor`, and `vscode`. Run it from your app repository, or pass `--cwd <dir>`. Without `--apply` it only prints what it would do. After a successful `--apply` it runs `swipium verify`.
+
+Anything written to a file your team shares (Claude Code project scope, Gemini project scope, `.cursor/mcp.json`, `.vscode/mcp.json`) uses the portable `npx -y swipium`. Machine-local registrations (Claude Code local/user scope, Gemini user scope, Codex) use this machine's `node` and install path, except when `init` itself runs from the npx cache, where they also use `npx -y swipium`.
 
 ### Claude Code
 
 ```bash
-swipium init claude --scope project --apply              # or, without installing:
+swipium init claude --scope project --apply
+# or, directly:
 claude mcp add swipium --scope project -- npx -y swipium
 ```
 
-Project scope writes a portable `.mcp.json` for the team. Local and user scope register this machine's `node` and install path. Claude Code provides MCP roots and `CLAUDE_PROJECT_DIR`, so you don't need to configure a project root.
+Project scope writes `.mcp.json`. The default scope is `local`. Claude Code provides MCP roots and `CLAUDE_PROJECT_DIR`, so no project-root setting is needed.
 
 ### Codex
 
 ```bash
-swipium init codex --apply        # run from your app repo, or pass --cwd <dir>
+swipium init codex --apply        # from your app repo, or pass --cwd <dir>
 ```
 
-This appends a `[mcp_servers.swipium]` block to `~/.codex/config.toml` that uses this machine's `node` path. To write it by hand instead:
+This appends a `[mcp_servers.swipium]` block to `~/.codex/config.toml` (and leaves an existing one unchanged). To write it by hand:
 
 ```toml
 [mcp_servers.swipium]
@@ -175,21 +118,22 @@ tool_timeout_sec = 600     # Codex default is 60 s; builds and simulator boots t
 
 `codex mcp add swipium --env SWIPIUM_PROJECT_ROOT=/absolute/path/to/app -- npx -y swipium` also works, but it can't set the timeouts, so add those two lines afterwards.
 
-Known caveat: in the Codex Desktop app, tools from custom stdio MCP servers can be discovered but not exposed to threads ([openai/codex#19425](https://github.com/openai/codex/issues/19425), open). If the `qa_*` tools don't appear in Desktop, use the Codex CLI.
+Known issue: in the Codex Desktop app, tools from custom stdio MCP servers can be discovered but not exposed to threads ([openai/codex#19425](https://github.com/openai/codex/issues/19425)). If the `qa_*` tools don't appear there, use the Codex CLI.
 
 ### Gemini CLI
 
 ```bash
-swipium init gemini --apply                        # project scope (.gemini/settings.json), portable
+swipium init gemini --apply
+# or, directly:
 gemini mcp add --scope project swipium npx -- -y swipium
 ```
 
-`--scope user` registers this machine's `node` path with a `cwd` instead. `settings.json` entries support `command`, `args`, `env`, `cwd`, and `timeout` (ms; default 600000).
+The default registers the server in the project's `.gemini/settings.json`. `--scope user` registers this machine's `node` path in `~/.gemini/settings.json`. If `gemini mcp add` fails or isn't installed, `init` prints the `settings.json` entry to add by hand; entries support `command`, `args`, `env`, `cwd`, and `timeout` (milliseconds; `init` uses 600000).
 
 ### Cursor
 
 ```bash
-swipium init cursor --apply       # merges into .cursor/mcp.json (preview without --apply)
+swipium init cursor --apply       # merges into .cursor/mcp.json
 ```
 
 ```json
@@ -205,13 +149,13 @@ swipium init cursor --apply       # merges into .cursor/mcp.json (preview withou
 }
 ```
 
-Use `.cursor/mcp.json` in the app repo, or `~/.cursor/mcp.json` for all projects.
+`init` only writes the project file. To enable Swipium in every project, add the same entry to `~/.cursor/mcp.json`.
 
 ### VS Code (Copilot agent mode)
 
 ```bash
-swipium init vscode --apply       # merges into .vscode/mcp.json (preview without --apply)
-code --add-mcp '{"name":"swipium","command":"npx","args":["-y","swipium"]}'   # user profile
+swipium init vscode --apply       # merges into .vscode/mcp.json
+code --add-mcp '{"name":"swipium","command":"npx","args":["-y","swipium"]}'   # user profile instead
 ```
 
 `.vscode/mcp.json` uses a top-level `servers` key:
@@ -229,9 +173,11 @@ code --add-mcp '{"name":"swipium","command":"npx","args":["-y","swipium"]}'   # 
 }
 ```
 
+For Cursor and VS Code, `--apply` never overwrites: it refuses to edit a file that isn't plain JSON (for example one with comments) and prints the entry to add by hand, and it leaves an existing `swipium` entry unchanged.
+
 ### Claude Desktop
 
-Add the following to `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`, Windows: `%APPDATA%\Claude\claude_desktop_config.json`), then restart the app. Claude Desktop has no workspace and no `cwd` setting, so set the project root in `env` or pass `projectRoot` in your prompt:
+Add this to `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`, Windows: `%APPDATA%\Claude\claude_desktop_config.json`), then restart the app. Claude Desktop has no workspace and no `cwd` setting, so set the project root in `env`, or name it in your prompt:
 
 ```json
 {
@@ -247,7 +193,7 @@ Add the following to `claude_desktop_config.json` (macOS: `~/Library/Application
 
 ### Windsurf
 
-Add to Windsurf's `mcp_config.json`, which you can open from Cascade's MCP settings. The format uses `mcpServers` with `command`, `args`, and `env`:
+Add the same block to Windsurf's `mcp_config.json`, which you can open from Cascade's MCP settings:
 
 ```json
 {
@@ -261,66 +207,192 @@ Add to Windsurf's `mcp_config.json`, which you can open from Cascade's MCP setti
 }
 ```
 
-After setup, confirm the client lists `qa_test_this`, `qa_doctor`, and `qa_report`.
+### From a source checkout
+
+Run `npm ci && npm run build`, then use `node /absolute/path/to/swipium/dist/index.js` as the command in any of the configs above.
+
+## How it works
+
+### The autopilot loop
+
+Most requests need only three tools:
+
+1. **`qa_test_this`** resolves the project, finds or builds an artifact, picks or boots a simulator, installs and launches the app, runs a smoke check (plus exploration or suite generation, depending on `goal`), and writes a report. The default `mode:"plan"` has no side effects and shows what would happen. `mode:"execute"` starts a background job and returns a `jobId`. `goal` is one of `smoke` (default), `explore`, `create_automation_suite`, `release_gate`, `test_login`, or `reproduce_bug`.
+2. **`qa_job_status`** polls the job. `waitMs` (up to 120000) long-polls until the job finishes. The run ends as `completed`, `blocked`, `unsafe`, or `needs_input`; a `needs_input` result (for example a login form that needs credentials) carries the question and a resume call to `qa_continue_from_blocker`.
+3. **`qa_report`** (or `qa_get_artifact` on the returned `reportUri`) gives the evidence report, with separate verdicts for the app and for how much of it was covered.
+
+When something fails, the result carries a `failureCode`; `qa_explain_blocker` explains any code. `qa_status` without arguments returns the operating rules and tool groups; with a `sessionId` it returns the single next call to make. For hands-on work, open a session with `qa_start_session` and use the lower-level tools directly. The server also ships MCP prompts for common workflows (setup check, smoke test, bug reproduction, turning a run into a flow).
+
+### Project root
+
+Every tool needs to know which app repository it is testing. Swipium resolves it in this order, and the first match wins:
+
+1. The `projectRoot` argument on the tool call. It must be an absolute, existing directory; an invalid value is an error, not a fallback.
+2. MCP roots, when the client provides them.
+3. `SWIPIUM_PROJECT_ROOT` in the server's environment.
+4. `CLAUDE_PROJECT_DIR`, which Claude Code sets automatically.
+5. The server's working directory, but only if it is not `/` or your home directory **and** it contains a project marker: `package.json`, `app.json`, `pubspec.yaml`, a Gradle build or settings file, `Podfile`, an `.xcodeproj`/`.xcworkspace`, or an `android/` or `ios/` directory. Clients that support a `cwd` setting (Codex, Gemini CLI) land here.
+
+If nothing resolves, tools fail with `PROJECT_ROOT_UNRESOLVED`. Results report which source was used as `rootSource`.
+
+### Consent
+
+Actions with side effects, such as booting an emulator, installing an app, building from source, starting Metro, running OCR or seed commands, wiping app data, or changing the network, are gated by consent on the server side:
+
+- **If your client supports MCP elicitation**, Swipium asks you directly in a prompt that the model cannot answer for you. Only an explicit approval runs the action. Declining returns `CONSENT_DECLINED`; dismissing the prompt, a 10-minute timeout, or an aborted call returns `CONSENT_CANCELLED`.
+- **Otherwise**, the tool returns a `requiresConsent` result with a `consentId`. The agent shows it to you and re-calls the tool with `consentId` and `approve:true` after you agree.
+- Set **`SWIPIUM_REQUIRE_ELICITATION=1`** to refuse every consent-gated action (`CONSENT_REFUSED`) when the client can't show a real prompt, instead of relying on the re-call.
+
+A consent is single-use, bound to the exact action and target, and bound to the session it was issued in. How each action was approved (`elicitation`, `client-assertion`, or `policy`) is recorded in the session's mutation ledger, which appears in the report.
+
+### Sensitive mode
+
+`qa_start_session { sensitive: true }` refuses every screenshot, screen recording, and on-screen log capture for that session (`SENSITIVE_MODE_REFUSED`). Structured UI snapshots and health checks still work. Outside sensitive mode, captures are also withheld while a password or OTP field is on screen (`CAPTURE_WITHHELD_SECURE`), because pixels cannot be redacted.
+
+### iOS: visual-only and WebDriverAgent
+
+Android has full interaction out of the box through `adb`. iOS runs in one of two modes:
+
+- **Visual-only (no WebDriverAgent).** Install, launch, deep links, screenshots, logs, and visual checks through `simctl`. `qa_visual` handles visual assertions (`mode:"assert"`), baselines and diffs, OCR text search (`find_text`, needs an [OCR command](#configuration--environment-variables)), and template matching (`find_image`). Taps from `qa_visual` use `idb` when it is on `PATH`. UI-tree snapshots, `qa_act` taps, typing, and swipes return `BACKEND_UNSUPPORTED` with a pointer to `qa_wda`. `qa_test_this` falls back to a visual-only smoke run when WebDriverAgent isn't ready.
+- **Full interaction (WebDriverAgent running).** Structured snapshots and input work as they do on Android.
+
+`qa_wda` manages WebDriverAgent: `status`, `doctor`, `diagnose`, `build`, `start`, `stop`, `attach`, `logs`, and `tune`. `build` and `start` use the `wdaProjectPath` you pass, or else an Appium-installed WebDriverAgent (`appium-webdriveragent` under `$APPIUM_HOME`, `~/.appium`, or global npm). Signing uses `ios.wda.developmentTeam` in `.swipium/config.json`, or `DEVELOPMENT_TEAM` / `XCODE_DEVELOPMENT_TEAM`.
+
+A WebDriverAgent that Swipium starts keeps running when the server shuts down, so a resumed iOS session can keep using it. On the next start, Swipium adopts it only if it is less than 12 hours old and its `/status` reports ready; otherwise it stops it. Processes are matched by start time and command line, so a recycled PID or a WebDriverAgent you started yourself is never touched. `qa_wda { action: "stop" }` stops it explicitly.
+
+WebDriverAgent URLs outside loopback (`localhost`, `127.0.0.0/8`, `[::1]`) require `allowNonLoopback:true` plus consent. The repository's `.swipium/config.json` cannot pre-approve one; only `SWIPIUM_ALLOW_REMOTE_WDA` in your own client configuration can.
+
+### What Swipium writes
+
+- **In your project:** `.swipium/` holds the app map, flows, the test suite (`.swipium/test-suite.json`), the issue ledger, visual baselines, and generated files. When the project is a Git repository, Swipium adds `.swipium/` to `.gitignore`. You can also put configuration there: `config.json` (WebDriverAgent, OCR, masking), `fixtures.json` (test preconditions and data), and `policy.json` (the release gate).
+- **In your home directory:** `~/.swipium/runs/` holds per-session evidence (screenshots, logs, dumps, reports), which tools return as `swipium://` URIs. See [Disk usage](#disk-usage).
+
+## Tools
+
+Tools are grouped by capability. `qa_status` (with no arguments) returns the same groups. The full reference, with parameters and behavior for each tool, is in **[docs/tools.md](docs/tools.md)**, and `swipium verify` prints the exact list your installed version exposes.
+
+| Group | Purpose | Tools |
+| --- | --- | --- |
+| Start | Autopilot, orientation, job polling, blockers, artifacts | `qa_test_this`, `qa_status`, `qa_job_status`, `qa_job_cancel`, `qa_explain_blocker`, `qa_continue_from_blocker`, `qa_get_artifact` |
+| Setup | Check the toolchain, open a session, prepare an emulator or simulator | `qa_doctor`, `qa_start_session`, `qa_prepare_target`, `qa_prepare_ios_target`, `qa_ios`, `qa_wda` |
+| Build | Pick a target, find an artifact, or build one from source | `qa_resolve_target`, `qa_resolve_artifact`, `qa_build`, `qa_bundletool` |
+| Device | Inspect and control the device and app environment | `qa_device_info`, `qa_orientation`, `qa_geolocation`, `qa_network`, `qa_metro`, `qa_app_control`, `qa_screen_record` |
+| Drive | Observe, act, assert, and collect evidence | `qa_snapshot`, `qa_inspect`, `qa_act`, `qa_clear_overlay`, `qa_check_health`, `qa_screenshot`, `qa_note`, `qa_visual`, `qa_wait` |
+| Run | Smoke checks, guided exploration, reports | `qa_smoke`, `qa_explore`, `qa_report` |
+| App map | The durable app knowledge map (project memory) | `qa_app_map_build`, `qa_app_map_read`, `qa_app_map_query`, `qa_app_map_feature_scope`, `qa_app_map_update` |
+| Feature | Test one feature by name | `qa_test_feature` |
+| Flows | Validate, run, compile, and repair repeatable flows | `qa_flow_check`, `qa_flow_run`, `qa_flow_compile`, `qa_flow_repair` |
+| Generate | Flows, page objects, a POM suite, test cases, or Appium code from a recorded run | `qa_generate` |
+| Test suite | The repo-level test suite (`.swipium/test-suite.json`) | `qa_suite_read`, `qa_suite_update`, `qa_suite_generate`, `qa_suite_export`, `qa_suite_lint` |
+| Issues | Durable issue ledger and release audits | `qa_issue_log`, `qa_mobile_audit` |
+| First run | Login, sign-up, onboarding, and paywall screens | `qa_first_run` |
+
+Every tool carries MCP annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint:false`), so clients can auto-approve the read-only ones.
 
 ## Configuration & environment variables
 
-Set these in the MCP server's `env` block, or in the shell for CLI commands.
+Set these in the MCP server's `env` block, or in your shell for CLI commands.
 
 | Variable | Purpose |
 | --- | --- |
-| `SWIPIUM_PROJECT_ROOT` | Absolute path of the app repo, used when the client provides no MCP roots (see [Project root](#project-root)). |
-| `ANDROID_HOME` / `ANDROID_SDK_ROOT` | Android SDK location, checked for `platform-tools/adb`, `emulator/emulator`, and `build-tools/*/aapt2` before `PATH`. |
-| `SWIPIUM_TEST_EMAIL`, `SWIPIUM_TEST_USERNAME`, `SWIPIUM_TEST_PASSWORD`, `SWIPIUM_TEST_OTP`, `SWIPIUM_TEST_TOKEN`, `SWIPIUM_TEST_PIN` | Test-account values for login/first-run flows. Flows reference them as `${SWIPIUM_TEST_EMAIL}` etc. and are redacted in outputs. Never inline secrets in flow files. |
-| Other `SWIPIUM_*` variables | Flows and `.swipium/fixtures.json` resolve environment variables **only** for names prefixed `SWIPIUM_` (values read from the environment are treated as secrets); any other name (e.g. `${HOME}`, `${AWS_SECRET_ACCESS_KEY}`) is not read from the environment, so a flow from a cloned repo cannot exfiltrate unrelated env vars. |
-| `SWIPIUM_RETENTION_DAYS` / `SWIPIUM_RETENTION_KEEP` | Disk retention for `~/.swipium/runs` session directories: age limit (default 30 days; `0` or `off` disables pruning) and how many recent sessions per project are always kept (default 20). See `swipium gc` below. |
-| `SWIPIUM_ALLOW_REMOTE_WDA` | Comma-separated list of exact non-loopback WebDriverAgent base URLs you pre-approve. Set it in your MCP client's server environment, never in the repository. |
-| `SWIPIUM_OCR_CMD` | OCR provider for `qa_visual` `find_text` (none is bundled). A command whose `{image}` placeholder is replaced by a PNG path and which prints JSON `[{"text","confidence","bbox":{x,y,width,height}}]` in screenshot pixels. `ocrCommand` in `.swipium/config.json` (an argv array) takes precedence. |
-| `SWIPIUM_VISUAL_MASK_CMD` | Optional command that masks screenshots before visual providers see them (`visualMaskCommand` in config wins). |
-| `SWIPIUM_REQUIRE_ELICITATION=1` | Refuse **every** consent-gated action (builds, Metro, installs, data wipes, seeds, …), not only high-risk ones, when the client can't show a real consent prompt, instead of falling back to the re-call convention. |
-| `BUNDLETOOL_JAR` | Path to `bundletool.jar`, for installing `.aab` artifacts. |
-| `DEVELOPMENT_TEAM` / `XCODE_DEVELOPMENT_TEAM` | Apple team ID for WebDriverAgent signing (or `ios.wda.developmentTeam` in config). |
+| `SWIPIUM_PROJECT_ROOT` | Absolute path of the app repository, used when the client provides no MCP roots (see [Project root](#project-root)). |
+| `CLAUDE_PROJECT_DIR` | Set by Claude Code. Used as the project root when no argument, MCP root, or `SWIPIUM_PROJECT_ROOT` applies. |
+| `ANDROID_HOME`, `ANDROID_SDK_ROOT` | Android SDK location, searched for `adb`, `emulator`, and `aapt2` before `PATH`. |
+| `BUNDLETOOL_JAR` | Path to `bundletool.jar`, used to convert `.aab` files into an installable APK. A `bundletool` launcher on `PATH` also works. |
+| `DEVELOPMENT_TEAM`, `XCODE_DEVELOPMENT_TEAM` | Apple team ID for signing WebDriverAgent (`ios.wda.developmentTeam` in `.swipium/config.json` takes precedence). |
+| `APPIUM_HOME` | Extra location searched for an Appium-installed WebDriverAgent (besides `~/.appium` and global npm). |
+| `WDA_PROJECT_PATH`, `WEBDRIVERAGENT_PROJECT` | Extra `WebDriverAgent.xcodeproj` candidates reported by `qa_doctor` and `qa_wda` status checks. To build or start from a specific project, pass `wdaProjectPath` to `qa_wda`. |
+| `SWIPIUM_ALLOW_REMOTE_WDA` | Comma-separated list of exact non-loopback WebDriverAgent base URLs you pre-approve. Set it in your client configuration, never in the repository. |
+| `SWIPIUM_TEST_EMAIL`, `SWIPIUM_TEST_USERNAME`, `SWIPIUM_TEST_PASSWORD`, `SWIPIUM_TEST_OTP`, `SWIPIUM_TEST_TOKEN`, `SWIPIUM_TEST_PIN` | Test-account values. Flows reference them as `${SWIPIUM_TEST_EMAIL}`, and `.swipium/fixtures.json` fields as `"var": "SWIPIUM_TEST_EMAIL"`. They are redacted from all output. You can also answer a credentials question through `qa_continue_from_blocker`. |
+| Any other `SWIPIUM_*` name | Flows and `.swipium/fixtures.json` read environment variables **only** when the name starts with `SWIPIUM_`, and treat those values as secrets. Any other name (such as `${HOME}` or `${AWS_SECRET_ACCESS_KEY}`) is never read from the environment, so a flow from a cloned repository can't pull in unrelated variables. |
+| `SWIPIUM_OCR_CMD` | OCR command for `qa_visual` `find_text`; none is bundled. `{image}` is replaced with a PNG path, and the command must print JSON `[{"text","confidence","bbox":{x,y,width,height}}]` in screenshot pixels. `ocrCommand` in `.swipium/config.json` (an argv array) takes precedence. Running it asks for consent. |
+| `SWIPIUM_VISUAL_MASK_CMD` | Optional command that masks screenshots before OCR and other visual providers see them. `visualMaskCommand` in `.swipium/config.json` takes precedence. |
+| `SWIPIUM_REQUIRE_ELICITATION=1` | Refuse every consent-gated action when the client can't show a real consent prompt (see [Consent](#consent)). |
+| `SWIPIUM_RETENTION_DAYS` | Age limit for session directories in `~/.swipium/runs` (default 30). `0` or `off` turns off the automatic prune at startup; `swipium gc` still works. |
+| `SWIPIUM_RETENTION_KEEP` | Number of most recent sessions per project that are always kept (default 20). |
+| `CI` | When set, reports label the run environment as CI. |
 
-Generated flows, suites, and code never contain credential values; they reference placeholders instead. Values the run collected as stored inputs use the canonical `SWIPIUM_TEST_*` names above; other secret fields get a numbered `SWIPIUM_SECRET_N`; generated (non-secret) test data uses `SWIPIUM_GEN_<FIELD>` (e.g. `SWIPIUM_GEN_NAME`). Provide these in the environment when you replay.
+**Placeholders in generated output.** Generated flows, suites, and code never contain credential values. Collected inputs use the `SWIPIUM_TEST_*` names above, other secret fields get a numbered `SWIPIUM_SECRET_N`, and generated (non-secret) test data uses `SWIPIUM_GEN_<FIELD>` (for example `SWIPIUM_GEN_NAME`). Provide these in the environment when you replay.
 
-**Disk retention.** At startup, and on demand with `swipium gc [--dry-run] [--days N] [--keep N]`, Swipium prunes session directories under `~/.swipium/runs` that are older than `SWIPIUM_RETENTION_DAYS` (default 30) and no longer in the session registry, always keeping the newest `SWIPIUM_RETENTION_KEEP` (default 20) per project. `--dry-run` lists what would be removed; `gc` also drops `~/.swipium/projects.json` entries for projects that no longer exist.
+Generated Appium projects (`qa_generate target:"appium"`) read their own variables (`SWIPIUM_PLATFORM`, `SWIPIUM_NO_RESET`, `APPIUM_HOST`, `APPIUM_PORT`, `ANDROID_*`, `IOS_*`), which the README they include documents.
 
-**WebDriverAgent URL.** A non-loopback WDA URL (anything other than `localhost`, `127.0.0.0/8`, or `[::1]`) requires explicit consent (`qa_wda` with `allowNonLoopback:true`); `.swipium/config.json` cannot pre-approve it. The only pre-approval is `SWIPIUM_ALLOW_REMOTE_WDA` in your own MCP client configuration.
+## CLI reference
 
-Generated Appium code (`qa_generate target:"appium"`) reads its own variables (`SWIPIUM_PLATFORM`, `SWIPIUM_NO_RESET`, `APPIUM_HOST`/`APPIUM_PORT`, `ANDROID_*`, `IOS_*`). Those are documented in the README it generates, not in the server.
+With no subcommand, `swipium` runs the stdio MCP server, which is what MCP clients launch. `swipium --help` prints this list.
 
-## Tool Docs
+| Command | What it does |
+| --- | --- |
+| `swipium` (alias `swipium serve`) | Start the stdio MCP server. Unrecognized flags alone (such as `--stdio`) are ignored with a warning and the server starts; an unknown subcommand prints usage and exits 2. |
+| `swipium init <client> [--apply] [--scope local\|user\|project] [--cwd <dir>]` | Preview (default) or apply the MCP registration for `claude`, `codex`, `gemini`, `cursor`, or `vscode`. See [Client setup](#client-setup). |
+| `swipium init flows [--root <dir>] [--force]` | Write starter flow templates into `.swipium/flows/`. Existing files are kept unless you pass `--force`. |
+| `swipium verify` | Start the server over stdio, check that every tool is listed, and run `qa_doctor`. |
+| `swipium scan [path] [--check \| --dry-run \| --no-write]` | Print a readiness report for a project. It creates `.swipium/` unless the result is `BLOCKED` or you pass one of the no-write flags. |
+| `swipium suite <lint\|compile\|init> [projectRoot] [--suite suites/smoke.yaml]` | `lint` audits generated page objects for brittle locators, `compile` turns a POM suite into runnable flows under `.swipium/flows/`, and `init` explains how to create a suite. |
+| `swipium report --format junit\|sarif\|github-summary\|markdown\|json` | Render a run's report for CI. Options: `--latest` (default), `--session <id>`, or `--report <file>`; `--root <dir>`; `--out <file>`; `--fail-on-gate`. Exits 0 on success, 1 when `--fail-on-gate` is set and the release gate blocks, and 2 on a usage error or when no report is found. |
+| `swipium gc [--dry-run] [--days N] [--keep N]` | Delete old session directories and stale project entries. See [Disk usage](#disk-usage). |
+| `swipium --help` / `-h`, `swipium --version` / `-v` | Print usage or the version. |
 
-Start with `qa_test_this` for low-context requests. The full, current list of tools and parameters is in [docs/tools.md](docs/tools.md). `swipium verify` prints exactly which tools your installed version exposes. Release-by-release changes are in the [CHANGELOG](CHANGELOG.md); upgrading from 1.x, see [Migrating from 1.5.0](CHANGELOG.md#migrating-from-150) for renamed and removed tools.
+`swipium verify` only checks that the server starts and its tools load. Setup problems (platform-tools, Xcode, WebDriverAgent) and how to fix them come from `qa_doctor`, which it runs and which you can also call from your client.
 
-## Why Swipium?
+## CI
 
-- Agent-native: exposes QA work as MCP tools with structured outputs.
-- Simulator-first: focuses on Android Emulator and iOS Simulator reliability.
-- Evidence-first: screenshots, logs, reports, dumps, and artifacts are stored and linked.
-- App memory: the app map preserves screens, features, test cases, flows, and coverage context.
-- Practical consent: mutating actions are gated instead of hidden behind agent text.
-- Reusable output: exploratory runs can become flows, test cases, suites, and generated automation.
-- Local by default: the server runs on the developer machine and uses local simulators.
+`swipium report` renders a finished run as JUnit XML, SARIF 2.1.0, a GitHub job summary, Markdown, or JSON, and `--fail-on-gate` fails the job when the release-gate policy in `.swipium/policy.json` blocks. A CI run still needs an agent (for example Claude Code in headless mode) to drive the app; for deterministic replays, run a compiled flow suite instead. See **[docs/ci-reports.md](docs/ci-reports.md)** for a GitHub Actions recipe.
 
 ## Security
 
-Swipium runs locally as a stdio process: no network listener, no remote service. Destructive actions are consent-gated server-side, and known secret shapes are redacted from snapshots, artifacts, and reports. Trust boundaries, threats, and controls are documented in the [Threat Model](THREAT_MODEL.md). Report vulnerabilities per the [Security Policy](SECURITY.md).
+Swipium runs as a local stdio process with no network listener. Actions with side effects are consent-gated on the server side, known secret values are redacted from snapshots, artifacts, and reports, and generated output is checked for leaked secrets. Swipium refuses to run `git`, including from repo-supplied seed and provider commands, and it treats a cloned repository's `.swipium/` directory as untrusted input: repo-supplied commands are shown verbatim in the consent prompt, and flows can read only `SWIPIUM_*` environment variables.
 
-Consent is elicitation-aware: when the connected MCP client supports the elicitation capability, each consent prompt is routed to a real out-of-band user prompt — the server asks the human directly and only an explicit approval runs the gated action, instead of trusting the model to relay approval via a re-call. How each consent was decided — `elicitation` (the human answered an out-of-band prompt), `client-assertion` (the client re-called with approval), or `policy` (the server refused without asking) — is recorded in the session's mutation ledger. Set `SWIPIUM_REQUIRE_ELICITATION=1` to refuse every consent-gated action outright (recorded as `policy`) when the client cannot elicit, rather than falling back to the portable re-call convention.
+Screenshots and recordings are pixels and are never redacted; use [sensitive mode](#sensitive-mode) when that matters. Trust boundaries, threats, and controls are in the [Threat Model](THREAT_MODEL.md). Report vulnerabilities privately as described in the [Security Policy](SECURITY.md).
 
-## Docs
+## Upgrading from 1.5
 
-- [MCP Server](docs/mcp-server.md)
-- [Tool Reference](docs/tools.md)
-- [CI Reports](docs/ci-reports.md)
-- [Physical Devices (roadmap)](docs/physical-devices.md)
-- [Project Docs Index](docs/README.md)
-- [Threat Model](THREAT_MODEL.md)
-- [Security Policy](SECURITY.md)
-- [Contributing](CONTRIBUTING.md)
-- [Support](SUPPORT.md)
-- [Changelog](CHANGELOG.md)
+2.0.0 removes and renames several tools; the [migration table in the CHANGELOG](CHANGELOG.md#migrating-from-150) lists the replacement for each. The same table is at the end of [docs/tools.md](docs/tools.md).
+
+After upgrading, **restart your MCP client**. Clients often keep the old server process running, and an agent calling a removed tool or an old call shape gets `STALE_CLIENT`.
+
+## Troubleshooting
+
+Every error includes a `failureCode`, `nextSteps`, and whether a retry is safe. `qa_explain_blocker { failureCode }` explains any code, and `qa_doctor` checks the whole toolchain.
+
+| `failureCode` | What it means | What to do |
+| --- | --- | --- |
+| `PROJECT_ROOT_UNRESOLVED` | Swipium couldn't tell which app to test. | Pass `projectRoot` (absolute) in the prompt, or set `SWIPIUM_PROJECT_ROOT` in the server `env` or a `cwd` where the client supports it. See [Project root](#project-root). |
+| `ADB_NOT_FOUND` | Android platform-tools aren't installed or can't be found. | Install platform-tools and the emulator (Android Studio SDK Manager), and set `ANDROID_HOME` in the server `env` if they're in a non-default location. |
+| `NO_DEVICE` | No emulator is online and none can be booted. | Create an AVD (Android Studio Device Manager) or an iOS Simulator (Xcode), then re-run `qa_test_this`; it boots it for you. |
+| `PHYSICAL_DEVICE_UNSUPPORTED` | The only device available is a real phone. | Expected: Swipium works with emulators and simulators only. Start an emulator, or unplug the phone if it was picked by accident. |
+| `DEVICE_NOT_READY` | The device exists but hasn't finished booting or is locked. | Wait for boot to finish and unlock it, then retry. |
+| `WDA_UNREACHABLE` | WebDriverAgent isn't running or isn't answering. | Run `qa_wda { action: "status" }` or `"logs"`, then `start` or `attach`. For a plain smoke check, run `qa_test_this` with `goal:"smoke"`, which works visual-only. |
+| `BACKEND_UNSUPPORTED` | The action isn't available on this backend, typically iOS without WebDriverAgent. | Attach WebDriverAgent with `qa_wda`, or use `qa_visual` and `qa_ios` instead. |
+| `OCR_NOT_CONFIGURED` | `qa_visual` `find_text` has no OCR command. | Set `ocrCommand` in `.swipium/config.json` or `SWIPIUM_OCR_CMD` (the error includes a tesseract example), or use `find_image`. |
+| `STALE_CLIENT` | The client is using a server started before an upgrade, or an old tool name or call shape. | Restart the MCP client. See [Upgrading from 1.5](#upgrading-from-15). |
+| `CONSENT_DECLINED` | You declined the consent prompt. Nothing ran. | Don't retry unless you want the action. |
+| `CONSENT_CANCELLED` | The prompt was dismissed, timed out, or failed. Nothing ran. | Re-call the tool to get a fresh prompt. |
+| `CONSENT_REFUSED` | `SWIPIUM_REQUIRE_ELICITATION=1` is set and the client can't show consent prompts. | Use a client that supports MCP elicitation, or unset the variable. |
+
+If the client lists fewer tools than `swipium verify` prints, restart it. If `adb` works in your terminal but not from a GUI client, set `ANDROID_HOME` in the server's `env` block; GUI clients don't inherit your shell `PATH`.
+
+## Disk usage
+
+Session evidence lives in `~/.swipium/runs/`. At startup, Swipium deletes session directories whose last activity is older than `SWIPIUM_RETENTION_DAYS` (default 30), except sessions still listed in `~/.swipium/registry.json` and the newest `SWIPIUM_RETENTION_KEEP` (default 20) per project.
+
+To clean up on demand:
+
+```bash
+swipium gc --dry-run          # show what would be deleted
+swipium gc --days 7 --keep 5  # delete, with custom thresholds
+```
+
+`gc` also removes entries from `~/.swipium/projects.json` whose project directory no longer exists. Project-level data in `<app>/.swipium/` (app map, flows, test suite, baselines) is never pruned automatically.
+
+## Documentation
+
+- [Tool reference](docs/tools.md): every tool, its parameters, and its behavior.
+- [MCP server](docs/mcp-server.md): server command, project root, client setup, verification.
+- [CI reports](docs/ci-reports.md): JUnit, SARIF, and GitHub summaries, and the release gate.
+- [Physical devices](docs/physical-devices.md): why real devices are out of scope today.
+- [Threat model](THREAT_MODEL.md) and [security policy](SECURITY.md).
+- [Changelog](CHANGELOG.md).
+- [Contributing](CONTRIBUTING.md) and [support](SUPPORT.md).
 
 ## License
 
