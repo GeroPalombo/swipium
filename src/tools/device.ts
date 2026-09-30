@@ -1,14 +1,16 @@
-// qa_device_info + qa_orientation (PHASE3-PLAN §4.2) — device-parity introspection and rotation,
+// qa_device_info + qa_orientation: device-parity introspection and rotation,
 // without raw adb. Read-only info needs no consent; orientation is a logged, non-destructive
 // environment change.
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
-import { getDriver } from '../session/attach.js';
+import { blockedDeviceResult, getDriver } from '../session/attach.js';
+import { listSimulators, type Simulator } from '../lib/simctl.js';
 import { getDeviceProps, getOrientation, setOrientation, listPackages, setGeo } from '../lib/device.js';
 import type { SessionStore } from '../session/store.js';
+import { invalidateScreenSizeCache } from '../drivers/DirectDriver.js';
 
 function rotationLabel(rotation: number, auto: boolean): string {
   return auto ? 'auto' : rotation === 1 || rotation === 3 ? 'landscape' : 'portrait';
@@ -20,7 +22,7 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
     {
       title: 'Device info',
       description:
-        'Read-only device introspection (no consent needed): model/manufacturer/Android SDK+release, supported ABIs, locale, timezone, screen size/density, current orientation, and installed third-party app count. Pass listPackages:true (optionally packageFilter) to include package names.',
+        'Read-only device info (no consent). Android: model/manufacturer/SDK+release, ABIs, locale, timezone, screen size/density, orientation, third-party app count (listPackages:true, optionally packageFilter, adds names). iOS Simulator: name, runtime, state, screen size.',
       inputSchema: {
         sessionId: z.string(),
         listPackages: z.boolean().optional().describe('Include installed third-party package names.'),
@@ -29,14 +31,48 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
     },
     async ({ sessionId, listPackages: withPkgs, packageFilter }) => {
       const session = sessions.get(sessionId);
-      const { driver } = session ? await getDriver(session) : { driver: undefined };
+      if (!session) return unknownSessionError(sessionId);
+      const { driver, blocked } = await getDriver(session);
       const serial = driver?.currentDevice();
       if (!session || !driver || !serial) {
+        return (
+          blockedDeviceResult(blocked) ??
+          qaError({
+            what: 'No device attached to this session',
+            changedState: false,
+            retrySafe: true,
+            nextSteps: ['Call qa_prepare_target first.'],
+          })
+        );
+      }
+      if (driver.kind === 'simulator' || driver.kind === 'wda') {
+        // H9: the getprop/settings helpers below are adb-only. On an iOS simulator they would
+        // return ok:true with every field null. Report what simctl actually knows instead.
+        const sims = await listSimulators().catch(() => [] as Simulator[]);
+        const sim = sims.find((x) => x.udid === serial);
+        const screen = await driver.screenSize().catch(() => null);
+        const payload = {
+          device: serial,
+          platform: 'ios',
+          backend: driver.kind,
+          props: { name: sim?.name ?? null, runtime: sim?.runtime ?? null, state: sim?.state ?? null },
+          screen,
+          orientation: 'unknown',
+          unsupported: ['orientation', 'installedThirdPartyCount', 'packages', 'abis', 'locale', 'timezone'],
+        };
+        return qaOk(
+          payload,
+          `iOS simulator ${sim?.name ?? serial} · ${sim?.runtime ?? 'runtime ?'} · ${sim?.state ?? '?'}
+` + `screen ${screen ? `${screen.width}x${screen.height}pt` : '?'} · orientation/packages/locale are not available via simctl`,
+        );
+      }
+      if (driver.kind !== 'direct') {
         return qaError({
-          what: 'No device attached to this session',
+          what: `Device info is not supported on the "${driver.kind}" backend`,
           changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_prepare_target first.'],
+          retrySafe: false,
+          failureCode: 'BACKEND_UNSUPPORTED',
+          nextSteps: ['Use an Android emulator (adb) or an iOS simulator session.'],
         });
       }
       const [props, screen, density, orientation, pkgs] = await Promise.all([
@@ -70,7 +106,7 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
     {
       title: 'Set orientation',
       description:
-        'Set screen orientation: portrait | landscape | auto (re-enables auto-rotate). Non-destructive; logged as an environment change and surfaced in qa_report. Useful for testing rotation handling.',
+        'Set screen orientation (Android Emulator only): portrait | landscape | auto (re-enables auto-rotate). Non-destructive; logged as an environment change and surfaced in qa_report.',
       inputSchema: {
         sessionId: z.string(),
         orientation: z.enum(['portrait', 'landscape', 'auto']),
@@ -78,19 +114,34 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
     },
     async ({ sessionId, orientation }) => {
       const session = sessions.get(sessionId);
-      const { driver } = session ? await getDriver(session) : { driver: undefined };
+      if (!session) return unknownSessionError(sessionId);
+      const { driver, blocked } = await getDriver(session);
       const serial = driver?.currentDevice();
       if (!session || !driver || !serial) {
+        return (
+          blockedDeviceResult(blocked) ??
+          qaError({
+            what: 'No device attached to this session',
+            changedState: false,
+            retrySafe: true,
+            nextSteps: ['Call qa_prepare_target first.'],
+          })
+        );
+      }
+      if (driver.kind !== 'direct') {
+        // H9: setOrientation drives adb `settings put`, so on iOS it would fail or no-op.
         return qaError({
-          what: 'No device attached to this session',
+          what: 'Setting orientation is only supported on the Android emulator backend',
           changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_prepare_target first.'],
+          retrySafe: false,
+          failureCode: 'BACKEND_UNSUPPORTED',
+          nextSteps: ['On an iOS simulator, rotate from the Simulator menu (Device > Rotate Left/Right) or via your WDA client.'],
         });
       }
       try {
         await setOrientation(serial, orientation);
       } catch (e) {
+        invalidateScreenSizeCache(serial); // a partial failure may still have rotated the device
         return qaError({
           what: `Could not set orientation: ${String(e)}`,
           changedState: false,
@@ -98,7 +149,10 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
           nextSteps: ['Confirm the device is online.'],
         });
       }
-      sessions.addEnvChange(session, `orientation → ${orientation}`);
+      // DirectDriver caches screen size + rotation for a short TTL. Drop it so the very next
+      // swipe/keyboard check uses the new axes instead of the pre-rotation ones.
+      invalidateScreenSizeCache(serial);
+      sessions.addEnvChange(session, `orientation > ${orientation}`);
       const now = await getOrientation(serial);
       sessions.recordMutation(session, {
         tool: 'qa_orientation',
@@ -120,7 +174,7 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
     {
       title: 'Set location',
       description:
-        'Spoof the device GPS location (emulator only). Consent-gated and logged as an environment change. Useful for testing location-dependent apps (maps, nearby, geofencing). Pass lat + lng (decimal degrees).',
+        'Spoof the GPS location (Android Emulator only). Consent-gated and logged as an environment change. For location-based apps (maps, nearby, geofencing). Pass lat + lng (decimal degrees).',
       inputSchema: {
         sessionId: z.string(),
         lat: z.number().describe('Latitude in decimal degrees.'),
@@ -131,15 +185,19 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
     },
     async ({ sessionId, lat, lng, consentId, approve }) => {
       const session = sessions.get(sessionId);
-      const { driver } = session ? await getDriver(session) : { driver: undefined };
+      if (!session) return unknownSessionError(sessionId);
+      const { driver, blocked } = await getDriver(session);
       const serial = driver?.currentDevice();
       if (!session || !driver || !serial) {
-        return qaError({
-          what: 'No device attached to this session',
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_prepare_target first.'],
-        });
+        return (
+          blockedDeviceResult(blocked) ??
+          qaError({
+            what: 'No device attached to this session',
+            changedState: false,
+            retrySafe: true,
+            nextSteps: ['Call qa_prepare_target first.'],
+          })
+        );
       }
       if (driver.kind !== 'direct') {
         return qaError({
@@ -179,7 +237,7 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
       try {
         await setGeo(serial, lat, lng);
       } catch (e) {
-        const emulatorHint = !serial.startsWith('emulator-') ? ' (this looks like a real device — `adb emu` only works on emulators)' : '';
+        const emulatorHint = !serial.startsWith('emulator-') ? ' (this looks like a real device; `adb emu` only works on emulators)' : '';
         sessions.recordMutation(session, {
           tool: 'qa_geolocation',
           action: 'geo_set',
@@ -196,7 +254,7 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
           nextSteps: ['Use an emulator for location spoofing.'],
         });
       }
-      sessions.addEnvChange(session, `geolocation → (${lat}, ${lng})`);
+      sessions.addEnvChange(session, `geolocation > (${lat}, ${lng})`);
       sessions.recordMutation(session, {
         tool: 'qa_geolocation',
         action: 'geo_set',

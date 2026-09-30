@@ -1,12 +1,12 @@
-// qa_network — safe offline/online testing without raw adb (Phase 2 CR2).
+// qa_network: safe offline/online testing without raw adb (Phase 2 CR2).
 // Uses `cmd connectivity airplane-mode` (API 30+). Records the original state on first
 // change so it can be restored; report + session-end restore use session.network.
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
-import { getDriver } from '../session/attach.js';
+import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import type { Session, SessionStore } from '../session/store.js';
 import type { Driver } from '../drivers/Driver.js';
 
@@ -30,7 +30,7 @@ export async function restoreNetwork(sessions: SessionStore, session: Session, d
   return `restored (airplane=${original})`;
 }
 
-/** Best-effort restore of EVERY session that changed the network — for server shutdown. */
+/** Best-effort restore of EVERY session that changed the network, for server shutdown. */
 export async function restoreAllNetwork(sessions: SessionStore): Promise<void> {
   const { DirectDriver } = await import('../drivers/DirectDriver.js');
   for (const s of sessions.list()) {
@@ -62,7 +62,8 @@ export function registerNetwork(server: McpServer, sessions: SessionStore): void
     {
       title: 'Network state control',
       description:
-        'Offline/online testing via airplane mode (no raw adb; needs Android 11+ `cmd connectivity`). Actions: status, offline, online, restore. Swipium records the original airplane state on the first change and restores it on qa_report, on explicit `restore`, and best-effort on server shutdown (SIGINT/SIGTERM/transport close). offline/online require consent.',
+        'Offline/online testing via airplane mode (Android 11+). action: status, offline/online (consent-gated), restore. The ' +
+        'original state is restored on qa_report, on restore, and on server shutdown.',
       inputSchema: {
         sessionId: z.string(),
         action: z.enum(['status', 'offline', 'online', 'restore']),
@@ -72,11 +73,26 @@ export function registerNetwork(server: McpServer, sessions: SessionStore): void
     },
     async ({ sessionId, action, consentId, approve }) => {
       const session = sessions.get(sessionId);
-      const { driver: d } = session ? await getDriver(session) : { driver: undefined };
+      if (!session) return unknownSessionError(sessionId);
+      const { driver: d, blocked } = await getDriver(session);
       if (!session || !d) {
-        return qaError({ what: 'No device attached', changedState: false, retrySafe: true, nextSteps: ['Call qa_prepare_target first.'] });
+        return (
+          blockedDeviceResult(blocked) ??
+          qaError({ what: 'No device attached', changedState: false, retrySafe: true, nextSteps: ['Call qa_prepare_target first.'] })
+        );
       }
 
+      // Airplane-mode control is an Android emulator feature (`cmd connectivity airplane-mode`); iOS
+      // simulators have no equivalent, so answer with a typed refusal instead of a raw driver error.
+      if (d.kind !== 'direct') {
+        return qaError({
+          what: 'qa_network is supported on Android emulators only (iOS simulators have no airplane-mode control)',
+          changedState: false,
+          retrySafe: false,
+          failureCode: 'BACKEND_UNSUPPORTED',
+          nextSteps: ['On iOS, test offline behavior by disconnecting the Mac from the network or with a network link conditioner.'],
+        });
+      }
       const airplane = await d.airplaneOn();
       if (action === 'status') {
         return qaOk(
@@ -86,7 +102,7 @@ export function registerNetwork(server: McpServer, sessions: SessionStore): void
             changedBySwipium: !!session.network?.changed,
             restoreAvailable: !!session.network?.changed,
           },
-          `network=${airplane ? 'offline (airplane on)' : 'online'}${session.network?.changed ? ' (changed by Swipium — will restore)' : ''}`,
+          `network=${airplane ? 'offline (airplane on)' : 'online'}${session.network?.changed ? ' (changed by Swipium, will restore)' : ''}`,
         );
       }
 
@@ -98,7 +114,7 @@ export function registerNetwork(server: McpServer, sessions: SessionStore): void
         );
       }
 
-      // offline / online — consent-gated, records original on first change.
+      // offline / online: consent-gated, records original on first change.
       const wantAirplane = action === 'offline';
       const gate = consumeConsent(consentId, approve, { action: 'network_change', affects: { to: action } });
       if (!gate.approved) {
@@ -126,15 +142,17 @@ export function registerNetwork(server: McpServer, sessions: SessionStore): void
         consent: { required: true, consentId, approved: true, payloadHash: action },
         status: 'approved',
       });
-      if (!session.network?.changed) {
+      const firstChange = !session.network?.changed;
+      if (firstChange) {
         session.network = { changed: true, originalAirplane: airplane };
       }
       sessions.persist(session);
       try {
         await d.setAirplane(wantAirplane);
       } catch (e) {
-        // Older images / no `cmd connectivity airplane-mode` (pre-Android 11).
-        if (!session.network.changed) session.network = undefined;
+        // Older images / no `cmd connectivity airplane-mode` (pre-Android 11). Nothing changed, so
+        // drop the restore record this call just created (an earlier change's record is kept).
+        if (firstChange) session.network = undefined;
         sessions.persist(session);
         return qaError({
           what: `Network control unsupported on this device: ${String(e)}`,
@@ -143,7 +161,7 @@ export function registerNetwork(server: McpServer, sessions: SessionStore): void
           nextSteps: ['Needs Android 11+ (`cmd connectivity airplane-mode`). Use a newer emulator image, or toggle network manually.'],
         });
       }
-      sessions.addEnvChange(session, `network → ${action} (airplane=${wantAirplane})`);
+      sessions.addEnvChange(session, `network > ${action} (airplane=${wantAirplane})`);
       await new Promise((r) => setTimeout(r, 1200)); // settle
       const now = await d.airplaneOn();
       sessions.recordMutation(session, {
@@ -157,7 +175,7 @@ export function registerNetwork(server: McpServer, sessions: SessionStore): void
       });
       return qaOk(
         { network: now ? 'offline' : 'online', previousStateRecorded: true, restoreAvailable: true },
-        `network → ${now ? 'offline' : 'online'}. Original recorded; restore on qa_report / qa_network restore.`,
+        `network > ${now ? 'offline' : 'online'}. Original recorded; restore on qa_report / qa_network restore.`,
       );
     },
   );

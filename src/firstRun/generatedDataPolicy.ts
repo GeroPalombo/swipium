@@ -1,9 +1,9 @@
-// SWIPIUM-REQ-02 — safe generated-data policy + environment classifier + built-in safe generators.
+// Safe generated-data policy + environment classifier + built-in safe generators.
 //
 // Controlled autonomy: Swipium will only invent values for input fields (to create a throwaway
 // account, fill onboarding, etc.) when policy AND the classified environment say it is safe. The
 // guardrails follow the MCP security best-practices (consent, least privilege) and Anthropic's
-// "use environmental ground truth at each step" guidance — if production cannot be ruled out we do
+// "use environmental ground truth at each step" guidance. If production cannot be ruled out, we do
 // NOT create an account; we ask one NeedsInput question instead.
 //
 // Secrets (generated passwords) are flagged so they go into the session redaction set and never
@@ -23,7 +23,7 @@ export interface TestDataPolicy {
   email: {
     generator: string;
     pattern: string; // contains <timestamp>
-    externalMailboxProvider?: string; // e.g. 'yopmail' — only used when set + requiresNetwork honored
+    externalMailboxProvider?: string; // e.g. 'yopmail'. Only used when set and requiresNetwork is honored
     requiresNetwork: boolean;
   };
   password: {
@@ -71,7 +71,7 @@ export const DEFAULT_TEST_DATA_POLICY: TestDataPolicy = {
 export const DEFAULT_POLICY_PATH = '.swipium/test-data-policy.json';
 
 /** Load `.swipium/test-data-policy.json` from the project root (or an explicit path), deep-merged
- *  over the safe default. A missing/corrupt file falls back to the default — never throws. */
+ *  over the safe default. A missing/corrupt file falls back to the default. Never throws. */
 export function loadTestDataPolicy(root: string, explicitPath?: string): { policy: TestDataPolicy; source: string } {
   const path = explicitPath ? (explicitPath.startsWith('/') ? explicitPath : join(root, explicitPath)) : join(root, DEFAULT_POLICY_PATH);
   if (!existsSync(path)) return { policy: DEFAULT_TEST_DATA_POLICY, source: 'default' };
@@ -92,7 +92,7 @@ export function loadTestDataPolicy(root: string, explicitPath?: string): { polic
 }
 
 // ---------------------------------------------------------------------------------------------
-// Environment classifier — decides whether the app under test is test / staging / production.
+// Environment classifier: decides whether the app under test is test / staging / production.
 // ---------------------------------------------------------------------------------------------
 
 export interface EnvironmentSignalsInput {
@@ -196,8 +196,8 @@ export function classifyEnvironment(input: EnvironmentSignalsInput): Environment
     return { environment: 'production', confidence: Math.min(0.85, 0.55 + prodHits * 0.15), signals, productionRisk: true };
   }
 
-  // 4. Nothing decisive → unknown, and we MUST treat unknown as production-risk (fail safe).
-  signals.push('no decisive test/staging signal — environment cannot be confirmed as non-production');
+  // 4. Nothing decisive > unknown, and we MUST treat unknown as production-risk (fail safe).
+  signals.push('no decisive test/staging signal; environment cannot be confirmed as non-production');
   return { environment: 'unknown', confidence: 0.3, signals, productionRisk: true };
 }
 
@@ -224,8 +224,8 @@ export function decideGeneratedAccount(
       allowed: false,
       reason:
         env.environment === 'production'
-          ? 'environment classified as production — refusing automatic account creation'
-          : 'environment could not be confirmed as non-production — refusing automatic account creation',
+          ? 'environment classified as production, refusing automatic account creation'
+          : 'environment could not be confirmed as non-production, refusing automatic account creation',
       environment: env,
     };
   }
@@ -277,7 +277,7 @@ function emailFromPattern(pattern: string, ts: number, index?: number): string {
 
 /** Generate a safe value for a field kind under the policy. Returns undefined when the field kind
  *  is not safely generatable without explicit policy opt-in (phone/date_of_birth) or never
- *  (otp — must come from a real provider). */
+ *  (otp, which must come from a real provider). */
 export function generateFieldValue(field: FieldKind, policy: TestDataPolicy, opts: GeneratorOptions = {}): GeneratedValue | undefined {
   const ts = opts.timestamp ?? Date.now();
   const i = opts.index;
@@ -311,7 +311,7 @@ export function generateFieldValue(field: FieldKind, policy: TestDataPolicy, opt
     case 'date_of_birth':
       return policy.allowDateOfBirth ? { value: '1990-01-15', secret: false, generator: 'dob_default' } : undefined;
     case 'otp':
-      return undefined; // never invented — only a declared provider may supply it
+      return undefined; // never invented; only a declared provider may supply it
     default:
       return undefined;
   }

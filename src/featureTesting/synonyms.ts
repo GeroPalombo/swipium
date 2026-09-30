@@ -1,4 +1,4 @@
-// Query normalization + synonym expansion (SWIPIUM-REQ-03 "Query and Ranking Requirements").
+// Query normalization + synonym expansion.
 // Deterministic, English-leaning v1 (Non-Goals: schema allows locale/synonym expansion later).
 // A feature request like "weather analysis feature" expands to the broader vocabulary the code
 // might actually use ("forecast", "temperature", "radar", …) so static/runtime matches are found.
@@ -70,7 +70,7 @@ export interface NormalizedQuery {
   raw: string;
   /** Salient terms typed by the user (stopwords removed). These drive title + cluster naming. */
   coreTerms: string[];
-  /** coreTerms ∪ synonym expansions — the full search vocabulary. */
+  /** coreTerms ∪ synonym expansions: the full search vocabulary. */
   expandedTerms: string[];
 }
 

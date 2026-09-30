@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-04 — suite-generation plan. Pure: assembles the read-only plan behind
+// Suite-generation plan. Pure: assembles the read-only plan behind
 // the qa_generate target:"appium" plan from the project profile + (optional) Appium model. No device, no writes.
 // Honest about prerequisites (map/recorded actions) and locator readiness.
 
@@ -20,6 +20,9 @@ export interface AutomationSuitePlan {
   language: AutomationLanguage;
   outputDir: string;
   platforms: { android: boolean; ios: boolean };
+  /** Default platform of the generated suite + why (explicit > session device > project > android). */
+  primaryPlatform: 'android' | 'ios';
+  platformSource: NonNullable<AutomationProjectProfile['platformSource']>;
   backends: { default: string; secondary?: string };
   mapCoverage: {
     hasActions: boolean;
@@ -37,7 +40,7 @@ export interface AutomationSuitePlan {
   nextAction: string;
 }
 
-/** .swipium/automation/<dir> — js for TS/JS, python for Python (matches REQ-04 layout). */
+/** .swipium/automation/<dir>: js for TS/JS, python for Python (the generated-suite layout). */
 export function outputDirFor(language: AutomationLanguage): string {
   return `.swipium/automation/${language === 'python' ? 'python' : 'js'}`;
 }
@@ -95,7 +98,7 @@ export function buildSuitePlan(profile: AutomationProjectProfile, opts: BuildPla
     filesPlanned.push(`${outputDir}/README.md`);
     if (opts.includeCi) filesPlanned.push(`${outputDir}/ci.example.yml`);
   } else {
-    // No model yet — list the skeleton we WOULD generate, and require a recording/map pass first.
+    // No model yet: list the skeleton we WOULD generate, and require a recording/map pass first.
     blockers.push({
       code: 'NO_RECORDED_ACTIONS',
       detail: 'No recorded actions / app map to turn into a POM suite.',
@@ -121,7 +124,7 @@ export function buildSuitePlan(profile: AutomationProjectProfile, opts: BuildPla
   if (mapCoverage && mapCoverage.brittle > 0) {
     blockers.push({
       code: 'BRITTLE_LOCATORS',
-      detail: `${mapCoverage.brittle} brittle/coordinate locator(s) (${mapCoverage.brittlePct}% brittle) — not release-grade.`,
+      detail: `${mapCoverage.brittle} brittle/coordinate locator(s) (${mapCoverage.brittlePct}% brittle), not release-grade.`,
       nextStep: 'Add durable accessibility id / resource-id / testID; generated suite marks these as candidate-only.',
     });
   }
@@ -137,6 +140,8 @@ export function buildSuitePlan(profile: AutomationProjectProfile, opts: BuildPla
     language,
     outputDir,
     platforms,
+    primaryPlatform: profile.primaryPlatform ?? (profile.defaultBackend === 'appium-xcuitest' ? 'ios' : 'android'),
+    platformSource: profile.platformSource ?? 'project',
     backends: { default: profile.defaultBackend, secondary: profile.secondaryBackend },
     mapCoverage,
     prerequisites,

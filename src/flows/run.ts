@@ -1,24 +1,39 @@
-// Flow runner v2 (NEXT-PLAN: Flow System V2). Drives a parsed Flow step-by-step using core
+// Flow runner v2 (Flow System V2). Drives a parsed Flow step-by-step using core
 // primitives + the driver directly, WITHOUT re-entering through the model. Fail-fast, never
-// auto-retries (DESIGN §6). v2 adds: setup/teardown phases (teardown always runs), selector-bound
+// auto-retries. v2 adds: setup/teardown phases (teardown always runs), selector-bound
 // inputText, visual steps (image match / diff / visual evidence), device-relative gestures,
 // overlay/network/lifecycle/seed/note steps, and typed per-step failure codes. On failure it
 // captures a screenshot + health so the result stands alone.
 
 import { readFileSync, existsSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { parseSnapshot, signature } from '../snapshot/parse.js';
 import { settle } from '../snapshot/settle.js';
 import { checkHealth } from '../oracle/health.js';
 import { recordHealthFindings } from '../oracle/record.js';
+import { isAbortError } from '../lib/abortScope.js';
 import { boundsBucket, resolveTarget, resourceIdMatches, type Target } from '../core/target.js';
 import { imageDiff, findTemplate } from '../lib/image.js';
 import { captureCoordinateSpace, toDevicePoint } from '../lib/coordSpace.js';
 import { executeSeed } from './seedExec.js';
-import { resolveVars, type Flow, type FlowProvenanceEntry, type FlowStep, type SwipeArea } from './schema.js';
+import { withinRootOrNull } from './paths.js';
+import {
+  lookupFlowVar,
+  missingVarMessage,
+  resolveVars,
+  SECRET_VAR_NAME,
+  type Flow,
+  type FlowProvenanceEntry,
+  type FlowStep,
+} from './schema.js';
+// Shared with qa_act: flow replay keeps the default inset 0 so recorded flows
+// reproduce their historical vectors byte-for-byte.
+import { swipeVector } from '../lib/gestures.js';
 import { configuredOcrCommand, findOcrRegion, runOcr } from '../visual/ocr.js';
 import { makeRedactor } from '../lib/redact.js';
+import { classifyForeground, detectTreeOverlays } from '../snapshot/overlays.js';
+import type { RawNode } from '../snapshot/parse.js';
 import type { FailureCode } from '../oracle/failures.js';
 import type { Driver, NativeSelectorStrategy } from '../drivers/Driver.js';
 import type { MutationRecord, Session, SessionStore } from '../session/store.js';
@@ -33,6 +48,10 @@ export interface FlowStepResult {
   detail?: string;
   failureCode?: FailureCode;
   screenshotUri?: string;
+  /** clearOverlay only: true = nothing dismissible was detected, so nothing was done (not a
+   *  failure); false = an overlay was detected but could NOT be dismissed (e.g. iOS without a
+   *  native alert API). The step does not claim success. */
+  nothingCleared?: boolean;
 }
 
 export interface FlowRunResult {
@@ -47,45 +66,6 @@ export interface FlowRunResult {
   appHealth?: string;
   durationMs: number;
   counters: Session['counters'];
-}
-
-const FALLBACK_SWIPE: Record<string, [number, number, number, number]> = {
-  up: [540, 1500, 540, 600],
-  down: [540, 600, 540, 1500],
-  left: [800, 1100, 200, 1100],
-  right: [200, 1100, 800, 1100],
-};
-const AREA_ANCHOR: Record<SwipeArea, [number, number]> = {
-  center: [0.5, 0.5],
-  top: [0.5, 0.3],
-  bottom: [0.5, 0.7],
-  left: [0.3, 0.5],
-  right: [0.7, 0.5],
-};
-const SECRET_VAR_NAME = /pass|secret|token|otp|pin|cvv|key/i;
-
-/** Device-relative swipe vector (fractions of the screen), falling back to fixed coords if no size. */
-function swipeVector(
-  size: { width: number; height: number } | null,
-  dir: 'up' | 'down' | 'left' | 'right',
-  area: SwipeArea = 'center',
-  distance = 0.6,
-): [number, number, number, number] {
-  if (!size) return FALLBACK_SWIPE[dir];
-  const [ax, ay] = AREA_ANCHOR[area];
-  const cx = size.width * ax;
-  const cy = size.height * ay;
-  const vd = (size.height * distance) / 2;
-  const hd = (size.width * distance) / 2;
-  const clampX = (x: number) => Math.max(1, Math.min(size.width - 1, Math.round(x)));
-  const clampY = (y: number) => Math.max(1, Math.min(size.height - 1, Math.round(y)));
-  const v = {
-    up: [cx, cy + vd, cx, cy - vd],
-    down: [cx, cy - vd, cx, cy + vd],
-    left: [cx + hd, cy, cx - hd, cy],
-    right: [cx - hd, cy, cx + hd, cy],
-  }[dir];
-  return [clampX(v[0]), clampY(v[1]), clampX(v[2]), clampY(v[3])];
 }
 
 function describe(step: FlowStep): string {
@@ -289,10 +269,49 @@ interface StepOutcome {
   ok: boolean;
   detail?: string;
   failureCode?: FailureCode;
+  nothingCleared?: boolean;
+}
+
+/** In-tree modal surfaces that BACK dismisses (Android dialogs / bottom sheets / popups, iOS
+ * alerts and action sheets, system permission dialogs rendered in-tree). */
+const MODAL_CLASS_RE = /BottomSheet|AlertDialog|DialogTitle|PopupWindow|XCUIElementTypeAlert|XCUIElementTypeSheet/;
+const MODAL_ID_RE =
+  /design_bottom_sheet|bottom_sheet|touch_outside|android:id\/(?:alertTitle|button1|button2|parentPanel|select_dialog_listview)|permissioncontroller:id\/|packageinstaller:id\/permission|:id\/(?:modal|dialog)[_a-z]*/i;
+
+/** Classify what (if anything) the clearOverlay flow step may safely dismiss with BACK.
+ * Snackbars / banners are NOT BACK-dismissible (BACK would navigate the app instead). */
+export function detectBackDismissibleOverlay(
+  nodes: RawNode[],
+  screen: [number, number] | undefined,
+  appId: string | undefined,
+  foregroundOwner: string,
+): string | undefined {
+  const fg = classifyForeground(appId, foregroundOwner);
+  if (fg && (fg.type === 'permission_dialog' || fg.type === 'account_picker')) return fg.type;
+  const tree = detectTreeOverlays(nodes, screen).find(
+    (o) => o.type === 'native_dialog' || o.type === 'rn_logbox' || o.type === 'rn_redbox',
+  );
+  if (tree) return tree.type;
+  const modal = nodes.find((n) => MODAL_CLASS_RE.test(n.cls) || MODAL_ID_RE.test(n.id));
+  if (modal)
+    return /permission/i.test(modal.id) ? 'permission_dialog' : /sheet/i.test(`${modal.cls} ${modal.id}`) ? 'bottom_sheet' : 'modal';
+  return undefined;
 }
 
 export function classifyFlowDriverError(error: unknown, fallback: FailureCode = 'UNKNOWN'): FailureCode {
+  // Cancelled work (the call/job was aborted) is CANCELLED, never WDA_UNREACHABLE / SNAPSHOT_FAILED
+  // because the aborted request's message says "aborted" or "dump failed".
+  if (isAbortError(error)) return 'CANCELLED';
   const msg = String((error as Error)?.message ?? error);
+  // A crashing OCR/mask provider (tapOcrText/assertOcrText) is typed, not UNKNOWN.
+  if ((error as { code?: unknown } | null)?.code === 'OCR_PROVIDER_FAILED') return 'OCR_PROVIDER_FAILED';
+  // Driver-side argument validation (e.g. a malformed app id from assertAndroidAppId) carries
+  // code INVALID_ARGUMENT and/or an `INVALID_ARGUMENT:` message prefix. That's a caller error, not UNKNOWN.
+  if ((error as { code?: unknown } | null)?.code === 'INVALID_ARGUMENT' || /^(?:Error:\s*)?INVALID_ARGUMENT\b/.test(msg))
+    return 'INVALID_ARGUMENT';
+  // Drivers self-classify undeliverable text (DirectDriver/WdaDriver prefix the code), so match
+  // first so the free-form detail after the prefix can't hit a broader pattern below.
+  if (/TEXT_INPUT_UNSUPPORTED/.test(msg)) return 'TEXT_INPUT_UNSUPPORTED';
   if (/not hittable|not hit.?point|not visible.*hittable|is not enabled|element.*obscured|other element.*would receive/i.test(msg))
     return 'ELEMENT_NOT_HITTABLE';
   if (/stale element|stale.*reference|element.*no longer|invalid element/i.test(msg)) return 'STALE_REF';
@@ -333,26 +352,34 @@ export async function runFlow(
   const steps: FlowStepResult[] = [];
   const appId = flow.appId ?? session.appId;
   const timeoutMs = 8000;
-  // Ensure session.driver is the driver we're running with — core helpers (resolveTarget) read it.
+  // Ensure session.driver is the driver we're running with. Core helpers (resolveTarget) read it.
   session.driver = d;
-  const screenSize = await d.screenSize().catch(() => null);
+  // Re-read per gesture: a rotation mid-flow swaps the axes (the WDA driver caches per
+  // orientation, so this is cheap there). Keeps the first read as the fallback.
+  const initialScreenSize = await d.screenSize().catch(() => null);
+  const currentScreenSize = async () => (await d.screenSize().catch(() => null)) ?? initialScreenSize;
   const mutationConsent = opts.mutationConsent ?? { required: false, approved: true };
 
   const resolveFlowText = (value: string): { out: string; missing: string[] } => {
     const resolved = resolveVars(value, vars);
     for (const m of value.matchAll(/\$\{([^}]+)\}/g)) {
       const name = m[1];
-      const v = vars[name] ?? process.env[name];
-      if (v != null && SECRET_VAR_NAME.test(name)) session.secrets.add(v);
+      const v = lookupFlowVar(name, vars);
+      if (v != null && v !== '' && SECRET_VAR_NAME.test(name)) session.secrets.add(v);
     }
     return resolved;
   };
   const unresolved = (missing: string[]): StepOutcome => ({
     ok: false,
-    detail: `unresolved variable(s): ${missing.join(', ')}`,
+    detail: missingVarMessage(missing),
     failureCode: 'MISSING_FIXTURE',
   });
   const shown = (value: string): string => makeRedactor(session.secrets)(value) ?? value;
+  const outsideRoot = (p: string): StepOutcome => ({
+    ok: false,
+    detail: `path "${p}" resolves outside the project root. Image templates and baselines must live under the project root`,
+    failureCode: 'UNSAFE_ACTION_REFUSED',
+  });
 
   const recordFlowMutation = (
     action: string,
@@ -378,8 +405,8 @@ export async function runFlow(
   let failureCode: FailureCode | undefined;
 
   const tapImageHit = async (template: string, minScore?: number): Promise<{ x: number; y: number } | null> => {
-    const tplPath = isAbsolute(template) ? template : join(session.root, template);
-    if (!existsSync(tplPath)) return null;
+    const tplPath = withinRootOrNull(session.root, template);
+    if (!tplPath || !existsSync(tplPath)) return null;
     const png = await d.screenshot();
     const m = findTemplate(png, readFileSync(tplPath), minScore ?? 0.85);
     if (!m.found) return null;
@@ -443,6 +470,7 @@ export async function runFlow(
         await settle(d, { timeoutMs });
         return { ok: true };
       case 'tapImage': {
+        if (!withinRootOrNull(session.root, step.template)) return outsideRoot(step.template);
         const pt = await tapImageHit(step.template, step.minScore);
         if (!pt) return { ok: false, detail: `image "${step.template}" not found on screen`, failureCode: 'ELEMENT_NOT_FOUND' };
         await d.pressXY(pt.x, pt.y, 100);
@@ -471,7 +499,9 @@ export async function runFlow(
       }
       case 'inputText': {
         const { out, missing } = resolveFlowText(step.value);
-        if (missing.length) return { ok: false, detail: `unresolved variable(s): ${missing.join(', ')}`, failureCode: 'MISSING_FIXTURE' };
+        if (missing.length) return unresolved(missing);
+        // Register a secret BEFORE typing so a failing driver call's error is scrubbed too (H2).
+        if (step.secret && out) session.secrets.add(out);
         // eslint-disable-next-line no-control-regex -- intentional: detect non-ASCII (outside \x00-\x7F) before adb text input
         if (d.kind === 'direct' && /[^\x00-\x7F]/.test(out)) {
           return {
@@ -566,7 +596,8 @@ export async function runFlow(
         return ok ? { ok } : { ok, detail: `"${shown(query)}" unexpectedly visible`, failureCode: 'ASSERTION_FAILED' };
       }
       case 'assertImage': {
-        const tplPath = isAbsolute(step.template) ? step.template : join(session.root, step.template);
+        const tplPath = withinRootOrNull(session.root, step.template);
+        if (!tplPath) return outsideRoot(step.template);
         if (!existsSync(tplPath)) return { ok: false, detail: `template not found: ${tplPath}`, failureCode: 'ASSERTION_FAILED' };
         const m = findTemplate(await d.screenshot(), readFileSync(tplPath), step.minScore ?? 0.85);
         return m.found
@@ -590,6 +621,17 @@ export async function runFlow(
       }
       case 'assertVisual': {
         // human-readable visual checkpoint: capture evidence + record a visual note; passes.
+        // Sensitive mode never persists screenshots, so record an honest skipped checkpoint instead.
+        if (session.sensitive) {
+          sessions.addNote(session, {
+            at: Date.now(),
+            workflow: `${flow.name}:visual`,
+            outcome: 'skipped',
+            reason: `${step.description}: not captured, sensitive mode disables screenshots`,
+            method: 'visual',
+          });
+          return { ok: true, detail: 'sensitive mode: visual checkpoint screenshot not captured' };
+        }
         const png = await d.screenshot();
         const uri = sessions.saveArtifact(
           session,
@@ -612,7 +654,8 @@ export async function runFlow(
         return { ok: true };
       }
       case 'assertDiff': {
-        const basePath = join(session.root, '.swipium', 'baselines', `${step.baseline}.png`);
+        const basePath = withinRootOrNull(join(session.root, '.swipium', 'baselines'), `${step.baseline}.png`);
+        if (!basePath) return outsideRoot(step.baseline);
         if (!existsSync(basePath))
           return { ok: false, detail: `no baseline "${step.baseline}" (create a visual baseline first)`, failureCode: 'MISSING_FIXTURE' };
         const res = imageDiff(readFileSync(basePath), await d.screenshot());
@@ -628,7 +671,7 @@ export async function runFlow(
             };
       }
       case 'swipe': {
-        const v = swipeVector(screenSize, step.direction, step.area, step.distance);
+        const v = swipeVector(await currentScreenSize(), step.direction, step.area, step.distance);
         await d.swipe(v[0], v[1], v[2], v[3], 300);
         sessions.bump(session, 'actions');
         await settle(d, { timeoutMs });
@@ -638,6 +681,7 @@ export async function runFlow(
         const resolved = resolveFlowText(step.query);
         if (resolved.missing.length) return unresolved(resolved.missing);
         const query = resolved.out;
+        const screenSize = await currentScreenSize();
         for (let n = 0; n < 8; n++) {
           try {
             const native = await nativeVisible(d, query);
@@ -672,7 +716,7 @@ export async function runFlow(
         return { ok: true };
       case 'openUrl': {
         const { out, missing } = resolveFlowText(step.url);
-        if (missing.length) return { ok: false, detail: `unresolved variable(s): ${missing.join(', ')}`, failureCode: 'MISSING_FIXTURE' };
+        if (missing.length) return unresolved(missing);
         await d.openUrl(out);
         await settle(d, { timeoutMs });
         return { ok: true };
@@ -737,11 +781,59 @@ export async function runFlow(
         return { ok: true };
       }
       case 'clearOverlay': {
-        // best-effort: hide the keyboard / dismiss a dialog with BACK (a flow cleanup, always ok)
-        if (await d.imeShown().catch(() => false)) await d.pressKey('back');
-        else await d.pressKey('back');
+        // Best-effort cleanup (always ok), but BACK only when something is there to dismiss:
+        // with nothing open, BACK navigates away / exits the app (H7).
+        if (await d.imeShown().catch(() => false)) {
+          if (d.hideKeyboard) await d.hideKeyboard().catch(() => false);
+          else await d.pressKey('back');
+          await settle(d, { timeoutMs });
+          return { ok: true, detail: 'keyboard hidden' };
+        }
+        const parsed = await snapshot(session, d).catch(() => null);
+        const fg = await d.foregroundOwner().catch(() => 'unknown');
+        const dismissible = detectBackDismissibleOverlay(parsed?.allNodes ?? [], parsed?.screen, session.appId, fg);
+        if (!dismissible) {
+          return {
+            ok: true,
+            nothingCleared: true,
+            detail: 'nothing to clear (no keyboard, dialog, sheet or permission prompt detected), BACK not pressed',
+          };
+        }
+        // iOS has no BACK for alerts/sheets: WDA "back" taps the nav bar / edge-swipes, which
+        // navigates the app instead of dismissing the alert. Use the native alert API, and never
+        // claim success when it is unavailable or the overlay is still there.
+        if (d.kind === 'wda' || d.kind === 'simulator') {
+          if (!d.dismissAlert) {
+            return {
+              ok: true,
+              nothingCleared: false,
+              detail: `${dismissible} detected but NOT dismissed. This iOS backend has no native alert API (BACK is not used on iOS); dismiss it with an explicit tap step`,
+            };
+          }
+          try {
+            await d.dismissAlert();
+          } catch (e) {
+            return {
+              ok: true,
+              nothingCleared: false,
+              detail: `${dismissible} detected but NOT dismissed: native alert dismiss failed: ${String((e as Error)?.message ?? e)}`,
+            };
+          }
+          await settle(d, { timeoutMs });
+          const after = await snapshot(session, d).catch(() => null);
+          const fgAfter = await d.foregroundOwner().catch(() => 'unknown');
+          const still = after ? detectBackDismissibleOverlay(after.allNodes, after.screen, session.appId, fgAfter) : undefined;
+          if (still)
+            return {
+              ok: true,
+              nothingCleared: false,
+              detail: `${dismissible} still present after native alert dismiss. Dismiss it with an explicit tap step`,
+            };
+          return { ok: true, detail: `dismissed ${dismissible} with the native alert API` };
+        }
+        await d.pressKey('back');
         await settle(d, { timeoutMs });
-        return { ok: true };
+        return { ok: true, detail: `dismissed ${dismissible} with BACK` };
       }
       case 'networkOffline':
       case 'networkOnline': {
@@ -797,6 +889,7 @@ export async function runFlow(
         sessions.addNote(session, { at: Date.now(), workflow: `${flow.name}:note`, outcome: step.outcome, reason: step.reason });
         return { ok: true };
       case 'screenshot': {
+        if (session.sensitive) return { ok: true, detail: 'sensitive mode: screenshot not captured' };
         const png = await d.screenshot();
         sessions.saveArtifact(session, 'screenshot', `flow-shot-${Date.now()}.png`, png, 'image/png', step.reason ?? 'flow screenshot');
         sessions.bump(session, 'screenshots');
@@ -846,15 +939,19 @@ export async function runFlow(
       } catch (e) {
         outcome = { ok: false, detail: String(e), failureCode: classifyFlowDriverError(e) };
       }
+      // H2: step detail can carry driver errors (argv/stderr), so scrub session secrets, which
+      // include every value typed into a secret step/variable before it ran.
+      if (outcome.detail) outcome = { ...outcome, detail: shown(outcome.detail) };
       const rec: FlowStepResult = {
         index,
         phase,
         kind: step.kind,
-        summary,
+        summary: shown(summary),
         ok: outcome.ok,
         durationMs: Math.round(Date.now() - stepStarted),
         detail: outcome.detail,
         failureCode: outcome.failureCode,
+        ...(outcome.nothingCleared !== undefined ? { nothingCleared: outcome.nothingCleared } : {}),
       };
       steps.push(rec);
       if (!outcome.ok && failFast) {
@@ -862,6 +959,11 @@ export async function runFlow(
         failedAtStep = index;
         reason = outcome.detail ?? 'step failed';
         failureCode = outcome.failureCode;
+        // Sensitive mode never persists screenshots, including failure evidence.
+        if (session.sensitive) {
+          rec.detail = `${rec.detail ?? 'step failed'} (sensitive mode: failure screenshot not captured)`;
+          return index;
+        }
         try {
           const png = await d.screenshot();
           rec.screenshotUri = sessions.saveArtifact(
@@ -881,7 +983,7 @@ export async function runFlow(
     return -1;
   };
 
-  // setup → main → teardown (teardown ALWAYS runs, even after a failure).
+  // setup > main > teardown (teardown ALWAYS runs, even after a failure).
   let nextBase = 0;
   const setupFail = await runPhase(flow.setup, 'setup', nextBase, true);
   nextBase += flow.setup.length;

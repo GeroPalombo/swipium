@@ -1,5 +1,5 @@
 // Shared types for the qa_test_this orchestration state machine (split out of
-// src/tools/testThis.ts). Pure declarations + tiny helpers — no side effects.
+// src/tools/testThis.ts). Pure declarations + tiny helpers, no side effects.
 
 import type { ProjectScan } from '../../context/scan.js';
 import type { TestGoal } from '../goal.js';
@@ -11,14 +11,15 @@ import { NeedsInput } from '../../lib/needsInput.js';
 
 export type State = 'ready' | 'needs_input' | 'blocked' | 'unsafe';
 
-export type ExecState = 'completed' | 'blocked' | 'unsafe';
+/** Terminal job states. `needs_input` pauses the run on ONE question (resume via qa_continue_from_blocker). */
+export type ExecState = 'completed' | 'blocked' | 'unsafe' | 'needs_input';
 
 export interface PlanStep {
   tool: string;
   why: string;
   args?: Record<string, unknown>;
   status: 'pending' | 'satisfied';
-  /** Symbolic outputs this step produces (e.g. artifact.path) — Milestone E. */
+  /** Symbolic outputs this step produces (e.g. artifact.path). Milestone E. */
   produces?: string[];
   /** Symbolic inputs a later step needs before it can run. */
   requires?: string[];
@@ -55,6 +56,7 @@ export interface TestThisInput {
   timeoutMs?: number;
   consentId?: string;
   approve?: boolean;
+  responseMode?: 'compact' | 'normal' | 'verbose';
 }
 
 export interface ExecuteArgs {
@@ -85,7 +87,7 @@ export interface ExecuteArgs {
   testThisPlanMutation?: { affects: Record<string, unknown>; risk: 'low' | 'medium' | 'high' };
   optionalQuestion?: ReturnType<typeof NeedsInput.credentials>;
   workaroundLog: () => string[];
-  /** Pre-launch static app map (Vision Gap Fix 1) — feeds first-run static candidates + report context. */
+  /** Pre-launch static app map (Vision Gap Fix 1): feeds first-run static candidates + report context. */
   prelaunchMap?: AppKnowledgeMap;
   appMapUri?: string;
 }

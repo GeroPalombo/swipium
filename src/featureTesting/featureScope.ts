@@ -1,6 +1,6 @@
-// Feature scope resolution (SWIPIUM-REQ-03 "Feature Scope Model" + "Query and Ranking"). PURE.
-// Given a natural-language feature request and the available ground truth — the static code index,
-// the runtime screen graph, and existing tests — rank every plausible code/runtime artifact, group
+// Feature scope resolution ("Query and Ranking"). PURE.
+// Given a natural-language feature request and the available ground truth (the static code index,
+// the runtime screen graph, and existing tests), rank every plausible code/runtime artifact, group
 // them into feature candidates, and return the best-supported FeatureScope plus disambiguation when
 // genuinely-different features tie. No device, no filesystem, no LLM: deterministic and unit-testable.
 
@@ -315,7 +315,7 @@ function cluster(matches: ScoredMatch[], q: NormalizedQuery): Cluster[] {
   const rootFor = (m: ScoredMatch): string => {
     const core = m.matchedTerms.filter((t) => q.coreTerms.includes(t));
     if (core.length) return uf.root(core[0]);
-    // synonym-only match → attach to the synonym's owning core term if derivable, else its own bucket
+    // synonym-only match: attach to the synonym's owning core term if derivable, else its own bucket
     return m.matchedTerms[0] ?? '∅';
   };
   for (const m of matches) {
@@ -339,19 +339,19 @@ function deriveRisks(terms: Set<string>): FeatureRisk[] {
     risks.push({
       risk: 'destructive actions present',
       level: 'high',
-      rationale: 'Feature vocabulary includes delete/remove/cancel — requires disposable state and explicit consent.',
+      rationale: 'Feature vocabulary includes delete/remove/cancel. Requires disposable state and explicit consent.',
     });
   if (has(PAYMENT_TERMS))
     risks.push({
       risk: 'real-money / purchase path',
       level: 'high',
-      rationale: 'Payment/checkout flows can charge real accounts — use a sandbox/test fixture.',
+      rationale: 'Payment/checkout flows can charge real accounts. Use a sandbox/test fixture.',
     });
   if (has(AUTH_TERMS))
     risks.push({
       risk: 'authentication gate',
       level: 'medium',
-      rationale: 'Likely blocked behind login — needs test credentials to exercise fully.',
+      rationale: 'Likely blocked behind login. Needs test credentials to exercise fully.',
     });
   if (!risks.length)
     risks.push({ risk: 'low-risk read/navigation', level: 'low', rationale: 'No destructive/payment/auth vocabulary detected in scope.' });
@@ -422,13 +422,13 @@ function buildScope(c: Cluster, q: NormalizedQuery, input: FeatureScopeInput, ma
 
   const coverageGaps: CoverageGap[] = [];
   if (!runtimeScreens.length)
-    coverageGaps.push({ area: 'runtime', reason: 'No runtime screen has been observed for this feature yet — run a focused exploration.' });
+    coverageGaps.push({ area: 'runtime', reason: 'No runtime screen has been observed for this feature yet. Run a focused exploration.' });
   if (!staticScreens.length)
     coverageGaps.push({
       area: 'static',
-      reason: 'No screen/route component matched in source — the static index may be incomplete or the feature is named differently.',
+      reason: 'No screen/route component matched in source. The static index may be incomplete or the feature is named differently.',
     });
-  if (!existingTests.length) coverageGaps.push({ area: 'tests', reason: 'No existing test/flow covers this feature — generate cases.' });
+  if (!existingTests.length) coverageGaps.push({ area: 'tests', reason: 'No existing test/flow covers this feature. Generate cases.' });
 
   const objective = `Validate the "${title}" feature${input.platform ? ` on ${input.platform}` : ''}: reach its entry point, exercise the primary path, and verify the expected outcome.`;
 
@@ -504,7 +504,7 @@ export function buildFeatureScope(input: FeatureScopeInput): FeatureScopeResult 
   };
 
   if (!matches.length) {
-    // No feature found — honest empty scope with searched terms (acceptance criterion).
+    // No feature found: honest empty scope with searched terms (acceptance criterion).
     const empty: FeatureScope = {
       featureId: slug(q.coreTerms),
       query: input.query,
@@ -523,7 +523,7 @@ export function buildFeatureScope(input: FeatureScopeInput): FeatureScopeResult 
         {
           area: 'map',
           reason:
-            'Feature not present in the current map — run an initial qa_test_this/qa_explore to grow coverage, or refine the feature name.',
+            'Feature not present in the current map. Run an initial qa_test_this/qa_explore to grow coverage, or refine the feature name.',
         },
       ],
       recommendedStrategy: 'manual_blocked',

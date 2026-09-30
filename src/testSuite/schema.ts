@@ -1,5 +1,5 @@
-// Canonical persistent QA test-case suite schema (SWIPIUM-REQ-06). This is the long-lived,
-// project-level QA knowledge that grows with the app map — distinct from the per-run test catalog
+// Canonical persistent QA test-case suite schema. This is the long-lived,
+// project-level QA knowledge that grows with the app map. Distinct from the per-run test catalog
 // (src/report/testCatalog.ts) and the per-suite POM catalog (src/suite/testcase.ts), which are
 // snapshots. A CanonicalTestCase carries manual + automated coverage, expected vs. actual results,
 // creativity level, automation readiness, traceability to the app/tickets/requirements, and a
@@ -37,7 +37,7 @@ export interface ActualResultSummary {
   failureCode?: string;
 }
 
-// SWIPIUM-REQ-08 — links a canonical test case to issue-ledger records. The issue ledger remains the
+// Links a canonical test case to issue-ledger records. The issue ledger remains the
 // source of truth; the suite stores only the issue id + fingerprint + relationship, never events.
 export type TestCaseIssueRelationship = 'caused_failure' | 'blocks_case' | 'verified_fixed' | 'known_noise' | 'improvement';
 export type TestCaseRunIssueRelationship = 'observed' | 'verified_fixed' | 'regressed' | 'suppressed';
@@ -72,7 +72,7 @@ export interface AutomationLink {
 
 export interface TestDataRef {
   name: string;
-  value?: string; // never a raw secret — redacted/placeholder
+  value?: string; // never a raw secret: redacted/placeholder
   secret?: boolean;
   source?: string;
 }
@@ -97,7 +97,7 @@ export interface TestRunRef {
   summary?: string;
   source: ProvenanceSource;
   evidence: string[];
-  /** Issue-ledger links observed/verified on this run (SWIPIUM-REQ-08). */
+  /** Issue-ledger links observed/verified on this run. */
   issueLinks?: TestCaseRunIssueLink[];
 }
 
@@ -107,7 +107,7 @@ export interface ProvenanceEntry {
   source: ProvenanceSource;
   at: string;
   sourceUri?: string;
-  /** Fields this provenance entry wrote — used to protect manually-curated fields on regeneration. */
+  /** Fields this provenance entry wrote. Used to protect manually-curated fields on regeneration. */
   fields?: string[];
   note?: string;
 }
@@ -146,7 +146,7 @@ export interface CanonicalTestCase {
   provenance: ProvenanceEntry[];
   /** True once a human edits the case; protects curated fields from generated overwrites. */
   manuallyEdited?: boolean;
-  /** Durable links to issue-ledger records (SWIPIUM-REQ-08). The ledger is the source of truth. */
+  /** Durable links to issue-ledger records. The ledger is the source of truth. */
   issueRefs?: TestCaseIssueRef[];
 }
 
@@ -185,7 +185,7 @@ export function emptySuite(appId?: string, now = new Date().toISOString()): Test
   return { schemaVersion: TEST_SUITE_SCHEMA_VERSION, updatedAt: now, appId, cases: [], retiredIds: [] };
 }
 
-/** Slugify a functionality label into a stable, filesystem-safe segment (e.g. "Weather Analysis" → "weather-analysis"). */
+/** Slugify a functionality label into a stable, filesystem-safe segment (e.g. "Weather Analysis" > "weather-analysis"). */
 export function functionalitySlug(functionality: string): string {
   return (
     functionality
@@ -196,7 +196,7 @@ export function functionalitySlug(functionality: string): string {
   );
 }
 
-/** Derive the ID prefix token for a functionality (e.g. "weather-analysis" → "WEATHER"). */
+/** Derive the ID prefix token for a functionality (e.g. "weather-analysis" > "WEATHER"). */
 export function idPrefix(functionality: string): string {
   const slug = functionalitySlug(functionality);
   const token = slug.split('-')[0] || 'gen';
@@ -208,7 +208,7 @@ export function idPrefix(functionality: string): string {
   );
 }
 
-/** A normalized identity key for de-duplication: feature + objective + ordered (action→target) steps. */
+/** A normalized identity key for de-duplication: feature + objective + ordered (action>target) steps. */
 export function caseIdentity(c: Pick<CanonicalTestCase, 'featureId' | 'objective' | 'steps'>): string {
   const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ');
   const stepKey = c.steps.map((s) => `${norm(s.action)}>${norm(s.target ?? '')}`).join('|');

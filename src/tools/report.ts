@@ -1,10 +1,10 @@
-// qa_report — thin wrapper around the report service (Phase 3.2 Milestone B). All assembly lives in
+// qa_report: thin wrapper around the report service (Phase 3.2 Milestone B). All assembly lives in
 // src/services/report.ts so qa_test_this execute produces the identical report artifact in every
 // terminal state. This tool resolves the session, runs the service, and surfaces its result.
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { generateSessionReport } from '../services/report.js';
 import type { SessionStore } from '../session/store.js';
 
@@ -14,36 +14,21 @@ export function registerReport(server: McpServer, sessions: SessionStore): void 
     {
       title: 'Build a session report',
       description:
-        'Assemble a report for the session: an executive summary (release risk ship/caution/block + the single next action), native/app health, structured outcomes by workflow, findings, artifact links, env mutations + restoration, workarounds + provided inputs. Returns a summary + resource URIs (not the whole bundle); saves the full report as an artifact. Pass `format` to also export: markdown (issue-ready), json, junit (CI), playwright (dashboard JSON), or flow — returns the export artifact URI. qa_test_this execute generates this report automatically at the end of a run.',
+        'Assemble the session report: executive summary (release risk ship/caution/block + next action), health, outcomes by ' +
+        'workflow, findings, evidence links, env changes + restoration, workarounds. Saves the full report as an artifact and returns ' +
+        'a summary + URIs. format adds an export artifact: markdown, json, junit, sarif (SARIF 2.1.0), github-summary, playwright, or ' +
+        'flow. qa_test_this execute calls this automatically. CI usage: docs/ci-reports.md.',
       inputSchema: {
         sessionId: z.string(),
-        format: z
-          .enum(['summary', 'markdown', 'json', 'junit', 'flow', 'playwright'])
-          .optional()
-          .describe(
-            'Also emit this export as an artifact (default summary only). markdown = issue-ready; junit = CI; playwright = Playwright-style dashboard JSON; flow = a replayable flow drafted from the actions recorded this run.',
-          ),
-        baseline: z
-          .string()
-          .optional()
-          .describe('Optional baseline report.json path. When provided, qa_report adds comparison and PR-summary links.'),
-        trendRoot: z
-          .string()
-          .optional()
-          .describe(
-            'Optional project root containing .swipium/runs or legacy .swipium/ci history. When provided, qa_report adds trend/flake context.',
-          ),
+        format: z.enum(['summary', 'markdown', 'json', 'junit', 'sarif', 'github-summary', 'flow', 'playwright']).optional(),
+        baseline: z.string().optional().describe('Baseline report.json path; adds comparison links.'),
+        trendRoot: z.string().optional().describe('Project root with .swipium/runs history; adds trend/flake context.'),
       },
     },
     async ({ sessionId, format, baseline, trendRoot }) => {
       const session = sessions.get(sessionId);
       if (!session) {
-        return qaError({
-          what: `Unknown sessionId ${sessionId}`,
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_start_session first.'],
-        });
+        return unknownSessionError(sessionId);
       }
 
       // format:"flow" with no recorded actions is a user error (kept from the original tool).
@@ -52,7 +37,7 @@ export function registerReport(server: McpServer, sessions: SessionStore): void 
           what: 'No actions were recorded this run, so there is no flow to export',
           changedState: false,
           retrySafe: true,
-          nextSteps: ['Drive the app with qa_act first, then qa_report { format: "flow" } — or use qa_generate target:"flow".'],
+          nextSteps: ['Drive the app with qa_act first, then qa_report { format: "flow" }, or use qa_generate target:"flow".'],
         });
       }
 

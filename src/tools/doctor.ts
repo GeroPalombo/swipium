@@ -1,4 +1,4 @@
-// qa_doctor — proactive environment self-diagnosis (DESIGN §3, §7). Run first.
+// qa_doctor: proactive environment self-diagnosis. Run first.
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -6,13 +6,14 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { qaOk } from '../lib/result.js';
 import { getSchemaHash } from '../lib/schemaHash.js';
-import { which, firstLine, adbDevices, listAvds, deviceFreeDataBytes, fmtBytes } from '../lib/android.js';
+import { which, firstLine, adbDevices, listAvds, deviceFreeDataBytes, fmtBytes, androidSdkCandidates } from '../lib/android.js';
 import { simctlAvailable, listSimulators } from '../lib/simctl.js';
 import { checkWda, discoverWdaProjects, xcodeAvailable } from '../lib/wda.js';
 import { loadWdaConfig } from '../lib/wdaConfig.js';
+import { resolveProjectRoot } from '../context/projectRoot.js';
 import { SWIPIUM_VERSION, TOOL_NAMES, TOOL_COUNT, STALE_CLIENT_HINT } from '../version.js';
 
-interface Check {
+export interface Check {
   name: string;
   ok: boolean;
   optional?: boolean;
@@ -21,13 +22,39 @@ interface Check {
 }
 
 const CLIENT_HINTS: Record<string, string> = {
-  claude: 'Register with: claude mcp add swipium --scope project -- node <abs>/dist/index.js',
-  gemini: 'Add to settings.json mcpServers; set an absolute "command" and a "cwd". stdio cwd is otherwise undefined.',
+  claude: 'Register with: claude mcp add swipium --scope project -- npx -y swipium (preview: `swipium init claude --scope project`).',
+  gemini:
+    'Register with: gemini mcp add swipium npx -y swipium (project scope), or add to .gemini/settings.json mcpServers with "cwd" set to your app repo. Preview: `swipium init gemini`.',
   codex:
-    'Codex has an open tool-injection regression (#19425) on builds after ~0.120.0. Set cwd explicitly, use an absolute node path, and verify tools actually appear after `init codex`.',
+    'Register with `codex mcp add swipium -- npx -y swipium` or `swipium init codex` (sets cwd + startup_timeout_sec/tool_timeout_sec). Codex Desktop threads may not expose custom stdio MCP tools (openai/codex#19425), so confirm the tools appear.',
+  cursor:
+    'Add to .cursor/mcp.json under "mcpServers": { "swipium": { "command": "npx", "args": ["-y", "swipium"], "env": { "SWIPIUM_PROJECT_ROOT": "${workspaceFolder}" } } } (or run `swipium init cursor --apply`).',
+  vscode:
+    'Add to .vscode/mcp.json under "servers" (not "mcpServers"): { "swipium": { "type": "stdio", "command": "npx", "args": ["-y", "swipium"], "env": { "SWIPIUM_PROJECT_ROOT": "${workspaceFolder}" } } } (or run `swipium init vscode --apply`).',
 };
 
 type DoctorPlatform = 'android' | 'ios' | 'both';
+
+/** Default doctor scope when the caller gives none: iOS Simulator only exists on macOS. */
+export function defaultDoctorPlatform(hostPlatform: NodeJS.Platform = process.platform): DoctorPlatform {
+  return hostPlatform === 'darwin' ? 'both' : 'android';
+}
+
+/** Minimum Node major version, mirrored from package.json "engines.node" (>=20). */
+export const MIN_NODE_MAJOR = 20;
+
+export function nodeVersionCheck(version: string = process.version, minMajor: number = MIN_NODE_MAJOR): Check {
+  const major = Number(/^v?(\d+)/.exec(version)?.[1] ?? NaN);
+  const ok = Number.isFinite(major) && major >= minMajor;
+  return {
+    name: 'node',
+    ok,
+    detail: ok ? `${version} (>= ${minMajor})` : `${version} is below the supported minimum (>= ${minMajor})`,
+    fix: ok
+      ? undefined
+      : `Install Node.js ${minMajor} or newer (the client launches the server with the node on its PATH or the absolute path in its config).`,
+  };
+}
 
 function checkLine(c: Check): string {
   const status = c.ok ? '[ok]' : c.optional ? '[warn]' : '[fail]';
@@ -68,30 +95,22 @@ export function registerDoctor(server: McpServer): void {
     {
       title: 'QA environment doctor',
       description:
-        'Probe the local environment for simulator QA prerequisites. Use platform:"android" for Android Emulator, platform:"ios" for iOS Simulator + WDA status, or platform:"both". Pass client to tailor MCP registration hints.',
+        'Check the local toolchain for simulator QA: Node, Android SDK/emulator, Xcode/simctl, WDA, and stale-client symptoms. ' +
+        'platform: android | ios | both (default both on macOS). client tailors MCP registration hints.',
       inputSchema: {
-        platform: z
-          .enum(['android', 'ios', 'both'])
+        platform: z.enum(['android', 'ios', 'both']).optional().describe('Default both on macOS (ready if either is), android elsewhere.'),
+        client: z
+          .enum(['claude', 'gemini', 'codex', 'cursor', 'vscode'])
           .optional()
-          .describe('Which simulator environment to evaluate. Defaults to android for backward compatibility.'),
-        client: z.enum(['claude', 'gemini', 'codex']).optional().describe('Optional: tailor hints to a specific MCP client.'),
-        expectedToolCount: z
-          .number()
-          .optional()
-          .describe(
-            'What your docs/setup expect this server to expose. If it differs from the running server, your client is on a STALE build — restart it.',
-          ),
+          .describe('Optional: tailor hints to a specific MCP client.'),
+        expectedToolCount: z.number().optional().describe('Tool count you expect; a mismatch means a stale client.'),
         expectedVersion: z.string().optional().describe('Swipium version your docs expect; mismatch ⇒ stale client.'),
-        expectedSchemaHash: z
-          .string()
-          .optional()
-          .describe(
-            'Tool-surface hash your docs expect; mismatch ⇒ the client is on a build with a different surface (same tool count can still be stale).',
-          ),
+        expectedSchemaHash: z.string().optional().describe('Surface hash you expect; a mismatch means a stale client.'),
       },
     },
-    async ({ platform = 'android', client, expectedToolCount, expectedVersion, expectedSchemaHash }) => {
-      const requested = platform as DoctorPlatform;
+    async ({ platform, client, expectedToolCount, expectedVersion, expectedSchemaHash }) => {
+      const defaulted = platform === undefined;
+      const requested = (platform ?? defaultDoctorPlatform()) as DoctorPlatform;
       const wantsAndroid = requested === 'android' || requested === 'both';
       const wantsIos = requested === 'ios' || requested === 'both';
       const checks: Check[] = [];
@@ -112,23 +131,29 @@ export function registerDoctor(server: McpServer): void {
           ok,
           detail: ok
             ? `client matches running server (v${SWIPIUM_VERSION}, ${TOOL_COUNT} tools, schema ${schemaHash})`
-            : `STALE CLIENT — running v${SWIPIUM_VERSION}/${TOOL_COUNT} tools/schema ${schemaHash} but client expected ${expectedVersion ?? '?'}/${expectedToolCount ?? '?'}/${expectedSchemaHash ?? '?'}`,
+            : `STALE CLIENT: running v${SWIPIUM_VERSION}/${TOOL_COUNT} tools/schema ${schemaHash} but client expected ${expectedVersion ?? '?'}/${expectedToolCount ?? '?'}/${expectedSchemaHash ?? '?'}`,
           fix: ok ? undefined : STALE_CLIENT_HINT,
         });
       }
 
-      checks.push({ name: 'node', ok: true, detail: process.version });
+      checks.push(nodeVersionCheck());
+      const nodeOk = checks[checks.length - 1].ok;
 
       let devices: string[] = [];
       let avds: string[] = [];
       let androidReady = true;
       if (wantsAndroid) {
+        // PATH lookup: at startup src/index.ts prepends the SDK's platform-tools/ and emulator/
+        // ($ANDROID_HOME, $ANDROID_SDK_ROOT, OS default) to PATH, so this sees SDK copies too.
         const hasAdb = await which('adb');
+        const sdkDirs = androidSdkCandidates().join(', ');
         androidChecks.push({
           name: 'adb',
           ok: hasAdb,
-          detail: hasAdb ? ((await firstLine('adb', ['version'])) ?? 'present') : 'not on PATH',
-          fix: hasAdb ? undefined : 'Install Android platform-tools and add to PATH (ANDROID_HOME/platform-tools).',
+          detail: hasAdb ? ((await firstLine('adb', ['version'])) ?? 'present') : `not on PATH (SDK dirs checked: ${sdkDirs})`,
+          fix: hasAdb
+            ? undefined
+            : 'Install Android platform-tools (Android Studio > SDK Manager) and set ANDROID_HOME to the SDK dir (or put platform-tools on PATH).',
         });
 
         devices = hasAdb ? await adbDevices() : [];
@@ -158,7 +183,11 @@ export function registerDoctor(server: McpServer): void {
           name: 'emulator+avd',
           ok: hasEmulator && avds.length > 0,
           optional: devices.length > 0,
-          detail: hasEmulator ? (avds.length ? `AVDs: ${avds.join(', ')}` : 'emulator present, no AVDs') : 'emulator not on PATH',
+          detail: hasEmulator
+            ? avds.length
+              ? `AVDs: ${avds.join(', ')}`
+              : 'emulator present, no AVDs'
+            : `emulator not on PATH (SDK dirs checked: ${sdkDirs})`,
           fix:
             hasEmulator && avds.length === 0
               ? 'Create an AVD with Android Studio or avdmanager.'
@@ -221,7 +250,9 @@ export function registerDoctor(server: McpServer): void {
           fix: simulators.length ? undefined : 'Install an iOS Simulator runtime in Xcode and create a simulator.',
         });
 
-        const root = process.cwd();
+        // The WDA cache/config live under the PROJECT root (SWIPIUM_PROJECT_ROOT / MCP roots / cwd
+        // marker), not blindly the server cwd.
+        const root = (await resolveProjectRoot(server)).root ?? process.cwd();
         const wdaConfig = loadWdaConfig(root);
         const wda = await checkWda(wdaConfig.url, 1200);
         const discovery = discoverWdaProjects(root);
@@ -255,6 +286,7 @@ export function registerDoctor(server: McpServer): void {
         checks.push(...iosChecks);
         iosReady = iosChecks.filter((c) => !c.optional).every((c) => c.ok);
         wdaSummary = {
+          projectRoot: root,
           config: { url: wdaConfig.url, mode: wdaConfig.mode, derivedDataPath: wdaConfig.derivedDataPath },
           status: wda,
           projectDiscovery: discovery,
@@ -262,14 +294,25 @@ export function registerDoctor(server: McpServer): void {
         };
       }
 
-      const requiredOk = requested === 'android' ? androidReady : requested === 'ios' ? iosReady : androidReady && iosReady;
+      // An explicit platform:"both" means "both must work"; the macOS default only needs one of them
+      // (an iOS-only or Android-only developer on a Mac must not be told the environment is broken).
+      const platformOk =
+        requested === 'android'
+          ? androidReady
+          : requested === 'ios'
+            ? iosReady
+            : defaulted
+              ? androidReady || iosReady
+              : androidReady && iosReady;
+      const requiredOk = platformOk && nodeOk;
       const clientHint = client ? CLIENT_HINTS[client] : undefined;
 
       const table = checks.map(checkLine).join('\n');
+      const readyLabel = requested === 'both' && defaulted && !(androidReady && iosReady) ? (androidReady ? 'android' : 'ios') : requested;
 
       const summary =
         `Swipium v${SWIPIUM_VERSION} · ${TOOL_COUNT} tools · schema ${schemaHash}\n${STALE_CLIENT_HINT}\n\n` +
-        `${requiredOk ? `Environment ready for ${requested} simulator QA.` : `Environment NOT ready for ${requested} simulator QA. See [fail] rows.`}\n${table}`;
+        `${requiredOk ? `Environment ready for ${readyLabel} simulator QA.` : `Environment NOT ready for ${requested} simulator QA. See [fail] rows.`}\n${table}`;
 
       return qaOk(
         {

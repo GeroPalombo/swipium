@@ -1,4 +1,4 @@
-// qa_build (roadmap §4.5; 1.5.0 consolidation: the former plan/build twins are one tool with a mode enum).
+// qa_build (1.5.0 consolidation: the former plan/build twins are one tool with a mode enum).
 //
 // mode:"plan" (default): side-effect-free. Proposes the exact prerequisite + build commands and the
 // artifact globs the build will produce. An agent shows this and asks before compiling.
@@ -10,15 +10,16 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError, qaAnnotate } from '../lib/result.js';
+import { qaOk, qaError, qaAnnotate, unknownSessionError } from '../lib/result.js';
 import { qaFail } from '../oracle/failures.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
-import { resolveProjectRoot } from '../context/projectRoot.js';
+import { resolveProjectRoot, unresolvedProjectRootError } from '../context/projectRoot.js';
 import { buildPlan, type BuildPlan, type BuildPlatform } from '../build/plan.js';
 import { executeBuild } from '../services/build.js';
 import type { Session, SessionStore, JobRecord } from '../session/store.js';
+import { runWithSignal } from '../lib/abortScope.js';
 
-const DEFAULT_BUILD_TIMEOUT_MS = 20 * 60_000; // 20 min — native builds are slow
+const DEFAULT_BUILD_TIMEOUT_MS = 20 * 60_000; // 20 min, native builds are slow
 
 async function rootFrom(
   server: McpServer,
@@ -33,13 +34,7 @@ async function rootFrom(
   const resolved = await resolveProjectRoot(server, projectRoot);
   if (!resolved.root)
     return {
-      error: qaError({
-        what: 'Could not resolve a project root',
-        changedState: false,
-        retrySafe: true,
-        nextSteps: ['Pass projectRoot or call qa_start_session.'],
-        clientHint: resolved.hint,
-      }),
+      error: unresolvedProjectRootError(resolved),
     };
   return resolved.root;
 }
@@ -62,33 +57,27 @@ export function registerBuild(server: McpServer, sessions: SessionStore): void {
     {
       title: 'Plan or run a build from source',
       description:
-        'Build the app from source — or just propose how. mode:"plan" (default) is side-effect free: it returns the exact prerequisite + build commands (deps install, Expo prebuild, pod install), the main build command + cwd, the expected artifact globs, and toolchain status, per framework (Expo/RN/native/Flutter); typed blockers: UNSUPPORTED_FRAMEWORK, BUILD_COMMAND_UNAVAILABLE. mode:"run" executes that plan (consent-gated) as a background job: it captures a combined build log artifact and, on success, re-resolves the produced artifact (path/appId/installability); on failure it returns a typed blocker (GRADLE_FAILED/XCODEBUILD_FAILED/FLUTTER_BUILD_FAILED/BUILD_TIMED_OUT/DEPENDENCY_INSTALL_REQUIRED) with the log — a build failure is NOT a test failure. mode:"run" returns a jobId (poll qa_job_status) and requires a session (for artifacts/log storage).',
+        'Build the app from source, or just propose how. mode:"plan" (default, side-effect free): exact prerequisite + build commands, ' +
+        'cwd, expected artifact globs, toolchain status per framework (Expo/RN/native/Flutter). mode:"run" (consent-gated job, needs ' +
+        'sessionId): runs them, stores a build log artifact, and re-resolves the produced artifact; failures are typed ' +
+        '(GRADLE_FAILED, XCODEBUILD_FAILED, FLUTTER_BUILD_FAILED, BUILD_TIMED_OUT, DEPENDENCY_INSTALL_REQUIRED, ...). A build failure is ' +
+        'not a test failure.',
       inputSchema: {
-        mode: z
-          .enum(['plan', 'run'])
-          .optional()
-          .describe(
-            'plan (default): side-effect-free — return the exact commands, expected artifacts, and toolchain status without building. run: execute the planned prerequisites + build as a consent-gated background job.',
-          ),
-        sessionId: z
-          .string()
-          .optional()
-          .describe(
-            'Session from qa_start_session. Optional in mode:"plan" (projectRoot works too); REQUIRED in mode:"run" — the build log is stored as a session artifact.',
-          ),
-        projectRoot: z.string().optional().describe('(mode:"plan" only) Resolve the project without a session.'),
+        mode: z.enum(['plan', 'run']).optional(),
+        sessionId: z.string().optional().describe('Required for run (stores the build log).'),
+        projectRoot: z.string().optional().describe('plan: resolve the project without a session.'),
         platform: z.enum(['android', 'ios']),
         variant: z.enum(['debug', 'release']).optional(),
-        timeoutMs: z.number().optional().describe(`(mode:"run" only) Per-step timeout (default ${DEFAULT_BUILD_TIMEOUT_MS}).`),
-        consentId: z.string().optional().describe('(mode:"run" only) Consent token from the previous refusal.'),
-        approve: z.boolean().optional().describe('(mode:"run" only) Set true with consentId to execute the exact reviewed commands.'),
+        timeoutMs: z.number().optional().describe(`run: per-step timeout (default ${DEFAULT_BUILD_TIMEOUT_MS}).`),
+        consentId: z.string().optional().describe('run'),
+        approve: z.boolean().optional().describe('run'),
       },
     },
     async ({ mode, sessionId, projectRoot, platform, variant, timeoutMs, consentId, approve }) => {
       const effectiveMode = mode ?? 'plan';
       const notes: string[] = [];
 
-      // ---- mode:"plan" — read-only proposal (merged twin, 1.5.0). ----
+      // ---- mode:"plan": read-only proposal (merged twin, 1.5.0). ----
       if (effectiveMode === 'plan') {
         const ignored = [
           timeoutMs !== undefined && 'timeoutMs',
@@ -96,7 +85,7 @@ export function registerBuild(server: McpServer, sessions: SessionStore): void {
           approve !== undefined && 'approve',
         ].filter((x): x is string => !!x);
         if (ignored.length)
-          notes.push(`ignored parameter(s) not applicable to mode:"plan": ${ignored.join(', ')} — re-run with mode:"run" to build`);
+          notes.push(`ignored parameter(s) not applicable to mode:"plan": ${ignored.join(', ')}; re-run with mode:"run" to build`);
         const root = await rootFrom(server, sessions, sessionId, projectRoot);
         if (typeof root !== 'string') return qaAnnotate(root.error, notes);
         const plan = await buildPlan({ projectRoot: root, platform: platform as BuildPlatform, variant });
@@ -109,9 +98,9 @@ export function registerBuild(server: McpServer, sessions: SessionStore): void {
         return qaAnnotate(qaOk({ plan }, `${planSummary(plan)}\nExecute with qa_build { mode:"run" }.`), notes);
       }
 
-      // ---- mode:"run" — consent-gated build job (formerly the bare qa_build). ----
+      // ---- mode:"run": consent-gated build job (formerly the bare qa_build). ----
       if (projectRoot !== undefined)
-        notes.push('ignored parameter not applicable to mode:"run": projectRoot — mode:"run" builds the session\'s project root');
+        notes.push('ignored parameter not applicable to mode:"run": projectRoot (mode:"run" builds the session\'s project root)');
       if (!sessionId) {
         return qaAnnotate(
           qaError({
@@ -124,16 +113,7 @@ export function registerBuild(server: McpServer, sessions: SessionStore): void {
         );
       }
       const session = sessions.get(sessionId);
-      if (!session)
-        return qaAnnotate(
-          qaError({
-            what: `Unknown sessionId "${sessionId}"`,
-            changedState: false,
-            retrySafe: true,
-            nextSteps: ['Call qa_start_session first.'],
-          }),
-          notes,
-        );
+      if (!session) return qaAnnotate(unknownSessionError(sessionId), notes);
 
       const plan = await buildPlan({ projectRoot: session.root, platform: platform as BuildPlatform, variant });
       if (plan.failureCode) return qaAnnotate(qaFail(plan.failureCode, { what: plan.notes[0] ?? 'Cannot build', extra: { plan } }), notes);
@@ -144,7 +124,8 @@ export function registerBuild(server: McpServer, sessions: SessionStore): void {
         );
       if (!plan.build) return qaAnnotate(qaFail('BUILD_COMMAND_UNAVAILABLE', { extra: { plan } }), notes);
 
-      // Consent: building from source spends minutes + writes into the project tree.
+      // Consent (risk high): building from source runs arbitrary repo scripts (gradle/xcodebuild/
+      // npm lifecycle hooks), spends minutes, and writes into the project tree.
       const steps = [...plan.prerequisites, plan.build];
       const affects = { commands: steps.map((s) => s.command), cwd: plan.build.cwd };
       const gate = consumeConsent(consentId, approve, { action: 'build_from_source', affects });
@@ -152,7 +133,7 @@ export function registerBuild(server: McpServer, sessions: SessionStore): void {
         sessions.recordMutation(session, {
           tool: 'qa_build',
           action: 'build_from_source',
-          risk: 'medium',
+          risk: 'high',
           target: affects,
           consent: { required: true, approved: false },
           status: 'requested',
@@ -160,7 +141,7 @@ export function registerBuild(server: McpServer, sessions: SessionStore): void {
         return qaAnnotate(
           requireConsent({
             action: 'build_from_source',
-            risk: 'medium',
+            risk: 'high',
             exactCommand: steps.map((s) => `(${s.cwd}) ${s.command}`).join('\n'),
             affects,
             explain: `Build ${plan.framework}/${platform}/${plan.variant} from source. This runs:\n${steps.map((s) => `• ${s.label}: ${s.command}`).join('\n')}`,
@@ -171,14 +152,17 @@ export function registerBuild(server: McpServer, sessions: SessionStore): void {
       sessions.recordMutation(session, {
         tool: 'qa_build',
         action: 'build_from_source',
-        risk: 'medium',
+        risk: 'high',
         target: affects,
         consent: { required: true, consentId, approved: true },
         status: 'approved',
       });
 
       const job = sessions.createJob(session, `build:${platform}`);
-      void runBuild(sessions, session, job, plan, timeoutMs ?? DEFAULT_BUILD_TIMEOUT_MS, { affects, consentId });
+      // The job runs in its own cancellation scope (abortScope), not the starting call's.
+      void runWithSignal(sessions.abortSignal(session, job.jobId), () =>
+        runBuild(sessions, session, job, plan, timeoutMs ?? DEFAULT_BUILD_TIMEOUT_MS, { affects, consentId }),
+      );
       return qaAnnotate(
         qaOk(
           { jobId: job.jobId, status: 'running', kind: job.kind, plan },
@@ -208,7 +192,7 @@ async function runBuild(
       sessions.recordMutation(session, {
         tool: 'qa_build',
         action: 'build_from_source',
-        risk: 'medium',
+        risk: 'high',
         target: mutation.affects,
         consent: { required: true, consentId: mutation.consentId, approved: true },
         status: 'blocked',
@@ -236,7 +220,7 @@ async function runBuild(
       sessions.recordMutation(session, {
         tool: 'qa_build',
         action: 'build_from_source',
-        risk: 'medium',
+        risk: 'high',
         target: mutation.affects,
         consent: { required: true, consentId: mutation.consentId, approved: true },
         status: 'blocked',
@@ -257,7 +241,7 @@ async function runBuild(
     sessions.recordMutation(session, {
       tool: 'qa_build',
       action: 'build_from_source',
-      risk: 'medium',
+      risk: 'high',
       target: { ...mutation.affects, artifact: res.artifact.path },
       consent: { required: true, consentId: mutation.consentId, approved: true },
       status: 'executed',

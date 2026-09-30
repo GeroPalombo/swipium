@@ -1,14 +1,14 @@
-// SWIPIUM-REQ-08 — link persistent test cases to issue-ledger records.
+// Link persistent test cases to issue-ledger records.
 //
 // The issue ledger (src/issues) stays the source of truth for issue lifecycle. This layer records,
-// on a canonical test case, WHICH issues caused/blocked it and — crucially — lets a passing run that
+// on a canonical test case, WHICH issues caused/blocked it and (crucially) lets a passing run that
 // is linked to a previously-fixed issue prove the fix held ("verified_fixed"). PURE: mutates the
 // passed case/run objects, takes `now` as input, never touches the clock or fs.
 
 import type { IssueCategory, IssueRecord } from '../issues/schema.js';
 import type { CanonicalTestCase, TestCaseIssueRelationship, TestCaseRunIssueLink, TestCaseRunIssueRelationship } from './schema.js';
 
-/** Map an issue category + case outcome to the durable case→issue relationship. */
+/** Map an issue category + case outcome to the durable case>issue relationship. */
 export function relationshipForCase(category: IssueCategory): TestCaseIssueRelationship {
   switch (category) {
     case 'app_bug':

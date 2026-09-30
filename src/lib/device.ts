@@ -1,8 +1,28 @@
-// Device-parity adb helpers (PHASE3-PLAN §4.2 / roadmap §5). Serial-based (Android/adb-specific)
-// rather than on the Driver interface, so the iOS/native-backend swap seam stays lean — when iOS
-// lands it provides its own device-parity implementations. All spawns use arg arrays (injection-safe).
+// Device-parity adb helpers. Serial-based (Android/adb-specific)
+// rather than on the Driver interface, so the iOS/native-backend swap seam stays lean. When iOS
+// lands it provides its own device-parity implementations. All spawns use arg arrays, but `adb shell`
+// re-joins them for the device-side sh, so app ids / permissions are validated AND quoted (M1).
 
 import { run } from './spawn.js';
+import { assertAndroidAppId, deviceShellQuote, shellAppId } from '../drivers/DirectDriver.js';
+
+/** Android permission names (android.permission.CAMERA, com.example.permission.X). */
+const PERMISSION_RE = /^[A-Za-z][\w]*(\.[A-Za-z][\w]*)*$/;
+
+/** Throw a typed INVALID_ARGUMENT error unless `perm` is a well-formed Android permission name. */
+export function assertAndroidPermission(perm: string): string {
+  if (typeof perm !== 'string' || !PERMISSION_RE.test(perm)) {
+    const err = new Error(`INVALID_ARGUMENT: ${JSON.stringify(String(perm).slice(0, 80))} is not a valid Android permission name.`);
+    (err as Error & { code?: string }).code = 'INVALID_ARGUMENT';
+    throw err;
+  }
+  return perm;
+}
+
+/** Validated + device-shell-quoted permission name (typed INVALID_ARGUMENT otherwise). */
+function shellPermission(perm: string): string {
+  return deviceShellQuote(assertAndroidPermission(perm));
+}
 
 export interface DeviceProps {
   model: string | null;
@@ -75,7 +95,8 @@ export async function setOrientation(serial: string, o: Orientation): Promise<vo
 export async function listPackages(serial: string, opts: { thirdPartyOnly?: boolean; filter?: string } = {}): Promise<string[]> {
   const args = ['-s', serial, 'shell', 'pm', 'list', 'packages'];
   if (opts.thirdPartyOnly) args.push('-3');
-  if (opts.filter) args.push(opts.filter);
+  // `adb shell` re-parses the joined argv on the device: the free-form filter is quoted.
+  if (opts.filter) args.push(deviceShellQuote(opts.filter));
   try {
     const r = await run('adb', args, { timeoutMs: 8000 });
     return r.stdout
@@ -92,8 +113,9 @@ export async function listPackages(serial: string, opts: { thirdPartyOnly?: bool
 export async function listRuntimePermissions(serial: string, pkg: string): Promise<{ granted: string[]; denied: string[] }> {
   const granted: string[] = [];
   const denied: string[] = [];
+  assertAndroidAppId(pkg); // argument error, not "no permissions"
   try {
-    const r = await run('adb', ['-s', serial, 'shell', 'dumpsys', 'package', pkg], { timeoutMs: 8000 });
+    const r = await run('adb', ['-s', serial, 'shell', 'dumpsys', 'package', shellAppId(pkg)], { timeoutMs: 8000 });
     for (const m of r.stdout.matchAll(/(android\.permission\.[A-Z_]+):\s*granted=(true|false)/g)) {
       (m[2] === 'true' ? granted : denied).push(m[1]);
     }
@@ -104,7 +126,10 @@ export async function listRuntimePermissions(serial: string, pkg: string): Promi
 }
 
 export async function grantPermission(serial: string, pkg: string, perm: string): Promise<void> {
-  await run('adb', ['-s', serial, 'shell', 'pm', 'grant', pkg, perm], { timeoutMs: 6000, rejectOnNonZero: true });
+  await run('adb', ['-s', serial, 'shell', 'pm', 'grant', shellAppId(pkg), shellPermission(perm)], {
+    timeoutMs: 6000,
+    rejectOnNonZero: true,
+  });
 }
 
 /** Spoof the device location via the emulator console (`emu geo fix <lon> <lat>`). Emulator-only. */
@@ -114,5 +139,8 @@ export async function setGeo(serial: string, lat: number, lng: number): Promise<
 }
 
 export async function revokePermission(serial: string, pkg: string, perm: string): Promise<void> {
-  await run('adb', ['-s', serial, 'shell', 'pm', 'revoke', pkg, perm], { timeoutMs: 6000, rejectOnNonZero: true });
+  await run('adb', ['-s', serial, 'shell', 'pm', 'revoke', shellAppId(pkg), shellPermission(perm)], {
+    timeoutMs: 6000,
+    rejectOnNonZero: true,
+  });
 }

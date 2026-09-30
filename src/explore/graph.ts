@@ -1,4 +1,4 @@
-// Screen graph (Phase 3.3 Milestone B) — model exploration as nodes (screens) + edges (actions),
+// Screen graph (Phase 3.3 Milestone B): model exploration as nodes (screens) + edges (actions),
 // not free-form notes. Nodes dedupe by signature so revisiting Home collapses to one node while a
 // modal/sheet becomes a distinct node. PURE: serialization only; the runner drives it.
 
@@ -19,7 +19,7 @@ export interface ExploreElement {
   bounds?: { x: number; y: number; w: number; h: number };
   locator?: LocatorInfo;
   actionType: 'tap' | 'type' | 'toggle' | 'scroll' | 'back' | 'assert_visual';
-  secure?: boolean; // password / secure-text field (SWIPIUM-REQ-02 input planning)
+  secure?: boolean; // password / secure-text field (input planning)
   risk: 'safe' | 'unknown' | 'destructive';
   riskClass?: string;
   stepUp?: boolean;
@@ -210,7 +210,7 @@ export class ExploreGraph {
     ];
     for (const n of this.allNodes()) {
       out.push(
-        `## ${n.id}${n.title ? ` — ${n.title}` : ''} (${n.mode})`,
+        `## ${n.id}${n.title ? `: ${n.title}` : ''} (${n.mode})`,
         `- signature: \`${n.signature}\``,
         `- health: native ${n.health.native} · app ${n.health.app}${n.authState ? ` · auth ${n.authState}` : ''}`,
         ...(n.visualOnlyReason ? [`- visual-only: ${n.visualOnlyReason}`] : []),
@@ -227,16 +227,16 @@ export class ExploreGraph {
     if (this.edges.length) {
       out.push(`## Transitions`, ``);
       for (const e of this.edges) {
-        out.push(`- ${e.from} —[${e.action.type} ${e.action.targetDescription}]→ ${e.to ?? '?'} (${e.outcome})`);
+        out.push(`- ${e.from} -[${e.action.type} ${e.action.targetDescription}]> ${e.to ?? '?'} (${e.outcome})`);
       }
     }
     if (this.tasks.length) {
       out.push('', '## Tasks', '');
-      for (const t of this.tasks) out.push(`- ${t.id}: ${t.title} [${t.feature}] — ${t.status}`);
+      for (const t of this.tasks) out.push(`- ${t.id}: ${t.title} [${t.feature}]: ${t.status}`);
     }
     if (this.coverageClaims.length) {
       out.push('', '## Feature Coverage', '');
-      for (const c of this.coverageClaims) out.push(`- ${c.feature}: ${c.status} — ${c.reason}`);
+      for (const c of this.coverageClaims) out.push(`- ${c.feature}: ${c.status} (${c.reason})`);
     }
     if (this.reflection) {
       out.push('', '## Reflection', '');

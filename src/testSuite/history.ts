@@ -1,4 +1,4 @@
-// Per-case run-history ledger helpers (SWIPIUM-REQ-06 "Keep a run history ledger for each case").
+// Per-case run-history ledger helpers.
 // PURE. A TestRunRef is appended on every merge that carries a real run result (merge.ts); these
 // helpers summarize the ledger for reporting and for the persisted per-run files (store.recordRun).
 

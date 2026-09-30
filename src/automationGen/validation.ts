@@ -1,5 +1,5 @@
-// SWIPIUM-REQ-04 — generated-code validation. Pure: validates emitted files WITHOUT a device.
-// Checks (REQ-04 §qa_automation_validate + acceptance criteria):
+// Generated-code validation. Pure: validates emitted files WITHOUT a device.
+// Checks (formerly qa_automation_validate; now run via qa_generate + acceptance criteria):
 //   - no inlined secrets (env-only),
 //   - locator durability threshold (fails on brittle-only above threshold unless candidate-only),
 //   - capability config presence,
@@ -7,6 +7,7 @@
 //   - no empty essential files.
 
 import type { GeneratedFile } from '../suite/pom.js';
+import { findSecretLeaks } from '../suite/secretGuard.js';
 
 export type Severity = 'error' | 'warning';
 
@@ -31,11 +32,18 @@ export interface ValidateOptions {
   brittlePct?: number;
   brittleThreshold?: number;
   candidateOnly?: boolean;
-  /** Secret env-var names the suite uses — used to confirm they're never assigned a literal. */
+  /** Secret env-var names the suite uses. Used to confirm they're never assigned a literal. */
   secrets?: string[];
+  /** Registered secret VALUES (session.secrets). Any occurrence in any generated file (comments
+   *  included) is a SECRET_IN_GENERATED_OUTPUT error: the heuristics above cannot see a password
+   *  typed into a field the UI did not flag as secure. */
+  secretValues?: Iterable<string>;
+  /** Selector/screen strings of the recording (secretGuard.structuralLiterals): a weak secret equal
+   *  to one of them is a locator in the output, not a leak. */
+  structural?: Iterable<string>;
 }
 
-// password = "literal" / token: 'literal' etc. — but NOT process.env / os.environ references.
+// password = "literal" / token: 'literal' etc., but NOT process.env / os.environ references.
 const SECRET_ASSIGN_RE = /(password|passwd|secret|token|api[_-]?key|apikey|bearer|credential|pwd)\s*[:=]\s*(["'])(?!\s*\2)([^"']{3,})\2/i;
 const ENV_REF_RE = /(process\.env|os\.environ|getenv|\$\{?env)/i;
 
@@ -54,7 +62,7 @@ function scanSecrets(files: GeneratedFile[], secrets: string[]): ValidationFindi
           code: 'INLINED_SECRET',
           severity: 'error',
           file: f.path,
-          message: `possible inlined secret at line ${i + 1}: ${m[1]} assigned a literal — read from the environment instead`,
+          message: `possible inlined secret at line ${i + 1}: ${m[1]} assigned a literal; read from the environment instead`,
         });
       }
       // Explicit: a known secret env-var name assigned a literal value.
@@ -143,7 +151,11 @@ function capabilityPresence(files: GeneratedFile[]): ValidationFinding[] {
   if (!capFile) {
     return [{ code: 'NO_CAPABILITIES', severity: 'warning', message: 'no capabilities/conftest file found in the generated suite' }];
   }
-  const ok = /platformName/i.test(capFile.content) && /(UiAutomator2|XCUITest)/.test(capFile.content);
+  // JS/TS capabilities spell out `platformName`; Appium-Python-Client uses typed options objects
+  // (UiAutomator2Options / XCUITestOptions set platformName + automationName themselves).
+  const platformSet =
+    /platformName|platform_name/i.test(capFile.content) || /\b(UiAutomator2Options|XCUITestOptions)\s*\(/.test(capFile.content);
+  const ok = platformSet && /(UiAutomator2|XCUITest)/.test(capFile.content);
   return ok
     ? []
     : [
@@ -172,7 +184,15 @@ export function validateGeneratedSuite(files: GeneratedFile[], opts: ValidateOpt
   const candidateOnly = opts.candidateOnly ?? false;
 
   const findings: ValidationFinding[] = [];
-  const secretFindings = scanSecrets(files, opts.secrets ?? []);
+  const secretFindings = [
+    ...scanSecrets(files, opts.secrets ?? []),
+    ...findSecretLeaks(files, opts.secretValues, { structural: opts.structural }).map((l): ValidationFinding => ({
+      code: 'SECRET_IN_GENERATED_OUTPUT',
+      severity: 'error',
+      file: l.path,
+      message: `registered secret value written in plaintext at line ${l.line}; must be an environment variable`,
+    })),
+  ];
   findings.push(...secretFindings);
   findings.push(...braceBalance(files));
   findings.push(...capabilityPresence(files));
@@ -184,13 +204,13 @@ export function validateGeneratedSuite(files: GeneratedFile[], opts: ValidateOpt
     findings.push({
       code: 'BRITTLE_OVER_THRESHOLD',
       severity: 'error',
-      message: `brittle locators ${brittlePct}% exceed the ${brittleThreshold}% threshold — add durable locators or label the suite candidate-only`,
+      message: `brittle locators ${brittlePct}% exceed the ${brittleThreshold}% threshold; add durable locators or label the suite candidate-only`,
     });
   } else if (brittlePct > brittleThreshold && candidateOnly) {
     findings.push({
       code: 'BRITTLE_OVER_THRESHOLD',
       severity: 'warning',
-      message: `brittle locators ${brittlePct}% exceed the ${brittleThreshold}% threshold — suite is labeled candidate-only`,
+      message: `brittle locators ${brittlePct}% exceed the ${brittleThreshold}% threshold; suite is labeled candidate-only`,
     });
   }
 

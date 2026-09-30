@@ -1,4 +1,4 @@
-// SWIPIUM Issue Log — stable fingerprinting (SWIPIUM-REQ-07 "Fingerprinting Rules").
+// SWIPIUM Issue Log: stable fingerprinting.
 //
 // A fingerprint must be STABLE across sessions, timestamps, artifact paths, and random ids, but
 // SPECIFIC enough not to merge unrelated defects. We build a normalized token list from the
@@ -7,7 +7,7 @@
 //
 // Explicitly EXCLUDED (per spec): session id, screenshot/artifact paths, exact timestamps, random
 // ids / emails / UUIDs / tokens / device ids / request ids, line numbers (unless disambiguating),
-// and full stack traces. PURE — no clock, no fs.
+// and full stack traces. PURE: no clock, no fs.
 
 import { createHash } from 'node:crypto';
 import type { IssueCategory, IssueObservation, IssuePlatform } from './schema.js';
@@ -53,7 +53,7 @@ export function normalizeException(type?: string, message?: string, topFrame?: s
   if (type) parts.push(type);
   if (message) {
     let m = message.toLowerCase();
-    // "Cannot read properties of undefined (reading 'map')" → "cannot_read_property map"
+    // "Cannot read properties of undefined (reading 'map')" > "cannot_read_property map"
     const reading = m.match(/cannot read propert(?:y|ies) of \w+ \(reading '([^']+)'\)/);
     if (reading) {
       m = `cannot_read_property ${reading[1]}`;
@@ -62,7 +62,7 @@ export function normalizeException(type?: string, message?: string, topFrame?: s
         .replace(/[^a-z0-9 _]/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
-      // keep it short — a few meaningful words
+      // keep it short, a few meaningful words
       m = m.split(' ').slice(0, 6).join(' ');
     }
     parts.push(m);
@@ -117,6 +117,27 @@ export function fingerprintTokens(input: FingerprintInput): string[] {
     if (norm) tokens.push(`text:${norm}`);
   }
   return tokens;
+}
+
+/** Tokens that only scope an issue (category/platform/app). They never tell two defects apart. */
+const SCOPE_TOKEN = /^(cat|plat|app):/;
+
+/**
+ * True when the token list carries at least one signal that identifies WHAT went wrong (failure
+ * code, screen/route/flow, exception, HTTP route, package, subsystem, or visible text with at least
+ * one real word after volatile-id scrubbing). A scope-only fingerprint would merge every defect
+ * logged on the same platform into one issue, so callers should refuse it.
+ */
+export function hasIdentitySignal(tokens: string[]): boolean {
+  return tokens.some((t) => {
+    if (SCOPE_TOKEN.test(t)) return false;
+    if (t.startsWith('text:'))
+      return t
+        .slice(5)
+        .split(' ')
+        .some((w) => /[a-z]/i.test(w) && !w.startsWith(':'));
+    return true;
+  });
 }
 
 /** A short hex digest of the tokens, prefixed `sha256:` (matches the spec's example shape). */

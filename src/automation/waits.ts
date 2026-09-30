@@ -1,4 +1,4 @@
-// Automation Kernel V2 — Workstream 4: Wait and Stability Engine. Explicit wait contracts that
+// Automation Kernel V2, Workstream 4: Wait and Stability Engine. Explicit wait contracts that
 // replace scattered sleeps. Assertions act as efficient condition waits (Maestro parity); idle waits
 // label their source as app_declared | backend | heuristic (Espresso parity); tap retry is explicit
 // and recorded, never a hidden loop. All executors take an injectable clock so they are deterministic
@@ -59,7 +59,7 @@ export async function waitForVisible(
   return { ...r, visible: r.ok };
 }
 
-/** Wait until an element is NOT visible — e.g. a spinner / modal disappears. */
+/** Wait until an element is NOT visible, e.g. a spinner / modal disappears. */
 export async function waitForNotVisible(
   isVisible: () => Promise<boolean> | boolean,
   opts: { timeoutMs: number; intervalMs?: number; clock?: WaitClock },
@@ -83,7 +83,7 @@ export interface WaitForIdleResult {
  * Wait for the UI to settle. The caller declares which idle source is in play:
  *  - app_declared: an Espresso/RN idling resource the app exposes (the only true proof)
  *  - backend: WDA/XCTest waitForIdle or driver-level idle
- *  - heuristic: best-effort settling (screenshot stability etc.) — labeled as NOT app proof
+ *  - heuristic: best-effort settling (screenshot stability etc.), labeled as NOT app proof
  */
 export async function waitForIdle(
   isIdle: () => Promise<boolean> | boolean,
@@ -114,7 +114,7 @@ export interface AnimationWaitResult {
   warning?: string;
 }
 
-/** waitForAnimationToEnd — on timeout, pass with a warning rather than fail. */
+/** waitForAnimationToEnd: on timeout, pass with a warning rather than fail. */
 export async function waitForAnimationToEnd(
   isAnimating: () => Promise<boolean> | boolean,
   opts: { timeoutMs: number; intervalMs?: number; clock?: WaitClock },
@@ -146,7 +146,7 @@ export interface RetryTapResult {
 /**
  * Tap with explicit `retryTapIfNoChange` semantics. Taps once; if the UI did not change AND retry is
  * enabled, taps exactly one more time. Every attempt (with before/after signatures) is recorded so
- * the retry is visible in the plan and evidence — never a hidden loop.
+ * the retry is visible in the plan and evidence. Never a hidden loop.
  */
 export async function retryTapIfNoChange(
   doTap: () => Promise<void> | void,

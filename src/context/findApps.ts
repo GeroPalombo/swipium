@@ -1,7 +1,7 @@
-// Mobile app discovery for low-context roots (Developer 1, roadmap §3.1 / §3.7). When a developer
+// Mobile app discovery for low-context roots (Developer 1). When a developer
 // or agent points Swipium at a monorepo root, a parent directory, or any folder that is not itself
 // a mobile app, this locates the candidate app(s) so `qa_test_this` can either proceed with the one
-// strong candidate (recording a workaround) or ask ONE disambiguation question — instead of failing
+// strong candidate (recording a workaround) or ask ONE disambiguation question, instead of failing
 // with NOT_MOBILE_PROJECT at a root that does in fact contain an app.
 //
 // Pure + bounded + side-effect free: it scans a fixed, shallow set of conventional locations and
@@ -112,7 +112,7 @@ function readdirSafe(dir: string): string[] {
   }
 }
 
-/** Best-effort app id from cheap config markers (no APK badging — that is too heavy here). */
+/** Best-effort app id from cheap config markers (no APK badging; that is too heavy here). */
 function lightAppId(dir: string, fw: Framework): string | null {
   if (fw === 'expo') {
     const cfg = readJson(join(dir, 'app.json'));
@@ -235,9 +235,9 @@ export function findMobileApps(root: string, nowMs: number = Date.now()): FindAp
 
 /**
  * Decide what `qa_test_this` should do with the discovery result.
- * - 'adopt'      → exactly one recognized app; proceed with it.
- * - 'disambiguate' → ≥2 recognized apps; ask one monorepo_target question with ranked choices.
- * - 'none'       → no recognized app anywhere searched.
+ * - 'adopt'        > exactly one recognized app; proceed with it.
+ * - 'disambiguate' > ≥2 recognized apps; ask one monorepo_target question with ranked choices.
+ * - 'none'         > no recognized app anywhere searched.
  */
 export function classifyDiscovery(result: FindAppsResult): {
   decision: 'adopt' | 'disambiguate' | 'none';

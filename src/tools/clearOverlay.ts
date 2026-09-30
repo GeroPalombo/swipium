@@ -1,14 +1,15 @@
-// qa_clear_overlay — clear common overlays so a covered CTA becomes tappable (Phase 2 CR5).
+// qa_clear_overlay: clear common overlays so a covered CTA becomes tappable (Phase 2 CR5).
 // Strategies: auto | hide_keyboard | press_back | tap_outside | minimize_logbox |
 // dismiss_logbox | allow_permission | deny_permission | dismiss_toast_if_possible.
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
-import { getDriver } from '../session/attach.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
+import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import { parseSnapshot, boundsContain, type RawNode } from '../snapshot/parse.js';
 import { detectTreeOverlays, classifyForeground, obstructionAt } from '../snapshot/overlays.js';
 import type { Driver } from '../drivers/Driver.js';
+import { classifyFlowDriverError } from '../flows/run.js';
 import type { SessionStore } from '../session/store.js';
 
 const STRATEGIES = [
@@ -58,7 +59,9 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
     {
       title: 'Clear an overlay',
       description:
-        'Clear common overlays blocking the screen: auto (detect + clear the topmost), hide_keyboard, press_back, tap_outside, minimize_logbox / dismiss_logbox (RN), allow_permission / deny_permission, dismiss_toast_if_possible. Optional targetRef: reports whether that element was obstructed before/after. Returns what was cleared and what remains.',
+        'Clear what blocks the screen: auto (topmost), hide_keyboard, press_back, tap_outside, minimize_logbox / dismiss_logbox ' +
+        '(RN), allow_permission / deny_permission, dismiss_toast_if_possible. targetRef reports whether that element was ' +
+        'obstructed before/after. Returns what was cleared and what remains.',
       inputSchema: {
         sessionId: z.string(),
         strategy: z.enum(STRATEGIES).optional().describe('default "auto"'),
@@ -67,9 +70,19 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
     },
     async ({ sessionId, strategy = 'auto', targetRef }) => {
       const session = sessions.get(sessionId);
-      const { driver: d } = session ? await getDriver(session) : { driver: undefined };
+      if (!session) return unknownSessionError(sessionId);
+      const { driver: d, blocked } = await getDriver(session);
       if (!session || !d) {
-        return qaError({ what: 'No device attached', changedState: false, retrySafe: true, nextSteps: ['Call qa_prepare_target first.'] });
+        return (
+          blockedDeviceResult(blocked) ??
+          qaError({
+            what: 'No device attached',
+            changedState: false,
+            retrySafe: true,
+            failureCode: 'NO_DEVICE',
+            nextSteps: ['Call qa_prepare_target first.'],
+          })
+        );
       }
 
       const obstructionFor = async (): Promise<{ obstructed: boolean; node?: RawNode }> => {
@@ -104,10 +117,22 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
       const overlaysBefore = treeOverlays.map((o) => o.type);
       const fgOverlay = classifyForeground(session.appId, fg);
 
+      // Set when the keyboard is up and could not be dismissed: typed KEYBOARD_NOT_DISMISSIBLE.
+      let keyboardStuck: string | undefined;
       const doHideKeyboard = async () => {
         if (await safe(() => d.imeShown(), false)) {
-          await d.pressKey('back');
-          cleared.push({ type: 'keyboard', action: 'hidden' });
+          // Backend-native hide first (WDA /wda/keyboard/dismiss; adb BACK-if-shown). A BACK
+          // fallback only where BACK is a real key (Android). On iOS it is not a keyboard dismiss.
+          let hid: boolean;
+          let why = '';
+          try {
+            hid = d.hideKeyboard ? await d.hideKeyboard() : (await d.pressKey('back'), true);
+          } catch (e) {
+            hid = false;
+            why = String((e as Error)?.message ?? e);
+          }
+          if (hid) cleared.push({ type: 'keyboard', action: 'hidden' });
+          else keyboardStuck = why || 'the backend has no generic way to dismiss this keyboard';
         } else {
           cleared.push({ type: 'keyboard', action: 'not_visible_or_unsupported' });
         }
@@ -176,19 +201,39 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
             if (ime) await doHideKeyboard();
             else if (treeOverlays.some((o) => o.type === 'rn_logbox' || o.type === 'rn_redbox')) await doMinimizeLogbox();
             else if (fgOverlay?.type === 'permission_dialog')
-              cleared.push({ type: 'permission_dialog', action: 'present — call allow_permission/deny_permission deliberately' });
+              cleared.push({ type: 'permission_dialog', action: 'present; call allow_permission/deny_permission deliberately' });
             else if (treeOverlays.some((o) => o.type === 'native_dialog'))
-              cleared.push({ type: 'native_dialog', action: 'present — handle via qa_act (e.g. tap a dialog button)' });
+              cleared.push({ type: 'native_dialog', action: 'present; handle via qa_act (e.g. tap a dialog button)' });
             else await doTapOutside();
             break;
         }
       } catch (e) {
+        const msg = String((e as Error)?.message ?? e);
         return qaError({
-          what: `clear_overlay "${strategy}" failed: ${String(e)}`,
+          what: `clear_overlay "${strategy}" failed: ${msg}`,
           changedState: true,
           retrySafe: true,
+          failureCode: /BACKEND_UNSUPPORTED|not supported by the WDA backend/.test(msg)
+            ? 'BACKEND_UNSUPPORTED'
+            : classifyFlowDriverError(e),
           nextSteps: ['Re-snapshot and inspect the overlay.'],
         });
+      }
+
+      if (keyboardStuck) {
+        return qaError(
+          {
+            what: `The soft keyboard is up and could not be dismissed (${keyboardStuck.slice(0, 240)}). Nothing was changed.`,
+            changedState: false,
+            retrySafe: false,
+            failureCode: 'KEYBOARD_NOT_DISMISSIBLE',
+            nextSteps: [
+              'Submit the field with qa_act action:"press" key:"enter", or tap the app\'s own Done/Return button.',
+              'Or tap a non-input area (qa_clear_overlay strategy:"tap_outside"), then re-snapshot.',
+            ],
+          },
+          { strategy, cleared },
+        );
       }
 
       await new Promise((r) => setTimeout(r, 500));
@@ -224,7 +269,7 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
           remaining,
           ...(targetRef ? { targetObstructedBefore: before, targetObstructedAfter: after } : {}),
         },
-        `outcome: ${outcome}\ncleared: ${cleared.map((c) => `${c.type}:${c.action}`).join(', ') || '(none)'}${targetRef ? `\ntarget ${targetRef} obstructed: ${before} → ${after}` : ''}${remaining.length ? `\nremaining overlays: ${remaining.join(', ')}` : ''}`,
+        `outcome: ${outcome}\ncleared: ${cleared.map((c) => `${c.type}:${c.action}`).join(', ') || '(none)'}${targetRef ? `\ntarget ${targetRef} obstructed: ${before} > ${after}` : ''}${remaining.length ? `\nremaining overlays: ${remaining.join(', ')}` : ''}`,
       );
     },
   );

@@ -1,4 +1,4 @@
-// Automation Kernel V2 — Workstream 5: Gesture Engine V2. First-class mobile gestures (longPress,
+// Automation Kernel V2, Workstream 5: Gesture Engine V2. First-class mobile gestures (longPress,
 // doubleTap, scrollUntilVisible, drag, pinch) modeled as backend-checked operations. Pinch is
 // capability-gated and is NEVER silently converted to a swipe. The scrollUntilVisible loop is a pure,
 // driver-agnostic executor so it can be unit-tested without a device and reused by the runner.

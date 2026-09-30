@@ -1,4 +1,4 @@
-// qa_metro — own the debug React Native / Expo Metro flow (review §4.2 / Rec 5).
+// qa_metro: own the debug React Native / Expo Metro flow (review §4.2 / Rec 5).
 // A debug RN/Expo APK needs a Metro dev server on :8081 + `adb reverse` to fetch its JS
 // bundle. `status` reports whether that's ready; `start` (consent-gated) sets up the
 // reverse and launches Metro, logging to a session artifact.
@@ -8,7 +8,7 @@ import { openSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { run } from '../lib/spawn.js';
 import { detectFramework } from '../context/detect.js';
@@ -16,18 +16,19 @@ import { METRO_PORT, metroReadiness } from '../lib/metroState.js';
 import { parseSnapshot } from '../snapshot/parse.js';
 import { detectRedBox } from '../snapshot/overlays.js';
 import { getDriver, resolveDevice, bindDevice } from '../session/attach.js';
-import { registerManagedProcess, unregisterManagedProcess } from '../session/processRegistry.js';
+import { psEnv, registerManagedProcess, unregisterManagedProcess } from '../session/processRegistry.js';
 import type { SessionStore } from '../session/store.js';
 
 /** True if `pid` is a live process whose command looks like a Metro/Expo/RN bundler. Guards
- * against killing a recycled PID — e.g. a `metroPid` persisted before a machine or server
- * restart that now belongs to an unrelated process. Best-effort (POSIX `ps`); on any doubt
+ * against killing a recycled PID (e.g. a `metroPid` persisted before a machine or server
+ * restart that now belongs to an unrelated process). Best-effort (POSIX `ps`); on any doubt
  * we report "not ours" so we never signal a stranger. */
 function metroProcessLooksAlive(pid: number): boolean {
   try {
-    const out = spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' });
+    const out = spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', env: psEnv() });
     if (out.status !== 0 || !out.stdout) return false;
-    return /metro|expo|react-native|node/i.test(out.stdout);
+    // `npm exec …`: npx retitles itself after spawn (the launcher we recorded as metroPid).
+    return /metro|expo|react-native|node|npm exec/i.test(out.stdout);
   } catch {
     return false;
   }
@@ -42,7 +43,7 @@ function killMetroGroup(pid: number): boolean {
     process.kill(-pid, 'SIGTERM');
     return true;
   } catch {
-    /* not a group leader, or group already gone — fall through */
+    /* not a group leader, or group already gone, fall through */
   }
   try {
     process.kill(pid, 'SIGTERM');
@@ -77,7 +78,9 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
     {
       title: 'Metro dev server (debug RN/Expo)',
       description:
-        'For debug React Native / Expo builds that need a Metro bundler on :8081. action="status" reports Metro/reverse/serving state; action="diagnose" adds RedBox detection + logcat evidence + a recovery roadmap (incl. whether reinstall/rebuild is required); action="start" (consent-gated) runs `adb reverse tcp:8081 tcp:8081` + launches Metro, logging to a session artifact + tracking its PID; action="stop" kills it + removes the reverse. After start, wait a few seconds then relaunch with qa_prepare_target.',
+        'Metro bundler for debug React Native / Expo builds (:8081). status: Metro/reverse/serving state; diagnose: + RedBox ' +
+        'detection, logcat evidence, and recovery steps; start (consent-gated): adb reverse + launch Metro with a log artifact; ' +
+        'stop: kill it + remove the reverse. After start, relaunch with qa_prepare_target.',
       inputSchema: {
         sessionId: z.string(),
         action: z.enum(['status', 'diagnose', 'start', 'stop']),
@@ -87,21 +90,16 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
     },
     async ({ sessionId, action, consentId, approve }) => {
       const session = sessions.get(sessionId);
-      if (!session)
-        return qaError({
-          what: `Unknown sessionId ${sessionId}`,
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_start_session first.'],
-        });
+      if (!session) return unknownSessionError(sessionId);
       // Centralized device resolution (P0.1/P0.3): use the session device, else the single
-      // online one (bind it), else ask / guide — never a circular "no device" dead end.
+      // online one (bind it), else ask / guide. Never a circular "no device" dead end.
       const dev = await resolveDevice(session);
       if (dev.needSelection && action !== 'status') {
         return qaError({
-          what: 'Multiple devices online — choose one',
+          what: 'Multiple devices online, choose one',
           changedState: false,
           retrySafe: true,
+          failureCode: 'MULTIPLE_DEVICES',
           nextSteps: [`Re-run qa_prepare_target with device="<serial>". Online: ${dev.available.join(', ')}`],
         });
       }
@@ -116,7 +114,7 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
       if (action === 'status') {
         const deviceHint = serial
           ? ''
-          : '\n⚠ No device bound — adb reverse needs one. Call qa_prepare_target first (it binds the device), then qa_metro.';
+          : '\n⚠ No device bound; adb reverse needs one. Call qa_prepare_target first (it binds the device), then qa_metro.';
         return qaOk(
           {
             framework: fw,
@@ -133,8 +131,8 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
           },
           `framework=${fw} metro:${METRO_PORT}=${listening ? 'listening' : 'down'} serving=${rd.serving} adb-reverse=${serial ? (reverseSet ? 'set' : 'unset') : 'n/a (no device)'} device=${serial ?? 'none'} online=[${dev.available.join(',')}]${session.metroPid ? ` pid=${session.metroPid}` : ''}` +
             (rd.ready
-              ? '\nReady — debug bundle can load.'
-              : deviceHint || '\nNot fully ready — run qa_metro action="start" (or qa_metro diagnose).'),
+              ? '\nReady: debug bundle can load.'
+              : deviceHint || '\nNot fully ready. Run qa_metro action="start" (or qa_metro diagnose).'),
         );
       }
 
@@ -157,22 +155,22 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
         if (!serial)
           recovery.push(
             dev.needSelection
-              ? `Multiple devices online — re-run qa_prepare_target device="<serial>". Online: ${dev.available.join(', ')}`
-              : 'No device online — boot one via qa_prepare_target (it boots + sets reverse), then retry.',
+              ? `Multiple devices online. Re-run qa_prepare_target device="<serial>". Online: ${dev.available.join(', ')}`
+              : 'No device online. Boot one via qa_prepare_target (it boots + sets reverse), then retry.',
           );
         if (!listening) recovery.push('Start Metro: qa_metro action="start".');
         if (serial && listening && !reverseSet) recovery.push('Set reverse: qa_metro action="start" (sets adb reverse).');
         if (listening && !rd.serving)
-          recovery.push('Metro is up but not serving the bundle yet — wait ~10s for the first transform, then retry.');
+          recovery.push('Metro is up but not serving the bundle yet. Wait ~10s for the first transform, then retry.');
         if (redbox.unableToLoadScript) {
           requiresReinstall = true;
           recovery.push(
-            'RedBox is "Unable to load script": the installed build cannot fetch the JS bundle. If Metro+reverse are ready and it still fails, the APK is bundle-less/asset-only — RECOVERY REQUIRES REINSTALL/REBUILD of a working debug or release APK (a data wipe alone will not fix it).',
+            'RedBox is "Unable to load script": the installed build cannot fetch the JS bundle. If Metro+reverse are ready and it still fails, the APK is bundle-less/asset-only. RECOVERY REQUIRES REINSTALL/REBUILD of a working debug or release APK (a data wipe alone will not fix it).',
           );
         } else if (redbox.present) {
           recovery.push('RedBox present (not load-script): tap RELOAD via qa_act, or fix the JS error shown.');
         }
-        if (rd.ready && !redbox.present) recovery.push('Metro ready and no RedBox — the bundle should load.');
+        if (rd.ready && !redbox.present) recovery.push('Metro ready and no RedBox. The bundle should load.');
 
         return qaOk(
           {
@@ -188,7 +186,7 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
           },
           `framework=${fw} | metro listening=${rd.listening} serving=${rd.serving} reverse=${reverseSet} ready=${rd.ready}\n` +
             `redbox=${redbox.present ? (redbox.unableToLoadScript ? 'UNABLE-TO-LOAD-SCRIPT' : 'present') : 'none'}${requiresReinstall ? ' ⚠ requires reinstall/rebuild' : ''}\n` +
-            `recovery:\n - ${recovery.join('\n - ') || '(none — looks healthy)'}` +
+            `recovery:\n - ${recovery.join('\n - ') || '(none, looks healthy)'}` +
             (logUri ? `\nlogcat evidence: ${logUri}` : ''),
         );
       }
@@ -230,13 +228,14 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
         );
       }
 
-      // action === 'start' — `serial` is the single online device (auto-bound) or a session
+      // action === 'start': `serial` is the single online device (auto-bound) or a session
       // device. If none online, guide to prepare_target to BOOT (terminal, non-circular).
       if (!serial) {
         return qaError({
-          what: dev.needSelection ? 'Multiple devices online — choose one' : 'No device online — Metro reverse needs a running device',
+          what: dev.needSelection ? 'Multiple devices online, choose one' : 'No device online. Metro reverse needs a running device',
           changedState: false,
           retrySafe: true,
+          failureCode: dev.needSelection ? 'MULTIPLE_DEVICES' : 'NO_DEVICE',
           nextSteps: dev.needSelection
             ? [`Re-run qa_prepare_target device="<serial>". Online: ${dev.available.join(', ')}`]
             : ['Boot a device first: qa_prepare_target { bindOnly:true } (boots an AVD + sets reverse), then qa_metro start.'],
@@ -245,7 +244,7 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
       if (listening && reverseSet) {
         return qaOk(
           { framework: fw, metroListening: true, reverseSet: true, alreadyRunning: true },
-          'Metro already listening and adb reverse already set — nothing to do.',
+          'Metro already listening and adb reverse already set, nothing to do.',
         );
       }
       const { cmd, args } = metroCommand(fw);
@@ -255,14 +254,14 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
         sessions.recordMutation(session, {
           tool: 'qa_metro',
           action: 'start_metro',
-          risk: 'low',
+          risk: 'medium',
           target: { device: serial, port: METRO_PORT, framework: fw },
           consent: { required: true, approved: false },
           status: 'requested',
         });
         return requireConsent({
           action: 'start_metro',
-          risk: 'low',
+          risk: 'medium',
           exactCommand: cmdStr,
           affects: { port: METRO_PORT, framework: fw },
           explain: `This looks like a debug ${fw} build needing Metro on :${METRO_PORT}. Set adb reverse and start Metro?`,
@@ -271,7 +270,7 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
       sessions.recordMutation(session, {
         tool: 'qa_metro',
         action: 'start_metro',
-        risk: 'low',
+        risk: 'medium',
         target: { device: serial, port: METRO_PORT, framework: fw },
         consent: { required: true, consentId, approved: true },
         status: 'approved',
@@ -284,7 +283,7 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
         sessions.recordMutation(session, {
           tool: 'qa_metro',
           action: 'start_metro',
-          risk: 'low',
+          risk: 'medium',
           target: { device: serial, port: METRO_PORT, framework: fw },
           consent: { required: true, consentId, approved: true },
           status: 'blocked',
@@ -295,6 +294,7 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
           commandAttempted: `adb -s ${serial} reverse tcp:${METRO_PORT} tcp:${METRO_PORT}`,
           changedState: true,
           retrySafe: true,
+          failureCode: 'METRO_FAILED',
           nextSteps: ['Check the device is online.'],
         });
       }
@@ -313,7 +313,7 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
       sessions.recordMutation(session, {
         tool: 'qa_metro',
         action: 'start_metro',
-        risk: 'low',
+        risk: 'medium',
         target: { device: serial, port: METRO_PORT, framework: fw, pid: child.pid ?? null },
         consent: { required: true, consentId, approved: true },
         status: 'executed',
@@ -322,7 +322,7 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
 
       return qaOk(
         { framework: fw, started: true, port: METRO_PORT, reverseSet: true, pid: child.pid, logUri, logPath },
-        `Started Metro (${fw}) on :${METRO_PORT} + adb reverse set. Log → ${logUri}\nWait ~5–10s for "Metro waiting", then relaunch the app with qa_prepare_target.`,
+        `Started Metro (${fw}) on :${METRO_PORT} + adb reverse set. Log: ${logUri}\nWait ~5-10s for "Metro waiting", then relaunch the app with qa_prepare_target.`,
       );
     },
   );

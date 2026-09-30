@@ -1,5 +1,5 @@
-// qa_test_this goal routing (Developer 1, roadmap §3.1 Milestone C). A `goal` adjusts ORCHESTRATION
-// FLAGS and REQUIRED OUTPUTS only — it never duplicates suite/report/platform logic (those stay in
+// qa_test_this goal routing (Developer 1, Milestone C). A `goal` adjusts ORCHESTRATION
+// FLAGS and REQUIRED OUTPUTS only. It never duplicates suite/report/platform logic (those stay in
 // the services Developer 2/3 own). Keeping the mapping a pure, exported helper makes goal behavior
 // unit-testable without a device, and keeps `qa_test_this` an orchestrator rather than a switchboard.
 
@@ -33,7 +33,7 @@ export interface GoalOverrides {
 
 /** Policy knobs that shape the DEFAULT (no explicit goal) behavior. */
 export interface GoalPolicy {
-  /** Opt out of the default "leave behind automation" behavior — just launch + smoke, fast. */
+  /** Opt out of the default "leave behind automation" behavior: just launch + smoke, fast. */
   fastSmoke?: boolean;
 }
 
@@ -92,7 +92,7 @@ const BASE: Record<TestGoal, Omit<GoalFlags, 'goal'>> = {
  * Resolve a goal into orchestration flags. Explicit per-flag overrides win, so existing callers
  * passing `explore`/`generateSuite`/`stopOnNeedsInput` keep working unchanged.
  *
- * DEFAULT POLICY (no explicit goal): "leave behind automation when possible" — the run still does
+ * DEFAULT POLICY (no explicit goal): "leave behind automation when possible". The run still does
  * a fast launch + smoke, but ALSO attempts POM suite generation afterward (the suite service skips
  * honestly when no actions were recorded). Opt out with `goal:"smoke"` (fast, explicit) or
  * `policy.fastSmoke:true`.
@@ -111,7 +111,7 @@ export function resolveGoalFlags(goal: TestGoal | undefined, overrides: GoalOver
       'Default autopilot: fast launch + smoke, then generate a POM suite when actions exist (goal:"smoke" or fastSmoke:true to skip).';
   }
   if (policy.fastSmoke) {
-    // Strongest "just smoke, fast" signal — overrides the default automation attempt.
+    // Strongest "just smoke, fast" signal; it overrides the default automation attempt.
     base.generateSuite = false;
     base.explore = false;
   }

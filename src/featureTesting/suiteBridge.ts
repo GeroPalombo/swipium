@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-03 / REQ-06 Fix Group 3 — bridge focused-feature cases into the durable, project-level
+// Bridge focused-feature cases into the durable, project-level
 // test suite (.swipium/test-suite.json). Feature testing used to persist canonical facts ONLY under
 // .swipium/feature-map; this converts each FeatureTestCase into a CanonicalTestCase (linked to the
 // featureId + map screens + evidence) so applyMerge() can fold them into the single source of truth.

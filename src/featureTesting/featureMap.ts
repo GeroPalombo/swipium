@@ -1,4 +1,4 @@
-// Feature coverage CACHE (Vision Gap Fix 11 — a DERIVED, disposable cache, NOT a source of truth).
+// Feature coverage CACHE (Vision Gap Fix 11: a DERIVED, disposable cache, NOT a source of truth).
 // The single durable QA business-context layer is the App Knowledge Map (.swipium/app-map.json) plus
 // the persistent test suite (.swipium/test-suite.json); both are written on every feature run. This
 // file only memoizes the last per-feature coverage snapshot (runtime/static screens, generated cases
@@ -48,7 +48,7 @@ function safeName(value: string): string {
   );
 }
 
-/** Cache dir — under `.swipium/cache/` to make its disposable/derived status explicit (Fix 11). */
+/** Cache dir. Lives under `.swipium/cache/` to make its disposable/derived status explicit (Fix 11). */
 export function featureCoverageCacheDir(root: string): string {
   return join(root, '.swipium', 'cache', 'feature-coverage');
 }

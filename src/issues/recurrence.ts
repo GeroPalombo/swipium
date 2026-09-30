@@ -1,7 +1,7 @@
-// SWIPIUM Issue Log — lifecycle folding + recurrence messages (SWIPIUM-REQ-07 "Recurrence Behavior").
+// SWIPIUM Issue Log: lifecycle folding + recurrence messages.
 //
 // PURE. `foldEvent` is the single reducer that turns the append-only event stream into the derived
-// index record — so the index can always be rebuilt from `issues-log.jsonl`. `buildRecurrenceMessage`
+// index record, so the index can always be rebuilt from `issues-log.jsonl`. `buildRecurrenceMessage`
 // produces the product-facing text shown in reports when a fixed issue reappears.
 
 import type { IssueEvent, IssueRecord, IssueState, IssueLinks, AppMapRef, TestRef, ReportRef, EvidenceRef } from './schema.js';
@@ -46,6 +46,25 @@ function mergeLinks(record: IssueRecord, links?: IssueLinks): void {
   record.evidenceRefs = mergeRefs<EvidenceRef>(record.evidenceRefs, links.evidenceRefs, (r) => `${r.kind}|${r.uri ?? r.path ?? ''}`);
 }
 
+/** True when a suppressed record's `suppressedUntil` has passed at `at` (ISO). An unparsable or
+ *  absent `suppressedUntil` never expires (an open-ended suppression). */
+export function suppressionExpired(record: Pick<IssueRecord, 'state' | 'suppressedUntil'>, at: string): boolean {
+  if (record.state !== 'suppressed' || !record.suppressedUntil) return false;
+  const until = Date.parse(record.suppressedUntil);
+  const now = Date.parse(at);
+  return Number.isFinite(until) && Number.isFinite(now) && now >= until;
+}
+
+/** Return the record to the lane it was in before suppression, clearing the suppression fields. */
+export function liftSuppression(record: IssueRecord): IssueRecord {
+  const out: IssueRecord = { ...record, state: record.stateBeforeSuppression ?? 'open' };
+  delete out.suppressedUntil;
+  delete out.suppressionReason;
+  delete out.suppressionScope;
+  delete out.stateBeforeSuppression;
+  return out;
+}
+
 /**
  * Fold a single event onto the running index record. Returns the updated record (a new object).
  * `prev` is null when this is the first event for the issue. This reducer is the canonical
@@ -56,9 +75,12 @@ export function foldEvent(prev: IssueRecord | null, event: IssueEvent): IssueRec
   const cls = event.classification;
   const lc = event.lifecycle;
 
+  // An expired suppression lapses at the first event after `suppressedUntil` (deterministic from
+  // the event's own timestamp, so a rebuild from the log reproduces it).
+  const base = prev != null && suppressionExpired(prev, event.createdAt) ? liftSuppression(prev) : prev;
   const record: IssueRecord =
-    prev != null
-      ? { ...prev }
+    base != null
+      ? { ...base }
       : {
           schemaVersion: ISSUE_SCHEMA_VERSION,
           issueId: event.issueId,
@@ -144,6 +166,7 @@ export function foldEvent(prev: IssueRecord | null, event: IssueEvent): IssueRec
       break;
     }
     case 'suppressed': {
+      if (record.state !== 'suppressed') record.stateBeforeSuppression = record.state;
       record.state = 'suppressed';
       record.suppressedUntil = lc?.suppressedUntil;
       record.suppressionReason = lc?.suppressionReason;
@@ -157,8 +180,8 @@ export function foldEvent(prev: IssueRecord | null, event: IssueEvent): IssueRec
       break;
     }
     case 'linked_run': {
-      // Evidence from a run (test case / audit check), not a state change — links already merged.
-      // A `verified_fixed` link records that a passing run confirmed the fix still holds (REQ-08).
+      // Evidence from a run (test case / audit check), not a state change. Links already merged.
+      // A `verified_fixed` link records that a passing run confirmed the fix still holds.
       if (event.relationship === 'verified_fixed' && record.state === 'fixed') {
         record.lastVerifiedFixedAt = event.createdAt;
       }
@@ -169,8 +192,12 @@ export function foldEvent(prev: IssueRecord | null, event: IssueEvent): IssueRec
       break;
   }
 
-  // Apply any explicit state override carried on a lifecycle patch last.
-  if (lc?.state) record.state = lc.state;
+  // Apply any explicit state override carried on a lifecycle patch last. Moving a suppressed issue
+  // to any other state (unsuppress, mark_fixed) drops its suppression fields.
+  if (lc?.state) {
+    if (record.state === 'suppressed' && lc.state !== 'suppressed') return { ...liftSuppression(record), state: lc.state };
+    record.state = lc.state;
+  }
   return record;
 }
 

@@ -1,20 +1,21 @@
-// SWIPIUM-REQ-04 — Cross-platform Appium POM model. Pure transform of the canonical Swipium POM
+// Cross-platform Appium POM model. Pure transform of the canonical Swipium POM
 // (src/suite/pom.ts) into an Appium-ready, language-agnostic screen model that the JS and Python
 // emitters share. This is the "shared intermediate model" the requirement asks for so generated
 // JS/Python cannot drift from Swipium YAML semantics.
 //
-// Locator policy (REQ-04 §Generated * Suite Requirements + Appium locator-strategy guidance):
+// Locator policy (follows Appium locator-strategy guidance):
 //   accessibility id > resource-id/id > iOS predicate/class-chain/name > text > coordinate.
 //   XPath is NEVER emitted; coordinate is the explicit non-release-grade fallback.
 
 import type { Durability, PomResult, PomTestStep } from '../suite/pom.js';
+import { asciiFold } from './identifiers.js';
 
 export type AppiumStrategy = 'accessibilityId' | 'id' | 'name' | 'iosPredicate' | 'iosClassChain' | 'androidUiautomator' | 'coordinate';
 
 export interface AppiumLocator {
   strategy: AppiumStrategy;
   value: string;
-  /** True for accessibility id / resource id — durable across releases. */
+  /** True for accessibility id / resource id: durable across releases. */
   durable: boolean;
   /** Coordinate (and, to a lesser degree, raw text) is brittle and not release-grade. */
   releaseGrade: boolean;
@@ -34,7 +35,9 @@ export interface CrossPlatformElement {
   sourceFile?: string;
 }
 
-export type AppiumActionKind = 'tap' | 'tapAt' | 'inputText' | 'press' | 'swipe' | 'scrollTo' | 'openUrl' | 'assertVisible';
+/** `visualCheck` is a manual visual checkpoint (qa_visual assert prose), emitted as a clearly-marked
+ *  TODO comment, never as a text assertion. */
+export type AppiumActionKind = 'tap' | 'tapAt' | 'inputText' | 'press' | 'swipe' | 'scrollTo' | 'openUrl' | 'assertVisible' | 'visualCheck';
 
 export interface AppiumStep {
   /** Screen CLASS name (e.g. LoginScreen) the step targets. */
@@ -43,7 +46,7 @@ export interface AppiumStep {
   element?: string;
   action: AppiumActionKind;
   text?: string;
-  /** True when `text` is a ${VAR} secret placeholder — never inline the value. */
+  /** True when `text` is a ${VAR} secret placeholder. Never inline the value. */
   secret?: boolean;
   /** Env var name backing a secret/templated value. */
   varName?: string;
@@ -69,13 +72,13 @@ export interface AppiumSuiteModel {
   steps: AppiumStep[];
   /** Non-secret ${VARS} the suite needs (test data). */
   variables: string[];
-  /** Secret ${VARS} — must come from the environment, never inlined. */
+  /** Secret ${VARS}. Must come from the environment, never inlined. */
   secrets: string[];
   audit: PomResult['audit'];
   platforms: { android: boolean; ios: boolean };
 }
 
-/** PomPage name (LoginPage) → screen class name (LoginScreen). */
+/** PomPage name (LoginPage) > screen class name (LoginScreen). */
 export function screenClassName(pageName: string): string {
   return /Page$/.test(pageName) ? pageName.replace(/Page$/, 'Screen') : `${pageName}Screen`;
 }
@@ -93,7 +96,7 @@ function locator(strategy: AppiumStrategy, value: string): AppiumLocator {
 
 /**
  * Compute the platform-specific Appium locators for one POM element selectorKind.
- * Returns { android, ios, fallback } — any of which may be undefined.
+ * Returns { android, ios, fallback }, any of which may be undefined.
  */
 function locatorsFor(
   selectorKind: string,
@@ -117,7 +120,7 @@ function locatorsFor(
     case 'class_chain':
       return { ios: platforms.ios ? locator('iosClassChain', value) : undefined };
     case 'text': {
-      // text → Android UiAutomator text match (semi), iOS name match (semi). Both fragile.
+      // text > Android UiAutomator text match (semi), iOS name match (semi). Both fragile.
       const android = platforms.android ? locator('androidUiautomator', value) : undefined;
       const ios = platforms.ios ? locator('name', value) : undefined;
       return { android, ios, fallback: locator('androidUiautomator', value) };
@@ -187,20 +190,23 @@ function toStep(s: PomTestStep, secrets: Set<string>, variables: Set<string>): A
       else variables.add(m[1]);
       return { ...base, action: 'inputText', text: s.text, secret: s.secret, varName: m[1] };
     }
-    // literal non-secret text — also scan for embedded ${VARS}
+    // literal non-secret text; also scan for embedded ${VARS}
     for (const mm of (s.text ?? '').matchAll(/\$\{([^}]+)\}/g)) variables.add(mm[1]);
     return { ...base, action: 'inputText', text: s.text ?? '', secret: s.secret };
   }
   if (s.action === 'tap' && !s.element && s.coords) return { ...base, action: 'tapAt', coords: s.coords };
   if (s.action === 'press') return { ...base, action: 'press', key: s.key };
   if (s.action === 'swipe') return { ...base, action: 'swipe', direction: s.direction };
+  // scrollTo carries the CONTENT direction the recording scrolled in ('down' reveals content below).
+  if (s.action === 'scrollTo') return { ...base, action: 'scrollTo', direction: s.direction, text: s.element ? undefined : s.text };
   if (s.action === 'openUrl') return { ...base, action: 'openUrl', url: s.url };
   if (s.action === 'assertVisible') return { ...base, action: 'assertVisible', text: s.text };
+  if (s.action === 'visualCheck') return { ...base, element: undefined, action: 'visualCheck', text: s.text };
   return base;
 }
 
 function kebab(s: string): string {
-  return s
+  return asciiFold(s)
     .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
     .replace(/[^A-Za-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')

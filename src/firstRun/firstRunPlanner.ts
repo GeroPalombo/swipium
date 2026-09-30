@@ -1,7 +1,7 @@
-// SWIPIUM-REQ-02 — firstRunPlanner(): the per-screen brain of the first-run state machine. Given an
+// firstRunPlanner(): the per-screen brain of the first-run state machine. Given an
 // observed screen, the session, the test-data policy, and the generated-account decision, it
 // classifies the screen and returns a bounded, safe FirstRunPlan: the actions to take, the expected
-// next screens, the stop conditions, and the app-map updates. PURE — no device access; the driver
+// next screens, the stop conditions, and the app-map updates. PURE: no device access. The driver
 // loop in firstRunRunner.ts executes the returned actions.
 
 import type { SnapshotElement } from '../drivers/Driver.js';
@@ -54,7 +54,7 @@ export function planFirstRun(obs: ScreenObservation, session: Session, ctx: Firs
   const planFor = (req: Parameters<typeof planInputForField>[1]): InputPlan =>
     planInputForField(session, req, { ...inputCtx, index: genIndex++ });
 
-  // --- error / native crash → stop ---
+  // --- error / native crash > stop ---
   if (classification.purpose === 'error') {
     return {
       ...base,
@@ -62,13 +62,13 @@ export function planFirstRun(obs: ScreenObservation, session: Session, ctx: Firs
       actions: [],
       expectedNextPurposes: [],
       stopConditions: ['app or native error on screen'],
-      reason: 'app/native error encountered — first-run halted',
+      reason: 'app/native error encountered, first-run halted',
       pathTaken: 'none',
       nextRecommendedTool: 'qa_report',
     };
   }
 
-  // --- OTP / email verification → stop with NeedsInput ---
+  // --- OTP / email verification > stop with NeedsInput ---
   if (classification.purpose === 'otp_or_email_verification') {
     return {
       ...base,
@@ -155,7 +155,7 @@ export function planFirstRun(obs: ScreenObservation, session: Session, ctx: Firs
     };
   }
 
-  // --- paywall → record coverage, dismiss only via a safe visible path ---
+  // --- paywall > record coverage, dismiss only via a safe visible path ---
   if (classification.purpose === 'paywall') {
     const pw = planPaywall(elements);
     if (pw.stop || !pw.action) {
@@ -181,7 +181,7 @@ export function planFirstRun(obs: ScreenObservation, session: Session, ctx: Firs
     };
   }
 
-  // --- onboarding → safe forward/skip ---
+  // --- onboarding > safe forward/skip ---
   if (classification.purpose === 'onboarding') {
     const step = planOnboardingStep(elements);
     if (!step.action) {
@@ -212,8 +212,8 @@ export function planFirstRun(obs: ScreenObservation, session: Session, ctx: Firs
       state: 'completed',
       actions: [],
       expectedNextPurposes: [],
-      stopConditions: ['reached home/feature — hand off to guided exploration'],
-      reason: `reached ${classification.purpose} — first-run gates cleared`,
+      stopConditions: ['reached home/feature, hand off to guided exploration'],
+      reason: `reached ${classification.purpose}, first-run gates cleared`,
       pathTaken: hasProvidedCredentials(session) ? 'login' : 'home',
       nextRecommendedTool: 'qa_explore',
     };
@@ -225,7 +225,7 @@ export function planFirstRun(obs: ScreenObservation, session: Session, ctx: Firs
     state: 'blocked',
     actions: classification.safeActions.slice(0, 1),
     expectedNextPurposes: [],
-    stopConditions: ['unknown screen — cannot plan a safe first-run step'],
+    stopConditions: ['unknown screen, cannot plan a safe first-run step'],
     reason: classification.blockedReasons[0] ?? 'screen purpose is unknown',
     pathTaken: 'none',
   };
@@ -233,5 +233,5 @@ export function planFirstRun(obs: ScreenObservation, session: Session, ctx: Firs
 
 /** Convenience for tests/reporting: a one-line label of the path a plan would take. */
 export function describePlan(plan: FirstRunPlan): string {
-  return `${plan.classification.purpose} (conf ${plan.classification.confidence}) → ${plan.state}${plan.pathTaken ? ` [${plan.pathTaken}]` : ''}`;
+  return `${plan.classification.purpose} (conf ${plan.classification.confidence}) > ${plan.state}${plan.pathTaken ? ` [${plan.pathTaken}]` : ''}`;
 }

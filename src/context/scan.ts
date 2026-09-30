@@ -1,4 +1,4 @@
-// scanProject (PHASE3-PLAN §3.1) — the data behind `swipium scan` and `.swipium/config.json`.
+// scanProject: the data behind `swipium scan` and `.swipium/config.json`.
 // Extends detectContext() with the higher-level signals a developer needs to answer
 // "what can I test right now?": app id, whether Metro is likely needed, whether a fresh
 // start is safe, whether auth is likely, install state (best-effort), a recommended budget

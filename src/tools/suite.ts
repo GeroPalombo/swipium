@@ -1,7 +1,7 @@
-// Per-run suite generation cores (roadmap §6 / §7 / §12) + qa_flow_compile.
+// Per-run suite generation cores + qa_flow_compile.
 //
 // These turn the actions recorded during a session (qa_act) into a MAINTAINABLE POM suite under
-// .swipium/ — page objects (selectors), tests (reference elements by name), a suite, a test-case
+// .swipium/: page objects (selectors), tests (reference elements by name), a suite, a test-case
 // catalog, and a locator audit. The generation entry points (page objects, full suite, test-case
 // catalog) are exposed through qa_generate (src/tools/generate.ts); this file registers only
 // qa_flow_compile, which compiles a generated POM suite into runnable Flow V2 for qa_flow_run.
@@ -12,7 +12,8 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
+import { resolveProjectRoot, unresolvedProjectRootError } from '../context/projectRoot.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { generatePom, type GeneratedFile, type PomResult } from '../suite/pom.js';
 import { generateTestCases } from '../suite/testcase.js';
@@ -21,10 +22,11 @@ import { parseFlow } from '../flows/schema.js';
 import { runFlow } from '../flows/run.js';
 import { loadProjectConfig } from '../cli/scan.js';
 import { generateAndCompileSuite } from '../services/suiteGenerate.js';
+import { assertNoSecretLeaks, findSecretLeaks, inputBindings, secretSafeNotes, structuralLiterals } from '../suite/secretGuard.js';
 import { getDriver } from '../session/attach.js';
 import { readinessForSession } from '../report/readiness.js';
 import { loadStateProfile, prepareStateProfile, teardownStateProfile, verifyStateProfile } from '../state/profile.js';
-import { hasStateProfileMutation, stateProfileAffects, stateRisk } from './state.js';
+import { hasStateProfileMutation, stateProfileAffects, stateRisk } from '../state/consent.js';
 import type { Session, SessionStore } from '../session/store.js';
 
 function stable(value: unknown): unknown {
@@ -76,7 +78,7 @@ function appIdOf(session: Session): string | undefined {
   return session.appId ?? (loadProjectConfig(session.root)?.appId as string | undefined) ?? undefined;
 }
 
-/** Map the replay outcome to the test-case catalog's replay status (Deliverable 4 — honest plumbing). */
+/** Map the replay outcome to the test-case catalog's replay status (Deliverable 4, honest plumbing). */
 function catalogReplayStatus(
   mode: string,
   results: Array<{ status: string }>,
@@ -98,6 +100,7 @@ function suiteDir(session: Session): string {
 
 /** Write generated files under .swipium/, returning absolute paths written. */
 function writeFiles(session: Session, files: GeneratedFile[]): string[] {
+  assertNoSecretLeaks(files, session.secrets, 'suite generation', { structural: structuralLiterals(session.recordedActions) }); // backstop: never write a secret
   const base = suiteDir(session);
   const written: string[] = [];
   for (const f of files) {
@@ -109,12 +112,29 @@ function writeFiles(session: Session, files: GeneratedFile[]): string[] {
   return written;
 }
 
+/** Loud refusal when generated files would carry a registered secret value (nothing is written). */
+function secretLeakError(session: Session, files: GeneratedFile[]): CallToolResult | null {
+  const leaks = findSecretLeaks(files, session.secrets, { structural: structuralLiterals(session.recordedActions) });
+  if (!leaks.length) return null;
+  return qaError({
+    what: `Not generated: a registered secret value would be written in plaintext (${leaks
+      .slice(0, 5)
+      .map((l) => `${l.path}:${l.line}`)
+      .join(', ')})`,
+    changedState: false,
+    retrySafe: false,
+    failureCode: 'SECRET_IN_GENERATED_OUTPUT',
+    nextSteps: ['Nothing was written. Re-record the credential step so it is captured as a ${VAR}, then regenerate.'],
+  });
+}
+
 function requireActions(session: Session): CallToolResult | null {
   if (!session.recordedActions.length) {
     return qaError({
       what: 'No actions recorded in this session yet',
       changedState: false,
       retrySafe: true,
+      failureCode: 'NO_RECORDED_ACTIONS',
       nextSteps: ['Drive the app with qa_act first (each action is recorded), then regenerate the suite.'],
     });
   }
@@ -124,7 +144,13 @@ function requireActions(session: Session): CallToolResult | null {
 function pomFor(session: Session, name?: string): { pom: PomResult; flowName: string } {
   const appId = appIdOf(session);
   const flowName = (name ?? `${(appId ?? 'app').split('.').pop()}-smoke`).replace(/[^\w.-]+/g, '-');
-  const pom = generatePom(session.recordedActions, { name: flowName, appId, budgetProfile: session.budgetProfile });
+  const pom = generatePom(session.recordedActions, {
+    name: flowName,
+    appId,
+    budgetProfile: session.budgetProfile,
+    secrets: session.secrets,
+    inputs: inputBindings(session), // typed text equal to a stored input maps to its ${SWIPIUM_TEST_*} placeholder
+  });
   return { pom, flowName };
 }
 
@@ -136,26 +162,22 @@ export interface PomGenerateArgs {
   save?: boolean;
 }
 
-/** Core handler for qa_generate target:"pom" — page objects + locator audit from recorded actions. */
+/** Core handler for qa_generate target:"pom": page objects + locator audit from recorded actions. */
 export async function runPomGenerate(sessions: SessionStore, { sessionId, name, save }: PomGenerateArgs): Promise<CallToolResult> {
   const session = sessions.get(sessionId);
-  if (!session)
-    return qaError({
-      what: `Unknown sessionId ${sessionId}`,
-      changedState: false,
-      retrySafe: true,
-      nextSteps: ['Call qa_start_session first.'],
-    });
+  if (!session) return unknownSessionError(sessionId);
   const noActions = requireActions(session);
   if (noActions) return noActions;
 
   const { pom } = pomFor(session, name);
   const pageFiles = pom.files.filter((f) => f.path.startsWith('pages/') || f.path.startsWith('locators/'));
+  const pomLeak = secretLeakError(session, pageFiles);
+  if (pomLeak) return pomLeak;
   const written = save ? writeFiles(session, pageFiles) : [];
   const summary =
     `Generated ${pom.pages.length} page object(s): ${pom.pages.map((p) => p.name).join(', ')}\n` +
     `locator audit: ${pom.audit.durable} durable / ${pom.audit.semi} semi / ${pom.audit.brittle} brittle (${pom.audit.brittlePct}% brittle)` +
-    (save ? `\nsaved ${written.length} files under .swipium/` : `\n(not saved — pass save:true)`);
+    (save ? `\nsaved ${written.length} files under .swipium/` : `\n(not saved; pass save:true)`);
   return qaOk({ pages: pom.pages, audit: pom.audit, files: pageFiles, written }, summary);
 }
 
@@ -173,7 +195,7 @@ export interface SuiteGenerateArgs {
 }
 
 /**
- * Core handler for qa_generate target:"suite" — the full per-run .swipium/ suite from recorded
+ * Core handler for qa_generate target:"suite": the full per-run .swipium/ suite from recorded
  * actions: pages + tests + suite + test cases + locator audit, plus compile and replay gates.
  */
 export async function runSuiteGenerate(
@@ -181,17 +203,19 @@ export async function runSuiteGenerate(
   { sessionId, name, save, compile, replay, stateProfile, consentId, approve }: SuiteGenerateArgs,
 ): Promise<CallToolResult> {
   const session = sessions.get(sessionId);
-  if (!session)
-    return qaError({
-      what: `Unknown sessionId ${sessionId}`,
-      changedState: false,
-      retrySafe: true,
-      nextSteps: ['Call qa_start_session first.'],
-    });
+  if (!session) return unknownSessionError(sessionId);
   const noActions = requireActions(session);
   if (noActions) return noActions;
 
   const res = generateAndCompileSuite(sessions, session, { name, save: save !== false, compile: compile !== false });
+  if (res.failureCode)
+    return qaError({
+      what: `Suite not generated: ${res.skippedReason}`,
+      changedState: false,
+      retrySafe: false,
+      failureCode: 'SECRET_IN_GENERATED_OUTPUT',
+      nextSteps: [res.recommendation ?? 'Re-record the credential step so it is captured as a ${VAR}, then regenerate.'],
+    });
   const audit = res.audit!;
   const ranOk = res.compiledFlows.filter((c) => c.ok).length;
   const replayMode = replay ?? 'dry_run';
@@ -439,7 +463,7 @@ export async function runSuiteGenerate(
       const tc = generateTestCases(pom, {
         appId: appIdOf(session),
         fixtures: session.fixtures,
-        notes: session.notes,
+        notes: secretSafeNotes(session.notes, session.secrets),
         budgetProfile: session.budgetProfile,
         replayStatus,
       });
@@ -454,12 +478,12 @@ export async function runSuiteGenerate(
     `✅ Suite "${res.name}" generated (${res.pages?.length ?? 0} pages, ${res.testCases?.length ?? 0} test case, suite + audit).\n` +
     `durability: ${audit.durable} durable / ${audit.semi} semi / ${audit.brittle} brittle (${audit.brittlePct}% brittle)` +
     (res.variables?.length ? `\nvariables: ${res.variables.join(', ')}` : '') +
-    (audit.brittle ? `\n⚠ ${audit.brittle} brittle locator(s) — see locators/locator-audit.json for app-code fixes.` : '') +
-    (written.length ? `\nwrote ${written.length} files under ${suiteDir(session)}` : `\n(preview — pass save:true to write)`) +
+    (audit.brittle ? `\n⚠ ${audit.brittle} brittle locator(s), see locators/locator-audit.json for app-code fixes.` : '') +
+    (written.length ? `\nwrote ${written.length} files under ${suiteDir(session)}` : `\n(preview; pass save:true to write)`) +
     (res.compiledFlows.length
-      ? `\ncompiled ${ranOk}/${res.compiledFlows.length} runnable flow(s) → run: swipium suite run (or qa_flow_run).`
+      ? `\ncompiled ${ranOk}/${res.compiledFlows.length} runnable flow(s) > run: swipium suite run (or qa_flow_run).`
       : `\nNext: qa_flow_compile to produce runnable Flow V2.`) +
-    `\nreplay gate (${replayMode}): ${replayPassed ? 'passed' : replayResults.length ? 'not proven' : 'not run'}; readiness=${readiness}; labels=${readinessLabels.join(' → ')}` +
+    `\nreplay gate (${replayMode}): ${replayPassed ? 'passed' : replayResults.length ? 'not proven' : 'not run'}; readiness=${readiness}; labels=${readinessLabels.join(' > ')}` +
     (ciReady
       ? '\nci_ready: compiled + fresh-state replay + state evidence proved'
       : replayMode === 'fresh_state'
@@ -500,19 +524,13 @@ export interface TestcaseGenerateArgs {
   save?: boolean;
 }
 
-/** Core handler for qa_generate target:"testcases" — industry-style test case catalog from recorded actions. */
+/** Core handler for qa_generate target:"testcases": industry-style test case catalog from recorded actions. */
 export async function runTestcaseGenerate(
   sessions: SessionStore,
   { sessionId, name, format, save }: TestcaseGenerateArgs,
 ): Promise<CallToolResult> {
   const session = sessions.get(sessionId);
-  if (!session)
-    return qaError({
-      what: `Unknown sessionId ${sessionId}`,
-      changedState: false,
-      retrySafe: true,
-      nextSteps: ['Call qa_start_session first.'],
-    });
+  if (!session) return unknownSessionError(sessionId);
   const noActions = requireActions(session);
   if (noActions) return noActions;
 
@@ -520,13 +538,15 @@ export async function runTestcaseGenerate(
   const tc = generateTestCases(pom, {
     appId: appIdOf(session),
     fixtures: session.fixtures,
-    notes: session.notes,
+    notes: secretSafeNotes(session.notes, session.secrets),
     budgetProfile: session.budgetProfile,
   });
   const fmt = format ?? 'both';
   const files: GeneratedFile[] = [];
   if (fmt !== 'markdown') files.push({ path: `testcases/${flowName}.cases.yaml`, content: tc.yaml });
   if (fmt !== 'yaml') files.push({ path: `testcases/${flowName}.cases.md`, content: tc.markdown });
+  const tcLeak = secretLeakError(session, files);
+  if (tcLeak) return tcLeak;
   const written = save ? writeFiles(session, files) : [];
   const summary =
     `Generated ${tc.cases.length} test case(s): ${tc.cases.map((c) => `${c.id} ${c.title}`).join('; ')}` +
@@ -544,7 +564,10 @@ export function registerSuite(server: McpServer, sessions: SessionStore): void {
     {
       title: 'Compile a POM suite to runnable flows',
       description:
-        'Compile a generated POM suite (.swipium/suites/<suite>.yaml → its POM tests) into Flow V2 YAML that qa_flow_run and `swipium ci` can execute. Resolves page-object element refs to selectors, carries variables/secrets, and writes runnable flows to .swipium/flows/ (+ a readable copy under .swipium/compiled/). Validates each compiled flow through parseFlow and reports any errors. This is the step that makes a generated suite runnable, not just documentation.',
+        'Compile an existing POM suite on disk (.swipium/suites/<suite>.yaml, e.g. committed or hand-edited) into runnable Flow V2 ' +
+        'for qa_flow_run: resolves page-object refs to selectors, carries variables, writes .swipium/flows/<slug>.yaml (+ a copy ' +
+        'under .swipium/compiled/), and validates each flow. Needs no session or recorded actions; qa_generate target:"suite" ' +
+        'already compiles the suite it generates from a run.',
       inputSchema: {
         sessionId: z.string().optional(),
         projectRoot: z.string().optional(),
@@ -552,11 +575,12 @@ export function registerSuite(server: McpServer, sessions: SessionStore): void {
       },
     },
     async ({ sessionId, projectRoot, suite }) => {
-      let root: string | undefined;
-      if (sessionId) root = sessions.get(sessionId)?.root;
-      root = root ?? projectRoot;
-      if (!root)
-        return qaError({ what: 'No project root', changedState: false, retrySafe: true, nextSteps: ['Pass sessionId or projectRoot.'] });
+      let root: string | undefined = sessionId ? sessions.get(sessionId)?.root : undefined;
+      if (!root) {
+        const resolved = await resolveProjectRoot(server, projectRoot);
+        if (!resolved.root) return unresolvedProjectRootError(resolved);
+        root = resolved.root;
+      }
 
       const result = compileSuite(root, suite ?? 'suites/smoke.yaml');
       if (result.errors.length && result.flows.length === 0) {
@@ -580,7 +604,7 @@ export function registerSuite(server: McpServer, sessions: SessionStore): void {
         let flowPath: string | undefined;
         let compiledPath: string | undefined;
         if (ok) {
-          flowPath = join(flowsDir, `${slug}.yaml`); // discoverable by `swipium ci --flow <slug>`
+          flowPath = join(flowsDir, `${slug}.yaml`); // discoverable by qa_flow_run flow:"<slug>"
           compiledPath = join(compiledDir, `${slug}.flow.yaml`);
           writeFileSync(flowPath, f.yaml);
           writeFileSync(compiledPath, f.yaml);
@@ -594,7 +618,7 @@ export function registerSuite(server: McpServer, sessions: SessionStore): void {
         compiled
           .map(
             (c) =>
-              `  ${c.ok ? '✓' : '✗'} ${c.name}${c.ok ? ` → flows/${c.slug}.yaml (run: swipium ci --flow ${c.slug})` : `: ${c.errors.join('; ')}`}`,
+              `  ${c.ok ? '✓' : '✗'} ${c.name}${c.ok ? ` > flows/${c.slug}.yaml (run: qa_flow_run flow:"${c.slug}")` : `: ${c.errors.join('; ')}`}`,
           )
           .join('\n');
       return qaOk({ suite: result.suite, flows: compiled, okCount }, summary);

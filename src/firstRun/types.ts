@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-02 — shared types for the first-run smoke / auth / onboarding / safe-test-data lane.
+// Shared types for the first-run smoke / auth / onboarding / safe-test-data lane.
 // These describe the data exchanged between the screen classifier, the input planner, the auth /
 // onboarding / paywall state machines, and the firstRunPlanner. They are intentionally
 // backend-neutral (no Driver references) so the planning layer stays pure + unit-testable; the
@@ -46,7 +46,7 @@ export interface InputRequirement {
   ref: string; // @eN element ref from the snapshot
   field: FieldKind;
   label?: string;
-  secure: boolean; // password / secure-text — value must be masked
+  secure: boolean; // password / secure-text; value must be masked
   required: boolean;
   locator?: FieldLocator;
   bounds?: [number, number, number, number];
@@ -54,7 +54,7 @@ export interface InputRequirement {
 
 export type PlannedActionType = 'tap' | 'type' | 'back' | 'scroll' | 'skip' | 'wait';
 
-/** The value an input action will type — never the raw value (that stays in the secure store). */
+/** The value an input action will type. Never the raw value (that stays in the secure store). */
 export interface PlannedInputValue {
   varName: string; // flow variable the value is stored under (e.g. SWIPIUM_TEST_EMAIL)
   secret: boolean;
@@ -91,7 +91,7 @@ export interface ScreenClassification {
   mapLinks: MapLink[];
 }
 
-/** A forward-compatible patch into the durable app map (SWIPIUM-REQ-01). Until that module lands
+/** A forward-compatible patch into the durable app map. Until that module lands
  *  these are persisted as a session artifact + note and returned to the caller, so a later app-map
  *  implementation can replay them without changing this contract. */
 export interface AppMapPatch {

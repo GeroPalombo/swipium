@@ -1,7 +1,7 @@
-// Ground-truth gathering for feature scope (SWIPIUM-REQ-03 "Feature Scope Model" sources). Reads the
+// Ground-truth gathering for feature scope. Reads the
 // durable, on-disk Swipium artifacts so the pure scope ranker has runtime screens + existing tests to
 // search: the latest exploration screen graph (runtime nodes) and authored flows / generated test
-// cases. Best-effort and defensive — a malformed file is skipped, never fatal.
+// cases. Best-effort and defensive: a malformed file is skipped, never fatal.
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, basename, extname } from 'node:path';
@@ -44,7 +44,7 @@ export function gatherExistingTests(root: string): TestCaseRef[] {
     out.push(ref);
   };
 
-  // .swipium/testcases/*.{yaml,yml,json} → { cases: [{ id, title }] }
+  // .swipium/testcases/*.{yaml,yml,json} > { cases: [{ id, title }] }
   const tcDir = join(root, '.swipium', 'testcases');
   if (existsSync(tcDir)) {
     for (const name of safeReaddir(tcDir)) {
@@ -67,7 +67,7 @@ export function gatherExistingTests(root: string): TestCaseRef[] {
     }
   }
 
-  // .swipium/flows/*.{yaml,yml} → flow name (file + `name:` field)
+  // .swipium/flows/*.{yaml,yml} > flow name (file + `name:` field)
   const flowsDir = join(root, '.swipium', 'flows');
   if (existsSync(flowsDir)) {
     for (const name of safeReaddir(flowsDir)) {

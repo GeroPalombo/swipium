@@ -1,19 +1,19 @@
-// Failure taxonomy (PHASE3-PLAN §4.3 / roadmap §6). Every failure Swipium can detect maps to a
+// Failure taxonomy. Every failure Swipium can detect maps to a
 // stable code with: a bucket (so qa_report can group failures the way a developer triages them),
 // a severity, a default retry-safety, and an actionable recovery line. This turns "something
-// failed" into "this class of failure, here's whether to retry, here's the fix" — the
+// failed" into "this class of failure, here's whether to retry, here's the fix". The
 // structured/actionable error practice, applied to mobile QA.
 //
 // Buckets (what a developer does about it):
-//   app_bug        — the app is broken; fix the app.
-//   environment    — device/toolchain/network/build setup; fix the environment.
-//   missing_data   — a precondition / test account / fixture is absent; provide it.
-//   mcp_limitation — automation couldn't proceed (opaque UI, stale ref, overlay); adjust approach.
-//   unsafe_refused — a guardrail intentionally refused a destructive action; expected, not a bug.
+//   app_bug        : the app is broken; fix the app.
+//   environment    : device/toolchain/network/build setup; fix the environment.
+//   missing_data   : a precondition / test account / fixture is absent; provide it.
+//   mcp_limitation : automation couldn't proceed (opaque UI, stale ref, overlay); adjust approach.
+//   unsafe_refused : a guardrail intentionally refused a destructive action; expected, not a bug.
 
 export type FailureBucket = 'app_bug' | 'environment' | 'missing_data' | 'mcp_limitation' | 'unsafe_refused';
 
-// Likely owner of a failure (roadmap §10): who acts to fix it. Distinct from the bucket,
+// Likely owner of a failure: who acts to fix it. Distinct from the bucket,
 // which is how a developer triages it. `swipium` = Swipium can often fix it itself.
 export type FailureOwner = 'app' | 'environment' | 'swipium' | 'user';
 
@@ -30,6 +30,7 @@ export type FailureCode =
   | 'ASSERTION_FAILED'
   // environment
   | 'NO_DEVICE'
+  | 'ADB_NOT_FOUND'
   | 'NO_ARTIFACT'
   | 'INVALID_FLOW'
   | 'WRONG_ARCH'
@@ -63,8 +64,12 @@ export type FailureCode =
   | 'ARTIFACT_PATH_UNWRITABLE'
   | 'REPORT_UPLOAD_SKIPPED'
   | 'SECRET_ARTIFACT_IN_EVIDENCE'
+  | 'SECRET_IN_GENERATED_OUTPUT'
   | 'VISUAL_MASKING_STATUS_MISSING'
   | 'EVIDENCE_RETENTION_UNDECLARED'
+  | 'OCR_NOT_CONFIGURED'
+  | 'OCR_PROVIDER_FAILED'
+  | 'FLOW_NOT_FOUND'
   // missing_data
   | 'AUTH_GATE'
   | 'MISSING_FIXTURE'
@@ -81,6 +86,7 @@ export type FailureCode =
   | 'ELEMENT_NOT_FOUND'
   | 'ELEMENT_NOT_HITTABLE'
   | 'KEYBOARD_OBSTRUCTION'
+  | 'KEYBOARD_NOT_DISMISSIBLE'
   | 'TEXT_INPUT_UNSUPPORTED'
   | 'WEBVIEW_UNAVAILABLE'
   | 'ANIMATION_IDLE_BLOCKED'
@@ -93,12 +99,21 @@ export type FailureCode =
   | 'DESTRUCTIVE_REFUSED'
   | 'GIT_SCOPE_FORBIDDEN'
   | 'UNSAFE_ACTION_REFUSED'
-  // --- roadmap §10: project detection ---
+  | 'CONSENT_DECLINED'
+  | 'CONSENT_CANCELLED'
+  | 'CANCELLED'
+  | 'CONSENT_REFUSED'
+  | 'PHYSICAL_DEVICE_UNSUPPORTED'
+  | 'VISUAL_PATH_REFUSED'
+  | 'CAPTURE_WITHHELD_SECURE'
+  | 'SENSITIVE_MODE_REFUSED'
+  // --- project detection ---
   | 'NOT_MOBILE_PROJECT'
   | 'MONOREPO_TARGET_AMBIGUOUS'
   | 'PROJECT_ROOT_EMPTY'
+  | 'PROJECT_ROOT_UNRESOLVED'
   | 'UNSUPPORTED_FRAMEWORK'
-  // --- roadmap §10: artifact resolution / install ---
+  // --- artifact resolution / install ---
   | 'NO_BUILD_ARTIFACT'
   | 'MULTIPLE_ARTIFACTS_AMBIGUOUS'
   | 'ARTIFACT_OUTSIDE_ROOT_REQUIRES_APPROVAL'
@@ -121,7 +136,7 @@ export type FailureCode =
   | 'REAL_DEVICE_UDID_NOT_PROVISIONED'
   | 'REAL_DEVICE_BUNDLE_ID_MISMATCH'
   | 'REAL_DEVICE_TEAM_MISMATCH'
-  // --- roadmap §10: build-from-source ---
+  // --- build-from-source ---
   | 'BUILD_COMMAND_UNAVAILABLE'
   | 'BUILD_FAILED'
   | 'BUILD_ARTIFACT_UNRESOLVED_AFTER_SUCCESS'
@@ -131,17 +146,26 @@ export type FailureCode =
   | 'GRADLE_FAILED'
   | 'XCODEBUILD_FAILED'
   | 'FLUTTER_BUILD_FAILED'
-  // --- roadmap §10: runtime ---
+  // --- runtime ---
   | 'METRO_REQUIRED'
   | 'METRO_FAILED'
   | 'DEVICE_BOOT_FAILED'
   | 'APP_LAUNCH_FAILED'
-  // --- roadmap §10: automation / durability ---
+  // --- automation / durability ---
   | 'MISSING_DURABLE_LOCATOR'
   | 'COORDINATE_ONLY_FLOW'
   | 'VISUAL_ONLY_ASSERTION'
   | 'AUTH_REQUIRED'
   | 'MISSING_TEST_DATA'
+  // --- tool-local codes (issue ledger, app map, generators, argument validation) ---
+  | 'ISSUE_LOG_TOO_VAGUE'
+  | 'ISSUE_NOT_FOUND'
+  | 'ISSUE_STATE_INVALID'
+  | 'ISSUE_EVIDENCE_REQUIRED'
+  | 'NO_APP_MAP'
+  | 'NO_RECORDED_ACTIONS'
+  | 'UNEMITTABLE_STEP'
+  | 'INVALID_ARGUMENT'
   // fallback
   | 'UNKNOWN';
 
@@ -153,10 +177,10 @@ export interface FailureInfo {
   retrySafe: boolean;
   summary: string;
   recovery: string;
-  /** Likely owner of the fix (roadmap §10). Optional — defaults are derived from the bucket
+  /** Likely owner of the fix. Optional; defaults are derived from the bucket
    *  by `failureOwner()`; set explicitly where it differs from the bucket default. */
   owner?: FailureOwner;
-  /** Whether Swipium can plausibly resolve this itself (roadmap §3.4 "can Swipium fix this?"). */
+  /** Whether Swipium can plausibly resolve this itself. */
   selfFixable?: boolean;
 }
 
@@ -173,56 +197,56 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     severity: 'high',
     retrySafe: false,
     summary: 'App not responding (ANR)',
-    recovery: 'Main thread is blocked — profile the slow work; retrying will not help.',
+    recovery: 'Main thread is blocked. Profile the slow work; retrying will not help.',
   },
   ERROR_BOUNDARY: {
     bucket: 'app_bug',
     severity: 'high',
     retrySafe: false,
     summary: 'App error screen / error boundary',
-    recovery: 'A render/runtime error surfaced to the user — inspect logs and fix the failing screen.',
+    recovery: 'A render/runtime error surfaced to the user. Inspect logs and fix the failing screen.',
   },
   REDBOX: {
     bucket: 'app_bug',
     severity: 'high',
     retrySafe: false,
     summary: 'Framework red-box error',
-    recovery: 'A fatal JS/runtime error — read the error text; often a bad bundle or thrown error.',
+    recovery: 'A fatal JS/runtime error. Read the error text; often a bad bundle or thrown error.',
   },
   LOGBOX: {
     bucket: 'app_bug',
     severity: 'medium',
     retrySafe: true,
     summary: 'Framework warning overlay',
-    recovery: 'Non-fatal warning(s) — dismiss with qa_clear_overlay; review before release.',
+    recovery: 'Non-fatal warning(s). Dismiss with qa_clear_overlay; review before release.',
   },
   BACKEND_ERROR: {
     bucket: 'app_bug',
     severity: 'high',
     retrySafe: false,
     summary: 'Backend/error surface shown to the user',
-    recovery: 'An error toast/banner/HTTP-error screen appeared — check the API response and error handling.',
+    recovery: 'An error toast/banner/HTTP-error screen appeared. Check the API response and error handling.',
   },
   BLANK_SCREEN: {
     bucket: 'app_bug',
     severity: 'high',
     retrySafe: false,
     summary: 'Blank/empty screen',
-    recovery: 'Nothing rendered — check for a failed initial fetch, missing data state, or a swallowed error.',
+    recovery: 'Nothing rendered. Check for a failed initial fetch, missing data state, or a swallowed error.',
   },
   INFINITE_SPINNER: {
     bucket: 'app_bug',
     severity: 'high',
     retrySafe: false,
     summary: 'Stuck loading indicator',
-    recovery: 'A loading state never resolved — check the pending request/timeout handling.',
+    recovery: 'A loading state never resolved. Check the pending request/timeout handling.',
   },
   ASSERTION_FAILED: {
     bucket: 'app_bug',
     severity: 'high',
     retrySafe: false,
     summary: 'Expected UI was not present',
-    recovery: 'The asserted text/element was missing — either a real regression or the flow needs updating for a UI change.',
+    recovery: 'The asserted text/element was missing. Either a real regression or the flow needs updating for a UI change.',
   },
 
   NO_DEVICE: {
@@ -230,7 +254,16 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     severity: 'high',
     retrySafe: true,
     summary: 'No online device or bootable emulator',
-    recovery: 'Boot/create a device (qa_doctor), then qa_prepare_target.',
+    recovery:
+      'Create an Android AVD (Android Studio > Device Manager, or avdmanager create avd …) or an iOS Simulator (Xcode), then re-run qa_test_this. It boots it for you.',
+  },
+  ADB_NOT_FOUND: {
+    bucket: 'environment',
+    severity: 'high',
+    retrySafe: true,
+    summary: 'adb (Android platform-tools) is not installed or not on PATH',
+    recovery:
+      'Install Android platform-tools + emulator (Android Studio SDK Manager or sdkmanager), put them on PATH or set ANDROID_HOME, create an AVD, then re-run qa_test_this.',
   },
   NO_ARTIFACT: {
     bucket: 'environment',
@@ -457,6 +490,15 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     summary: 'CI report upload or publication was skipped',
     recovery: 'Use if: always()/equivalent artifact upload steps and upload the full Swipium run directory even when tests fail.',
   },
+  SECRET_IN_GENERATED_OUTPUT: {
+    bucket: 'unsafe_refused',
+    severity: 'high',
+    retrySafe: false,
+    owner: 'swipium',
+    summary: 'Generated test asset would contain a registered secret value in plaintext; nothing was written',
+    recovery:
+      'Report this as a Swipium bug (the recorded step should have become a ${VAR}); meanwhile re-record the credential step through a secure field or provide it via qa_continue_from_blocker so it is recorded as a variable.',
+  },
   SECRET_ARTIFACT_IN_EVIDENCE: {
     bucket: 'unsafe_refused',
     severity: 'high',
@@ -489,7 +531,7 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     severity: 'medium',
     retrySafe: false,
     summary: 'Login required, no usable credentials',
-    recovery: 'Provide a test account (a fixture with a testAccount, plus TEST_EMAIL/TEST_PASSWORD).',
+    recovery: 'Provide a test account (a fixture with a testAccount, plus SWIPIUM_TEST_EMAIL/SWIPIUM_TEST_PASSWORD).',
   },
   MISSING_FIXTURE: {
     bucket: 'missing_data',
@@ -504,15 +546,42 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     retrySafe: false,
     summary: 'Required secret or flow variable is missing',
     recovery:
-      'Provide the variable through the CI environment, --secret-file, SWIPIUM_SECRET_FILE, or .swipium/secrets.json; never inline secrets in flows.',
+      'Provide the variable as an environment variable of the Swipium server/CI job (e.g. SWIPIUM_TEST_PASSWORD), or answer the needs_input question via qa_continue_from_blocker; never inline secrets in flows.',
   },
 
+  OCR_NOT_CONFIGURED: {
+    bucket: 'environment',
+    severity: 'low',
+    retrySafe: false,
+    owner: 'user',
+    summary: 'No local OCR provider is configured (none is bundled)',
+    recovery:
+      'Set ocrCommand in .swipium/config.json (argv array with an {image} placeholder) or SWIPIUM_OCR_CMD; the command must print JSON regions [{text, confidence 0..1, bbox:{x,y,width,height} in screenshot px}]. Or use qa_visual mode:"find_image".',
+  },
+  OCR_PROVIDER_FAILED: {
+    bucket: 'environment',
+    severity: 'medium',
+    retrySafe: false,
+    owner: 'user',
+    summary: 'The configured OCR/visual-mask provider exited non-zero or timed out (its result was not trusted as "text not found")',
+    recovery:
+      'Read the returned exitCode + stderr, run the provider standalone from the project root on a PNG, and fix it (missing tesseract, bad script path, Python error). Relative argv paths resolve against the project root.',
+  },
+  FLOW_NOT_FOUND: {
+    bucket: 'environment',
+    severity: 'low',
+    retrySafe: true,
+    owner: 'user',
+    summary: 'The named flow file does not exist under the resolved project root',
+    recovery:
+      'Pass an existing flow name (.swipium/flows/<name>.yaml) or path, inline flowYaml, or projectRoot / sessionId so the flow can be resolved (SWIPIUM_PROJECT_ROOT also works).',
+  },
   VISUAL_ONLY_SCREEN: {
     bucket: 'mcp_limitation',
     severity: 'low',
     retrySafe: false,
     summary: 'Screen has no usable UI tree (canvas/map/webview)',
-    recovery: 'Use qa_screenshot, coordinate taps, and qa_assert_visual.',
+    recovery: 'Use qa_screenshot, coordinate taps, and qa_visual mode:"assert".',
   },
   VISUAL_LOCATOR_DRIFT: {
     bucket: 'mcp_limitation',
@@ -583,7 +652,16 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     severity: 'low',
     retrySafe: true,
     summary: 'Keyboard is covering the target',
-    recovery: 'Dismiss the keyboard or press enter/back before interacting with the covered element.',
+    recovery:
+      'qa_act already tried hiding the keyboard, so it could not be hidden or the target is still covered. Submit (press enter), scroll the target above the keyboard, or qa_clear_overlay hide_keyboard, then retry.',
+  },
+  KEYBOARD_NOT_DISMISSIBLE: {
+    bucket: 'mcp_limitation',
+    severity: 'low',
+    retrySafe: false,
+    summary: 'The soft keyboard is up and the backend could not dismiss it',
+    recovery:
+      'The app offers no generic dismiss (e.g. WDA "Did not know how to dismiss the keyboard"): submit with qa_act press key:"enter", tap outside the field (qa_clear_overlay strategy:"tap_outside") or the app\'s own Done button, then retry.',
   },
   TEXT_INPUT_UNSUPPORTED: {
     bucket: 'mcp_limitation',
@@ -611,7 +689,7 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     severity: 'medium',
     retrySafe: false,
     summary: 'Repeated actions changed nothing',
-    recovery: 'Likely wrong coordinates, a disabled control, an overlay, or an auth wall — stop and inspect.',
+    recovery: 'Likely wrong coordinates, a disabled control, an overlay, or an auth wall. Stop and inspect.',
   },
   OVERLAY_OBSTRUCTION: {
     bucket: 'mcp_limitation',
@@ -633,7 +711,7 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     retrySafe: false,
     summary: 'Operation not supported by the current backend',
     recovery:
-      'For structured iOS tap/type/snapshot, attach WebDriverAgent with qa_wda. Without WDA, use qa_assert_visual and qa_ios lifecycle/deep links.',
+      'For structured iOS tap/type/snapshot, attach WebDriverAgent with qa_wda. Without WDA, use qa_visual mode:"assert" and qa_ios lifecycle/deep links.',
   },
 
   BUNDLE_LOSS_REFUSED: {
@@ -641,14 +719,14 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     severity: 'low',
     retrySafe: false,
     summary: 'Refused a clear/reset that would wipe a debug bundle',
-    recovery: 'Expected guardrail — use a release build for clean-state tests, or run destructive steps last.',
+    recovery: 'Expected guardrail. Use a release build for clean-state tests, or run destructive steps last.',
   },
   DESTRUCTIVE_REFUSED: {
     bucket: 'unsafe_refused',
     severity: 'low',
     retrySafe: false,
     summary: 'Refused a destructive action pending consent',
-    recovery: 'Expected guardrail — approve the consent prompt only if you intend the side effect.',
+    recovery: 'Expected guardrail. Approve the consent prompt only if you intend the side effect.',
   },
   GIT_SCOPE_FORBIDDEN: {
     bucket: 'unsafe_refused',
@@ -664,10 +742,78 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     retrySafe: false,
     owner: 'user',
     summary: 'Refused an unsafe action (purchase/delete/send) during exploration',
-    recovery: 'Expected guardrail — explicitly allow this action class (e.g. allowDestructive) only if you intend its side effect.',
+    recovery: 'Expected guardrail. Explicitly allow this action class (e.g. allowDestructive) only if you intend its side effect.',
+  },
+  CONSENT_DECLINED: {
+    bucket: 'unsafe_refused',
+    severity: 'low',
+    retrySafe: false,
+    owner: 'user',
+    summary: 'The user declined a consent prompt (MCP elicitation); nothing ran',
+    recovery: 'Expected guardrail. Do not retry; ask the user before attempting the action again.',
+  },
+  CONSENT_CANCELLED: {
+    bucket: 'unsafe_refused',
+    severity: 'low',
+    retrySafe: true,
+    owner: 'user',
+    summary: 'A consent prompt was dismissed, timed out, or failed. Treated as a refusal; nothing ran',
+    recovery: 'Re-call the tool (without consentId) to show the user a fresh consent prompt.',
+  },
+  CANCELLED: {
+    // Not a failure: the MCP request was aborted or the job cancelled. Never recorded as a tool
+    // error, snapshot failure, finding or health verdict (lib/abortScope.ts isAbortError).
+    bucket: 'unsafe_refused',
+    severity: 'low',
+    retrySafe: true,
+    owner: 'user',
+    summary: 'The call or job was cancelled before it finished. Not a failure; nothing was recorded against the app or the tool',
+    recovery: 'Re-run the call if you still need its result.',
+  },
+  CONSENT_REFUSED: {
+    bucket: 'unsafe_refused',
+    severity: 'low',
+    retrySafe: false,
+    owner: 'user',
+    summary: 'SWIPIUM_REQUIRE_ELICITATION=1 refused a consent-gated action because the client cannot elicit',
+    recovery: 'Connect with an MCP client that supports elicitation, or unset SWIPIUM_REQUIRE_ELICITATION.',
+  },
+  VISUAL_PATH_REFUSED: {
+    bucket: 'unsafe_refused',
+    severity: 'medium',
+    retrySafe: false,
+    summary: 'Visual baseline name or template path escapes the allowed directory',
+    recovery:
+      'Use a plain baseline name matching [A-Za-z0-9._-]{1,64} (no leading dot) and a find_image template inside the project root or a swipium:// artifact URI from this session.',
+  },
+  SENSITIVE_MODE_REFUSED: {
+    bucket: 'unsafe_refused',
+    severity: 'low',
+    retrySafe: false,
+    owner: 'user',
+    summary: 'Pixel/video/log capture refused because the session was started in sensitive mode',
+    recovery:
+      'Expected guardrail: rely on structured snapshot + health (no screen contents), or start a non-sensitive session (omit sensitive:true) to capture pixels/logs.',
+  },
+  CAPTURE_WITHHELD_SECURE: {
+    bucket: 'unsafe_refused',
+    severity: 'low',
+    retrySafe: false,
+    summary: 'Screen capture withheld because a secure field (password/OTP) is on screen',
+    recovery:
+      'Expected guardrail (pixels cannot be redacted): capture a non-sensitive screen, or pass force:true only if the artifact may contain the secret.',
+  },
+  PHYSICAL_DEVICE_UNSUPPORTED: {
+    bucket: 'unsafe_refused',
+    severity: 'low',
+    retrySafe: false,
+    owner: 'user',
+    summary: 'A physical device is visible but Swipium is simulator/emulator-only by policy',
+    recovery:
+      'Expected scope guardrail (THREAT_MODEL.md non-goals, docs/physical-devices.md): real devices carry real user data. Test on an emulator/simulator, or unplug the device if it was selected by accident.',
   },
 
-  // --- roadmap §10: project detection ---
+  // --- project detection ---
   NOT_MOBILE_PROJECT: {
     bucket: 'environment',
     severity: 'high',
@@ -681,7 +827,7 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     severity: 'medium',
     retrySafe: true,
     owner: 'user',
-    summary: 'Monorepo has multiple app targets — none chosen',
+    summary: 'Monorepo has multiple app targets, none chosen',
     recovery: 'Specify which app/package to test (projectRoot or target) so Swipium does not guess.',
   },
   PROJECT_ROOT_EMPTY: {
@@ -692,6 +838,14 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     summary: 'Project root is empty',
     recovery: 'Run inside a project directory or pass projectRoot to a real app.',
   },
+  PROJECT_ROOT_UNRESOLVED: {
+    bucket: 'environment',
+    severity: 'high',
+    retrySafe: true,
+    owner: 'user',
+    summary: 'Could not resolve a project root (no projectRoot arg, MCP roots, SWIPIUM_PROJECT_ROOT, or usable cwd)',
+    recovery: 'Pass projectRoot="/absolute/path/to/app", or set SWIPIUM_PROJECT_ROOT in the MCP server env.',
+  },
   UNSUPPORTED_FRAMEWORK: {
     bucket: 'environment',
     severity: 'high',
@@ -701,7 +855,7 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     recovery: 'Swipium supports Expo, bare React Native, native Android, native iOS, and Flutter. File a request for other frameworks.',
   },
 
-  // --- roadmap §10: artifact resolution / install ---
+  // --- artifact resolution / install ---
   NO_BUILD_ARTIFACT: {
     bucket: 'environment',
     severity: 'high',
@@ -716,7 +870,7 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     severity: 'medium',
     retrySafe: true,
     owner: 'user',
-    summary: 'Multiple candidate artifacts found — none clearly newest/best',
+    summary: 'Multiple candidate artifacts found, none clearly newest/best',
     recovery: 'Pass an explicit artifact path, or accept the ranked top candidate Swipium proposes.',
   },
   ARTIFACT_OUTSIDE_ROOT_REQUIRES_APPROVAL: {
@@ -880,7 +1034,7 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     recovery: 'Re-sign the .ipa so the codesign team identifier matches the provisioning profile team, then retry.',
   },
 
-  // --- roadmap §10: build-from-source ---
+  // --- build-from-source ---
   BUILD_COMMAND_UNAVAILABLE: {
     bucket: 'environment',
     severity: 'high',
@@ -958,7 +1112,7 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     recovery: 'Open the flutter build log artifact and fix the reported error, then retry.',
   },
 
-  // --- roadmap §10: runtime ---
+  // --- runtime ---
   METRO_REQUIRED: {
     bucket: 'environment',
     severity: 'high',
@@ -994,7 +1148,7 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     recovery: 'Confirm the bundle/app id, check the device log for the launch error, and verify Metro (for debug builds) is reachable.',
   },
 
-  // --- roadmap §10: automation / durability ---
+  // --- automation / durability ---
   MISSING_DURABLE_LOCATOR: {
     bucket: 'mcp_limitation',
     severity: 'medium',
@@ -1018,7 +1172,7 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     retrySafe: false,
     owner: 'swipium',
     summary: 'Verification was visual-only, not structurally asserted',
-    recovery: 'Treat as weaker evidence — add structured assertions where the UI tree is available; keep the screenshot as evidence.',
+    recovery: 'Treat as weaker evidence. Add structured assertions where the UI tree is available; keep the screenshot as evidence.',
   },
   AUTH_REQUIRED: {
     bucket: 'missing_data',
@@ -1026,7 +1180,8 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     retrySafe: false,
     owner: 'user',
     summary: 'Login required to reach this workflow',
-    recovery: 'Provide test credentials (TEST_EMAIL/TEST_PASSWORD via a secret file), or accept pre-login-only coverage.',
+    recovery:
+      'Provide test credentials (SWIPIUM_TEST_EMAIL/SWIPIUM_TEST_PASSWORD in the server env, or via qa_continue_from_blocker), or accept pre-login-only coverage.',
   },
   MISSING_TEST_DATA: {
     bucket: 'missing_data',
@@ -1035,6 +1190,73 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     owner: 'user',
     summary: 'Required test data/fixture is missing',
     recovery: 'Seed or provide the required state (account, record, entitlement), then re-run; do not fake coverage.',
+  },
+
+  // --- tool-local codes ---
+  ISSUE_LOG_TOO_VAGUE: {
+    bucket: 'missing_data',
+    severity: 'low',
+    retrySafe: true,
+    owner: 'user',
+    summary: 'The issue title has no identifying words once ids/numbers are scrubbed, so it would merge with unrelated issues',
+    recovery: 'Log it with a descriptive title (what broke, where), or pass a failureCode.',
+  },
+  ISSUE_NOT_FOUND: {
+    bucket: 'missing_data',
+    severity: 'low',
+    retrySafe: true,
+    owner: 'user',
+    summary: 'No issue in the project ledger matches the given issueId/fingerprint',
+    recovery: 'List issues with qa_issue_log mode:"history" and pass an existing issueId.',
+  },
+  ISSUE_STATE_INVALID: {
+    bucket: 'unsafe_refused',
+    severity: 'low',
+    retrySafe: false,
+    owner: 'user',
+    summary: "The requested lifecycle transition is not allowed from the issue's current state",
+    recovery:
+      'mark_fixed only applies to an active issue, verify_fixed only to a fixed one, unsuppress only to a suppressed one. Check the state with mode:"history".',
+  },
+  ISSUE_EVIDENCE_REQUIRED: {
+    bucket: 'missing_data',
+    severity: 'low',
+    retrySafe: true,
+    owner: 'user',
+    summary: 'verify_fixed needs evidence from the current run',
+    recovery: 'Pass a reportUri, testCaseId, auditCheckId, or evidenceUris from the run that proves the fix.',
+  },
+  NO_APP_MAP: {
+    bucket: 'missing_data',
+    severity: 'low',
+    retrySafe: true,
+    owner: 'swipium',
+    selfFixable: true,
+    summary: 'No app knowledge map exists for this project yet',
+    recovery: 'Build it with qa_app_map_build (qa_test_this and qa_explore also update it).',
+  },
+  NO_RECORDED_ACTIONS: {
+    bucket: 'missing_data',
+    severity: 'low',
+    retrySafe: true,
+    owner: 'swipium',
+    summary: 'The session has no recorded actions to generate assets from',
+    recovery: 'Drive the app first (qa_smoke / qa_explore / qa_act), or let qa_generate target:"appium" bootstrap from projectRoot.',
+  },
+  UNEMITTABLE_STEP: {
+    bucket: 'mcp_limitation',
+    severity: 'medium',
+    retrySafe: false,
+    summary: 'A recorded step cannot be emitted as Appium code (no selector or gesture the target language can express)',
+    recovery: 'Re-record the step with a durable selector (testID / accessibilityIdentifier), or remove it before generating.',
+  },
+  INVALID_ARGUMENT: {
+    bucket: 'unsafe_refused',
+    severity: 'low',
+    retrySafe: true,
+    owner: 'user',
+    summary: 'A tool argument is malformed (e.g. a timestamp that does not parse)',
+    recovery: 'Fix the argument as described in the error and re-call the tool.',
   },
 
   UNKNOWN: {
@@ -1055,13 +1277,13 @@ const OWNER_BY_BUCKET: Record<FailureBucket, FailureOwner> = {
   unsafe_refused: 'user',
 };
 
-/** Likely owner of a failure code's fix (roadmap §10). */
+/** Likely owner of a failure code's fix. */
 export function failureOwner(code: FailureCode): FailureOwner {
   const info = FAILURES[code];
   return info.owner ?? OWNER_BY_BUCKET[info.bucket];
 }
 
-/** Whether Swipium can plausibly fix this itself (roadmap §3.4). */
+/** Whether Swipium can plausibly fix this itself. */
 export function isSelfFixable(code: FailureCode): boolean {
   return FAILURES[code].selfFixable ?? false;
 }

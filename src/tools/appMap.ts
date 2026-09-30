@@ -4,21 +4,32 @@
 // structured data is returned inline. All heavy logic lives in src/appMap/*; these are thin.
 
 import { existsSync, readFileSync } from 'node:fs';
+import { basename } from 'node:path';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { qaNeedsInput } from '../lib/needsInput.js';
-import { resolveProjectRoot } from '../context/projectRoot.js';
+import { resolveProjectRoot, unresolvedProjectRootError } from '../context/projectRoot.js';
 import { buildAppMap, summarizeMap, type BuildMode } from '../appMap/build.js';
 import { queryAppMap } from '../appMap/query.js';
-import { loadAppMap, loadCodeIndex, saveAppMap, saveIndexes, appMapResourceUri, appMapPath, projectId } from '../appMap/store.js';
+import {
+  loadAppMap,
+  loadCodeIndex,
+  saveAppMap,
+  saveIndexes,
+  withAppMapLock,
+  appMapResourceUri,
+  appMapPath,
+  projectId,
+} from '../appMap/store.js';
 import { addProvenance, makeProvenance, recomputeConfidence } from '../appMap/provenance.js';
 import { rememberProject, lookupRoot } from '../appMap/projectRegistry.js';
 import { resolveFeatureContext } from './featureTesting.js';
 import { detectFramework } from '../context/detect.js';
 import type { AppKnowledgeMap, ProjectIdentity } from '../appMap/schema.js';
 import type { SerializedGraph } from '../explore/graph.js';
-import type { Session, SessionStore } from '../session/store.js';
+import { encodeUriSegment, type Session, type SessionStore } from '../session/store.js';
 
 // projectId(root) is a one-way hash, so resource reads need a reverse lookup. We remember every root
 // touched this session (in-memory) AND in a DURABLE registry (~/.swipium/projects.json, Fix 8) so a
@@ -51,10 +62,10 @@ async function rootFor(
   server: McpServer,
   sessions: SessionStore,
   args: { projectRoot?: string; sessionId?: string },
-): Promise<{ root?: string; session?: Session; hint?: string }> {
+): Promise<{ root?: string; session?: Session; hint?: string; error?: CallToolResult }> {
   if (args.sessionId) {
     const s = sessions.get(args.sessionId);
-    if (!s) return { hint: `Unknown sessionId ${args.sessionId}` };
+    if (!s) return { error: unknownSessionError(args.sessionId) };
     return { root: s.root, session: s };
   }
   const resolved = await resolveProjectRoot(server, args.projectRoot);
@@ -98,31 +109,23 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
     {
       title: 'Build / update the app knowledge map',
       description:
-        'Build or incrementally update the durable App Knowledge Map at .swipium/app-map.json. Runs the framework-aware STATIC scan (Expo Router / React Navigation / native Android manifest / SwiftUI+UIKit / Flutter routes), loads + migrates any existing map, and (with a sessionId in runtime_merge/full mode) MERGES the latest exploration screen graph into runtime topology — linking runtime screens to static screens. Returns a compact summary + the map resource URI; the full map is read via qa_app_map_read or the resource. Does NOT commit the file.',
+        'Build or update the app knowledge map (.swipium/app-map.json): framework-aware static scan (Expo Router, React ' +
+        'Navigation, Android manifest, SwiftUI/UIKit, Flutter) plus, with sessionId, a merge of the latest exploration screen ' +
+        'graph. Returns a summary + map URI. Does not commit.',
       inputSchema: {
-        projectRoot: z.string().optional().describe('Absolute project root. Omit to use a session root or the MCP workspace root.'),
+        projectRoot: z.string().optional().describe('Default: the session or resolved project root.'),
         sessionId: z.string().optional().describe('Reuse a session (its root + latest exploration graph).'),
-        mode: z
-          .enum(['static_only', 'runtime_merge', 'full'])
-          .optional()
-          .describe('static_only: code scan only; runtime_merge: merge the session exploration graph only; full (default): both.'),
+        mode: z.enum(['static_only', 'runtime_merge', 'full']).optional().describe('static_only | runtime_merge | full (default).'),
         includeCodeIndex: z.boolean().optional().describe('Persist a code symbol index for queries (default true).'),
-        forceRescan: z.boolean().optional().describe('Re-run the static scan even if an up-to-date map exists (default false).'),
+        forceRescan: z.boolean().optional().describe('Re-scan even if the map is current.'),
       },
-      // NOTE: no outputSchema — a declared (closed) output schema makes strict MCP clients
+      // NOTE: no outputSchema. A declared (closed) output schema makes strict MCP clients
       // reject BOTH the rich qaOk payload and the qaError envelope as "additional properties"
       // (caught by test/errorContract.test.ts). structuredContent stays self-describing.
     },
     async ({ projectRoot, sessionId, mode, includeCodeIndex, forceRescan }) => {
-      const { root, session, hint } = await rootFor(server, sessions, { projectRoot, sessionId });
-      if (!root)
-        return qaError({
-          what: 'Could not resolve a project root',
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Pass projectRoot="/abs/path" or a valid sessionId.'],
-          clientHint: hint,
-        });
+      const { root, session, hint, error } = await rootFor(server, sessions, { projectRoot, sessionId });
+      if (!root) return error ?? unresolvedProjectRootError({ source: 'none', hint });
       remember(root);
       const m = (mode ?? 'full') as BuildMode;
       const exploreGraph = m === 'static_only' ? null : latestExploreGraph(sessions, session);
@@ -148,7 +151,13 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
             staticScreens: res.map.staticTopology.screens.length,
             runtimeScreens: res.map.runtimeTopology.screens.length,
             mergeResult: merge ?? null,
-            migration: res.migration ? { migratedFrom: res.migration.migratedFrom, applied: res.migration.applied } : null,
+            migration: res.migration
+              ? {
+                  migratedFrom: res.migration.migratedFrom,
+                  applied: res.migration.applied,
+                  recoveredFrom: res.migration.recoveredFrom ?? null,
+                }
+              : null,
             summary,
           },
           text,
@@ -170,7 +179,8 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
     {
       title: 'Read the app knowledge map',
       description:
-        'Return a COMPACT section of the app map (default summary). Sections: summary | screens | features | auth | automation | testSuite | full. Pass featureId or screenId to drill into one node. The full map and large sections are returned by resource URI to protect context — fetch it with qa_get_artifact / the resource when you need everything.',
+        'Read a compact app-map section: summary (default) | screens | features | auth | automation | testSuite | full; ' +
+        'featureId or screenId drills into one node. Large sections come back as a resource URI.',
       inputSchema: {
         projectRoot: z.string().optional(),
         sessionId: z.string().optional(),
@@ -180,15 +190,8 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
       },
     },
     async ({ projectRoot, sessionId, section, featureId, screenId }) => {
-      const { root, hint } = await rootFor(server, sessions, { projectRoot, sessionId });
-      if (!root)
-        return qaError({
-          what: 'Could not resolve a project root',
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Pass projectRoot or sessionId.'],
-          clientHint: hint,
-        });
+      const { root, hint, error } = await rootFor(server, sessions, { projectRoot, sessionId });
+      if (!root) return error ?? unresolvedProjectRootError({ source: 'none', hint });
       remember(root);
       const map = readExistingMap(root);
       if (!map)
@@ -213,7 +216,7 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
           });
         return qaOk(
           { appMapUri: uri, section: 'feature', feature: f, featureResourceUri: `${uri}/feature/${featureId}` },
-          `feature ${f.title} — ${f.testCoverage} coverage, ${f.status}, confidence ${f.confidence}`,
+          `feature ${f.title}: ${f.testCoverage} coverage, ${f.status}, confidence ${f.confidence}`,
         );
       }
       if (screenId) {
@@ -290,7 +293,7 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
               appMapUri: uri,
               section: 'full',
               summary: summarizeMap(map),
-              note: 'Full map omitted from text to protect context — read the appMapUri resource for everything.',
+              note: 'Full map omitted from text to protect context. Read the appMapUri resource for everything.',
             },
             `Full map at resource: ${uri}`,
           );
@@ -313,15 +316,8 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
       },
     },
     async ({ query, projectRoot, sessionId, intent, limit }) => {
-      const { root, hint } = await rootFor(server, sessions, { projectRoot, sessionId });
-      if (!root)
-        return qaError({
-          what: 'Could not resolve a project root',
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Pass projectRoot or sessionId.'],
-          clientHint: hint,
-        });
+      const { root, hint, error } = await rootFor(server, sessions, { projectRoot, sessionId });
+      if (!root) return error ?? unresolvedProjectRootError({ source: 'none', hint });
       remember(root);
       const map = readExistingMap(root);
       if (!map)
@@ -338,10 +334,10 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
         .slice(0, 5)
         .map(
           (r, i) =>
-            `  ${i + 1}. [${r.type}] ${r.title} (score ${r.score}${r.confidence !== undefined ? `, conf ${r.confidence}` : ''}) → ${r.recommendedNextTool.tool}`,
+            `  ${i + 1}. [${r.type}] ${r.title} (score ${r.score}${r.confidence !== undefined ? `, conf ${r.confidence}` : ''}) > ${r.recommendedNextTool.tool}`,
         )
         .join('\n');
-      return qaOk({ ...out, appMapUri: appMapResourceUri(root) }, `🔎 "${query}" — ${out.total} result(s)\n${top || '  (no matches)'}`);
+      return qaOk({ ...out, appMapUri: appMapResourceUri(root) }, `🔎 "${query}": ${out.total} result(s)\n${top || '  (no matches)'}`);
     },
   );
   // ----------------------------------------------------------- feature_scope
@@ -350,14 +346,16 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
     {
       title: 'Scope testing to a feature',
       description:
-        'Resolve a feature (by featureId or free-text query) to a focused test scope. READ-ONLY — no device, no mutation. With query (e.g. "weather analysis"), it scopes app-map-FIRST and falls back to a fresh code-index scan + the latest exploration screen graph when no map exists yet — returning ranked code symbols, static + runtime screens, existing tests, an inferred objective model, coverage gaps, a recommended test strategy, and ALL plausible candidates with confidence (asking ONE disambiguation question only when genuinely-different features tie). With featureId, it returns that map feature\'s source files, screens, coverage, blockers, and a recommended plan (requires an existing map). Pass sessionId (preferred — adds runtime evidence) or projectRoot.',
+        'Resolve a feature (featureId, or free-text query such as "checkout") to a focused test scope: code symbols, static + ' +
+        'runtime screens, existing tests, objective, coverage gaps, strategy, and ranked candidates (one disambiguation ' +
+        'question only on a genuine tie). Works without a map (falls back to a code scan). Read-only.',
       inputSchema: {
         projectRoot: z.string().optional().describe('Project root when no session exists.'),
-        sessionId: z.string().optional().describe('Session to scope against (adds runtime screen-graph evidence).'),
-        featureId: z.string().optional().describe('Exact app-map feature id (requires an existing map). Provide this OR query.'),
-        query: z.string().optional().describe('Free-text feature description, e.g. "checkout flow" or "weather analysis".'),
+        sessionId: z.string().optional().describe('Adds runtime screen-graph evidence.'),
+        featureId: z.string().optional().describe('Exact map feature id (or use query).'),
+        query: z.string().optional().describe('e.g. "checkout flow".'),
         platform: z.enum(['android', 'ios']).optional(),
-        includeCode: z.boolean().optional().describe('Query mode: scan source for code-aware matches (default true).'),
+        includeCode: z.boolean().optional().describe('query: scan source code (default true).'),
         limit: z.number().optional().describe('Query mode: max items per list in the scope (default 8).'),
       },
     },
@@ -365,6 +363,7 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
       if (!featureId && !query) {
         return qaError({
           what: 'Provide one of: featureId or query',
+          failureCode: 'INVALID_ARGUMENT',
           changedState: false,
           retrySafe: true,
           nextSteps: ['e.g. qa_app_map_feature_scope { query:"login" }'],
@@ -407,7 +406,7 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
               fields: [{ name: 'query', description: 'The exact feature to test', example: scopeResult.candidates[0]?.title }],
               fallbackOptions: scopeResult.needsInput.options,
               resume: { tool: 'qa_app_map_feature_scope', args: {} },
-              attempted: [`scoped "${query}" — matched ${scopeResult.candidates.length} distinct candidates that tie`],
+              attempted: [`scoped "${query}" matched ${scopeResult.candidates.length} distinct candidates that tie`],
               ifDeclined: 'Swipium scopes the highest-confidence candidate and records the others as alternatives.',
             },
             { sessionId: sessionId ?? undefined, candidates: scopeResult.candidates },
@@ -444,22 +443,15 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
             codeIndex: { scannedFiles: index.scannedFiles, truncated: index.truncated },
             nextRecommendedAction,
           },
-          `🔎 ${scope.title} (confidence ${Math.round(scope.confidence * 100)}%, strategy ${scope.recommendedStrategy}) — ` +
+          `🔎 ${scope.title} (confidence ${Math.round(scope.confidence * 100)}%, strategy ${scope.recommendedStrategy}): ` +
             `${scope.staticScreens.length} static screen(s), ${scope.runtimeScreens.length} runtime screen(s), ${scope.functions.length} symbol(s), ${scope.existingTests.length} existing test(s).` +
             (scopeResult.candidates.length > 1 ? ` ${scopeResult.candidates.length} candidate(s).` : ''),
         );
       }
 
       // FEATURE-ID path: exact map lookup (requires an existing map).
-      const { root, hint } = await rootFor(server, sessions, { projectRoot, sessionId });
-      if (!root)
-        return qaError({
-          what: 'Could not resolve a project root',
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Pass projectRoot or sessionId.'],
-          clientHint: hint,
-        });
+      const { root, hint, error } = await rootFor(server, sessions, { projectRoot, sessionId });
+      if (!root) return error ?? unresolvedProjectRootError({ source: 'none', hint });
       remember(root);
       const map = readExistingMap(root);
       if (!map)
@@ -509,8 +501,8 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
               ...(needsCreds ? { stopOnNeedsInput: true } : {}),
             },
             why: needsCreds
-              ? `Drive "${f.title}"; will stop for test credentials (fixture) — ${f.testCoverage} coverage today`
-              : `Drive "${f.title}" with focused exploration — ${f.testCoverage} coverage today`,
+              ? `Drive "${f.title}"; will stop for test credentials (fixture); ${f.testCoverage} coverage today`
+              : `Drive "${f.title}" with focused exploration; ${f.testCoverage} coverage today`,
           },
         };
       });
@@ -520,7 +512,7 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
         scope
           .map(
             (s) =>
-              `  • ${s.title} [${s.testCoverage}] — ${s.staticScreens.length} screen(s), ${s.sourceFiles.length} file(s)${s.blockers.length ? ` · blockers: ${s.blockers.join(', ')}` : ''}\n    → ${s.recommendedPlan.tool} ${JSON.stringify(s.recommendedPlan.args)}`,
+              `  • ${s.title} [${s.testCoverage}]: ${s.staticScreens.length} screen(s), ${s.sourceFiles.length} file(s)${s.blockers.length ? ` · blockers: ${s.blockers.join(', ')}` : ''}\n    > ${s.recommendedPlan.tool} ${JSON.stringify(s.recommendedPlan.args)}`,
           )
           .join('\n');
       return qaOk({ appMapUri: appMapResourceUri(root), featureId: scope[0]?.featureId, scope }, text);
@@ -533,7 +525,9 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
     {
       title: 'Update the app knowledge map',
       description:
-        "Apply targeted, provenance-tracked updates to the app map without a full rebuild: attach a user note, add test cases, link an automation suite to feature/screen ids, set the app environment, or override a feature's coverage. Recomputes confidence + coverage and persists.",
+        'Targeted, provenance-tracked app-map edits without a rebuild: add a note, register test cases, link an automation ' +
+        "suite to features/screens, set the environment, or override a feature's coverage. Existing entries with the same " +
+        'id/path are overwritten.',
       inputSchema: {
         projectRoot: z.string().optional(),
         sessionId: z.string().optional(),
@@ -565,89 +559,85 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
       },
     },
     async ({ projectRoot, sessionId, note, testCases, automationSuite, environment, featureCoverage }) => {
-      const { root, hint } = await rootFor(server, sessions, { projectRoot, sessionId });
-      if (!root)
-        return qaError({
-          what: 'Could not resolve a project root',
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Pass projectRoot or sessionId.'],
-          clientHint: hint,
-        });
+      const { root, hint, error } = await rootFor(server, sessions, { projectRoot, sessionId });
+      if (!root) return error ?? unresolvedProjectRootError({ source: 'none', hint });
       remember(root);
-      const map = readExistingMap(root);
-      if (!map)
-        return qaError({
-          what: 'No app map yet',
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Run qa_app_map_build first.'],
-          failureCode: 'NO_APP_MAP',
-        });
-      const at = nowIso();
-      const applied: string[] = [];
-
-      if (note) {
-        addProvenance(map, makeProvenance('user_note', at, note, { targetType: 'map' }));
-        applied.push('note');
-      }
-      if (testCases?.length) {
-        for (const c of testCases) {
-          const existing = map.testSuite.cases.find((x) => x.id === c.id);
-          if (existing) Object.assign(existing, c);
-          else map.testSuite.cases.push(c);
-        }
-        addProvenance(map, makeProvenance('test_case', at, `${testCases.length} test case(s) registered`, { targetType: 'test' }));
-        applied.push(`testCases(${testCases.length})`);
-      }
-      if (automationSuite) {
-        const existing = map.automation.suites.find((s) => s.path === automationSuite.path);
-        if (existing) Object.assign(existing, automationSuite);
-        else map.automation.suites.push(automationSuite);
-        addProvenance(
-          map,
-          makeProvenance('test_case', at, `Automation suite ${automationSuite.name} linked`, {
-            targetType: 'test',
-            refs: [automationSuite.path],
-          }),
-        );
-        applied.push('automationSuite');
-      }
-      if (environment) {
-        map.appIdentity.environment = environment;
-        applied.push('environment');
-      }
-      if (featureCoverage) {
-        const f = map.features.find((x) => x.id === featureCoverage.featureId);
-        if (!f)
+      // Synchronous load > mutate > save cycle, held under the cross-process app-map lock (see store.ts).
+      return withAppMapLock(root, () => {
+        const map = readExistingMap(root);
+        if (!map)
           return qaError({
-            what: `Unknown featureId ${featureCoverage.featureId}`,
+            what: 'No app map yet',
             changedState: false,
             retrySafe: true,
-            nextSteps: ['List ids with qa_app_map_read { section:"features" }.'],
+            nextSteps: ['Run qa_app_map_build first.'],
+            failureCode: 'NO_APP_MAP',
           });
-        f.testCoverage = featureCoverage.coverage;
-        addProvenance(
-          map,
-          makeProvenance('user_note', at, `coverage(${f.id})=${featureCoverage.coverage}`, { targetType: 'feature', targetId: f.id }),
-        );
-        applied.push('featureCoverage');
-      }
+        const at = nowIso();
+        const applied: string[] = [];
 
-      if (!applied.length)
-        return qaError({
-          what: 'No update fields provided',
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Pass at least one of: note, testCases, automationSuite, environment, featureCoverage.'],
-        });
+        if (note) {
+          addProvenance(map, makeProvenance('user_note', at, note, { targetType: 'map' }));
+          applied.push('note');
+        }
+        if (testCases?.length) {
+          for (const c of testCases) {
+            const existing = map.testSuite.cases.find((x) => x.id === c.id);
+            if (existing) Object.assign(existing, c);
+            else map.testSuite.cases.push(c);
+          }
+          addProvenance(map, makeProvenance('test_case', at, `${testCases.length} test case(s) registered`, { targetType: 'test' }));
+          applied.push(`testCases(${testCases.length})`);
+        }
+        if (automationSuite) {
+          const existing = map.automation.suites.find((s) => s.path === automationSuite.path);
+          if (existing) Object.assign(existing, automationSuite);
+          else map.automation.suites.push(automationSuite);
+          addProvenance(
+            map,
+            makeProvenance('test_case', at, `Automation suite ${automationSuite.name} linked`, {
+              targetType: 'test',
+              refs: [automationSuite.path],
+            }),
+          );
+          applied.push('automationSuite');
+        }
+        if (environment) {
+          map.appIdentity.environment = environment;
+          applied.push('environment');
+        }
+        if (featureCoverage) {
+          const f = map.features.find((x) => x.id === featureCoverage.featureId);
+          if (!f)
+            return qaError({
+              what: `Unknown featureId ${featureCoverage.featureId}`,
+              changedState: false,
+              retrySafe: true,
+              nextSteps: ['List ids with qa_app_map_read { section:"features" }.'],
+            });
+          f.testCoverage = featureCoverage.coverage;
+          addProvenance(
+            map,
+            makeProvenance('user_note', at, `coverage(${f.id})=${featureCoverage.coverage}`, { targetType: 'feature', targetId: f.id }),
+          );
+          applied.push('featureCoverage');
+        }
 
-      map.updatedAt = at;
-      map.coverage.staleTests = map.testSuite.cases.filter((c) => c.stale).length;
-      recomputeConfidence(map);
-      const save = saveAppMap(root, map);
-      saveIndexes(root, loadCodeIndex(root), map.features);
-      return qaOk({ appMapUri: save.resourceUri, applied }, `app map updated: ${applied.join(', ')}\nappMapUri: ${save.resourceUri}`);
+        if (!applied.length)
+          return qaError({
+            what: 'No update fields provided',
+            changedState: false,
+            retrySafe: true,
+            nextSteps: ['Pass at least one of: note, testCases, automationSuite, environment, featureCoverage.'],
+          });
+
+        map.updatedAt = at;
+        map.coverage.staleTests = map.testSuite.cases.filter((c) => c.stale).length;
+        recomputeConfidence(map);
+        const save = saveAppMap(root, map);
+        saveIndexes(root, loadCodeIndex(root), map.features);
+        return qaOk({ appMapUri: save.resourceUri, applied }, `app map updated: ${applied.join(', ')}\nappMapUri: ${save.resourceUri}`);
+      });
     },
   );
 }
@@ -673,4 +663,80 @@ export function readAppMapResource(root: string, sub: { kind?: string; id?: stri
     return { mimeType: 'application/json', text: JSON.stringify(map.testSuite, null, 2) };
   }
   return null;
+}
+
+/** A resources/list entry (MCP `Resource` minus optional annotations). */
+export interface ListedAppMapResource {
+  uri: string;
+  name: string;
+  description?: string;
+  mimeType?: string;
+}
+
+/** Project roots whose app map can be listed RIGHT NOW: roots touched this server run
+ *  (in-memory registry) plus live-session roots, filtered to those with an app map on disk.
+ *  Deliberately NOT the durable machine-wide registry. Listing every project ever mapped on
+ *  this machine into an unrelated client session would be noise, not discovery. */
+function appMapRoots(sessions: SessionStore): string[] {
+  const roots = new Set<string>(projectRegistry.values());
+  for (const s of sessions.list()) roots.add(s.root);
+  return [...roots].filter((r) => existsSync(appMapPath(r)));
+}
+
+/** Enumerate the actually-readable app-map resource URIs for the MCP resources/list callbacks.
+ * `full`: one complete-map URI per known project; `sections`: the per-feature /
+ *  per-screen / test-suite section URIs served by readAppMapResource above (same URI shapes
+ *  qa_app_map_read emits). Section ids are percent-encoded (encodeUriSegment) so ids containing
+ *  `/`, spaces or `(` still match the `{kind}/{id}` template; the read handlers decode them.
+ *  Read-only and never throws: an unparseable map is skipped, and an
+ *  empty world lists as []. Caller applies any cap. */
+export function listAppMapResources(sessions: SessionStore, which: 'full' | 'sections'): ListedAppMapResource[] {
+  const out: ListedAppMapResource[] = [];
+  for (const root of appMapRoots(sessions)) {
+    try {
+      const map = loadAppMap(root, fallbackProject(root), nowIso()).map;
+      if (!map) continue;
+      const base = appMapResourceUri(root);
+      const project = map.appIdentity.appName ?? basename(root);
+      if (which === 'full') {
+        out.push({
+          uri: base,
+          name: `app-map (${project})`,
+          mimeType: 'application/json',
+          description: `Complete app knowledge map for ${root}`,
+        });
+        continue;
+      }
+      for (const f of map.features) {
+        out.push({
+          uri: `${base}/feature/${encodeUriSegment(f.id)}`,
+          name: f.title,
+          mimeType: 'application/json',
+          description: `feature section: ${project}`,
+        });
+      }
+      // Static + runtime screens share the /screen/{id} read path; dedupe on id (static wins).
+      const screens = new Map<string, string>();
+      for (const s of map.staticTopology.screens) screens.set(s.id, s.name);
+      for (const r of map.runtimeTopology.screens) if (!screens.has(r.id)) screens.set(r.id, r.title ?? r.id);
+      for (const [id, name] of screens) {
+        out.push({
+          uri: `${base}/screen/${encodeUriSegment(id)}`,
+          name,
+          mimeType: 'application/json',
+          description: `screen section: ${project}`,
+        });
+      }
+      // The read path ignores {id} for test-suite; "cases" is the listed canonical spelling.
+      out.push({
+        uri: `${base}/test-suite/cases`,
+        name: `test-suite (${project})`,
+        mimeType: 'application/json',
+        description: `test-suite section: ${map.testSuite.cases.length} cases`,
+      });
+    } catch {
+      // Listing must never throw. A broken map is simply not browsable; reads still error loudly.
+    }
+  }
+  return out;
 }

@@ -1,4 +1,4 @@
-// Automation Kernel V2 — Workstream 3: the Action Compiler. Compiles a Flow V2 file into Action IR,
+// Automation Kernel V2, Workstream 3: the Action Compiler. Compiles a Flow V2 file into Action IR,
 // then into a backend-specific automation plan WITHOUT touching a device. Every step is classified
 // before execution (native / supported_with_fallback / visual_only / unsupported) and unsupported
 // steps name the exact missing capability and a concrete next step. This is the pure core behind the
@@ -78,7 +78,7 @@ export function compileStep(step: FlowStep): ActionIR | null {
         : { kind: 'waitForIdle', idleSource: 'heuristic', timeoutMs: step.ms, note: step.ms != null ? `wait ${step.ms}ms` : 'wait' };
     case 'waitForIdle':
       return { kind: 'waitForIdle', idleSource: 'heuristic', timeoutMs: step.timeoutMs, note: 'waitForIdle' };
-    // Lifecycle / environment / meta steps — modeled but not selector-targeted.
+    // Lifecycle / environment / meta steps: modeled but not selector-targeted.
     case 'prepareTarget':
     case 'restartApp':
     case 'clearOverlay':
@@ -125,7 +125,7 @@ function hasNonAscii(text?: string): boolean {
 /**
  * Classify a text-input action's backend support. Returns a blocking Classification, or null when the
  * input is fine. ASCII needs textInputAscii; literal non-ASCII text (e.g. "José") additionally needs
- * textInputUnicode — adb `input text` cannot type Unicode reliably, so Android direct is blocked.
+ * textInputUnicode: adb `input text` cannot type Unicode reliably, so Android direct is blocked.
  */
 function inputTextSupport(action: ActionIR, caps: BackendCapabilities): Classification | null {
   if (!caps.textInputAscii)
@@ -190,7 +190,7 @@ function classifyAction(action: ActionIR, caps: BackendCapabilities): Classifica
     return ok
       ? {
           support: 'visual_only',
-          reason: `${action.kind} uses a ${selector.strategy} target — visual/OCR candidate evidence, not a structured locator proof.`,
+          reason: `${action.kind} uses a ${selector.strategy} target. That is visual/OCR candidate evidence, not a structured locator proof.`,
         }
       : {
           support: 'unsupported',
@@ -279,7 +279,7 @@ function nextStepForRequirement(requiredCapability: string | undefined, backend:
 }
 
 /**
- * Compile a Flow V2 file into a backend-specific automation plan. Pure — no device, no mutation.
+ * Compile a Flow V2 file into a backend-specific automation plan. Pure: no device, no mutation.
  */
 export function compileAutomationPlan(flow: Flow, caps: BackendCapabilities): AutomationPlan {
   const actions = compileActions(flow);
@@ -348,8 +348,8 @@ function buildDeveloperMessage(
   warnings: PlanDiagnostic[],
 ): string {
   const lines = [`Backend: ${caps.backend}. ${steps.length} step(s) planned.`];
-  for (const b of blockers) lines.push(`BLOCKER ${b.code}: ${b.detail} → ${b.nextStep}`);
-  for (const w of warnings) lines.push(`WARNING ${w.code}: ${w.detail} → ${w.nextStep}`);
+  for (const b of blockers) lines.push(`BLOCKER ${b.code}: ${b.detail} > ${b.nextStep}`);
+  for (const w of warnings) lines.push(`WARNING ${w.code}: ${w.detail} > ${w.nextStep}`);
   if (caps.notes.length) lines.push(`Backend notes: ${caps.notes.join(' ')}`);
   return lines.join('\n');
 }

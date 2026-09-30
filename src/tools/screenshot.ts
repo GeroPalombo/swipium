@@ -1,14 +1,14 @@
-// qa_screenshot — capture the screen, save as a session artifact, return a resource URI
-// (not inline bytes, DESIGN §4). Sensitive-mode: if a secure field is on screen, withhold
+// qa_screenshot: capture the screen, save as a session artifact, return a resource URI
+// (not inline bytes). Sensitive-mode: if a secure field is on screen, withhold
 // by default (pixels can't be redacted) unless force:true.
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError, qaStop } from '../lib/result.js';
+import { qaOk, qaError, qaStop, unknownSessionError } from '../lib/result.js';
 import { isSecureNode } from '../lib/redact.js';
 import { sensitiveRefusal } from '../lib/sensitive.js';
 import { captureCoordinateSpace } from '../lib/coordSpace.js';
-import { getDriver } from '../session/attach.js';
+import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import type { SessionStore } from '../session/store.js';
 
 export function registerScreenshot(server: McpServer, sessions: SessionStore): void {
@@ -17,23 +17,29 @@ export function registerScreenshot(server: McpServer, sessions: SessionStore): v
     {
       title: 'Capture a screenshot',
       description:
-        "Capture the current screen, save it as a session artifact, and return a resource URI (swipium://…) — not inline image bytes. If a secure field (password/OTP) is on screen the capture is withheld unless force:true, since screenshot pixels can't be redacted. Requires qa_prepare_target.",
+        'Capture the screen as a session artifact and return its swipium:// URI (not inline bytes). Withheld when a ' +
+        'password/OTP field is on screen unless force:true (pixels cannot be redacted). Counts against the screenshot budget.',
       inputSchema: {
         sessionId: z.string(),
         force: z.boolean().optional(),
-        reason: z.string().optional().describe('Short label of what this screenshot documents (shown in qa_report).'),
+        reason: z.string().optional().describe('What it documents (shown in qa_report).'),
       },
     },
     async ({ sessionId, force, reason }) => {
       const session = sessions.get(sessionId);
-      const { driver } = session ? await getDriver(session) : { driver: undefined };
+      if (!session) return unknownSessionError(sessionId);
+      const { driver, blocked } = await getDriver(session);
       if (!session || !driver) {
-        return qaError({
-          what: 'No device attached to this session',
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_prepare_target first.'],
-        });
+        return (
+          blockedDeviceResult(blocked) ??
+          qaError({
+            what: 'No device attached to this session',
+            changedState: false,
+            retrySafe: true,
+            failureCode: 'NO_DEVICE',
+            nextSteps: ['Call qa_prepare_target first.'],
+          })
+        );
       }
 
       if (session.sensitive) return sensitiveRefusal('Screenshot');
@@ -45,9 +51,10 @@ export function registerScreenshot(server: McpServer, sessions: SessionStore): v
       const hasSecure = session.lastSnapshot ? [...session.lastSnapshot.fullByRef.values()].some((n) => isSecureNode(n)) : false;
       if (hasSecure && !force) {
         return qaError({
-          what: 'Screenshot withheld — a secure field (password/OTP) is on screen',
+          what: 'Screenshot withheld: a secure field (password/OTP) is on screen',
           changedState: false,
           retrySafe: true,
+          failureCode: 'CAPTURE_WITHHELD_SECURE',
           nextSteps: ['Pass force:true to capture anyway (pixels are NOT redactable), or screenshot a non-sensitive screen.'],
         });
       }
@@ -64,7 +71,7 @@ export function registerScreenshot(server: McpServer, sessions: SessionStore): v
         // captured a screen with a secure field, say so explicitly so the agent can treat the
         // artifact as sensitive.
         const secureWarning = hasSecure
-          ? '\n⚠ A secure field (password/OTP) was on screen and screenshot pixels are NOT redacted — treat this artifact as sensitive.'
+          ? '\n⚠ A secure field (password/OTP) was on screen and screenshot pixels are NOT redacted. Treat this artifact as sensitive.'
           : '';
         return qaOk(
           {
@@ -73,11 +80,12 @@ export function registerScreenshot(server: McpServer, sessions: SessionStore): v
             bytes: png.length,
             coordinateSpace,
             redaction: rec.redaction,
+            ...(rec.redaction === 'partial' && rec.redactionNote ? { redactionNote: rec.redactionNote } : {}),
             sensitiveForced: hasSecure ? true : undefined,
             counters: session.counters,
             ...(budgetReached ? { budgetReached } : {}),
           },
-          `Saved screenshot #${n} (${png.length} bytes) → ${uri}${secureWarning}\ncoordinate space: ${coordinateSpace.screenshot?.width}x${coordinateSpace.screenshot?.height} screenshot px, scale ${coordinateSpace.scale}, ${coordinateSpace.orientation}${budgetReached ? `\n⏹ budget reached: ${budgetReached} — call qa_report.` : ''}`,
+          `Saved screenshot #${n} (${png.length} bytes) > ${uri}${secureWarning}\ncoordinate space: ${coordinateSpace.screenshot?.width}x${coordinateSpace.screenshot?.height} screenshot px, scale ${coordinateSpace.scale}, ${coordinateSpace.orientation}${budgetReached ? `\n⏹ budget reached: ${budgetReached}, call qa_report.` : ''}`,
         );
       } catch (e) {
         return qaError({

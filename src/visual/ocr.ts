@@ -1,9 +1,15 @@
 import { rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadProjectConfig } from '../cli/scan.js';
 import { captureCoordinateSpace, toDevicePoint, type CoordinateSpace } from '../lib/coordSpace.js';
-import { maskScreenshotForProvider, runVisualProvider, type ProviderIo, type VisualProviderCommand } from './provider.js';
+import {
+  makeProviderWorkDir,
+  maskScreenshotForProvider,
+  runVisualProvider,
+  type ProviderIo,
+  type ProviderSource,
+  type VisualProviderCommand,
+} from './provider.js';
 import type { Driver } from '../drivers/Driver.js';
 
 export interface OcrRegion {
@@ -21,9 +27,54 @@ export interface OcrResult {
   masking: { providerConfigured: boolean; masksApplied: string[] };
 }
 
+/**
+ * The local OCR provider contract (what `find_text` needs; no provider is bundled):
+ *  - Configure `ocrCommand` in .swipium/config.json: an argv array (preferred), a string
+ *    (deprecated, shell-split), or { command, io: "argv" | "json", timeoutMs }. Or use the
+ *    SWIPIUM_OCR_CMD env var (a string). Project config wins over the env var.
+ *  - `{image}` in the argv is replaced with the path of a PNG screenshot (already masked when
+ *    visualMaskCommand is configured). With io:"json" the command ALSO receives one JSON line on
+ *    stdin: { schema: "swipium.visual.provider.v1", task: "ocr", imagePath, coordinateSpace, masking }.
+ *  - stdout must be JSON: either an array of regions or { text?, regions: [...] }, where each
+ *    region is { text: string, confidence: 0..1, bbox: { x, y, width, height } } in SCREENSHOT
+ *    PIXELS (top-left origin). Line-level regions work best (find_text matches a case-insensitive
+ *    substring of one region). Non-JSON stdout is kept as plain text with no regions, so nothing
+ *    can be located. Default timeout 30 s; Git executables are refused.
+ *  - The command runs with cwd = the project root (relative argv such as ".swipium/ocr_tesseract.py"
+ *    resolves there). A non-zero exit or timeout is a typed OCR_PROVIDER_FAILED failure carrying the
+ *    exit code and trimmed (redacted) stderr, never a silent "found: false".
+ */
+export const OCR_PROVIDER_CONTRACT =
+  'ocrCommand (.swipium/config.json, argv array with an {image} placeholder; or env SWIPIUM_OCR_CMD) is run on a PNG screenshot and must ' +
+  'print JSON to stdout: [{"text":"Log in","confidence":0.97,"bbox":{"x":53,"y":182,"width":104,"height":38}}] (or {"regions":[...]}). ' +
+  'Bbox in screenshot pixels, confidence 0..1, one region per text line. Optional {command, io:"json", timeoutMs} form also sends a ' +
+  'swipium.visual.provider.v1 JSON line on stdin. Runs with cwd = project root; non-zero exit > OCR_PROVIDER_FAILED. Timeout 30 s.';
+
+/** A verified tesseract-based provider: groups tesseract's word TSV into line regions. Save as
+ * e.g. .swipium/ocr_tesseract.py and set ocrCommand to ["python3", ".swipium/ocr_tesseract.py", "{image}"]. */
+export const TESSERACT_OCR_EXAMPLE = `import csv, json, subprocess, sys
+tsv = subprocess.run(['tesseract', sys.argv[1], 'stdout', 'tsv'], capture_output=True, text=True, check=True).stdout
+lines = {}
+for w in csv.DictReader(tsv.splitlines(), delimiter='\t', quoting=csv.QUOTE_NONE):
+    if w['level'] != '5' or not w['text'].strip() or float(w['conf']) < 0: continue
+    k = (w['page_num'], w['block_num'], w['par_num'], w['line_num'])
+    x, y, wd, ht = (int(w[c]) for c in ('left', 'top', 'width', 'height'))
+    l = lines.setdefault(k, {'words': [], 'conf': [], 'x0': x, 'y0': y, 'x1': x + wd, 'y1': y + ht})
+    l['words'].append(w['text']); l['conf'].append(float(w['conf']) / 100)
+    l['x0'], l['y0'] = min(l['x0'], x), min(l['y0'], y); l['x1'], l['y1'] = max(l['x1'], x + wd), max(l['y1'], y + ht)
+print(json.dumps([{'text': ' '.join(l['words']), 'confidence': min(l['conf']),
+    'bbox': {'x': l['x0'], 'y': l['y0'], 'width': l['x1'] - l['x0'], 'height': l['y1'] - l['y0']}} for l in lines.values()]))
+`;
+
 export function configuredOcrCommand(root: string): VisualProviderCommand | undefined {
   const cfg = loadProjectConfig(root)?.ocrCommand as VisualProviderCommand | undefined;
   return cfg ?? process.env.SWIPIUM_OCR_CMD;
+}
+
+/** Provenance of the OCR command configuredOcrCommand() would use. */
+export function ocrCommandSource(root: string): ProviderSource | undefined {
+  if (loadProjectConfig(root)?.ocrCommand) return 'repository';
+  return process.env.SWIPIUM_OCR_CMD ? 'environment' : undefined;
 }
 
 export function parseOcrOutput(stdout: string): { text: string; regions: OcrRegion[] } {
@@ -60,8 +111,11 @@ export function parseOcrOutput(stdout: string): { text: string; regions: OcrRegi
 export async function runOcr(driver: Driver, root: string, command: VisualProviderCommand): Promise<OcrResult> {
   const png = await driver.screenshot();
   const coordinateSpace = await captureCoordinateSpace(driver, png);
-  const imgPath = join(tmpdir(), `swipium-ocr-${Date.now()}.png`);
-  const cleanup = [imgPath];
+  // Real (symlink-resolved) temp path: tesseract/leptonica cannot open macOS /tmp/... paths.
+  // A private mkdtemp (0700) dir per call, never a predictable name in the shared tmpdir.
+  const workDir = makeProviderWorkDir('swipium-ocr-');
+  const imgPath = join(workDir, 'screen.png');
+  const cleanup = [workDir];
   try {
     writeFileSync(imgPath, png);
     const masking = await maskScreenshotForProvider(root, imgPath, { task: 'ocr' });
@@ -76,6 +130,9 @@ export async function runOcr(driver: Driver, root: string, command: VisualProvid
         masking: { providerConfigured: masking.providerConfigured, masksApplied: masking.masksApplied },
       },
       30000,
+      // Relative argv (".swipium/ocr_tesseract.py") resolves against the project root; a
+      // non-zero exit throws VisualProviderFailedError (OCR_PROVIDER_FAILED), never found:false.
+      { cwd: root, provider: 'ocr' },
     );
     return {
       ...parseOcrOutput(result.stdout),
@@ -86,7 +143,7 @@ export async function runOcr(driver: Driver, root: string, command: VisualProvid
   } finally {
     for (const path of cleanup) {
       try {
-        rmSync(path, { force: true });
+        rmSync(path, { recursive: true, force: true });
       } catch {
         // best-effort cleanup
       }

@@ -1,10 +1,10 @@
-// Automation Kernel V2 — Workstream 1: backend capability matrix. Pure functions that answer
+// Automation Kernel V2, Workstream 1: backend capability matrix. Pure functions that answer
 // "what can this backend actually do?" before any device is touched. The planner (plan.ts) consumes
 // these to classify each step as native / supported_with_fallback / visual_only / unsupported and to
 // name the exact missing capability when something cannot run.
 //
-// Driver.kind values map to backends as: 'direct' → android-direct, 'simulator' → ios-raw-simulator,
-// 'wda' → ios-wda, 'remote' → an Appium backend (uiautomator2 | xcuitest, disambiguated by session).
+// Driver.kind values map to backends as: 'direct' > android-direct, 'simulator' > ios-raw-simulator,
+// 'wda' > ios-wda, 'remote' > an Appium backend (uiautomator2 | xcuitest, disambiguated by session).
 
 import type { AutomationBackend, SelectorStrategy } from './types.js';
 

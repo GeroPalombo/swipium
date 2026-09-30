@@ -1,4 +1,4 @@
-// Provenance + confidence helpers (SWIPIUM-REQ-01). Every fact in the app map must be traceable
+// Provenance + confidence helpers. Every fact in the app map must be traceable
 // to a source (code scan, app config, runtime, ticket, user note, test case, report) and carry a
 // confidence with machine-readable reason codes. These pure helpers keep that bookkeeping uniform.
 
@@ -32,7 +32,7 @@ export function addProvenance(map: AppKnowledgeMap, entry: ProvenanceEntry): voi
 /** Combine independent confidence signals: more corroboration raises the score, capped < 1 for inference. */
 export function combineConfidence(signals: number[]): number {
   if (!signals.length) return 0;
-  // Noisy-OR style: 1 - Π(1 - s). Two 0.6 signals → 0.84; saturates toward but never reaches 1.
+  // Noisy-OR style: 1 - Π(1 - s). Two 0.6 signals > 0.84; saturates toward but never reaches 1.
   const inv = signals.reduce((acc, s) => acc * (1 - Math.max(0, Math.min(1, s))), 1);
   return Math.round((1 - inv) * 100) / 100;
 }

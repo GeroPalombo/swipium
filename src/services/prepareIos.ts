@@ -1,4 +1,4 @@
-// iOS prepare service (hardening P0.3) — the full simulator first-run path: pick + boot a
+// iOS prepare service (hardening P0.3): the full simulator first-run path: pick + boot a
 // simulator, install a simulator .app, launch its bundle, verify foreground, and report whether
 // structured automation (WDA) is available or it is honestly visual-only. Refuses an .ipa on the
 // simulator with the correct explanation. Shared by qa_prepare_ios_target + qa_test_this execute.
@@ -6,8 +6,15 @@
 import { existsSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { SimctlDriver } from '../drivers/SimctlDriver.js';
-import { WdaDriver } from '../drivers/WdaDriver.js';
-import { checkWda, createWdaSession, wdaSessionUdidMismatch } from '../lib/wda.js';
+import { invalidateWdaPageSource, WdaDriver } from '../drivers/WdaDriver.js';
+import {
+  checkWda,
+  createWdaSession,
+  isLoopbackWdaUrl,
+  remoteWdaAllowedByUser,
+  REMOTE_WDA_ENV,
+  wdaSessionUdidMismatch,
+} from '../lib/wda.js';
 import { loadWdaConfig } from '../lib/wdaConfig.js';
 import { appBuildDestination } from '../ios/signing.js';
 import * as sim from '../lib/simctl.js';
@@ -60,7 +67,7 @@ export async function prepareIos(
     };
   }
 
-  // .ipa on the simulator is the classic mistake — refuse with the right explanation.
+  // .ipa on the simulator is the classic mistake. Refuse with the right explanation.
   if (args.app && /\.ipa$/i.test(args.app)) {
     return {
       ok: false,
@@ -80,7 +87,7 @@ export async function prepareIos(
     return {
       ok: false,
       failureCode: 'SIMULATOR_RUNTIME_MISSING',
-      error: 'No iOS simulator available — install a runtime / create one in Xcode.',
+      error: 'No iOS simulator available. Install a runtime or create one in Xcode.',
     };
 
   if (pick.state !== 'Booted') {
@@ -120,13 +127,13 @@ export async function prepareIos(
   if (args.app) {
     const appPath = isAbsolute(args.app) ? args.app : join(session.root, args.app);
     if (!existsSync(appPath)) return { ok: false, failureCode: 'IOS_SIMULATOR_APP_MISSING', error: `.app not found: ${appPath}` };
-    // A device-SDK (iphoneos) .app cannot run on the simulator — catch it before the opaque
+    // A device-SDK (iphoneos) .app cannot run on the simulator. Catch it before the opaque
     // simctl install error so the blocker is IOS_APP_WRONG_ARCH (build a simulator .app).
     if (appBuildDestination(appPath) === 'device') {
       return {
         ok: false,
         failureCode: 'IOS_APP_WRONG_ARCH',
-        error: `${appPath} is a device build (iphoneos) — the simulator needs a simulator-SDK .app (iphonesimulator). Real-device workflows are outside the public v1 scope.`,
+        error: `${appPath} is a device build (iphoneos). The simulator needs a simulator-SDK .app (iphonesimulator). Real-device workflows are outside the public v1 scope.`,
         udid: pick.udid,
         name: pick.name,
       };
@@ -134,6 +141,7 @@ export async function prepareIos(
     progress('installing .app');
     try {
       sessions.milestone(session, 'app_install_start');
+      invalidateWdaPageSource(pick.udid); // screen changes outside WDA
       await sim.installApp(pick.udid, appPath);
       sessions.milestone(session, 'app_install_end');
       installed = true;
@@ -172,6 +180,7 @@ export async function prepareIos(
     progress('launching');
     try {
       sessions.milestone(session, 'app_launch_start');
+      invalidateWdaPageSource(pick.udid); // screen changes outside WDA
       await sim.launchApp(pick.udid, bundleId);
       sessions.milestone(session, 'app_launch_end');
       launched = true;
@@ -214,7 +223,20 @@ export async function prepareIos(
   let wda: { reachable: boolean; url?: string } | undefined;
   let wdaSessionId: string | undefined;
   let requiresAttach = false;
-  if (attach !== 'skip') {
+  // Same rule as qa_wda: a non-loopback WDA URL (e.g. ios.wda.url from the repository's
+  // .swipium/config.json) is never contacted automatically: screens and typed text would go to
+  // another machine. Only the user's SWIPIUM_ALLOW_REMOTE_WDA pre-approves it; otherwise the
+  // consent path is an explicit `qa_wda attach { webDriverAgentUrl, allowNonLoopback:true }`.
+  if (attach !== 'skip' && !isLoopbackWdaUrl(wdaUrl) && !remoteWdaAllowedByUser(wdaUrl)) {
+    const why =
+      `WDA URL ${wdaUrl} is not loopback, refused to connect automatically (set in the repository's .swipium/config.json, unreviewed). ` +
+      `Attach it explicitly with qa_wda { action:"attach", webDriverAgentUrl, allowNonLoopback:true } (consent-gated), or set ${REMOTE_WDA_ENV}=<exact url> in the user environment.`;
+    if (attach === 'required') {
+      return { ok: false, failureCode: 'DESTRUCTIVE_REFUSED', error: why, udid: pick.udid, name: pick.name, bundleId, installed, launched };
+    }
+    wda = { reachable: false, url: wdaUrl };
+    sessions.addWorkaround(session, `${why} iOS verification is visual-only until then`);
+  } else if (attach !== 'skip') {
     const status = await checkWda(wdaUrl, 1500).catch(() => ({ reachable: false }));
     wda = { reachable: !!status.reachable, url: wdaUrl };
     if (status.reachable) {
@@ -273,7 +295,7 @@ export async function prepareIos(
         launched,
       };
     } else {
-      sessions.addWorkaround(session, 'WDA not reachable — iOS verification is visual-only (screenshots), not structured');
+      sessions.addWorkaround(session, 'WDA not reachable: iOS verification is visual-only (screenshots), not structured');
     }
   }
   session.mode = mode === 'structured' ? 'structured' : 'visual-fallback';

@@ -1,5 +1,5 @@
-// Shared target resolution (PHASE3-PLAN §2.3 core extraction). Both qa_act and the flow
-// runner resolve a target the SAME way — extracting it here is the "one IR, no drift" rule:
+// Shared target resolution (core extraction). Both qa_act and the flow
+// runner resolve a target the SAME way. Extracting it here is the "one IR, no drift" rule:
 // a ref | selector | coords becomes a tappable point with the resolved @eN (for obstruction
 // checks) and secure-field awareness (for redaction). Selector resolution re-snapshots and
 // updates session.lastSnapshot, exactly as before.
@@ -28,7 +28,7 @@ export interface Point {
   x: number;
   y: number;
   via: string;
-  ref?: string; // resolved @eN (ref AND selector targets) — used for obstruction lookup
+  ref?: string; // resolved @eN (ref AND selector targets), used for obstruction lookup
   textLen?: number;
   secure?: boolean;
 }
@@ -113,7 +113,7 @@ export async function resolveTarget(session: Session, target?: Target): Promise<
 
   if (target?.ref) {
     const node = session.lastSnapshot?.fullByRef.get(target.ref);
-    if (!node) return { error: `No ${target.ref} in the latest snapshot — run qa_snapshot first (refs invalidate after navigation).` };
+    if (!node) return { error: `No ${target.ref} in the latest snapshot. Run qa_snapshot first (refs invalidate after navigation).` };
     return { ...center(node.bounds), via: target.ref, ref: target.ref, textLen: node.text.length, secure: isSecureNode(node) };
   }
 

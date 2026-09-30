@@ -1,6 +1,6 @@
-// Canonical-case generator (SWIPIUM-REQ-06 "qa_suite_generate" + integration hooks). PURE:
+// Canonical-case generator (qa_suite_generate + integration hooks). PURE:
 // turns a generated POM, the session's observed outcomes (notes), declared fixtures, and guided
-// exploration coverage into CanonicalTestCase candidates with a blank id (`''`) — merge.ts assigns a
+// exploration coverage into CanonicalTestCase candidates with a blank id (`''`); merge.ts assigns a
 // stable id and dedupes. Mirrors src/suite/testcase.ts's intent vs. actual discipline but emits the
 // long-lived canonical schema (creativity level, traceability, automation readiness, history seed).
 
@@ -70,7 +70,7 @@ function actualFromNotes(notes: TestNote[], now: string): ActualResultSummary {
   if (!notes.length) {
     return {
       status: 'not_run',
-      summary: 'Generated from recorded actions; not executed as a discrete test — replay to capture an actual result.',
+      summary: 'Generated from recorded actions; not executed as a discrete test. Replay to capture an actual result.',
       evidence: [],
     };
   }
@@ -82,7 +82,7 @@ function actualFromNotes(notes: TestNote[], now: string): ActualResultSummary {
       : statuses.every((s) => s === 'skipped')
         ? 'skipped'
         : 'pass';
-  const summary = notes.map((n) => `${n.workflow}: ${n.outcome}${n.reason ? ` — ${n.reason}` : ''}`).join('; ');
+  const summary = notes.map((n) => `${n.workflow}: ${n.outcome}${n.reason ? ` (${n.reason})` : ''}`).join('; ');
   const evidence = notes.flatMap((n) => n.artifactUris ?? []);
   const failureCode = notes.find((n) => n.outcome === 'fail' || n.outcome === 'blocked')?.category;
   return { status, summary, lastRunAt: now, evidence, failureCode };
@@ -105,7 +105,12 @@ export function caseFromPom(input: GenerateInput): CanonicalTestCase | null {
     action: s.action,
     target: s.element ?? (s.coords ? `(${s.coords[0]},${s.coords[1]})` : undefined),
     data: s.secret ? '••• (secret)' : (s.text ?? s.url ?? s.key ?? s.direction),
-    expected: s.action === 'assertVisible' && s.text ? `${s.text} is visible` : undefined,
+    expected:
+      s.action === 'assertVisible' && s.text
+        ? `${s.text} is visible`
+        : s.action === 'visualCheck' && s.text
+          ? `MANUAL visual check: ${s.text}`
+          : undefined,
     mapScreenId: s.page,
     automationSelector: s.element,
   }));
@@ -155,8 +160,8 @@ export function caseFromPom(input: GenerateInput): CanonicalTestCase | null {
     },
     status: input.status ?? 'active',
     risk: [
-      ...(pom.audit.brittle > 0 ? [`${pom.audit.brittle} brittle locator(s) — flow may break on UI changes`] : []),
-      ...(visualOnly ? ['some verification was visual-only — weaker than a structured assertion'] : []),
+      ...(pom.audit.brittle > 0 ? [`${pom.audit.brittle} brittle locator(s), flow may break on UI changes`] : []),
+      ...(visualOnly ? ['some verification was visual-only, weaker than a structured assertion'] : []),
       ...(pom.variables.length ? [`requires test data: ${pom.variables.join(', ')}`] : []),
     ],
     cleanup: ['return to home/initial screen'],
@@ -172,7 +177,7 @@ export function caseFromPom(input: GenerateInput): CanonicalTestCase | null {
   };
 }
 
-/** Draft cases promoted from guided exploration's per-feature coverage (confidence → draft vs active). */
+/** Draft cases promoted from guided exploration's per-feature coverage (confidence picks draft vs active). */
 export function casesFromExploration(input: GenerateInput): CanonicalTestCase[] {
   const exp = input.exploration;
   const coverage = exp?.summary.featureCoverage;
@@ -181,7 +186,7 @@ export function casesFromExploration(input: GenerateInput): CanonicalTestCase[] 
   return Object.entries(coverage).map(([feature, conf]) => {
     const functionality = feature;
     const featureId = functionalitySlug(functionality);
-    // "covered"/"verified" → active; "partial"/"seen"/anything weaker → draft.
+    // "covered"/"verified" is active; "partial"/"seen"/anything weaker is draft.
     const status: CaseStatus = /cover|verif|pass|done/i.test(conf) ? 'active' : 'draft';
     return {
       schemaVersion: TEST_SUITE_SCHEMA_VERSION,

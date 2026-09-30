@@ -1,4 +1,4 @@
-// Target Resolver (roadmap §5) — pick the best available device/simulator for a first run,
+// Target Resolver: pick the best available device/simulator for a first run,
 // deterministically, so "test this" does not depend on agent improvisation. PURE: callers
 // gather the live inputs (online adb devices, AVDs, simulators, the resolved artifact's
 // platform) and pass them in; this module applies the decision order and explains the choice.
@@ -8,7 +8,9 @@
 //   2. A platform-specific artifact constrains the platform.
 //   3. Prefer an already-online device/simulator (fastest).
 //   4. Prefer emulator/simulator for the first run.
-//   5. Prefer a real device only when requested or required.
+//   5. Physical devices are visible but REFUSED (typed PHYSICAL_DEVICE_UNSUPPORTED): Swipium is
+//      simulator/emulator-only by policy until the real-device threat model lands
+//      (THREAT_MODEL.md non-goals, docs/physical-devices.md).
 //   6. If nothing is running, boot the fastest known emulator/simulator.
 
 import type { FailureCode } from '../oracle/failures.js';
@@ -22,7 +24,10 @@ export interface TargetInputs {
   preferRealDevice?: boolean;
   artifactPlatform?: ArtifactPlatform;
   artifactInstallTargets?: InstallTarget[];
-  android: { online: string[]; avds: string[] };
+  /** `emulators`: online serials verified as emulators by device properties (ro.kernel.qemu /
+   * ro.boot.qemu / Genymotion; see session/attach.ts classifyAndroidSerials). Needed for
+   * emulators whose serial isn't `emulator-N` (e.g. `localhost:5555`, Genymotion). */
+  android: { online: string[]; avds: string[]; emulators?: string[] };
   ios: {
     bootedSimulators: Array<{ udid: string; name: string }>;
     availableSimulators: Array<{ udid: string; name: string }>;
@@ -43,51 +48,58 @@ export interface TargetPlan {
   blocked?: { failureCode: FailureCode; detail: string };
 }
 
-function isEmulatorSerial(serial: string): boolean {
+/** Serial-pattern emulator check (adb names local emulators `emulator-<port>`). */
+export function isEmulatorSerial(serial: string): boolean {
   return /^emulator-\d+/.test(serial);
 }
 
-/** Which platforms have ANY usable device (online or bootable)? */
+/** The policy predicate: pattern match OR property-verified emulator (TargetInputs.android.emulators). */
+function emulatorPredicate(i: TargetInputs): (serial: string) => boolean {
+  const verified = new Set(i.android.emulators ?? []);
+  return (serial) => isEmulatorSerial(serial) || verified.has(serial);
+}
+
+/** Which platforms have ANY usable device (online or bootable)? Physical devices are not usable by policy. */
 function platformsViable(i: TargetInputs): TargetSelection[] {
   const out: TargetSelection[] = [];
-  if (i.android.online.length || i.android.avds.length) {
-    out.push(i.android.online.some((s) => !isEmulatorSerial(s)) ? 'android-real' : 'android-emulator');
-  }
+  const isEmulator = emulatorPredicate(i);
+  if (i.android.online.some(isEmulator) || i.android.avds.length) out.push('android-emulator');
   if (i.ios.bootedSimulators.length || i.ios.availableSimulators.length) out.push('ios-simulator');
-  if (i.ios.realDevices?.length) out.push('ios-real');
   return out;
+}
+
+/** Typed refusal for a visible physical device. Agents get "why", not a bare NO_DEVICE. */
+function physicalDeviceRefusal(device: string, alternatives: TargetSelection[]): TargetPlan {
+  return {
+    selected: null,
+    reason: `Physical device ${device} is visible, but Swipium is simulator/emulator-only by policy (real user data, see docs/physical-devices.md).`,
+    alternatives,
+    preconditions: [],
+    willBoot: false,
+    blocked: {
+      failureCode: 'PHYSICAL_DEVICE_UNSUPPORTED',
+      detail: `Physical device ${device} is visible but refused: real-device testing is out of scope until its threat model lands. Use an emulator/simulator.`,
+    },
+  };
 }
 
 function planAndroid(i: TargetInputs, reasonPrefix: string): TargetPlan {
   const online = i.android.online;
-  const real = online.find((s) => !isEmulatorSerial(s));
-  const emu = online.find((s) => isEmulatorSerial(s));
+  const isEmulator = emulatorPredicate(i);
+  const real = online.find((s) => !isEmulator(s));
+  const emu = online.find((s) => isEmulator(s));
 
   if (i.preferRealDevice && real) {
-    return {
-      selected: 'android-real',
-      device: real,
-      reason: `${reasonPrefix}real device ${real} is online.`,
-      alternatives: emu ? ['android-emulator'] : [],
-      preconditions: [],
-      willBoot: false,
-    };
+    // Even an explicit request is refused. The policy is server-side, not client-negotiable.
+    return physicalDeviceRefusal(real, emu || i.android.avds.length ? ['android-emulator'] : []);
   }
   if (emu) {
     return {
       selected: 'android-emulator',
       device: emu,
-      reason: `${reasonPrefix}emulator ${emu} is already online (fastest).`,
-      alternatives: real ? ['android-real'] : [],
-      preconditions: [],
-      willBoot: false,
-    };
-  }
-  if (real) {
-    return {
-      selected: 'android-real',
-      device: real,
-      reason: `${reasonPrefix}device ${real} is online.`,
+      reason:
+        `${reasonPrefix}emulator ${emu} is already online (fastest).` +
+        (real ? ` (Physical device ${real} is visible but out of scope: simulator-only policy.)` : ''),
       alternatives: [],
       preconditions: [],
       willBoot: false,
@@ -96,34 +108,36 @@ function planAndroid(i: TargetInputs, reasonPrefix: string): TargetPlan {
   if (i.android.avds.length) {
     return {
       selected: 'android-emulator',
-      reason: `${reasonPrefix}no device online — will boot AVD "${i.android.avds[0]}".`,
+      reason:
+        `${reasonPrefix}no emulator online, will boot AVD "${i.android.avds[0]}".` +
+        (real ? ` (Physical device ${real} is visible but out of scope: simulator-only policy.)` : ''),
       alternatives: [],
       preconditions: ['emulator boot (~30-60s)'],
       willBoot: true,
       bootTarget: i.android.avds[0],
     };
   }
+  if (real) return physicalDeviceRefusal(real, []);
   return {
     selected: null,
     reason: `${reasonPrefix}no Android device online and no AVD to boot.`,
     alternatives: [],
     preconditions: [],
     willBoot: false,
-    blocked: { failureCode: 'NO_DEVICE', detail: 'No Android device online and no AVD available — create one (qa_doctor).' },
+    blocked: {
+      failureCode: 'NO_DEVICE',
+      detail:
+        'No Android device online and no AVD available. Create one in Android Studio (Device Manager) or with avdmanager, then re-run qa_test_this.',
+    },
   };
 }
 
 function planIos(i: TargetInputs, reasonPrefix: string): TargetPlan {
   const iosPre = i.wdaAvailable === false ? ['WDA required for structured iOS tap/type/snapshot (qa_wda); else visual-only'] : [];
   if (i.preferRealDevice && i.ios.realDevices?.length) {
-    return {
-      selected: 'ios-real',
-      device: i.ios.realDevices[0],
-      reason: `${reasonPrefix}real iOS device requested and available.`,
-      alternatives: ['ios-simulator'],
-      preconditions: ['Apple code signing required', ...iosPre],
-      willBoot: false,
-    };
+    // Even an explicit request is refused. The policy is server-side, not client-negotiable.
+    const simViable = i.ios.bootedSimulators.length > 0 || i.ios.availableSimulators.length > 0;
+    return physicalDeviceRefusal(i.ios.realDevices[0], simViable ? ['ios-simulator'] : []);
   }
   if (i.ios.bootedSimulators.length) {
     const s = i.ios.bootedSimulators[0];
@@ -140,7 +154,7 @@ function planIos(i: TargetInputs, reasonPrefix: string): TargetPlan {
     const s = i.ios.availableSimulators[0];
     return {
       selected: 'ios-simulator',
-      reason: `${reasonPrefix}no simulator booted — will boot "${s.name}".`,
+      reason: `${reasonPrefix}no simulator booted, will boot "${s.name}".`,
       alternatives: [],
       preconditions: ['simulator boot (~10-30s)', ...iosPre],
       willBoot: true,
@@ -155,7 +169,7 @@ function planIos(i: TargetInputs, reasonPrefix: string): TargetPlan {
     willBoot: false,
     blocked: {
       failureCode: 'SIMULATOR_RUNTIME_MISSING',
-      detail: 'No iOS simulator available — install a runtime / create a simulator in Xcode.',
+      detail: 'No iOS simulator available. Install a runtime / create a simulator in Xcode.',
     },
   };
 }
@@ -165,7 +179,7 @@ export function artifactTargetMismatch(
   selected: TargetSelection,
   installTargets: InstallTarget[] | undefined,
 ): { failureCode: FailureCode; detail: string } | null {
-  if (!installTargets || installTargets.length === 0) return null; // unknown / archive-only → don't second-guess here
+  if (!installTargets || installTargets.length === 0) return null; // unknown / archive-only: don't second-guess here
   if (installTargets.includes(selected as InstallTarget)) return null;
   // Specific, common impossibilities get a precise code.
   if (selected === 'ios-simulator' && installTargets.includes('ios-real')) {
@@ -197,14 +211,17 @@ export function planTarget(i: TargetInputs): TargetPlan {
 }
 
 function planTargetCore(i: TargetInputs): TargetPlan {
-  // 1. Explicit device wins — figure out its platform from where it appears.
+  // 1. Explicit device wins. Figure out its platform from where it appears.
   if (i.requestedDevice) {
     const dev = i.requestedDevice;
     if (i.android.online.includes(dev) || i.android.avds.includes(dev)) {
       const online = i.android.online.includes(dev);
-      const sel: TargetSelection = !isEmulatorSerial(dev) && online ? 'android-real' : 'android-emulator';
+      const isEmulator = emulatorPredicate(i);
+      if (online && !isEmulator(dev)) {
+        return physicalDeviceRefusal(dev, i.android.online.some(isEmulator) || i.android.avds.length ? ['android-emulator'] : []);
+      }
       return {
-        selected: sel,
+        selected: 'android-emulator',
         device: online ? dev : undefined,
         reason: `Honoring requested device "${dev}".`,
         alternatives: [],
@@ -227,21 +244,14 @@ function planTargetCore(i: TargetInputs): TargetPlan {
     if (simAvail)
       return {
         selected: 'ios-simulator',
-        reason: `Honoring requested simulator "${dev}" — will boot it.`,
+        reason: `Honoring requested simulator "${dev}", will boot it.`,
         alternatives: [],
         preconditions: ['simulator boot'],
         willBoot: true,
         bootTarget: simAvail.udid,
       };
     if (i.ios.realDevices?.includes(dev))
-      return {
-        selected: 'ios-real',
-        device: dev,
-        reason: `Honoring requested real iOS device "${dev}".`,
-        alternatives: [],
-        preconditions: ['Apple code signing required'],
-        willBoot: false,
-      };
+      return physicalDeviceRefusal(dev, i.ios.bootedSimulators.length || i.ios.availableSimulators.length ? ['ios-simulator'] : []);
     return {
       selected: null,
       reason: `Requested device "${dev}" is not online/available.`,
@@ -258,25 +268,25 @@ function planTargetCore(i: TargetInputs): TargetPlan {
   if (platform === 'ios') return planIos(i, 'iOS chosen: ');
 
   // 3-6. No constraint: pick deterministically. Prefer a platform with an online device,
-  // then a bootable one; tie → Android (most common QA-first target).
+  // then a bootable one; tie > Android (most common QA-first target).
   const androidOnline = i.android.online.length > 0;
   const iosBooted = i.ios.bootedSimulators.length > 0;
-  if (androidOnline && !iosBooted) return planAndroid(i, 'Auto: Android device already online — ');
-  if (iosBooted && !androidOnline) return planIos(i, 'Auto: iOS simulator already booted — ');
+  if (androidOnline && !iosBooted) return planAndroid(i, 'Auto (Android device already online): ');
+  if (iosBooted && !androidOnline) return planIos(i, 'Auto (iOS simulator already booted): ');
   if (androidOnline && iosBooted) {
-    const a = planAndroid(i, 'Auto: both online, defaulting to Android — ');
+    const a = planAndroid(i, 'Auto (both online, defaulting to Android): ');
     a.alternatives = [...new Set<TargetSelection>([...a.alternatives, 'ios-simulator'])];
     return a;
   }
   // Nothing online: boot the fastest available (simulator boots faster than an emulator).
   const viable = platformsViable(i);
   if (i.ios.availableSimulators.length) {
-    const p = planIos(i, 'Auto: nothing online — booting a simulator (fastest) — ');
+    const p = planIos(i, 'Auto (nothing online, booting a simulator, the fastest option): ');
     p.alternatives = [...new Set<TargetSelection>([...p.alternatives, ...viable.filter((v) => v !== 'ios-simulator')])];
     return p;
   }
   if (i.android.avds.length) {
-    const p = planAndroid(i, 'Auto: nothing online — booting an emulator — ');
+    const p = planAndroid(i, 'Auto (nothing online, booting an emulator): ');
     p.alternatives = [...new Set<TargetSelection>([...p.alternatives, ...viable.filter((v) => v !== 'android-emulator')])];
     return p;
   }
@@ -288,7 +298,7 @@ function planTargetCore(i: TargetInputs): TargetPlan {
     willBoot: false,
     blocked: {
       failureCode: 'NO_DEVICE',
-      detail: 'No Android emulator/device and no iOS simulator available — set one up (qa_doctor / Xcode).',
+      detail: 'No Android emulator/device and no iOS simulator available. Set one up (qa_doctor / Xcode).',
     },
   };
 }

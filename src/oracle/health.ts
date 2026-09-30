@@ -1,11 +1,12 @@
-// Tier-1 deterministic health oracle (DESIGN §6). Phase 2.2: classifies BOTH layers —
+// Tier-1 deterministic health oracle. Phase 2.2: classifies BOTH layers:
 // NATIVE health (process: crash dialog / ANR / wrong foreground) and APP health (JS/UI:
 // RN RedBox / LogBox error / error-boundary fallback / WebView error). A green native
 // process with a broken app UI (e.g. an ErrorBoundary screen) is now a first-class finding,
 // so agents don't have to infer "healthy process but broken app" from raw snapshot text.
 
 import type { Driver } from '../drivers/Driver.js';
-import { parseSnapshot } from '../snapshot/parse.js';
+import { parseSnapshot, type RawNode } from '../snapshot/parse.js';
+import { isAbortError } from '../lib/abortScope.js';
 
 export type HealthLayer = 'native' | 'app';
 
@@ -29,6 +30,23 @@ export interface HealthResult {
   appStatus: AppStatus; // ok | degraded (recoverable) | error (broken UI)
   foreground: string;
   findings: Finding[];
+  /** The check was CANCELLED (the call/job was aborted while dumping): no verdict, no findings;
+   *  callers must not record anything from it (lib/abortScope.ts isAbortError). */
+  cancelled?: boolean;
+}
+
+/** The verdict-free result of a cancelled health check. */
+function cancelledHealth(): HealthResult {
+  return {
+    healthy: true,
+    nativeHealthy: true,
+    appHealthy: true,
+    nativeStatus: 'ok',
+    appStatus: 'ok',
+    foreground: 'unknown',
+    findings: [],
+    cancelled: true,
+  };
 }
 
 // APP-layer surfaces (JS/UI). Order matters: the first fatal RedBox variant wins over LogBox.
@@ -37,13 +55,13 @@ const APP_SURFACES: Array<{ re: RegExp; kind: string; severity: 'high' | 'medium
     re: /unable to load script|could not connect to development server|loadJSBundleFromAssets|index\.android\.bundle/i,
     kind: 'rn_redbox',
     severity: 'high',
-    detail: 'RN RedBox — JS bundle failed to load (Metro/bundle issue)',
+    detail: 'RN RedBox: JS bundle failed to load (Metro/bundle issue)',
   },
   {
     re: /unhandled (js|javascript) exception|invariant violation|TypeError:|ReferenceError|undefined is not an object|is not a function/i,
     kind: 'rn_redbox',
     severity: 'high',
-    detail: 'RN RedBox — unhandled JS exception',
+    detail: 'RN RedBox: unhandled JS exception',
   },
   {
     re: /we encountered an error|something went wrong|this screen (crashed|encountered)|oops[!,. ].{0,40}(wrong|error|crash)/i,
@@ -82,19 +100,52 @@ function firstMatch(nodes: HealthNode[], re: RegExp): string | undefined {
   return undefined;
 }
 
-export async function checkHealth(driver: Driver, appId?: string, xml?: string): Promise<HealthResult> {
-  const foreground = await driver.foregroundOwner().catch(() => 'unknown');
-  let source = xml;
-  if (source === undefined) source = await driver.dumpXml().catch(() => '');
+/** The package that owns the dumped window (Android uiautomator root `package=`), or undefined. */
+export function dumpRootPackage(nodes: ReadonlyArray<Pick<RawNode, 'attrs'>> | undefined): string | undefined {
+  const pkg = nodes?.[0]?.attrs?.package;
+  return pkg ? pkg : undefined;
+}
 
-  // Parse to nodes so evidence is the VISIBLE text (not attribute names) — best-effort.
-  let nodes: HealthNode[] = [];
-  try {
-    nodes = parseSnapshot(source).allNodes.map((n) => ({ text: n.text, desc: n.desc, cls: n.cls, id: n.id }));
-  } catch {
-    nodes = [];
+/**
+ * Health check. `opts.nodes` = the ALREADY-PARSED allNodes of `xml` (callers that just parsed the
+ * post-action dump pass them). Re-parsing a big screen cost ~60 ms per action.
+ *
+ * Foreground: on Android the dump's root `package=` already says which app owns the window. When
+ * it IS the app under test and no crash/ANR copy is on screen, the heavy `dumpsys activity
+ * activities` (foregroundOwner) is skipped (foreground = the package); it still runs whenever the
+ * caller did not supply the dump, the root package differs from appId, is absent (WDA / older
+ * dumps), or a crash/ANR pattern matched.
+ */
+export async function checkHealth(driver: Driver, appId?: string, xml?: string, opts: { nodes?: RawNode[] } = {}): Promise<HealthResult> {
+  let source = xml;
+  let dumpAborted = false;
+  if (source === undefined)
+    source = await driver.dumpXml().catch((e) => {
+      dumpAborted = isAbortError(e);
+      return '';
+    });
+  // Cancelled work is not evidence: an aborted dump (or a check whose call/job was cancelled) must
+  // never become a `wda_unreachable` finding / BLOCK verdict.
+  if (dumpAborted || isAbortError(undefined)) return cancelledHealth();
+
+  // Parse to nodes so evidence is the VISIBLE text (not attribute names). Best-effort.
+  let raw: RawNode[] | undefined = opts.nodes;
+  if (!raw) {
+    try {
+      raw = parseSnapshot(source).allNodes;
+    } catch {
+      raw = [];
+    }
   }
+  const nodes: HealthNode[] = raw.map((n) => ({ text: n.text, desc: n.desc, cls: n.cls, id: n.id }));
   const joined = nodes.map((n) => `${n.text} ${n.desc} ${n.cls ?? ''} ${n.id ?? ''}`).join('  ') || source;
+
+  const rootPkg = dumpRootPackage(raw);
+  // Only on the post-action path (caller supplied the dump): a standalone health check (no xml)
+  // keeps the full dumpsys answer, which also names the resumed activity.
+  const trustRoot = xml !== undefined && !!appId && rootPkg === appId && !ANR_RE.test(joined) && !CRASH_RE.test(joined);
+  const foreground = trustRoot ? rootPkg! : await driver.foregroundOwner().catch(() => 'unknown');
+  if (isAbortError(undefined)) return cancelledHealth();
 
   const findings: Finding[] = [];
 
@@ -162,7 +213,7 @@ export async function checkHealth(driver: Driver, appId?: string, xml?: string):
         severity: 'high',
         layer: 'native',
         kind: 'wrong_foreground_app',
-        detail: `app left to the launcher (possible crash) — foreground=${foreground}`,
+        detail: `app left to the launcher (possible crash), foreground=${foreground}`,
       });
       if (nativeStatus === 'ok') nativeStatus = 'wrong_foreground_app';
     } else if (/permissioncontroller/i.test(foreground)) {
@@ -170,7 +221,7 @@ export async function checkHealth(driver: Driver, appId?: string, xml?: string):
         severity: 'medium',
         layer: 'native',
         kind: 'permission_dialog',
-        detail: `Android runtime permission dialog is visible — foreground=${foreground}`,
+        detail: `Android runtime permission dialog is visible, foreground=${foreground}`,
       });
     } else if (/packageinstaller|systemui|com\.android\.|inputmethod/i.test(foreground)) {
       findings.push({ severity: 'info', layer: 'native', kind: 'system_surface', detail: foreground });
@@ -179,7 +230,7 @@ export async function checkHealth(driver: Driver, appId?: string, xml?: string):
         severity: 'medium',
         layer: 'native',
         kind: 'wrong_foreground_app',
-        detail: `foreground is a different app — foreground=${foreground}`,
+        detail: `foreground is a different app, foreground=${foreground}`,
       });
       if (nativeStatus === 'ok') nativeStatus = 'wrong_foreground_app';
     }
@@ -195,7 +246,7 @@ export async function checkHealth(driver: Driver, appId?: string, xml?: string):
         findings.push({ severity: s.severity, layer: 'app', kind: s.kind, detail: s.detail, evidence: firstMatch(nodes, s.re) });
         appStatus = s.severity === 'high' ? 'error' : appStatus === 'error' ? 'error' : 'degraded';
         matched = true;
-        // RedBox/error-boundary are terminal for the screen — don't also report lesser surfaces.
+        // RedBox/error-boundary are terminal for the screen; don't also report lesser surfaces.
         if (s.severity === 'high') break;
       }
     }

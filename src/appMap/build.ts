@@ -1,10 +1,10 @@
-// App map builder (SWIPIUM-REQ-01 qa_app_map_build orchestration). Resolves project identity, runs
+// App map builder (qa_app_map_build orchestration). Resolves project identity, runs
 // the framework-aware static scan, loads + migrates any existing map, optionally merges a runtime
 // explore graph, recomputes coverage/confidence, and persists. Additive: a static rescan refreshes
 // the static topology while PRESERVING runtime observations, tickets, the test suite, and automation
 // links. Pure-ish: filesystem I/O is confined to staticScan/codeIndex/store; this composes them.
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { detectFramework, type Framework } from '../context/detect.js';
 import type { SerializedGraph } from '../explore/graph.js';
@@ -17,7 +17,7 @@ import { applyFirstRunPatches, type FirstRunApplyResult } from './firstRunApply.
 import type { AppMapPatch } from '../firstRun/types.js';
 import { emptyAppMap, type AppKnowledgeMap, type ProjectIdentity } from './schema.js';
 import { hasFormLibrary, staticScan } from './staticScan.js';
-import { loadAppMap, saveAppMap, saveIndexes, type SaveResult } from './store.js';
+import { appMapPath, loadAppMap, saveAppMap, saveIndexes, withAppMapLock, type SaveResult } from './store.js';
 import { rememberProject } from './projectRegistry.js';
 import type { MigrationResult } from './migrations.js';
 
@@ -25,7 +25,7 @@ export type BuildMode = 'static_only' | 'runtime_merge' | 'full';
 
 export interface BuildOptions {
   mode: BuildMode;
-  at: string; // ISO timestamp (caller supplies — keeps this testable/deterministic)
+  at: string; // ISO timestamp (caller supplies it, keeps this testable/deterministic)
   includeCodeIndex?: boolean; // default true
   forceRescan?: boolean; // default false
   sessionId?: string;
@@ -37,7 +37,7 @@ export interface BuildOptions {
     artifactHash?: string | null;
     environment?: string | null;
   };
-  persist?: boolean; // default true — write to disk
+  persist?: boolean; // default true: write to disk
 }
 
 export interface BuildResult {
@@ -83,8 +83,8 @@ function projectIdentity(root: string, fw: Framework, packageName: string | null
 }
 
 function recomputeCoverage(map: AppKnowledgeMap): void {
-  // Recompute unvisited static screens here so it is correct after EVERY build path — including a
-  // static-only scan where mergeRuntimeGraph never runs (SWIPIUM-REQ-01 Fix Group 6).
+  // Recompute unvisited static screens here so it is correct after EVERY build path, including a
+  // static-only scan where mergeRuntimeGraph never runs.
   map.runtimeTopology.unvisitedStaticScreens = computeUnvisitedStaticScreens(map);
   const staticScreens = map.staticTopology.screens.length;
   const runtimeScreens = map.runtimeTopology.screens.length;
@@ -106,9 +106,34 @@ function recomputeCoverage(map: AppKnowledgeMap): void {
   };
 }
 
-/** Replace the static topology + static-derived facts; preserve runtime feature enrichment. */
-function applyStaticScan(map: AppKnowledgeMap, root: string, at: string): CodeIndex | null {
+/** Everything the (slow) static scan produces, computed OUTSIDE the app-map lock (H8) so the
+ *  locked critical section is only load > merge > save and can never outlive the stale threshold. */
+interface StaticScanBundle {
+  scan: ReturnType<typeof staticScan>;
+  features: ReturnType<typeof inferFeatures>;
+  codeIndex: CodeIndex | null;
+}
+
+/** Run the filesystem-heavy static scan + feature inference + code index. Lock-free: reads only
+ *  the project sources, never the app map. */
+function computeStaticScan(root: string, at: string): StaticScanBundle {
   const scan = staticScan(root, at);
+  const features = inferFeatures({
+    topo: scan.staticTopology,
+    auth: scan.auth,
+    onboarding: scan.onboarding,
+    paywalls: scan.paywalls,
+    hasForms: hasFormLibrary(root),
+  });
+  // Code index over the collected files.
+  const codeIndex = buildCodeIndex(root, scan.collectedFiles, at);
+  return { scan, features, codeIndex };
+}
+
+/** Replace the static topology + static-derived facts; preserve runtime feature enrichment.
+ *  Pure over (map, bundle), cheap enough to run inside the lock. */
+function applyStaticScan(map: AppKnowledgeMap, bundle: StaticScanBundle, at: string): CodeIndex | null {
+  const { scan } = bundle;
   map.staticTopology = scan.staticTopology;
   map.appIdentity = {
     androidPackage: scan.appIdentity.androidPackage ?? map.appIdentity.androidPackage,
@@ -125,16 +150,9 @@ function applyStaticScan(map: AppKnowledgeMap, root: string, at: string): CodeIn
   map.sourceFingerprint = scan.sourceFingerprint;
   if (scan.packageName) map.project.packageName = scan.packageName;
 
-  // Re-infer features, but carry over runtime enrichment (runtimeScreens/testCoverage) by id.
-  const fresh = inferFeatures({
-    topo: scan.staticTopology,
-    auth: scan.auth,
-    onboarding: scan.onboarding,
-    paywalls: scan.paywalls,
-    hasForms: hasFormLibrary(root),
-  });
+  // Re-inferred features, but carry over runtime enrichment (runtimeScreens/testCoverage) by id.
   const prevById = new Map(map.features.map((f) => [f.id, f]));
-  map.features = fresh.map((f) => {
+  map.features = bundle.features.map((f) => {
     const prev = prevById.get(f.id);
     if (!prev) return f;
     return {
@@ -162,13 +180,30 @@ function applyStaticScan(map: AppKnowledgeMap, root: string, at: string): CodeIn
       }),
     );
   }
-
-  // Code index over the collected files.
-  return buildCodeIndex(root, scan.collectedFiles, at);
+  return bundle.codeIndex;
 }
+
+/** Test seam: observe where the static scan runs relative to the lock. */
+export const buildHooks: { onStaticScan?: (root: string) => void } = {};
 
 /** Build (or incrementally update) the app map. Filesystem-bound but never throws on scan errors. */
 export function buildAppMap(root: string, opts: BuildOptions): BuildResult {
+  // H8: the static scan can take many seconds on a large repo, and the lock is synchronous (no
+  // heartbeat can fire while a sync fn runs), and holding it across the scan let a concurrent builder
+  // judge it stale and steal it. So the scan runs FIRST, lock-free (it reads sources, not the map),
+  // and the lock covers only load > merge > save. The whole cycle still holds the lock end-to-end,
+  // so two builders can never load the same base map and clobber each other's merge.
+  const willRescan = opts.mode === 'static_only' || opts.mode === 'full' || opts.forceRescan === true || !existsSync(appMapPath(root));
+  const bundle = willRescan ? runStaticScan(root, opts.at) : null;
+  return withAppMapLock(root, () => buildAppMapLocked(root, opts, bundle));
+}
+
+function runStaticScan(root: string, at: string): StaticScanBundle {
+  buildHooks.onStaticScan?.(root);
+  return computeStaticScan(root, at);
+}
+
+function buildAppMapLocked(root: string, opts: BuildOptions, prescanned: StaticScanBundle | null): BuildResult {
   const fw = detectFramework(root);
   const fallbackProject = projectIdentity(root, fw, null);
   const loaded = loadAppMap(root, fallbackProject, opts.at);
@@ -180,7 +215,9 @@ export function buildAppMap(root: string, opts: BuildOptions): BuildResult {
   const doRescan = opts.mode === 'static_only' || opts.mode === 'full' || !loaded.existed || opts.forceRescan === true;
   let rescanned = false;
   if (doRescan) {
-    codeIndex = applyStaticScan(map, root, opts.at);
+    // Normally pre-scanned outside the lock; only if the map vanished between the pre-check and
+    // acquisition (rare) do we scan here, inside the lock.
+    codeIndex = applyStaticScan(map, prescanned ?? runStaticScan(root, opts.at), opts.at);
     rescanned = true;
   }
 
@@ -221,7 +258,7 @@ export function buildAppMap(root: string, opts: BuildOptions): BuildResult {
 
   recomputeCoverage(map);
   recomputeConfidence(map);
-  // Derived issue summaries from the durable issue ledger (SWIPIUM-REQ-08). Best-effort — the issue
+  // Derived issue summaries from the durable issue ledger. Best-effort: the issue
   // ledger is an additive context layer and must never break an app-map build.
   try {
     applyIssueSummariesToAppMap(map, root, opts.at);
@@ -242,7 +279,7 @@ export function buildAppMap(root: string, opts: BuildOptions): BuildResult {
   return { map, codeIndex, mergeResult, firstRunApply, migration: loaded.migration, save, rescanned };
 }
 
-/** Read just the coverage counts from an existing map (zeros if none) — for computing a delta. */
+/** Read just the coverage counts from an existing map (zeros if none), for computing a delta. */
 export function quickCoverage(root: string, at: string): { overallPercent: number; runtimeScreens: number; staticScreens: number } {
   const fw = detectFramework(root);
   const loaded = loadAppMap(root, projectIdentity(root, fw, null), at);

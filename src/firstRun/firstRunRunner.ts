@@ -1,5 +1,5 @@
-// SWIPIUM-REQ-02 — the first-run driver loop. The ONLY side-effecting part of the first-run lane:
-// observe → planFirstRun → execute the bounded action(s) → record evidence/app-map → repeat until
+// The first-run driver loop. The ONLY side-effecting part of the first-run lane:
+// observe > planFirstRun > execute the bounded action(s) > record evidence/app-map > repeat until
 // the requested mode's stop condition. Generated values are recorded as evidence (non-secret) or
 // added to the redaction set (secret); they never appear in the read-only plan.
 
@@ -35,7 +35,7 @@ export interface FirstRunOptions {
   maxDurationMs?: number;
   /** Deterministic generation for tests. */
   timestamp?: number;
-  /** Durable app map (Vision Gap Fix 2) — supplies static screen candidates so each runtime screen is
+  /** Durable app map (Vision Gap Fix 2). Supplies static screen candidates so each runtime screen is
    *  classified against code/app-map context, not runtime UI alone, and links to its static screen id. */
   appMap?: AppKnowledgeMap;
 }
@@ -95,7 +95,7 @@ export interface Observation {
 
 const APP_ERROR_RE = /(redbox|render error|unhandled (js )?exception|com\.facebook\.react.*Exception|ReactNativeJS.*Error)/i;
 
-/** Observe the current screen → elements + signature + a budget-aware evidence screenshot. Shared by
+/** Observe the current screen > elements + signature + a budget-aware evidence screenshot. Shared by
  *  the read-only plan tool and the executing runner. */
 export async function observeScreen(sessions: SessionStore, session: Session, driver: Driver): Promise<Observation> {
   const foreground = await driver.foregroundOwner().catch(() => 'unknown');
@@ -231,7 +231,7 @@ export async function runFirstRun(
       const r = resolveFixtureValue(session, action.label, action.locator?.value, { role: action.field });
       return r?.value;
     }
-    // generator — generate once, cache so confirm-password matches password.
+    // generator: generate once and cache it so confirm-password matches password.
     if (genCache.has(v.varName)) return genCache.get(v.varName);
     const gen = generateFieldValue(action.field ?? 'generic', policy, { timestamp: opts.timestamp, index: genCache.size });
     if (!gen) return undefined;
@@ -326,7 +326,7 @@ export async function runFirstRun(
     );
     mapUpdates.push(...plan.mapUpdates);
     if (obs.screenshotUri) evidenceUris.push(obs.screenshotUri);
-    progress(`first-run: ${plan.classification.purpose} → ${plan.state}`);
+    progress(`first-run: ${plan.classification.purpose} > ${plan.state}`);
 
     // Record a classification note (auth-state side-effects too).
     if (AUTH_PURPOSES_RUNTIME.has(plan.classification.purpose))
@@ -345,7 +345,7 @@ export async function runFirstRun(
                 ? 'blocked'
                 : 'blocked',
       category: plan.state === 'unsafe' ? 'destructive_refused' : plan.state === 'needs_input' ? 'missing_test_data' : undefined,
-      reason: `${plan.classification.purpose} (confidence ${plan.classification.confidence})${plan.reason ? ` — ${plan.reason}` : ''}`,
+      reason: `${plan.classification.purpose} (confidence ${plan.classification.confidence})${plan.reason ? `: ${plan.reason}` : ''}`,
       artifactUris: obs.screenshotUri ? [obs.screenshotUri] : undefined,
       method: obs.elements.length ? 'structured' : 'visual',
     });
@@ -397,7 +397,7 @@ export async function runFirstRun(
       break;
     }
 
-    // state === 'ready' → execute the planned actions.
+    // state === 'ready' > execute the planned actions.
     let typedCredential = false;
     for (const action of plan.actions) {
       if (ctx.signal?.aborted) break;
@@ -441,7 +441,7 @@ export async function runFirstRun(
     void typedCredential;
   }
 
-  // Persist the app-map patches as a forward-compatible artifact (REQ-01 will consume these).
+  // Persist the app-map patches as a forward-compatible artifact (the app map consumes these).
   let mapArtifactUri: string | undefined;
   if (mapUpdates.length) {
     mapArtifactUri = sessions.saveArtifact(

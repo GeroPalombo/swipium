@@ -1,6 +1,6 @@
 import type { Session } from '../session/store.js';
 
-// Structured output fields are milliseconds with *Ms names (1.5.0 unit normalization —
+// Structured output fields are milliseconds with *Ms names (1.5.0 unit normalization;
 // inputs were already *Ms everywhere). Human-readable text may still render seconds.
 export interface PhaseTimings {
   totalMs: number | null;

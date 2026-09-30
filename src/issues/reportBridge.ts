@@ -1,4 +1,4 @@
-// SWIPIUM Issue Log — report integration bridge (SWIPIUM-REQ-07 "Integration Points → Reports").
+// SWIPIUM Issue Log: report integration bridge.
 //
 // Converts a finished run's health findings + structured test outcomes into normalized issue
 // observations, records them in the durable ledger (so recurrence works across runs), and returns
@@ -51,7 +51,7 @@ export interface BridgeMeta {
   sourceRevision?: SourceRevision;
 }
 
-/** One issue recorded from this run, with the linking context callers need (REQ-08). */
+/** One issue recorded from this run, with the linking context callers need. */
 export interface BridgeRecorded {
   issueId: string;
   fingerprint: string;
@@ -67,7 +67,7 @@ export interface BridgeResult {
   section: ReportIssuesSection;
   recordedIssueIds: string[];
   recurrences: string[];
-  /** Per-issue linking context so the caller can attach issues to test cases (REQ-08). */
+  /** Per-issue linking context so the caller can attach issues to test cases. */
   recorded: BridgeRecorded[];
 }
 
@@ -106,7 +106,7 @@ function inferScreenPurpose(n: BridgeNote): string | undefined {
 function noteToObservation(n: BridgeNote): IssueObservation {
   const subsystem = detectSubsystem(`${n.workflow} ${n.reason ?? ''}`);
   return {
-    title: `${n.workflow} → ${n.outcome}`,
+    title: `${n.workflow} > ${n.outcome}`,
     summary: n.reason ? n.reason.slice(0, 200) : `${n.workflow} ${n.outcome}`,
     failureCode: n.failureCode,
     workflow: n.workflow,
@@ -116,7 +116,7 @@ function noteToObservation(n: BridgeNote): IssueObservation {
   };
 }
 
-// A blocked/failed note in any of these categories is a real REQ-07 issue-ledger entry (not just
+// A blocked/failed note in any of these categories is a real issue-ledger entry (not just
 // app bugs): hard gates, store-compliance/privacy gaps, readiness improvements, missing data, etc.
 // Intentional skips and not-applicable / passing outcomes are NOT recorded.
 const RECORDED_NOTE_CATEGORIES = new Set([
@@ -136,7 +136,7 @@ function shouldRecordNote(n: BridgeNote): boolean {
   if (n.outcome !== 'fail' && n.outcome !== 'blocked') return false;
   if (n.category === 'intentionally_skipped') return false;
   // Record when it carries a recognized category, a failure code, or is an uncategorized failure
-  // (an uncategorized fail/blocked is still worth remembering — the classifier triages it).
+  // (an uncategorized fail/blocked is still worth remembering; the classifier triages it).
   return !n.category || RECORDED_NOTE_CATEGORIES.has(n.category) || Boolean(n.failureCode);
 }
 

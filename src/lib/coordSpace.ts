@@ -1,4 +1,4 @@
-// Coordinate-convention audit (PHASE3-PLAN §8.1). The vision-MCP audit found that visual tools
+// Coordinate-convention audit. The vision-MCP audit found that visual tools
 // returning coordinates WITHOUT declaring their space cause wrong taps. So every visual result
 // self-describes: screenshot vs device pixels, the scale between them, density, orientation, and
 // origin. An agent (or our own tools) can then convert a screenshot-space hit into a device-space

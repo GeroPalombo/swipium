@@ -1,6 +1,6 @@
 // Candidate action ranking (Phase 3.3 §8). From a parsed snapshot, produce ranked ExploreElements:
 // prioritize useful low-risk coverage (nav, tabs, named safe buttons, list items) and deprioritize
-// unlabeled icons + coordinate-only targets — which also surface as locator-quality issues. PURE.
+// unlabeled icons + coordinate-only targets, which also surface as locator-quality issues. PURE.
 
 import type { SnapshotElement } from '../drivers/Driver.js';
 import { classifyRisk } from './policy.js';
@@ -111,7 +111,7 @@ export function actionLikeNonInteractive(elements: SnapshotElement[]): SkippedAc
   return out;
 }
 
-/** Locator-readiness grade for a screen (Phase 3.3 §9.4) — drives the report's testability advice. */
+/** Locator-readiness grade for a screen (Phase 3.3 §9.4). Drives the report's testability advice. */
 export function locatorQuality(elements: SnapshotElement[]): {
   grade: 'A' | 'B' | 'C' | 'D';
   missingStableLocators: number;

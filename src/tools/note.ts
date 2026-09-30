@@ -1,16 +1,22 @@
-// qa_note — record a structured test outcome (Phase 2.2). Lets the agent state explicitly
+// qa_note: record a structured test outcome (Phase 2.2). Lets the agent state explicitly
 // that a workflow passed / failed / was blocked / skipped / not-applicable, with the reason,
 // missing precondition, required state, and recommended setup. This is how a report
-// distinguishes a real app bug from "no saved flight existed to delete" — so missing test
+// distinguishes a real app bug from "no saved flight existed to delete", so missing test
 // data and intentional skips stop being mislabeled as failures.
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import type { SessionStore, TestOutcome, TestCategory } from '../session/store.js';
 
 const OUTCOMES = ['pass', 'fail', 'blocked', 'skipped', 'not_applicable'] as const;
 const CATEGORIES = ['app_bug', 'mcp_limitation', 'missing_test_data', 'intentionally_skipped', 'destructive_refused', 'other'] as const;
+
+/** Default category for an uncategorized note: a failure is an app bug (app-owned, medium in the
+ *  issue ledger); other outcomes stay uncategorized. */
+export function defaultNoteCategory(outcome: string): TestCategory | undefined {
+  return outcome === 'fail' ? 'app_bug' : undefined;
+}
 
 export function registerNote(server: McpServer, sessions: SessionStore): void {
   server.registerTool(
@@ -18,28 +24,20 @@ export function registerNote(server: McpServer, sessions: SessionStore): void {
     {
       title: 'Record a test outcome',
       description:
-        'Record a STRUCTURED test outcome for one workflow so the report is honest about what was and was not verified. Use outcome="blocked" with a missingPrecondition (e.g. "no saved flight exists") instead of reporting a false failure; "not_applicable" when the workflow does not apply; "skipped" when intentionally not run. Set category to classify (app_bug | mcp_limitation | missing_test_data | intentionally_skipped | destructive_refused | other). Attach artifactUris (screenshots/dumps) as evidence.',
+        'Record a structured outcome for one workflow so the report is honest about what was verified. Use outcome:"blocked" ' +
+        'with missingPrecondition instead of a false failure; category (why) is independent of outcome. Attach evidence in ' +
+        'artifactUris; for a screenshot-verified check use qa_visual mode:"assert".',
       inputSchema: {
         sessionId: z.string(),
-        workflow: z.string().describe('the workflow/test this outcome is about, e.g. "Delete saved flight"'),
-        outcome: z.enum(OUTCOMES).describe('WHAT happened (independent of category).'),
-        category: z
-          .enum(CATEGORIES)
-          .optional()
-          .describe(
-            'WHY / classification — an INDEPENDENT axis from outcome (e.g. a not_applicable outcome may be category=intentionally_skipped). The report cross-tabs the two; they are not folded together.',
-          ),
+        workflow: z.string().describe('e.g. "Delete saved flight"'),
+        outcome: z.enum(OUTCOMES),
+        category: z.enum(CATEGORIES).optional().describe('Default for outcome:"fail" is app_bug; use mcp_limitation for tool problems.'),
         reason: z.string().optional(),
-        missingPrecondition: z.string().optional().describe('what state was required but absent, e.g. "no saved flight exists"'),
-        requiredState: z.string().optional().describe('the state the test needs, e.g. "at least one saved flight"'),
-        recommendedSetup: z.string().optional().describe('how to satisfy the precondition next time'),
+        missingPrecondition: z.string().optional().describe('e.g. "no saved flight exists"'),
+        requiredState: z.string().optional(),
+        recommendedSetup: z.string().optional(),
         artifactUris: z.array(z.string()).optional(),
-        verifiedVisually: z
-          .boolean()
-          .optional()
-          .describe(
-            'pass was confirmed from a screenshot (animated/map/canvas screen with no structured tree) — counts as a real pass, not a weak one. Attach the screenshot in artifactUris.',
-          ),
+        verifiedVisually: z.boolean().optional().describe('The pass was confirmed from an attached screenshot.'),
       },
     },
     async ({
@@ -56,12 +54,7 @@ export function registerNote(server: McpServer, sessions: SessionStore): void {
     }) => {
       const session = sessions.get(sessionId);
       if (!session) {
-        return qaError({
-          what: `Unknown sessionId ${sessionId}`,
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_start_session first.'],
-        });
+        return unknownSessionError(sessionId);
       }
       // A visual-only pass should carry its evidence so the report isn't taking it on faith.
       if (verifiedVisually && outcome === 'pass' && !(artifactUris && artifactUris.length)) {
@@ -73,7 +66,7 @@ export function registerNote(server: McpServer, sessions: SessionStore): void {
         });
       }
       // A "blocked" outcome with no explanation is exactly the unhelpful case this tool exists
-      // to prevent — nudge for the precondition.
+      // to prevent. Nudge for the precondition.
       if (outcome === 'blocked' && !missingPrecondition && !reason) {
         return qaError({
           what: 'A "blocked" outcome needs a missingPrecondition or reason so the report is actionable.',
@@ -89,11 +82,15 @@ export function registerNote(server: McpServer, sessions: SessionStore): void {
           f.name.toLowerCase() === workflow.toLowerCase() ||
           (missingPrecondition && f.name.toLowerCase() === missingPrecondition.toLowerCase()),
       );
+      // A failing note with no category is an app finding by default: left uncategorized, the
+      // issue-ledger bridge would triage it as a low-severity Swipium `mcp_limitation`. Agents
+      // mark tool problems explicitly with category:"mcp_limitation".
+      const effectiveCategory: TestCategory | undefined = (category as TestCategory | undefined) ?? defaultNoteCategory(outcome);
       sessions.addNote(session, {
         at: Date.now(),
         workflow,
         outcome: outcome as TestOutcome,
-        category: category as TestCategory | undefined,
+        category: effectiveCategory,
         reason,
         missingPrecondition: missingPrecondition ?? fx?.requiredState,
         requiredState: requiredState ?? fx?.requiredState,
@@ -103,8 +100,8 @@ export function registerNote(server: McpServer, sessions: SessionStore): void {
       });
       const tally = session.notes.reduce<Record<string, number>>((a, n) => ((a[n.outcome] = (a[n.outcome] ?? 0) + 1), a), {});
       return qaOk(
-        { recorded: { workflow, outcome, category }, tally },
-        `noted: "${workflow}" → ${outcome}${category ? ` (${category})` : ''}${missingPrecondition ? ` — missing: ${missingPrecondition}` : ''}\ntally: ${Object.entries(
+        { recorded: { workflow, outcome, category: effectiveCategory }, tally },
+        `noted: "${workflow}" > ${outcome}${effectiveCategory ? ` (${effectiveCategory}${category ? '' : ', default for a failing note'})` : ''}${missingPrecondition ? `, missing: ${missingPrecondition}` : ''}\ntally: ${Object.entries(
           tally,
         )
           .map(([k, v]) => `${k}=${v}`)

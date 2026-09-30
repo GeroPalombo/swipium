@@ -1,4 +1,4 @@
-// AppKnowledgeMap (SWIPIUM-REQ-01) — the durable, project-level business-context layer Swipium
+// AppKnowledgeMap: the durable, project-level business-context layer Swipium
 // reads before acting and writes back to after observing. It MERGES static code analysis, app
 // config, runtime exploration, feature hypotheses, automation artifacts, tickets, and test cases
 // into one schema-versioned document persisted at `.swipium/app-map.json`.
@@ -72,7 +72,7 @@ export type StaticScreenKind =
   'route' | 'screen' | 'component' | 'modal' | 'tab' | 'layout' | 'not_found' | 'activity' | 'fragment' | 'view_controller' | 'page';
 
 /**
- * Compact, derived issue summary for a screen or feature (SWIPIUM-REQ-08). The issue ledger
+ * Compact, derived issue summary for a screen or feature. The issue ledger
  * (`.swipium/issues-log.jsonl`) is the source of truth; the app map stores only pointers + counts,
  * never full issue events. Rebuilt on every app-map refresh from the issue index.
  */
@@ -110,7 +110,7 @@ export interface StaticScreen {
   navParams?: string[];
   confidence: number; // 0..1
   reasons: string[];
-  /** Derived issue summary (SWIPIUM-REQ-08). */
+  /** Derived issue summary. */
   issueSummary?: AppMapIssueSummary;
 }
 
@@ -173,7 +173,7 @@ export interface RuntimeScreen {
   linkConfidence?: number;
   unmapped?: boolean; // no static screen matched ("unmapped runtime screen")
   contradictions?: RuntimeContradiction[];
-  /** Derived issue summary (SWIPIUM-REQ-08). */
+  /** Derived issue summary. */
   issueSummary?: AppMapIssueSummary;
 }
 
@@ -212,7 +212,7 @@ export interface FeatureNode {
   status: 'fact' | 'hypothesis';
   confidence: number;
   reasons: string[];
-  /** Derived issue summary rolled up from this feature's screens + linked test cases (REQ-08). */
+  /** Derived issue summary rolled up from this feature's screens + linked test cases. */
   issueSummary?: AppMapIssueSummary;
 }
 

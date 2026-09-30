@@ -1,8 +1,8 @@
-// SWIPIUM-REQ-08 — derive compact app-map issue summaries from the durable issue ledger.
+// Derive compact app-map issue summaries from the durable issue ledger.
 //
 // The issue ledger (`.swipium/issues-log.jsonl`) stays the source of truth. This module reads the
 // issue index + events and attaches a small `AppMapIssueSummary` to the screens/features an issue is
-// confidently associated with — counts + pointers only, never full events. Rebuilt on every app-map
+// confidently associated with: counts + pointers only, never full events. Rebuilt on every app-map
 // refresh, so deleting the issue index and rebuilding loses nothing once the map is refreshed.
 //
 // PURE w.r.t. the clock (now is injected). Reads the ledger via src/issues/store.
@@ -76,7 +76,7 @@ export function buildAppMapIssueSummary(records: IssueRecord[], now: string): Ap
 }
 
 /**
- * Build per-issue screen/feature associations from the event log (mapping rules in REQ-08 order):
+ * Build per-issue screen/feature associations from the event log (mapping rules in order):
  *   1. explicit links.appMapRefs (screenId/featureId)
  *   2. observation.screenId matching a runtime/static screen id
  *   3. observation.screenPurpose matching a runtime screen purpose
@@ -91,7 +91,7 @@ export function issueAssociations(root: string, map: AppKnowledgeMap): Map<strin
   };
   const runtimeIds = new Set(map.runtimeTopology.screens.map((s) => s.id));
   const staticIds = new Set(map.staticTopology.screens.map((s) => s.id));
-  const purposeIndex = new Map<string, string[]>(); // purpose(lower) → runtime screen ids
+  const purposeIndex = new Map<string, string[]>(); // purpose(lower) > runtime screen ids
   for (const s of map.runtimeTopology.screens) {
     if (s.purpose) {
       const key = s.purpose.toLowerCase();
@@ -111,7 +111,7 @@ export function issueAssociations(root: string, map: AppKnowledgeMap): Map<strin
       // 2. screen id that matches a known screen.
       if (runtimeIds.has(obs.screenId) || staticIds.has(obs.screenId)) a.screenIds.add(obs.screenId);
     }
-    // 3. screen purpose → runtime screens with that purpose.
+    // 3. screen purpose > runtime screens with that purpose.
     if (obs?.screenPurpose) {
       for (const sid of purposeIndex.get(obs.screenPurpose.toLowerCase()) ?? []) a.screenIds.add(sid);
     }
@@ -126,9 +126,9 @@ export function issueAssociations(root: string, map: AppKnowledgeMap): Map<strin
     }
   }
 
-  // 4. observation.workflow → test-suite case → feature. Read the persistent suite's COMPACT issue
-  // links (issue id + featureId only — never case history) so an issue attached only to a test case
-  // still shows up on the owning feature's summary (REQ-08 follow-up).
+  // 4. observation.workflow > test-suite case > feature. Read the persistent suite's COMPACT issue
+  // links (issue id + featureId only, never case history) so an issue attached only to a test case
+  // still shows up on the owning feature's summary.
   try {
     const suite = loadSuite(root, map.appIdentity?.androidPackage ?? undefined);
     for (const c of suite.cases) {
@@ -137,7 +137,7 @@ export function issueAssociations(root: string, map: AppKnowledgeMap): Map<strin
       for (const run of c.history ?? []) for (const link of run.issueLinks ?? []) ensure(link.issueId).featureIds.add(c.featureId);
     }
   } catch {
-    /* best-effort — suite is optional */
+    /* best-effort; suite is optional */
   }
   return assoc;
 }
@@ -154,7 +154,7 @@ export function applyIssueSummariesToAppMap(
   const index = getIndex(root, now, map.appIdentity?.androidPackage ?? undefined);
   const byId = new Map(index.records.map((r) => [r.issueId, r]));
   if (index.records.length === 0) {
-    // No ledger yet — clear any stale summaries and return.
+    // No ledger yet, so clear any stale summaries and return.
     for (const s of map.runtimeTopology.screens) delete s.issueSummary;
     for (const s of map.staticTopology.screens) delete s.issueSummary;
     for (const f of map.features) delete f.issueSummary;

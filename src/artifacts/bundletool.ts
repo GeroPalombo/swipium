@@ -1,4 +1,4 @@
-// bundletool integration (roadmap §4.3 / hardening P0.2) — an .aab is not installable; it must be
+// bundletool integration. An .aab is not installable; it must be
 // converted to a universal APK first. This module detects bundletool (a `bundletool` launcher on
 // PATH, a `$BUNDLETOOL_JAR` run via java, or a jar in common locations), builds a universal APK
 // set with the debug keystore, extracts universal.apk, and caches it under .swipium/artifacts/.
@@ -64,12 +64,12 @@ export interface ConvertResult {
   fromCache?: boolean;
 }
 
-/** The bundletool build-apks argv for a universal APK set (pure — for tests + logging). */
+/** The bundletool build-apks argv for a universal APK set (pure, for tests + logging). */
 export function buildApksArgs(launcher: BundletoolLauncher, aabPath: string, apksOut: string): string[] {
   return [...launcher.prefix, 'build-apks', '--bundle', aabPath, '--output', apksOut, '--overwrite', '--mode', 'universal'];
 }
 
-/** Release keystore inputs for signing the APK set. Absent → bundletool uses the default debug keystore (emulator/dev OK). */
+/** Release keystore inputs for signing the APK set. Absent: bundletool uses the default debug keystore (emulator/dev OK). */
 export interface AabSigning {
   ks: string;
   ksPass?: string; // e.g. "pass:..." or "file:..."
@@ -77,7 +77,7 @@ export interface AabSigning {
   keyPass?: string;
 }
 
-/** PURE: signing args for build-apks (empty → debug keystore fallback). */
+/** PURE: signing args for build-apks (empty > debug keystore fallback). */
 export function signingArgs(signing?: AabSigning): string[] {
   if (!signing) return [];
   const out = ['--ks', signing.ks, '--ks-key-alias', signing.ksKeyAlias];
@@ -257,7 +257,7 @@ export async function convertAabToApk(
     };
   }
 
-  // The .apks is a zip containing universal.apk — extract it (prefer `unzip`, else bundletool can't).
+  // The .apks is a zip containing universal.apk. Extract it (prefer `unzip`, else bundletool can't).
   const extracted = await extractUniversalApk(apksOut, apkPath, opts.signal);
   if (!extracted) {
     return {
@@ -285,7 +285,7 @@ async function extractUniversalApk(apksPath: string, outApk: string, signal?: Ab
     if (!any) return false;
     return existsSync(join(dir, any));
   }
-  // Rename universal.apk → the cache name.
+  // Rename universal.apk to the cache name.
   const { renameSync } = await import('node:fs');
   try {
     renameSync(produced, outApk);

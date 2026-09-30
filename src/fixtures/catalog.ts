@@ -1,4 +1,6 @@
 import type { Fixture, Session } from '../session/store.js';
+import { FLOW_ENV_PREFIX, flowEnvAllowed, lookupFlowVar } from '../flows/schema.js';
+import { log } from '../lib/logger.js';
 
 export type FixtureGenerator = 'email' | 'person_name' | 'number' | 'text' | 'city' | 'country' | 'color' | 'phone' | 'date';
 export type FixtureGeneratorInput =
@@ -92,6 +94,32 @@ function variableName(fixture: string, field: string): string {
   return `SWIPIUM_${fixture}_${field}`.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
 }
 
+/** Why a fixture field's declared `var` was not read from the server environment. Fixtures come
+ *  from the repo's .swipium/fixtures.json (untrusted per THREAT_MODEL), so, like flows, only
+ *  SWIPIUM_* names are ever read from process.env; any other name is treated as missing. */
+export function fixtureVarBlockedMessage(fixture: string, field: string, varName: string): string {
+  return (
+    `fixture "${fixture}" field "${field}" declares var ${varName}, which was not read from the environment: ` +
+    `fixtures read process.env only for ${FLOW_ENV_PREFIX}* names. Rename it (e.g. ${variableName(fixture, field)}) ` +
+    `or provide the value via secure input`
+  );
+}
+
+const warnedBlockedVars = new Set<string>();
+
+/** process.env value for a fixture's declared var. SWIPIUM_* names only (else undefined + a warning). */
+function envFixtureVar(fixture: string, field: string, varName: string): string | undefined {
+  if (!flowEnvAllowed(varName)) {
+    const key = `${fixture}\0${field}\0${varName}`;
+    if (!warnedBlockedVars.has(key)) {
+      warnedBlockedVars.add(key);
+      log('warn', fixtureVarBlockedMessage(fixture, field, varName));
+    }
+    return undefined;
+  }
+  return lookupFlowVar(varName, {});
+}
+
 function fixtureFields(f: Fixture): Record<string, FixtureFieldSpec> {
   if (!f.fields || typeof f.fields !== 'object') return {};
   return f.fields as Record<string, FixtureFieldSpec>;
@@ -175,8 +203,15 @@ export function resolveFixtureValue(
         generator: generated.generator as FixtureGenerator,
       };
     }
-    const fromVar = session.inputValues.get(varName) ?? (spec.var ? process.env[spec.var] : undefined);
-    if (fromVar != null) return { value: fromVar, varName, secret, fixture: best.fixture.name, field: best.field, source: 'variable' };
+    const fromInput = session.inputValues.get(varName);
+    if (fromInput != null) return { value: fromInput, varName, secret, fixture: best.fixture.name, field: best.field, source: 'variable' };
+    const fromEnv = spec.var ? envFixtureVar(best.fixture.name, best.field, spec.var) : undefined;
+    if (fromEnv != null) {
+      // Anything read from the server environment is treated as a secret: registered for
+      // redaction so it never lands in recorded actions, notes, artifacts or state.json.
+      session.secrets.add(fromEnv);
+      return { value: fromEnv, varName, secret: true, fixture: best.fixture.name, field: best.field, source: 'variable' };
+    }
     if (spec.value != null) return { value: spec.value, varName, secret, fixture: best.fixture.name, field: best.field, source: 'value' };
     const generator = normalizeGenerator(spec.generator);
     if (generator && GENERATORS[generator]) {

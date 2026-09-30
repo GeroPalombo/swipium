@@ -1,4 +1,4 @@
-// SWIPIUM-REQ-08 — executable mobile-audit checks. Each check observes the device through the
+// Executable mobile-audit checks. Each check observes the device through the
 // Driver + evidence helpers and returns an honest result: it only reports `pass` when Swipium
 // actually observed the evidence; otherwise `blocked`/`not_applicable`/`skipped`/`fail`. The runner
 // (runner.ts) wraps these with id/title/profile and records issues for fail/blocked outcomes.
@@ -30,7 +30,7 @@ const skip = (reason: string): RawCheckResult => ({ status: 'skipped', reason, e
 // ---- smoke ---------------------------------------------------------------------------------
 
 export async function checkLaunch(ctx: AuditEvidenceCtx): Promise<RawCheckResult> {
-  if (!ctx.appId) return skip('no app id known — cannot drive launch; relying on the current foreground app');
+  if (!ctx.appId) return skip('no app id known, cannot drive launch; relying on the current foreground app');
   try {
     await ctx.driver.terminateApp(ctx.appId).catch(() => {});
     await ctx.driver.launchApp(ctx.appId);
@@ -125,7 +125,7 @@ export async function checkNavigation(ctx: AuditEvidenceCtx): Promise<RawCheckRe
       evidenceUris: [],
     };
   const after = await foreground(ctx);
-  return ok(`navigated safely via "${safe.label ?? safe.locator?.value ?? 'control'}" (${before}→${after})`);
+  return ok(`navigated safely via "${safe.label ?? safe.locator?.value ?? 'control'}" (${before} > ${after})`);
 }
 
 // ---- store compliance ----------------------------------------------------------------------
@@ -162,7 +162,7 @@ export async function checkTermsLink(ctx: AuditEvidenceCtx, text: string): Promi
 
 export async function checkAccountDeletion(ctx: AuditEvidenceCtx, text: string): Promise<RawCheckResult> {
   const hasAccountContext = found(text, 'account', 'profile', 'sign out', 'log out', 'settings');
-  if (!hasAccountContext) return na('no account/profile surface observed — account deletion not applicable here');
+  if (!hasAccountContext) return na('no account/profile surface observed, account deletion not applicable here');
   if (found(text, 'delete account', 'delete your account', 'data deletion', 'close account', 'remove account'))
     return ok('account deletion / data-deletion path found');
   return {
@@ -198,14 +198,14 @@ export async function checkPaywall(ctx: AuditEvidenceCtx, text: string): Promise
     status: 'blocked',
     category: 'hard_gate',
     severity: 'medium',
-    reason: 'hard paywall with no permitted test path — recorded without purchase',
+    reason: 'hard paywall with no permitted test path, recorded without purchase',
     evidenceUris: [],
     nextStep: 'A hard gate stops only this workflow, not the whole run.',
   };
 }
 
 export function checkExternalLinks(): RawCheckResult {
-  return skip('external links are not auto-opened for safety — verify manually');
+  return skip('external links are not auto-opened for safety; verify manually');
 }
 
 // ---- resilience ----------------------------------------------------------------------------
@@ -253,7 +253,7 @@ export async function checkNetworkRestoration(ctx: AuditEvidenceCtx): Promise<Ra
 }
 
 export async function checkProcessRelaunch(ctx: AuditEvidenceCtx): Promise<RawCheckResult> {
-  if (!ctx.appId) return skip('no app id known — cannot drive a kill/relaunch');
+  if (!ctx.appId) return skip('no app id known, cannot drive a kill/relaunch');
   try {
     await ctx.driver.terminateApp(ctx.appId);
     await ctx.driver.launchApp(ctx.appId);
@@ -280,14 +280,14 @@ export async function checkProcessRelaunch(ctx: AuditEvidenceCtx): Promise<RawCh
 }
 
 export function checkRotation(): RawCheckResult {
-  return skip('rotation is not driven automatically — verify manually where supported');
+  return skip('rotation is not driven automatically; verify manually where supported');
 }
 
 // ---- account-cycle: controlled logout ------------------------------------------------------
 
 export interface LogoutResult {
   tapped: boolean;
-  /** Visible text of the screen AFTER the logout tap — the logged-out auth surface, when reached. */
+  /** Visible text of the screen AFTER the logout tap (the logged-out auth surface, when reached). */
   loggedOutText: string;
   /** Whether the post-logout screen looks like a logged-out auth/login surface. */
   authSurface: boolean;
@@ -297,7 +297,7 @@ export interface LogoutResult {
  * Find and tap a "Log out" control on the current screen, gated by the controlled account-cycle
  * policy (logout permitted only on a disposable account; delete/pay/send stay refused). Returns the
  * post-logout screen text so the caller can check the forgot-password entrypoint on the LOGGED-OUT
- * surface — without a full exploration that would auto-re-login via stored credentials.
+ * surface, without a full exploration that would auto-re-login via stored credentials.
  */
 export async function findAndTapLogout(ctx: AuditEvidenceCtx, disposableAccount: boolean): Promise<LogoutResult> {
   let xml = '';
@@ -333,7 +333,7 @@ export async function findAndTapLogout(ctx: AuditEvidenceCtx, disposableAccount:
  * Evaluate the forgot-password entrypoint from the LOGGED-OUT auth surface (captured right after
  * logout, before any re-login). Pass when a forgot/reset link is present; a confirmed login screen
  * without one is an improvement; if logout couldn't reach an auth surface, return blocked rather than
- * falsely failing (REQ-08 account-cycle bug fix).
+ * falsely failing (account-cycle bug fix).
  */
 export function checkForgotPassword(loggedOutText: string): RawCheckResult {
   const isAuthSurface = /sign\s?in|log\s?in|email|password|username|forgot|create account/.test(loggedOutText);
@@ -341,7 +341,7 @@ export function checkForgotPassword(loggedOutText: string): RawCheckResult {
   if (hasForgot)
     return {
       status: 'pass',
-      reason: 'forgot-password entrypoint is present on the logged-out auth surface (not exercised — Swipium never consumes email/OTP)',
+      reason: 'forgot-password entrypoint is present on the logged-out auth surface (not exercised: Swipium never consumes email/OTP)',
       evidenceUris: [],
       workflow: 'account_cycle',
     };
@@ -357,7 +357,7 @@ export function checkForgotPassword(loggedOutText: string): RawCheckResult {
     };
   return {
     status: 'blocked',
-    reason: 'logout not confirmed — could not reach the logged-out auth surface to check the forgot-password entrypoint',
+    reason: 'logout not confirmed: could not reach the logged-out auth surface to check the forgot-password entrypoint',
     evidenceUris: [],
     workflow: 'account_cycle',
   };

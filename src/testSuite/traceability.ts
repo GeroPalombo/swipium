@@ -1,4 +1,4 @@
-// Traceability helpers (SWIPIUM-REQ-06 "Integration Requirements"). PURE. Build the links that tie a
+// Traceability helpers. PURE. Build the links that tie a
 // canonical case back to the app map, runtime screens, source files, tickets, requirements, and
 // evidence so the persistent suite is navigable rather than a flat list of steps.
 
@@ -35,7 +35,7 @@ export function buildEvidence(uris: Array<string | EvidenceRef | undefined | nul
   return out;
 }
 
-/** Pull ticket-like and requirement-like tokens out of a free-text label (e.g. "JIRA-123", "SWIPIUM-REQ-06"). */
+/** Pull ticket-like and requirement-like tokens out of a free-text label (tickets like "JIRA-123"; requirements shaped "<PROJECT>-REQ-<n>"). */
 export function extractRefs(text: string | undefined): { ticketRefs: string[]; requirementRefs: string[] } {
   const ticketRefs: string[] = [];
   const requirementRefs: string[] = [];

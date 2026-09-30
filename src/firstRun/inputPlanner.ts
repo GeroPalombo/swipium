@@ -1,10 +1,10 @@
-// SWIPIUM-REQ-02 — planInputForField(): decide what (if anything) to type into a field, with a
+// planInputForField(): decide what (if anything) to type into a field, with a
 // strict priority order so Swipium never invents data unless policy + environment allow it.
 //
 // Priority:
 //   1. Existing secure user input for the matching field (from a NeedsInput resume).
 //   2. Declared fixture value or generator.
-//   3. Built-in safe generator — ONLY when generated accounts are allowed for this environment.
+//   3. Built-in safe generator, ONLY when generated accounts are allowed for this environment.
 //   4. NeedsInput when the value is unsafe/unknown but required.
 //   5. Skip (blocked) when the field is optional.
 //
@@ -68,7 +68,7 @@ export function planInputForField(session: Session, req: InputRequirement, ctx: 
     }
   }
 
-  // 2. Declared fixture value or generator (existing fixture catalog — may itself mutate session
+  // 2. Declared fixture value or generator (existing fixture catalog; may itself mutate session
   //    for fixture-declared generators, which is the intended behavior).
   const fixture = resolveFixtureValue(session, req.label, req.locator?.value, { role: req.field });
   if (fixture) {
@@ -83,7 +83,7 @@ export function planInputForField(session: Session, req: InputRequirement, ctx: 
     };
   }
 
-  // OTP is never invented — only a real provider or a secure input may supply it.
+  // OTP is never invented. Only a real provider or a secure input may supply it.
   if (field === 'otp') {
     return {
       decision: 'needs_input',
@@ -133,5 +133,5 @@ export function planInputForField(session: Session, req: InputRequirement, ctx: 
       field,
     };
   }
-  return { decision: 'skip', reason: `optional field "${req.label ?? field}" skipped — no value source and generation not allowed`, field };
+  return { decision: 'skip', reason: `optional field "${req.label ?? field}" skipped: no value source and generation not allowed`, field };
 }

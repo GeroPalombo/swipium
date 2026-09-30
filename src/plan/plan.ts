@@ -1,8 +1,8 @@
-// qa_plan core (PHASE3-PLAN §3.2) — PURE synthesis. Given what we detected about the
+// Workflow-plan core (qa_resolve_target include:["plan"]): PURE synthesis. Given what we detected about the
 // project + what the session declared (fixtures, observed auth, prepared appId), produce a
 // safe test plan: which workflows are READY, which are BLOCKED (and why + how to unblock),
 // and which are UNSAFE (and why). No device I/O lives here, so it is fully unit-testable;
-// the tool wrapper (src/tools/plan.ts) gathers the inputs and calls buildPlan().
+// the tool wrapper (src/tools/resolveTarget.ts workflowPlan) gathers the inputs and calls buildPlan().
 
 import type { Framework } from '../context/detect.js';
 import type { AuthState, Fixture } from '../session/store.js';
@@ -86,21 +86,21 @@ export function buildPlan(i: PlanInput): Plan {
     return null;
   };
 
-  // launch_smoke — the cheapest always-valuable check.
+  // launch_smoke: the cheapest always-valuable check.
   {
     const g = gateEnv('launch_smoke', 'guardrail');
     if (g) blocked.push(g);
     else ready.push({ workflow: 'launch_smoke', budgetProfile: 'guardrail', requires: [] });
   }
 
-  // visual_smoke — screenshot/landmark check for visual-only (map/canvas) screens.
+  // visual_smoke: screenshot/landmark check for visual-only (map/canvas) screens.
   {
     const g = gateEnv('visual_smoke', 'login_smoke');
     if (g) blocked.push(g);
     else ready.push({ workflow: 'visual_smoke', budgetProfile: 'login_smoke', requires: [] });
   }
 
-  // login_smoke — needs a credential fixture on top of the env gate.
+  // login_smoke: needs a credential fixture on top of the env gate.
   {
     const g = gateEnv('login_smoke', 'login_smoke');
     if (g) blocked.push(g);
@@ -111,7 +111,7 @@ export function buildPlan(i: PlanInput): Plan {
         category: 'missing_test_data',
         requiredState: 'a test account (credentials)',
         recommendedSetup:
-          'Declare a fixture with a testAccount label (and provide TEST_EMAIL/TEST_PASSWORD via env), or add it to .swipium/fixtures.json.',
+          'Declare a fixture with a testAccount label (and provide SWIPIUM_TEST_EMAIL/SWIPIUM_TEST_PASSWORD via env), or add it to .swipium/fixtures.json.',
       });
     } else {
       ready.push({ workflow: 'login_smoke', budgetProfile: 'login_smoke', requires: [loginFixture.name] });
@@ -126,7 +126,7 @@ export function buildPlan(i: PlanInput): Plan {
   }
 
   // Fixtures that declare an unmet requiredState surface as blocked workflows so "no saved
-  // flight to delete" reads as setup guidance, not a failure (DESIGN §6 / qa_note semantics).
+  // flight to delete" reads as setup guidance, not a failure (qa_note semantics).
   for (const f of i.fixtures) {
     if (f.requiredState && !LOGIN_FIXTURE.test(f.name) && !f.testAccount) {
       blocked.push({
@@ -139,7 +139,7 @@ export function buildPlan(i: PlanInput): Plan {
     }
   }
 
-  // UNSAFE — destructive actions that Swipium will refuse by default.
+  // UNSAFE: destructive actions that Swipium will refuse by default.
   if (isDebugRN(i.framework)) {
     unsafe.push({
       workflow: 'fresh_start',
@@ -166,7 +166,7 @@ export function buildPlan(i: PlanInput): Plan {
   ];
 
   if (i.auth.authedAtStart === false || i.auth.loginScreenSeen) {
-    notes.push('A login screen was observed — authenticated workflows will need credentials.');
+    notes.push('A login screen was observed. Authenticated workflows will need credentials.');
   }
   for (const b of i.blockers) notes.push(b);
 

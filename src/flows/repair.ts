@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { isAbsolute, join } from 'node:path';
+import { join } from 'node:path';
+import { withinRootOrNull } from './paths.js';
 import { parse as parseYaml, stringify } from 'yaml';
 import { suggestLocator, type LocatorPlatform, type LocatorSuggestion } from '../oracle/locator.js';
 import { signature } from '../snapshot/parse.js';
@@ -45,6 +46,9 @@ export interface FlowRepairResult {
   suggestions: FlowRepairSuggestion[];
   proposedYaml?: string;
   patched?: boolean;
+  /** True only when the source flow file was rewritten (apply at high/medium confidence). */
+  applied?: boolean;
+  notes?: string[];
   proposal?: FlowRepairProposal;
 }
 
@@ -69,19 +73,22 @@ export function resolveFlowSource(
   root: string,
   flow?: string,
   flowYaml?: string,
-): { source: string; yaml: string; writable: boolean } | { error: string } {
+): { source: string; yaml: string; writable: boolean } | { error: string; errorCode?: 'PATH_OUTSIDE_ROOT' | 'FLOW_NOT_FOUND' } {
   if (flowYaml && flowYaml.trim()) return { source: 'inline', yaml: flowYaml, writable: false };
   if (!flow) return { error: 'Provide flow or flowYaml.' };
-  const candidates = isAbsolute(flow)
-    ? [flow]
-    : [
-        join(root, flow),
-        join(root, '.swipium', 'flows', `${flow}.yaml`),
-        join(root, '.swipium', 'flows', `${flow}.yml`),
-        join(root, '.swipium', 'flows', flow),
-      ];
-  const path = candidates.find((p) => existsSync(p));
-  return path ? { source: path, yaml: readFileSync(path, 'utf8'), writable: true } : { error: `Flow not found: ${flow}` };
+  // Confined to the project root (realpath + within-root): `apply` writes this file, so an
+  // absolute path or ../ escape must never let a repair overwrite YAML elsewhere on disk.
+  const raw = [flow, join('.swipium', 'flows', `${flow}.yaml`), join('.swipium', 'flows', `${flow}.yml`), join('.swipium', 'flows', flow)];
+  const candidates = raw.map((p) => withinRootOrNull(root, p));
+  if (candidates.every((p) => p === null) || candidates[0] === null)
+    return {
+      error: `Flow path "${flow}" resolves outside the project root (${root}). qa_flow_repair only reads and patches flows under the project root.`,
+      errorCode: 'PATH_OUTSIDE_ROOT',
+    };
+  const path = candidates.find((p): p is string => !!p && existsSync(p));
+  return path
+    ? { source: path, yaml: readFileSync(path, 'utf8'), writable: true }
+    : { error: `Flow not found: ${flow}`, errorCode: 'FLOW_NOT_FOUND' };
 }
 
 function stepAt(flow: Flow, failedStep: number): { phase: FlowRepairSuggestion['phase']; phaseIndex: number; step: FlowStep } | null {
@@ -287,24 +294,90 @@ function desiredId(label: string, role: string): string {
   return `${base}_${suffix}`;
 }
 
+type RoleClass = 'field' | 'button' | 'text' | 'other';
+
+/** Coarse role class so a repair never swaps a button for a text field (or vice versa). */
+function roleClass(role: string | undefined, clickable?: boolean): RoleClass {
+  const r = role ?? '';
+  if (/EditText|text-?field|SearchField|TextInput|AutoComplete|Input/i.test(r)) return 'field';
+  if (/Button|Link|Cell|Switch|CheckBox|Checkbox|RadioButton|Toggle|MenuItem|Tab/i.test(r)) return 'button';
+  if (clickable) return 'button';
+  if (/TextView|StaticText|Text|Label/i.test(r)) return 'text';
+  return 'other';
+}
+
+/** Role class the failed step targeted: recorded provenance first, else implied by the step kind. */
+function expectedRoleClass(step: FlowStep, provenance: FlowProvenanceEntry | undefined): RoleClass | undefined {
+  const recorded = provenance?.elementRole ?? provenance?.className;
+  if (recorded) return roleClass(recorded);
+  if (step.kind === 'tap') return 'button';
+  if (step.kind === 'inputText') return 'field';
+  return undefined;
+}
+
+function bigrams(s: string): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < s.length - 1; i++) out.push(s.slice(i, i + 2));
+  return out;
+}
+
+/** Text similarity in [0,1] (Dice coefficient over character bigrams of normalized text). */
+export function textSimilarity(a: string | undefined, b: string | undefined): number {
+  if (!a || !b) return 0;
+  const x = norm(a);
+  const y = norm(b);
+  if (!x || !y) return 0;
+  if (x === y) return 1;
+  const bx = bigrams(x);
+  const by = bigrams(y);
+  if (!bx.length || !by.length) return 0;
+  const pool = [...by];
+  let hits = 0;
+  for (const g of bx) {
+    const i = pool.indexOf(g);
+    if (i >= 0) {
+      hits++;
+      pool.splice(i, 1);
+    }
+  }
+  return (2 * hits) / (bx.length + by.length);
+}
+
 function chooseReplacement(
   selector: string | undefined,
   elements: SnapshotElement[],
   platform: LocatorPlatform,
+  expected?: RoleClass,
 ): { element?: SnapshotElement; suggestion?: LocatorSuggestion; confidence: FlowRepairSuggestion['confidence'] } {
   const scored = elements.map((el) => ({ el, suggestion: suggestLocator(el, { platform }) }));
+  const compatible = (el: SnapshotElement): boolean => {
+    if (!expected) return true;
+    const c = roleClass(el.role, el.clickable);
+    // A tap target may be a clickable text/label; a field target must be a field.
+    if (expected === 'button') return c === 'button';
+    if (expected === 'field') return c === 'field';
+    return c === expected;
+  };
   if (selector) {
     const n = norm(selector);
     const exact = scored.find(({ el }) => [el.id, el.label, el.text].some((v) => v && norm(v) === n));
-    if (exact) return { ...exact, confidence: 'high' };
-    const contains = scored.find(({ el }) => [el.id, el.label, el.text].some((v) => v && (norm(v).includes(n) || n.includes(norm(v)))));
-    if (contains) return { ...contains, confidence: 'medium' };
+    if (exact) return { element: exact.el, suggestion: exact.suggestion, confidence: 'high' };
+    const contains = scored.find(
+      ({ el }) => compatible(el) && [el.id, el.label, el.text].some((v) => v && (norm(v).includes(n) || n.includes(norm(v)))),
+    );
+    if (contains) return { element: contains.el, suggestion: contains.suggestion, confidence: 'medium' };
   }
-  const durable = scored.find(
-    ({ suggestion }) => suggestion.locator && (suggestion.tier === 'accessibility' || suggestion.tier === 'resource_id'),
-  );
-  if (durable) return { ...durable, confidence: 'low' };
-  return { ...scored[0], confidence: 'low' };
+  // No text match: rank same-role candidates by text similarity to the failed selector, then
+  // durability. Never fall back to "first stable element" of an unrelated role (a renamed
+  // "Sign in" button must not become the "Email" field).
+  const durable = (s: LocatorSuggestion) => !!s.locator && (s.tier === 'accessibility' || s.tier === 'resource_id');
+  const pool = scored.filter(({ el }) => compatible(el));
+  const ranked = pool
+    .map((c, i) => ({ ...c, i, sim: Math.max(0, ...[c.el.id, c.el.label, c.el.text].map((v) => textSimilarity(v, selector))) }))
+    .sort((a, b) => b.sim - a.sim || Number(durable(b.suggestion)) - Number(durable(a.suggestion)) || a.i - b.i);
+  const best = ranked[0];
+  if (best) return { element: best.el, suggestion: best.suggestion, confidence: 'low' };
+  return { confidence: 'low' };
 }
 
 function selectorForSuggestion(
@@ -425,7 +498,7 @@ export function repairFlow(opts: {
   elements: SnapshotElement[];
   apply?: boolean;
   platform?: LocatorPlatform;
-}): FlowRepairResult | { error: string } {
+}): FlowRepairResult | { error: string; errorCode?: 'PATH_OUTSIDE_ROOT' | 'FLOW_NOT_FOUND' } {
   const src = resolveFlowSource(opts.root, opts.flow, opts.flowYaml);
   if ('error' in src) return src;
   const parsed = parseFlow(src.yaml);
@@ -482,9 +555,9 @@ export function repairFlow(opts: {
       }),
     };
   }
-  const picked = chooseReplacement(originalSelector, opts.elements, platform);
-  const replacementSelector = selectorForSuggestion(picked.suggestion, picked.element, platform);
   const provenance = provenanceForStep(src.yaml, opts.failedStep, originalSelector);
+  const picked = chooseReplacement(originalSelector, opts.elements, platform, expectedRoleClass(at.step, provenance));
+  const replacementSelector = selectorForSuggestion(picked.suggestion, picked.element, platform);
   const drift = driftFindings(provenance, opts.elements, picked);
   const label = picked.element?.label ?? picked.element?.text ?? originalSelector ?? 'target';
   const appCodeSuggestion =
@@ -516,13 +589,22 @@ export function repairFlow(opts: {
   };
   let proposedYaml: string | undefined;
   let patched = false;
+  const notes: string[] = [];
   if (replacementSelector) {
     proposedYaml = applyReplacement(src.yaml, at.phase, at.phaseIndex, at.step, replacementSelector) ?? undefined;
     if (opts.apply && proposedYaml && src.writable) {
-      writeFileSync(src.source, proposedYaml);
-      patched = true;
+      // Never auto-apply a guess: low confidence means no text match to the failed selector.
+      if (picked.confidence === 'low')
+        notes.push(
+          `apply refused: the proposal is low confidence (no text match for "${originalSelector ?? 'target'}"). Review proposedYaml and apply it manually if correct.`,
+        );
+      else {
+        writeFileSync(src.source, proposedYaml);
+        patched = true;
+      }
     }
   }
+  if (opts.apply && !src.writable) notes.push('apply ignored: inline flowYaml has no file to patch.');
   const suggestions = [suggestion];
   return {
     source: src.source,
@@ -530,6 +612,8 @@ export function repairFlow(opts: {
     suggestions,
     proposedYaml,
     patched,
+    applied: patched,
+    ...(notes.length ? { notes } : {}),
     proposal: makeProposal({
       source: src.source,
       flow: parsed.flow.name,

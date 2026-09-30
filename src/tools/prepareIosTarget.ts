@@ -1,5 +1,5 @@
-// qa_prepare_ios_target (hardening P0.3) — one high-level iOS prepare: boot simulator → install
-// .app → launch bundle → verify → report WDA/visual mode. The cross-platform counterpart to
+// qa_prepare_ios_target (hardening P0.3): one high-level iOS prepare: boot simulator > install
+// .app > launch bundle > verify > report WDA/visual mode. The cross-platform counterpart to
 // qa_prepare_target's Android path, so qa_test_this can complete iOS first-runs end-to-end.
 
 import { z } from 'zod';
@@ -7,13 +7,13 @@ import { isAbsolute, join } from 'node:path';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, unknownSessionError } from '../lib/result.js';
 import { qaFail, type FailureCode } from '../oracle/failures.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { prepareIos } from '../services/prepareIos.js';
 import type { Session, SessionStore } from '../session/store.js';
 
-/** A .app is a directory — hash a stable signature (Info.plist) for consent binding. */
+/** A .app is a directory, so hash a stable signature (Info.plist) for consent binding. */
 function appSignature(appPath: string): string {
   try {
     const plist = join(appPath, 'Info.plist');
@@ -38,15 +38,14 @@ export function registerPrepareIosTarget(server: McpServer, sessions: SessionSto
     {
       title: 'Prepare an iOS simulator target',
       description:
-        'High-level iOS simulator prepare: pick + boot a simulator, install a simulator .app (consent-gated), launch its bundle id, verify foreground, and report whether structured automation (WDA) is available or it is honestly visual-only. Refuses a .ipa on the simulator (real-device only). attachWda: auto (use WDA if reachable, else visual) | required (fail if no WDA) | skip (visual-only). Returns typed blockers (IPA_NEEDS_REAL_DEVICE, IOS_SIMULATOR_APP_MISSING, SIMULATOR_BOOT_FAILED, WDA_UNREACHABLE).',
+        'Prepare an iOS Simulator: pick + boot, install a simulator .app (consent-gated), launch the bundle id, verify ' +
+        'foreground, and report whether WDA structured automation is available or it is visual-only. A .ipa is refused ' +
+        '(IPA_NEEDS_REAL_DEVICE). attachWda: auto | required | skip.',
       inputSchema: {
         sessionId: z.string(),
         app: z.string().optional().describe('Simulator .app path (absolute or project-relative).'),
         bundleId: z.string().optional(),
-        device: z
-          .string()
-          .optional()
-          .describe('Simulator UDID or name substring to prepare (same selector param name as the other tools).'),
+        device: z.string().optional().describe('Simulator UDID or name substring.'),
         launch: z.boolean().optional(),
         attachWda: z.enum(['auto', 'required', 'skip']).optional(),
         consentId: z.string().optional(),
@@ -55,15 +54,9 @@ export function registerPrepareIosTarget(server: McpServer, sessions: SessionSto
     },
     async ({ sessionId, app, bundleId, device, launch, attachWda, consentId, approve }) => {
       const session = sessions.get(sessionId);
-      if (!session)
-        return qaError({
-          what: `Unknown sessionId "${sessionId}"`,
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_start_session first.'],
-        });
+      if (!session) return unknownSessionError(sessionId);
 
-      // Installing app code is privileged → consent (mirrors qa_ios install).
+      // Installing app code is privileged, so consent (mirrors qa_ios install).
       let mutationConsent: { required: boolean; consentId?: string; approved: boolean; payloadHash?: string } | undefined;
       let installAffects: { appPath: string; sig: string; external: boolean } | undefined;
       if (app) {

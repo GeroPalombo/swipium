@@ -1,4 +1,4 @@
-// Vision Gap Fix 3 — app-map-FIRST feature scoping. The product principle is "read the durable app
+// Vision Gap Fix 3: app-map-FIRST feature scoping. The product principle is "read the durable app
 // map before deciding what to do". qa_app_map_feature_scope / qa_test_feature must scope
 // from `.swipium/app-map.json` (features, static + runtime topology, tickets, persistent suite) BEFORE
 // falling back to a fresh code scan. This shared service builds an app-map-enriched FeatureScopeInput
@@ -29,7 +29,7 @@ import type { AppKnowledgeMap, ProjectIdentity } from '../appMap/schema.js';
 export interface MapFeatureScopeInput {
   root: string;
   query: string;
-  /** App map (already loaded) — when omitted it is loaded from `.swipium/app-map.json`. */
+  /** App map (already loaded). When omitted it is loaded from `.swipium/app-map.json`. */
   map?: AppKnowledgeMap | null;
   /** A fresh/saved code index FeatureIndex; when omitted a fresh scan is run. */
   index?: FeatureIndex;
@@ -70,7 +70,7 @@ function indexFromMap(map: AppKnowledgeMap, base: FeatureIndex): FeatureIndex {
   const files: SourceFileEntry[] = [...base.files];
   const seenSym = new Set(symbols.map((s) => `${s.name}:${s.file}`));
 
-  // Map features → synthetic "screen" symbols carrying the feature's title/objective tokens, so the
+  // Map features > synthetic "screen" symbols carrying the feature's title/objective tokens, so the
   // ranker locates a feature even when no source symbol survives a code rename/deletion.
   for (const f of map.features) {
     const name = f.title.replace(/[^A-Za-z0-9]+/g, '') || f.id;
@@ -82,7 +82,7 @@ function indexFromMap(map: AppKnowledgeMap, base: FeatureIndex): FeatureIndex {
       seenSym.add(key);
     }
   }
-  // Static screens → synthetic routes/files so their names/routes participate in ranking.
+  // Static screens > synthetic routes/files so their names/routes participate in ranking.
   for (const s of map.staticTopology.screens) {
     const tokens = [...new Set([...tokenize(s.name), ...tokenize(s.route ?? '')])];
     if (s.route) routes.push({ route: s.route, file: s.sourceFiles[0] ?? `app-map:${s.id}`, line: 0, tokens });
@@ -106,7 +106,7 @@ function testsFromMap(map: AppKnowledgeMap): TestCaseRef[] {
   return map.testSuite.cases.map((c) => ({ id: c.id, title: c.title, source: c.source ?? 'app-map' }));
 }
 
-/** Cases from the canonical persistent suite (.swipium/test-suite.json) — the growing QA context the
+/** Cases from the canonical persistent suite (.swipium/test-suite.json), the growing QA context the
  *  vision requires feature scoping to read, not just the app-map's mirrored index. Each case also
  *  contributes a synthetic feature symbol so a suite-only functionality is locatable. */
 function testsFromSuite(root: string): { tests: TestCaseRef[]; symbols: SourceSymbol[] } {
@@ -134,7 +134,7 @@ function testsFromSuite(root: string): { tests: TestCaseRef[]; symbols: SourceSy
   return { tests, symbols };
 }
 
-/** Pick the map feature that best overlaps the scoped result's terms — to reconcile the scope id. */
+/** Pick the map feature that best overlaps the scoped result's terms, to reconcile the scope id. */
 function reconcileMapFeature(map: AppKnowledgeMap, result: FeatureScopeResult): { id?: string; title?: string } {
   if (!result.found) return {};
   const scopeTerms = new Set(result.primary.matchedTerms.map((t) => t.toLowerCase()));
@@ -164,7 +164,7 @@ export function buildMapFeatureScope(input: MapFeatureScopeInput): MapFeatureSco
   const map = input.map ?? loadAppMap(input.root, fallbackProject(input.root), at).map;
   const appMapUri = appMapResourceUri(input.root);
 
-  // Code index: provided, else fresh scan (still useful — but the map is layered on top as primary).
+  // Code index: provided, else fresh scan (still useful, but the map is layered on top as primary).
   const baseIndex: FeatureIndex = input.index ?? buildFeatureIndex(input.root);
 
   // The growing QA context (Fix #3): the persistent suite is durable feature knowledge too, so feed its
@@ -172,7 +172,7 @@ export function buildMapFeatureScope(input: MapFeatureScopeInput): MapFeatureSco
   const suite = testsFromSuite(input.root);
 
   if (!map) {
-    // No durable map yet — still layer the persistent suite on top of the pure code-scan scope.
+    // No durable map yet. Still layer the persistent suite on top of the pure code-scan scope.
     const idx: FeatureIndex = { ...baseIndex, symbols: [...baseIndex.symbols, ...suite.symbols] };
     const res = buildFeatureScope({
       query: input.query,

@@ -1,10 +1,10 @@
-// qa_bundletool (hardening P0.2) — convert an .aab to an installable universal .apk via bundletool,
+// qa_bundletool (hardening P0.2): convert an .aab to an installable universal .apk via bundletool,
 // cached under .swipium/artifacts/. Runs as a job (conversion can take a minute). Returns a typed
 // AAB_NEEDS_BUNDLETOOL / AAB_BUILD_APKS_FAILED blocker when it cannot, never a generic error.
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, unknownSessionError } from '../lib/result.js';
 import { qaFail } from '../oracle/failures.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { resolveArtifact } from '../artifacts/resolve.js';
@@ -12,45 +12,31 @@ import { convertAabToApk, findBundletool, buildAndInstallApkSet } from '../artif
 import { startProgress } from '../session/progress.js';
 import { log } from '../lib/logger.js';
 import type { Session, SessionStore, JobRecord } from '../session/store.js';
+import { runWithSignal } from '../lib/abortScope.js';
 
 export function registerBundletool(server: McpServer, sessions: SessionStore): void {
   server.registerTool(
     'qa_bundletool',
     {
-      title: 'Convert .aab → installable .apk',
+      title: 'Convert .aab > installable .apk',
       description:
-        'Convert an Android App Bundle (.aab) into an installable APK set using bundletool, cached under .swipium/artifacts/. An .aab is NOT directly installable — this is the conversion step before qa_prepare_target. Default mode builds a UNIVERSAL .apk (works on any device). Pass connectedDevice:true to build a DEVICE-SPECIFIC APK set (--connected-device) and install:true to push it via bundletool install-apks. Uses the debug keystore by default (emulator/dev OK). Returns typed blockers (BUNDLETOOL_MISSING/AAB_NEEDS_BUNDLETOOL, AAB_BUILD_APKS_FAILED, AAB_DEVICE_SPEC_FAILED, AAB_INSTALL_FAILED, ANDROID_SIGNING_FAILED). Runs as a job; poll qa_job_status.',
+        'Convert an .aab (not directly installable) into an installable APK with bundletool, cached under .swipium/artifacts/, before ' +
+        'qa_prepare_target. Default: a universal .apk (debug keystore). connectedDevice:true builds a device-specific APK set; ' +
+        'install:true also installs it (consent-gated). Runs as a job; typed blockers (BUNDLETOOL_MISSING, AAB_BUILD_APKS_FAILED, …).',
       inputSchema: {
         sessionId: z.string(),
-        aab: z.string().optional().describe('Path to the .aab (default: the best .aab resolved under the project).'),
-        force: z.boolean().optional().describe('Rebuild even if a cached APK/APK set exists.'),
-        connectedDevice: z
-          .boolean()
-          .optional()
-          .describe('Build a device-specific APK set for a connected device (bundletool --connected-device) instead of a universal APK.'),
-        install: z
-          .boolean()
-          .optional()
-          .describe(
-            'With connectedDevice, also install the APK set on the device (bundletool install-apks). Requires an online adb device. Consent-gated (installs app code on a real device/emulator).',
-          ),
-        device: z
-          .string()
-          .optional()
-          .describe('adb serial to target for connectedDevice build/install (defaults to the only connected device).'),
+        aab: z.string().optional().describe('Default: the best .aab in the project.'),
+        force: z.boolean().optional().describe('Rebuild even if cached.'),
+        connectedDevice: z.boolean().optional().describe('Device-specific APK set (--connected-device).'),
+        install: z.boolean().optional().describe('With connectedDevice: install-apks on the device (consent-gated).'),
+        device: z.string().optional().describe('adb serial (default: the only connected device).'),
         consentId: z.string().optional(),
         approve: z.boolean().optional(),
       },
     },
     async ({ sessionId, aab, force, connectedDevice, install, device, consentId, approve }) => {
       const session = sessions.get(sessionId);
-      if (!session)
-        return qaError({
-          what: `Unknown sessionId "${sessionId}"`,
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Call qa_start_session first.'],
-        });
+      if (!session) return unknownSessionError(sessionId);
 
       // Resolve the .aab if not given.
       let aabPath = aab;
@@ -65,9 +51,9 @@ export function registerBundletool(server: McpServer, sessions: SessionStore): v
         aabPath = found.path;
       }
 
-      // Installing an APK set runs app code on a real device/emulator → consent-gated (build-only
+      // Installing an APK set runs app code on a real device/emulator, so it's consent-gated (build-only
       // is safe and ungated). Confirm intent BEFORE any work, regardless of whether bundletool is
-      // installed. Mirrors qa_prepare_target / qa_prepare_ios_real_target.
+      // installed. Mirrors qa_prepare_target / qa_prepare_ios_target.
       let mutationConsent: { required: boolean; consentId?: string; approved: boolean; payloadHash?: string } | undefined;
       if (connectedDevice && install) {
         const affects = { aab: aabPath, device: device ?? '(only connected device)' };
@@ -96,7 +82,7 @@ export function registerBundletool(server: McpServer, sessions: SessionStore): v
       const launcher = await findBundletool();
       if (!launcher) {
         return qaFail('AAB_NEEDS_BUNDLETOOL', {
-          what: `bundletool is not installed — cannot convert ${aabPath}`,
+          what: `bundletool is not installed, cannot convert ${aabPath}`,
           nextSteps: [
             'Install bundletool (brew install bundletool) or set $BUNDLETOOL_JAR to bundletool.jar.',
             'Or build an APK directly: qa_build { platform: "android", variant: "debug" }  (./gradlew assembleDebug).',
@@ -107,7 +93,10 @@ export function registerBundletool(server: McpServer, sessions: SessionStore): v
 
       const job = sessions.createJob(session, 'bundletool:convert');
       if (connectedDevice) {
-        void runDeviceApkSet(sessions, session, job, aabPath, { install: !!install, deviceId: device, force: !!force, mutationConsent });
+        // Jobs run in their own cancellation scope (abortScope), not the starting call's.
+        void runWithSignal(sessions.abortSignal(session, job.jobId), () =>
+          runDeviceApkSet(sessions, session, job, aabPath, { install: !!install, deviceId: device, force: !!force, mutationConsent }),
+        );
         return qaOk(
           {
             jobId: job.jobId,
@@ -121,10 +110,10 @@ export function registerBundletool(server: McpServer, sessions: SessionStore): v
           `Building${install ? ' + installing' : ''} a device-specific APK set from ${aabPath} as job ${job.jobId} (${launcher.describe}). Poll qa_job_status.`,
         );
       }
-      void runConvert(sessions, session, job, aabPath, !!force);
+      void runWithSignal(sessions.abortSignal(session, job.jobId), () => runConvert(sessions, session, job, aabPath, !!force));
       return qaOk(
         { jobId: job.jobId, status: 'running', kind: job.kind, aab: aabPath, mode: 'universal', bundletool: launcher.describe },
-        `Converting ${aabPath} → universal APK as job ${job.jobId} (${launcher.describe}). Poll qa_job_status.`,
+        `Converting ${aabPath} > universal APK as job ${job.jobId} (${launcher.describe}). Poll qa_job_status.`,
       );
     },
   );
@@ -268,7 +257,7 @@ async function runConvert(sessions: SessionStore, session: Session, job: JobReco
       return;
     }
     prog.done('Universal APK ready.');
-    sessions.addWorkaround(session, `converted .aab → universal .apk via bundletool (${result.fromCache ? 'cached' : 'built'})`);
+    sessions.addWorkaround(session, `converted .aab > universal .apk via bundletool (${result.fromCache ? 'cached' : 'built'})`);
     upd({
       status: 'done',
       progress: 'done',

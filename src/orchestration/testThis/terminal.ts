@@ -1,4 +1,4 @@
-// qa_test_this terminal-state assembly — every terminal state (completed OR blocked) generates a
+// qa_test_this terminal-state assembly: every terminal state (completed OR blocked) generates a
 // report artifact (Milestone B) and lands the uniform TerminalEnvelope on the job result, so the
 // outcome is summarizable from structured output without log parsing.
 
@@ -26,7 +26,7 @@ export interface FinishContext {
 
 export type Finish = (state: ExecState, failureCode: string | undefined, summary: string, extra?: Record<string, unknown>) => Promise<void>;
 
-/** Every terminal state — completed OR blocked — generates a report artifact (Milestone B). */
+/** Every terminal state (completed OR blocked) generates a report artifact (Milestone B). */
 export function createFinisher(ctx: FinishContext): Finish {
   const { sessions, session, job, a, attempted, artifacts, upd } = ctx;
   return async (state: ExecState, failureCode: string | undefined, summary: string, extra: Record<string, unknown> = {}) => {
@@ -37,7 +37,7 @@ export function createFinisher(ctx: FinishContext): Finish {
         risk: a.testThisPlanMutation.risk,
         target: a.testThisPlanMutation.affects,
         consent: a.mutationConsent,
-        status: state === 'completed' ? 'executed' : 'blocked',
+        status: state === 'blocked' || state === 'unsafe' ? 'blocked' : 'executed',
         detail: failureCode,
       });
     }
@@ -67,6 +67,7 @@ export function createFinisher(ctx: FinishContext): Finish {
       });
       reportUri = r.reportUri;
       manifestUri = r.manifestUri;
+      sessions.milestone(session, 'report_generated'); // persisted flag for qa_status's ladder
       if (!artifacts.includes(reportUri)) artifacts.push(reportUri);
       appVerdict = (r.report as { appVerdict?: { status: string; summary: string } }).appVerdict;
       coverageVerdict = (r.report as { coverageVerdict?: { status: string; summary: string } }).coverageVerdict;
@@ -81,17 +82,30 @@ export function createFinisher(ctx: FinishContext): Finish {
       : session.findings.some((f) => f.layer === 'app' && f.severity === 'medium')
         ? 'degraded'
         : 'OK';
-    // The report already exists — point the agent AT it (fetch/open), not back at qa_report.
+    // The report already exists, so point the agent AT it (fetch/open), not back at qa_report.
+    const question = extra.needsInput as
+      { kind?: string; question?: string; resume?: { tool: string; args: Record<string, unknown> } } | undefined;
     const nextRecommendedAction =
-      state === 'completed'
-        ? reportUri
-          ? {
-              tool: 'qa_get_artifact',
-              args: { uri: reportUri },
-              why: `Open the generated report (${reportUri})`,
-            }
-          : { tool: 'qa_report', args: { sessionId: session.id }, why: 'Generate the report' }
-        : { tool: 'qa_explain_blocker', args: { failureCode: failureCode ?? 'UNKNOWN' }, why: 'Understand the blocker and how to fix it' };
+      state === 'needs_input' && question?.resume
+        ? {
+            tool: question.resume.tool,
+            args: question.resume.args,
+            why: `Ask the user exactly this one question, then resume with their answer: ${question.question ?? question.kind ?? 'input needed'}`,
+          }
+        : state === 'completed'
+          ? reportUri
+            ? {
+                tool: 'qa_get_artifact',
+                args: { uri: reportUri },
+                why: `Open the generated report (${reportUri})`,
+              }
+            : { tool: 'qa_report', args: { sessionId: session.id }, why: 'Generate the report' }
+          : {
+              tool: 'qa_explain_blocker',
+              // sessionId lets qa_explain_blocker stamp the blocker as explained, so qa_status moves on.
+              args: { failureCode: failureCode ?? 'UNKNOWN', sessionId: session.id },
+              why: 'Understand the blocker and how to fix it',
+            };
     // Uniform terminal envelope (Milestone B): summarizable from structured output, no log parsing.
     const envelope: TerminalEnvelope = buildTerminalEnvelope({
       state,
@@ -107,16 +121,17 @@ export function createFinisher(ctx: FinishContext): Finish {
         ...(coverageVerdict ? { coverage: coverageVerdict } : {}),
         ...(toolVerdict ? { tool: toolVerdict } : {}),
       },
-      blockers: state === 'completed' || !failureCode ? [] : [typedBlockerFromCode(failureCode)],
+      blockers: state === 'completed' || state === 'needs_input' || !failureCode ? [] : [typedBlockerFromCode(failureCode)],
       reportUri: reportUri ?? null,
       nextRecommendedAction,
     });
     upd({
-      status: state === 'completed' ? 'done' : 'failed',
+      // needs_input is a clean pause (the run did what it could and asks ONE question), not a failure.
+      status: state === 'completed' || state === 'needs_input' ? 'done' : 'failed',
       progress: state,
       result: {
         ...envelope,
-        // Pre-launch static app map URI is present in EVERY terminal state — including blocked (Fix 1).
+        // Pre-launch static app map URI is present in EVERY terminal state, including blocked (Fix 1).
         appMapUri: a.appMapUri,
         goal: a.goal,
         requiredOutputs: a.requiredOutputs,
@@ -126,6 +141,10 @@ export function createFinisher(ctx: FinishContext): Finish {
         manifestUri,
         health: { native, app },
         inputsProvided: session.inputs.map((i) => i.varName),
+        // Compact report pointer: verdict one-liner + URI; the full report lives at reportUri.
+        reportSummary: reportUri
+          ? `${appVerdict?.status ?? 'n/a'} app · ${coverageVerdict?.status ?? 'n/a'} coverage · ${toolVerdict?.status ?? 'n/a'} tool. Read ${reportUri}`
+          : null,
         notes: session.notes.length,
         findings: session.findings.length,
         ...extra,

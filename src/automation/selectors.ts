@@ -1,7 +1,9 @@
-// Automation Kernel V2 — Workstream 2: Selector IR V2. One normalized selector model shared by
-// Flow V2, Maestro import/export, the Appium audit, and flow repair. Parses the existing Swipium
-// selector string grammar, normalizes Android resource ids, scores risk/portability, preserves
-// provenance, and refuses unsupported strategies per backend. NEVER generates XPath.
+// Automation Kernel V2, Workstream 2: Selector IR V2. One normalized selector model shared by
+// Flow V2, the Appium audit, and flow repair. Parses the existing Swipium selector string
+// grammar, normalizes Android resource ids, scores risk/portability, preserves provenance, and
+// refuses unsupported strategies per backend. NEVER generates XPath. (Maestro interop left the
+// public surface in 1.5.0; the `maestro_import` SelectorSource remains valid for flows recorded
+// by earlier versions.)
 
 import type { BackendCapabilities } from './capabilities.js';
 import { selectorSupported } from './capabilities.js';
@@ -50,7 +52,7 @@ function riskFor(strategy: SelectorStrategy, value: string, hints?: SelectorHint
  * Parse one Swipium selector string into Selector IR. Recognizes the existing grammar:
  *   `id=foo`, `id/foo`, `com.example:id/foo`, `accessibility id=foo`, `name=foo`,
  *   `predicate string=...`, `class chain=...`, and bare text.
- * OCR / image selectors come from dedicated flow steps, not this string grammar — see selectorForVisual().
+ * OCR / image selectors come from dedicated flow steps, not this string grammar. See selectorForVisual().
  */
 export function parseSelector(
   raw: string,
@@ -98,7 +100,7 @@ export function selectorForVisual(
   };
 }
 
-/** A coordinate selector (tapAt) — always last-resort, non-portable, high risk. */
+/** A coordinate selector (tapAt). Always last-resort, non-portable, high risk. */
 export function selectorForCoordinate(value: string, source: SelectorSource = 'flow'): SelectorIR {
   return { strategy: 'coordinate', value, platform: 'cross_platform', source, risk: 'high', portable: false };
 }
@@ -151,7 +153,7 @@ export function checkSelectorCiRisk(ir: SelectorIR): SelectorCiRisk {
   return { risk: ir.risk };
 }
 
-/** A selector match candidate from a parsed snapshot — just enough to detect ambiguity. */
+/** A selector match candidate from a parsed snapshot, just enough to detect ambiguity. */
 export interface SelectorMatchCandidate {
   resourceId?: string;
   accessibilityId?: string;
@@ -210,7 +212,7 @@ export interface AppiumLocator {
 }
 
 /**
- * Export a Selector IR to an Appium native locator strategy. NEVER returns XPath — visual/coordinate
+ * Export a Selector IR to an Appium native locator strategy. NEVER returns XPath: visual/coordinate
  * strategies have no Appium native locator and return null (the caller must mark them manual_review).
  */
 export function selectorToAppium(ir: SelectorIR): AppiumLocator | null {
@@ -225,22 +227,14 @@ export function selectorToAppium(ir: SelectorIR): AppiumLocator | null {
       return { using: '-ios class chain', value: ir.value };
     case 'text':
       // Prefer a UiAutomator native text matcher over XPath for Android.
-      return { using: '-android uiautomator', value: `new UiSelector().text("${ir.value.replace(/"/g, '\\"')}")` };
+      // Backslashes must be doubled before quotes so a value ending in `\` can't escape the closing quote.
+      return {
+        using: '-android uiautomator',
+        value: `new UiSelector().text("${ir.value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}")`,
+      };
     default:
       return null;
   }
-}
-
-/** Convert a Maestro selector block (string | { id|text|... }) to Selector IR without semantic loss. */
-export function selectorFromMaestro(value: unknown, source: SelectorSource = 'maestro_import'): SelectorIR | null {
-  if (typeof value === 'string') return parseSelector(value, { source });
-  if (!value || typeof value !== 'object') return null;
-  const v = value as Record<string, unknown>;
-  if (typeof v.id === 'string') return parseSelector(`id=${v.id}`, { source });
-  if (typeof v['accessibility id'] === 'string') return parseSelector(`accessibility id=${v['accessibility id']}`, { source });
-  if (typeof v.label === 'string') return parseSelector(`accessibility id=${v.label}`, { source });
-  if (typeof v.text === 'string') return parseSelector(v.text, { source });
-  return null;
 }
 
 /** True when the strategy is a structured (non-visual) locator. */

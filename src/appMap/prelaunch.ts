@@ -2,7 +2,7 @@
 // BEFORE deciding what to do". Every high-level workflow (qa_test_this first) must load or build the
 // static `.swipium/app-map.json` after resolving the project root and BEFORE installing/launching the
 // app, so first-run decisions, exploration seeding, automation readiness, and the report are informed
-// by the durable map at the time they are made — not by a fresh scan after the fact.
+// by the durable map at the time they are made, not by a fresh scan after the fact.
 //
 // Cheap + side-effect-light: this only touches source files (staticScan/codeIndex via buildAppMap) and
 // `.swipium/`. It decides whether a rescan is actually needed (no map, missing/stale fingerprint, or a
@@ -20,12 +20,12 @@ export interface PrelaunchAppMapResult {
   map: AppKnowledgeMap;
   appMapUri: string;
   rescanned: boolean;
-  /** Why a rescan was (or was not) performed — surfaced in workaround/attempt trails. */
+  /** Why a rescan was (or was not) performed. Surfaced in workaround/attempt trails. */
   reason: string;
 }
 
 export interface PrelaunchOptions {
-  at: string; // ISO timestamp (caller supplies — deterministic/testable)
+  at: string; // ISO timestamp (caller supplies it, deterministic/testable)
   forceRescan?: boolean;
   appIdentityHints?: {
     androidPackage?: string | null;
@@ -60,7 +60,7 @@ export function decidePrelaunchRescan(root: string, at: string, forceRescan?: bo
   const fp = loaded.map.sourceFingerprint;
   if (!fp || !fp.files?.length) return { rescan: true, reason: 'missing_fingerprint' };
   // Any tracked source file (app config, route, or screen file) that changed or vanished invalidates
-  // the static topology — refresh it. Bounded by the fingerprint size the scanner already chose.
+  // the static topology, so refresh it. Bounded by the fingerprint size the scanner already chose.
   for (const f of fp.files) {
     const h = fileHash(join(root, f.path));
     if (!h || h.hash !== f.hash) return { rescan: true, reason: `source_changed:${f.path}` };

@@ -15,7 +15,7 @@ export type HighImpactClass =
   | 'data_export'
   | 'generic_destructive';
 
-// Verbs that mutate data, money, identity, or messaging — never auto-tapped in strict mode.
+// Verbs that mutate data, money, identity, or messaging. Never auto-tapped in strict mode.
 const DESTRUCTIVE =
   /\b(delete|remove|clear|reset|wipe|erase|discard|pay|buy|purchase|checkout|subscribe|unsubscribe|place\s+order|submit\s+order|send|invite|log\s?out|sign\s?out|deactivate|deregister|block|report|withdraw|transfer|export|share|permission|allow|deny)\b/i;
 const HIGH_IMPACT: Array<[HighImpactClass, RegExp]> = [
@@ -28,7 +28,7 @@ const HIGH_IMPACT: Array<[HighImpactClass, RegExp]> = [
   ['logout', /\b(log\s?out|sign\s?out)\b/i],
   ['data_export', /\b(export|download|share)\s+(data|report|records|history)\b/i],
 ];
-// Confirmation-style verbs: dangerous only as the YES of a destructive dialog — treat as unknown
+// Confirmation-style verbs: dangerous only as the YES of a destructive dialog, so treat as unknown
 // (skipped in strict) unless paired with a destructive verb.
 const CONFIRM = /\b(confirm|submit|proceed|ok|yes|agree|accept|continue)\b/i;
 // Clearly-safe navigation/inspection words.
@@ -66,7 +66,7 @@ export function classifyRisk(i: RiskInput): {
   requiresTwoStepConfirmation?: boolean;
 } {
   const hay = `${i.label ?? ''} ${i.id ?? ''}`.trim();
-  if (!hay) return { risk: 'unknown', reason: 'unlabeled control — no text/accessibility id to judge safety' };
+  if (!hay) return { risk: 'unknown', reason: 'unlabeled control: no text/accessibility id to judge safety' };
   const impact = classifyHighImpact(i);
   if (impact) return { risk: 'destructive', reason: `matches a high-impact action (${impact.riskClass})`, ...impact };
   if (DESTRUCTIVE.test(hay))
@@ -79,9 +79,9 @@ export function classifyRisk(i: RiskInput): {
   // Android dialog negative button is safe (backs out); positive button is the confirm.
   if (/(^|[:/])button2$/i.test(i.id ?? '')) return { risk: 'safe', reason: 'dialog negative/cancel button' };
   if (/(^|[:/])button1$/i.test(i.id ?? '') || CONFIRM.test(hay))
-    return { risk: 'unknown', reason: 'confirmation control — risky as the YES of a destructive dialog; skipped in strict mode' };
+    return { risk: 'unknown', reason: 'confirmation control: risky as the YES of a destructive dialog; skipped in strict mode' };
   if (SAFE.test(hay)) return { risk: 'safe', reason: `recognized navigation/inspection control ("${(hay.match(SAFE) ?? [''])[0]}")` };
-  return { risk: 'unknown', reason: 'unrecognized control — risk cannot be inferred from its label' };
+  return { risk: 'unknown', reason: 'unrecognized control: risk cannot be inferred from its label' };
 }
 
 /** Should this action run under the given safe mode? */
@@ -91,7 +91,7 @@ export function allowedUnder(risk: Risk, mode: SafeMode): boolean {
   return mode === 'balanced'; // unknown controls are only allowed in explicit balanced exploration.
 }
 
-/** Context for the controlled mobile-audit account-cycle workflow (SWIPIUM-REQ-07). */
+/** Context for the controlled mobile-audit account-cycle workflow. */
 export interface AccountCycleContext {
   /** True only inside the named account-cycle / release-gate mobile-audit workflow. */
   accountCycle: boolean;

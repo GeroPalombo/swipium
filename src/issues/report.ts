@@ -1,7 +1,7 @@
-// SWIPIUM Issue Log — fold issue memory into reports (SWIPIUM-REQ-07 "Report Changes").
+// SWIPIUM Issue Log: fold issue memory into reports.
 //
 // Builds the `issues` section of a QA report from the derived index, and renders the Markdown
-// "Issue Memory" block. PURE — takes records + now, returns data/strings.
+// "Issue Memory" block. PURE: takes records + now, returns data/strings.
 
 import { APP_BUG_CATEGORIES, combineReleaseImpact, defaultReleaseImpact, type IssueRecord, type ReleaseImpact } from './schema.js';
 
@@ -27,7 +27,7 @@ export interface ReportIssuesSection {
  * Build the report issues section.
  * @param records all index records for the app/project
  * @param runIssueIds ids touched in THIS run (so "new/recurring" reflect this run, not all history)
- * @param verifiedFixedIssueIds ids whose fix was VERIFIED this run by passing evidence (REQ-08). Only
+ * @param verifiedFixedIssueIds ids whose fix was VERIFIED this run by passing evidence. Only
  *   these are reported as "fixed issues verified this run". When omitted AND no runIssueIds is given
  *   (whole-history view, e.g. qa_issue_log) all fixed issues are listed historically.
  */
@@ -43,7 +43,7 @@ export function buildReportIssuesSection(
   );
   const openIssues = records.filter((r) => inRun(r) && (r.state === 'open' || r.state === 'observed_again'));
   const recurringIssues = records.filter((r) => inRun(r) && (r.state === 'reopened' || Boolean(r.lastRecurrenceMessage)));
-  // "Verified this run" requires CURRENT-RUN pass evidence (a verified_fixed linked_run). REQ-08:
+  // "Verified this run" requires CURRENT-RUN pass evidence (a verified_fixed linked_run),
   // honest fix verification. When a verification set is supplied, only those fixed issues count; when
   // a run scope is supplied but no verification set, nothing is claimed verified; with neither (a
   // whole-history view) all fixed issues are listed.

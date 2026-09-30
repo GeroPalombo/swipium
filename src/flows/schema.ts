@@ -1,4 +1,4 @@
-// Swipium flow format v2 (NEXT-PLAN: Flow System V2). A readable YAML authoring surface that
+// Swipium flow format v2 (Flow System V2). A readable YAML authoring surface that
 // compiles to a normalized step list (the action IR). v2 adds: selector-bound inputText, visual
 // steps (image/diff/visual), device-relative gestures, waits, overlay/network/lifecycle/seed/note
 // steps, a structured|visual|auto mode, and setup/teardown. One parse, shared by check + run.
@@ -63,7 +63,10 @@ export interface ParseResult {
   errors: string[];
 }
 
-const SECRET_VAR = /pass|secret|token|otp|pin|cvv|key/i;
+/** Credential-like variable names whose resolved values are registered as session secrets. The
+ *  ONE shared definition: qa_act placeholder expansion, flow parsing/running and
+ *  qa_continue_from_blocker all use it (`code` covers OTP vars like SWIPIUM_VERIFICATION_CODE). */
+export const SECRET_VAR_NAME = /pass|secret|token|otp|pin|cvv|key|code/i;
 const DIRECTIONS = ['up', 'down', 'left', 'right'] as const;
 const AREAS = ['center', 'top', 'bottom', 'left', 'right'] as const;
 const KEYS = ['back', 'home', 'enter'] as const;
@@ -71,7 +74,7 @@ const OUTCOMES = ['pass', 'fail', 'blocked', 'skipped', 'not_applicable'] as con
 const BARE = new Set(['prepareTarget', 'restartApp', 'waitForIdle', 'clearOverlay', 'networkOffline', 'networkOnline']);
 
 function looksSecret(value: string): boolean {
-  for (const m of value.matchAll(/\$\{([^}]+)\}/g)) if (SECRET_VAR.test(m[1])) return true;
+  for (const m of value.matchAll(/\$\{([^}]+)\}/g)) if (SECRET_VAR_NAME.test(m[1])) return true;
   return false;
 }
 
@@ -309,11 +312,59 @@ export function parseFlow(yamlText: string): ParseResult {
   };
 }
 
-/** Resolve ${VAR} from a variables map (then process.env). Returns the value + any missing names. */
+/** Environment variables a flow may read implicitly. A flow file can come from an untrusted
+ *  (cloned) repo, so `${NAME}` falls back to process.env ONLY for names with this prefix, never
+ *  arbitrary server secrets like DATABASE_URL / AWS_SECRET_ACCESS_KEY (THREAT_MODEL). Explicit
+ *  qa_flow_run `variables` and the session's stored inputs are not restricted. */
+export const FLOW_ENV_PREFIX = 'SWIPIUM_';
+const FLOW_ENV_NAME = /^SWIPIUM_/;
+
+/** True when `${name}` may be read from process.env. */
+export function flowEnvAllowed(name: string): boolean {
+  return FLOW_ENV_NAME.test(name);
+}
+
+/** Value of `${name}`: explicit vars first, then process.env for SWIPIUM_* names only. */
+export function lookupFlowVar(name: string, vars: Record<string, string>): string | undefined {
+  const v = vars[name];
+  if (v != null) return v;
+  return flowEnvAllowed(name) ? process.env[name] : undefined;
+}
+
+/** True when a string references at least one `${VAR}`. */
+export function hasFlowVariable(value: string): boolean {
+  return /\$\{[^}]+\}/.test(value);
+}
+
+/** Steps that change app/device/test state (consent-gated; never run implicitly by qa_smoke).
+ *  An `openUrl` that interpolates a `${VAR}` counts: the resolved value leaves the machine in the
+ *  URL (deep link / browser), so it must be shown and approved. */
+export function isMutatingFlowStep(step: FlowStep): boolean {
+  if (step.kind === 'networkOffline' || step.kind === 'networkOnline' || step.kind === 'seed' || step.kind === 'restartApp') return true;
+  return step.kind === 'openUrl' && hasFlowVariable(step.url);
+}
+
+/** Human-readable reason for a missing variable (says which env names are readable), e.g.
+ *  "Variables not available: HOME (flows only read SWIPIUM_* environment variables; pass it via
+ *  qa_flow_run { variables } or rename it SWIPIUM_HOME)". */
+export function missingVarMessage(missing: string[]): string {
+  const names = [...new Set(missing)];
+  const it = names.length === 1 ? 'it' : 'them';
+  const renamable = names.filter((n) => !flowEnvAllowed(n));
+  const rename = renamable.length
+    ? ` or rename ${renamable.length === 1 ? 'it' : 'them'} ${renamable.map((n) => `${FLOW_ENV_PREFIX}${n}`).join(', ')}`
+    : ` or set ${it} in the Swipium server's environment`;
+  return (
+    `Variables not available: ${names.join(', ')} (flows only read ${FLOW_ENV_PREFIX}* environment variables; ` +
+    `pass ${it} via qa_flow_run { variables }${rename})`
+  );
+}
+
+/** Resolve ${VAR} from a variables map (then process.env, SWIPIUM_* names only). Returns the value + any missing names. */
 export function resolveVars(value: string, vars: Record<string, string>): { out: string; missing: string[] } {
   const missing: string[] = [];
   const out = value.replace(/\$\{([^}]+)\}/g, (_, name: string) => {
-    const v = vars[name] ?? process.env[name];
+    const v = lookupFlowVar(name, vars);
     if (v == null) {
       missing.push(name);
       return '';

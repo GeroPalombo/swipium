@@ -1,13 +1,13 @@
-// qa_test_feature (SWIPIUM-REQ-03 "MCP Tool Requirements").
+// qa_test_feature MCP tool.
 // Feature-focused testing from the durable app map: map a natural-language feature request to code +
 // runtime + existing tests, model its objective, generate scoped cases, optionally execute a focused
-// run, and update the feature map. Thin wrappers — all logic lives in src/featureTesting/* + src/appMap.
+// run, and update the feature map. Thin wrappers; all logic lives in src/featureTesting/* + src/appMap.
 // Free-text feature scoping (read-only) lives under qa_app_map_feature_scope (src/tools/appMap.ts),
 // which reuses resolveFeatureContext() below.
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { qaNeedsInput } from '../lib/needsInput.js';
 import { getDriver } from '../session/attach.js';
 import { startProgress } from '../session/progress.js';
@@ -28,6 +28,7 @@ import { runtimeScreensFromGraph, loadGraphFromFile, gatherExistingTests } from 
 import { buildAppMap } from '../appMap/build.js';
 import { applyMerge } from '../testSuite/store.js';
 import type { Session, SessionStore, JobRecord } from '../session/store.js';
+import { runWithSignal } from '../lib/abortScope.js';
 
 const EMPTY_INDEX: FeatureIndex = { root: '', symbols: [], routes: [], files: [], scannedFiles: 0, truncated: false };
 
@@ -52,28 +53,17 @@ export async function resolveFeatureContext(
   if (args.sessionId && !session) {
     return {
       ok: false,
-      result: qaError({
-        what: `Unknown sessionId ${args.sessionId}`,
-        changedState: false,
-        retrySafe: true,
-        nextSteps: ['Call qa_start_session / qa_test_this first, or pass projectRoot.'],
-      }),
+      result: unknownSessionError(args.sessionId, ['Call qa_start_session / qa_test_this first, or pass projectRoot.']),
     };
   }
   let root = session?.root;
   if (!root) {
-    const { resolveProjectRoot } = await import('../context/projectRoot.js');
+    const { resolveProjectRoot, unresolvedProjectRootError } = await import('../context/projectRoot.js');
     const resolved = await resolveProjectRoot(server, args.projectRoot);
     if (!resolved.root) {
       return {
         ok: false,
-        result: qaError({
-          what: 'Could not resolve a project root',
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Pass projectRoot="/abs/path" or a sessionId.'],
-          clientHint: resolved.hint,
-        }),
+        result: unresolvedProjectRootError(resolved),
       };
     }
     root = resolved.root;
@@ -113,31 +103,27 @@ export function registerFeatureTesting(server: McpServer, sessions: SessionStore
     {
       title: 'Test a feature (focused)',
       description:
-        'Run a focused test of a named feature. mode:"plan" (default) is the read-only planning path: it returns the resolved scope + objective + generated test cases + required fixtures + the exact ordered execution plan — use it whenever a feature test plan is needed before running anything. mode:"execute" runs a focused exploration toward the feature\'s best entry point as a background JOB — it generates cases, records pass/fail/blocked per case, updates the durable feature map, and generates a report (poll qa_job_status for the terminal result: reportUri, map delta, cases, blockers). Execute requires a prepared device session (run qa_test_this { mode:"execute" } first). Honest: a feature gated by auth/paywall/permission/missing-fixture returns blocked with setup guidance, not a false failure.',
+        'Focused test of one named feature. mode:"plan" (default, read-only): scope, objective, generated cases, required ' +
+        'fixtures, ordered plan. mode:"execute": a job that explores toward the feature, records pass/fail/blocked per case, ' +
+        'updates the app map, and writes a report (see the qa_job_status result). Without sessionId, execute bootstraps a ' +
+        'device from projectRoot (consent-gated). A feature behind auth/paywall/permission/missing fixture is blocked with ' +
+        'setup guidance, not failed.',
       inputSchema: {
-        sessionId: z
-          .string()
-          .optional()
-          .describe(
-            'Prepared session. If omitted in execute/interactive, Swipium bootstraps a device from projectRoot (same path as qa_test_this).',
-          ),
-        projectRoot: z
-          .string()
-          .optional()
-          .describe('Project root — used for plan mode and to bootstrap a device in execute/interactive when no sessionId is given.'),
+        sessionId: z.string().optional().describe('Prepared session; omitted > bootstrap from projectRoot.'),
+        projectRoot: z.string().optional(),
         feature: z.string().describe('The feature to test, in natural language.'),
         mode: z
           .enum(['plan', 'execute', 'interactive'])
           .optional()
-          .describe('plan (default) | execute (focused run as a job) | interactive (run until the first question).'),
+          .describe('plan (default) | execute (job) | interactive (until the first question).'),
         platform: z.enum(['android', 'ios']).optional(),
-        device: z.string().optional().describe('Specific device/simulator serial or udid to prepare when bootstrapping from projectRoot.'),
-        consentId: z.string().optional().describe('Consent id for the privileged boot/install/launch steps when bootstrapping a device.'),
-        approve: z.boolean().optional().describe('Approve the bootstrap consent request (paired with consentId).'),
+        device: z.string().optional().describe('Device/simulator to bootstrap on.'),
+        consentId: z.string().optional().describe('Bootstrap consent (boot/install/launch).'),
+        approve: z.boolean().optional(),
         creativity: z.enum(['conservative', 'standard', 'creative', 'adversarial']).optional(),
         allowAdversarial: z.boolean().optional(),
-        maxScreens: z.number().optional().describe('Max distinct screens for the focused exploration (default 8).'),
-        maxActions: z.number().optional().describe('Max actions for the focused exploration (default 20).'),
+        maxScreens: z.number().optional().describe('Default 8.'),
+        maxActions: z.number().optional().describe('Default 20.'),
         timeoutMs: z.number().optional(),
         generateCases: z.boolean().optional().describe('Generate test cases (default true).'),
         includeCode: z.boolean().optional(),
@@ -180,7 +166,7 @@ export function registerFeatureTesting(server: McpServer, sessions: SessionStore
               fields: [{ name: 'feature', example: scopeResult.candidates[0]?.title }],
               fallbackOptions: scopeResult.needsInput.options,
               resume: { tool: 'qa_test_feature', args: { mode: 'plan' } },
-              attempted: [`scoped "${feature}" — multiple candidates tie`],
+              attempted: [`scoped "${feature}": multiple candidates tie`],
               ifDeclined: 'Swipium plans the highest-confidence candidate.',
             },
             { sessionId: sessionId ?? undefined, candidates: scopeResult.candidates },
@@ -201,16 +187,11 @@ export function registerFeatureTesting(server: McpServer, sessions: SessionStore
       }
 
       // EXECUTE / INTERACTIVE: reuse a prepared session, else BOOTSTRAP one from projectRoot using
-      // the same resolver/planner/prepare path as qa_test_this (Fix Group 4) — so "test the weather
+      // the same resolver/planner/prepare path as qa_test_this (Fix Group 4), so "test the weather
       // feature" works even when the first instruction is feature-focused.
       let session = sessionId ? sessions.get(sessionId) : undefined;
       if (sessionId && !session) {
-        return qaError({
-          what: `Unknown sessionId ${sessionId}`,
-          changedState: false,
-          retrySafe: true,
-          nextSteps: ['Omit sessionId to bootstrap from projectRoot, or pass a valid session.'],
-        });
+        return unknownSessionError(sessionId, ['Omit sessionId to bootstrap from projectRoot, or pass a valid session.']);
       }
       let driver = session ? (await getDriver(session)).driver : undefined;
       if (!session || !driver) {
@@ -234,7 +215,7 @@ export function registerFeatureTesting(server: McpServer, sessions: SessionStore
       if (!scopeResult.found) {
         return qaOk(
           { sessionId: session.id, feature, mode: effectiveMode, found: false, searched: scopeResult.searched },
-          `No feature matched "${feature}" — nothing to execute. Searched: ${scopeResult.searched.terms.slice(0, 10).join(', ')}.`,
+          `No feature matched "${feature}", nothing to execute. Searched: ${scopeResult.searched.terms.slice(0, 10).join(', ')}.`,
         );
       }
       if (scopeResult.needsInput) {
@@ -246,7 +227,7 @@ export function registerFeatureTesting(server: McpServer, sessions: SessionStore
             fields: [{ name: 'feature', example: scopeResult.candidates[0]?.title }],
             fallbackOptions: scopeResult.needsInput.options,
             resume: { tool: 'qa_test_feature', args: { sessionId: session.id, mode: effectiveMode } },
-            attempted: [`scoped "${feature}" — multiple candidates tie`],
+            attempted: [`scoped "${feature}": multiple candidates tie`],
             ifDeclined: 'Swipium tests the highest-confidence candidate.',
           },
           { sessionId: session.id, candidates: scopeResult.candidates },
@@ -254,19 +235,21 @@ export function registerFeatureTesting(server: McpServer, sessions: SessionStore
       }
 
       const job = sessions.createJob(session, `test_feature:${effectiveMode}`);
-      void runFeatureTestJob(sessions, session, job, {
-        feature,
-        scopeResult,
-        objective: r.ctx.objective,
-        mode: effectiveMode,
-        platform,
-        creativity: creativity as CreativityLevel | undefined,
-        allowAdversarial: !!allowAdversarial,
-        maxScreens,
-        maxActions,
-        generateCases: generateCases !== false,
-        stopOnAuth: effectiveMode === 'interactive',
-      });
+      void runWithSignal(sessions.abortSignal(session, job.jobId), () =>
+        runFeatureTestJob(sessions, session, job, {
+          feature,
+          scopeResult,
+          objective: r.ctx.objective,
+          mode: effectiveMode,
+          platform,
+          creativity: creativity as CreativityLevel | undefined,
+          allowAdversarial: !!allowAdversarial,
+          maxScreens,
+          maxActions,
+          generateCases: generateCases !== false,
+          stopOnAuth: effectiveMode === 'interactive',
+        }),
+      );
       return qaOk(
         {
           sessionId: session.id,
@@ -299,7 +282,7 @@ interface FeatureTestJobArgs {
   stopOnAuth: boolean;
 }
 
-/** Focused feature run: targeted exploration → record cases → merge into the feature map → report. */
+/** Focused feature run: targeted exploration > record cases > merge into the feature map > report. */
 async function runFeatureTestJob(sessions: SessionStore, session: Session, job: JobRecord, a: FeatureTestJobArgs): Promise<void> {
   const signal = sessions.abortSignal(session, job.jobId);
   const upd = (patch: Partial<JobRecord>) => sessions.updateJobIfRunning(session, job, patch);
@@ -387,7 +370,7 @@ async function runFeatureTestJob(sessions: SessionStore, session: Session, job: 
       prior,
     );
 
-    // 4. Refresh the DERIVED feature-coverage cache (Fix 11 — disposable; the durable truth is the app
+    // 4. Refresh the DERIVED feature-coverage cache (Fix 11, disposable; the durable truth is the app
     //    map + persistent suite written below) + a readable cases artifact.
     const mapPath = upsertFeatureCoverage(session.root, session.appId, merge.coverage);
     const casesUri = sessions.saveArtifact(
@@ -475,8 +458,8 @@ async function runFeatureTestJob(sessions: SessionStore, session: Session, job: 
         nextRecommendedAction,
       },
       resultText:
-        `🎯 feature test ${state} — ${liveScope.title}: ${merge.delta.summary}\n` +
-        `cases: ${merge.cases.length} (${merge.delta.casesPassed} pass / ${merge.delta.casesFailed} fail / ${merge.delta.casesBlocked} blocked); map: ${merge.delta.statusBefore ?? 'new'} → ${merge.delta.statusAfter}\n` +
+        `🎯 feature test ${state}: ${liveScope.title}: ${merge.delta.summary}\n` +
+        `cases: ${merge.cases.length} (${merge.delta.casesPassed} pass / ${merge.delta.casesFailed} fail / ${merge.delta.casesBlocked} blocked); map: ${merge.delta.statusBefore ?? 'new'} > ${merge.delta.statusAfter}\n` +
         (reportUri ? `report: ${reportUri}\n` : '') +
         (appMapUri ? `appMap: ${appMapUri}\n` : '') +
         `featureCoverageCache: ${mapPath}` +

@@ -1,9 +1,9 @@
-// SWIPIUM Issue Log / Error Tracking (SWIPIUM-REQ-07). Type definitions, enums, and validation
+// SWIPIUM Issue Log / Error Tracking. Type definitions, enums, and validation
 // helpers for the durable, project-level issue ledger.
 //
 // The ledger is Swipium's mobile-QA memory: an append-only event log (`.swipium/issues-log.jsonl`)
 // plus a derived index (`.swipium/issues/index.json`). Events are compact and never hold full
-// screenshots / logs / stack traces / report JSON — only references to artifacts (Developer Notes).
+// screenshots / logs / stack traces / report JSON. Only references to artifacts (Developer Notes).
 // Every lifecycle mutation is append-only so a developer can audit WHY an issue is currently
 // considered fixed / reopened / suppressed.
 //
@@ -53,7 +53,7 @@ export interface SourceRevision {
   artifactHash?: string;
 }
 
-/** A reference back to the run that produced an event (compact — no inline report JSON). */
+/** A reference back to the run that produced an event (compact, no inline report JSON). */
 export interface IssueRunRef {
   sessionId?: string;
   reportPath?: string;
@@ -70,7 +70,7 @@ export interface IssueObservation {
   screenId?: string;
   route?: string;
   workflow?: string;
-  visibleText?: string; // short, normalized — redact before storing long text
+  visibleText?: string; // short, normalized; redact before storing long text
   visibleTextHash?: string;
   exception?: { type?: string; message?: string; topFrame?: string };
   http?: { method?: string; routeTemplate?: string; status?: number };
@@ -152,11 +152,11 @@ export interface IssueEvent {
   classification?: IssueClassification;
   lifecycle?: IssueLifecyclePatch;
   links?: IssueLinks;
-  /** Relationship carried on a `linked_run` event (REQ-08): how this run relates to the issue. */
+  /** Relationship carried on a `linked_run` event: how this run relates to the issue. */
   relationship?: IssueRunRelationship;
 }
 
-/** How a run relates to an issue on a `linked_run` event (REQ-08 test-suite / audit linking). */
+/** How a run relates to an issue on a `linked_run` event (test-suite / audit linking). */
 export type IssueRunRelationship = 'observed' | 'verified_fixed' | 'regressed' | 'suppressed';
 
 /** A derived index record (one per issue), rebuildable from the event log. */
@@ -185,12 +185,14 @@ export interface IssueRecord {
   suppressedUntil?: string;
   suppressionReason?: string;
   suppressionScope?: SuppressionScope;
+  /** Lane the issue was in when it was suppressed. Restored on unsuppress / suppression expiry. */
+  stateBeforeSuppression?: IssueState;
   appMapRefs?: AppMapRef[];
   testRefs?: TestRef[];
   reportRefs?: ReportRef[];
   evidenceRefs?: EvidenceRef[];
   lastRecurrenceMessage?: string;
-  /** When a `verified_fixed` linked_run last confirmed the fix held (REQ-08). */
+  /** When a `verified_fixed` linked_run last confirmed the fix held. */
   lastVerifiedFixedAt?: string;
 }
 
@@ -200,6 +202,10 @@ export interface IssueIndex {
   updatedAt: string;
   appId?: string;
   records: IssueRecord[];
+  /** Size + mtime of `issues-log.jsonl` when this index was derived. A mismatch means another
+   *  process appended to the log since, so the cached index is stale and must be rebuilt. */
+  logSize?: number;
+  logMtimeMs?: number;
 }
 
 export function emptyIndex(now: string, appId?: string): IssueIndex {

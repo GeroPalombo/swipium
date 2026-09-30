@@ -1,4 +1,4 @@
-// Persistent-suite store (SWIPIUM-REQ-06 "Suite Store Requirements"). The ONLY module here that does
+// Persistent-suite store. The ONLY module here that does
 // IO: it owns `.swipium/test-suite.json`, the per-functionality `.swipium/test-suite/<func>/<id>.yaml`
 // mirror, and the `.swipium/test-runs/<runId>.json` ledger. Everything it persists is produced by the
 // pure modules (schema/merge/generator/history) so the on-disk format is deterministic and testable.
@@ -35,7 +35,7 @@ export function suiteResourceUri(sessionId: string): string {
   return `swipium://session/${sessionId}/test-suite/test-suite.json`;
 }
 
-/** A filesystem-safe run id from an ISO timestamp (no clock read here — caller passes `now`). */
+/** A filesystem-safe run id from an ISO timestamp (no clock read here; caller passes `now`). */
 export function runIdFromNow(now: string): string {
   return now.replace(/[:.]/g, '-');
 }
@@ -95,7 +95,7 @@ export interface ApplyMergeResult {
 }
 
 /**
- * Full disk round-trip: load → merge → validate → save → record run ledger. The single entry point
+ * Full disk round-trip: load > merge > validate > save > record run ledger. The single entry point
  * every integration hook (qa_test_this / report / explore / feature / ticket) calls so the suite is
  * updated consistently from one place.
  */

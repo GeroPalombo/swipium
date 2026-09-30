@@ -1,8 +1,8 @@
-// Shared seed executor (NEXT-PLAN: Seeded State + Flow V2). The raw, no-consent execution of a
+// Shared seed executor (Seeded State + Flow V2). The raw, no-consent execution of a
 // fixture seed (deeplink / script / api), used by flow
 // runner's `seed` step (a flow is the author's explicit consent surface). It performs the action,
-// persists a redacted artifact for scripts, logs the env change on success, and returns a result —
-// it does NOT prompt for consent or record qa_notes (callers decide how to report).
+// persists a redacted artifact for scripts, logs the env change on success, and returns a result:
+// it does NOT prompt for consent or record qa_note outcomes (callers decide how to report).
 
 import { existsSync } from 'node:fs';
 import { isAbsolute, resolve, sep } from 'node:path';
@@ -94,7 +94,7 @@ export async function executeSeed(
       if (bad)
         return {
           ok: false,
-          detail: `seed script references a path outside the project root ("${bad}") — seed scripts must live under the project root`,
+          detail: `seed script references a path outside the project root ("${bad}"). Seed scripts must live under the project root`,
           warnings,
         };
       const r = await run(argv[0], argv.slice(1), { cwd: session.root, timeoutMs: 60000 });

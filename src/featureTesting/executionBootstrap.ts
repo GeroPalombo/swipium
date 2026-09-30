@@ -1,6 +1,6 @@
-// SWIPIUM-REQ-03 Fix Group 4 — bootstrap a prepared device session for qa_test_feature execute/
+// Bootstrap a prepared device session for qa_test_feature execute/
 // interactive when no prepared session exists. Reuses the SAME resolver/planner/prepare path as
-// qa_test_this (resolveArtifact → planTarget → prepareAndroid/prepareIos), with the SAME consent
+// qa_test_this (resolveArtifact > planTarget > prepareAndroid/prepareIos), with the SAME consent
 // gate so the high-level feature tool is never less safe than the lower-level prepare tools. When a
 // device/artifact is not available it returns a typed, actionable target-preparation blocker that
 // routes to qa_test_this; the complex lanes (build-from-source, .aab convert, real iOS) are routed
@@ -22,9 +22,10 @@ import { buildTestThisPreflight } from '../services/preflight.js';
 import { prepareAndroid } from '../services/prepareAndroid.js';
 import { prepareIos } from '../services/prepareIos.js';
 import { DirectDriver } from '../drivers/DirectDriver.js';
-import { getDriver } from '../session/attach.js';
+import { blockedDeviceResult, getDriver, verifiedEmulatorSerials } from '../session/attach.js';
 import type { Session, SessionStore } from '../session/store.js';
 import type { Driver } from '../drivers/Driver.js';
+import { currentSignal, runWithSignal } from '../lib/abortScope.js';
 
 const SEL_TO_PLATFORM: Record<TargetSelection, 'android' | 'ios'> = {
   'android-emulator': 'android',
@@ -47,20 +48,14 @@ export interface BootstrapArgs {
 
 export type BootstrapResult = { ok: true; session: Session; driver: Driver } | { ok: false; result: CallToolResult };
 
-/** Resolve project → create session → resolve artifact/target → (consent) prepare the device. */
+/** Resolve project > create session > resolve artifact/target > (consent) prepare the device. */
 export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<BootstrapResult> {
-  const { resolveProjectRoot } = await import('../context/projectRoot.js');
+  const { resolveProjectRoot, unresolvedProjectRootError } = await import('../context/projectRoot.js');
   const resolved = await resolveProjectRoot(a.server, a.projectRoot);
   if (!resolved.root) {
     return {
       ok: false,
-      result: qaError({
-        what: 'Could not resolve a project root for feature execution',
-        changedState: false,
-        retrySafe: true,
-        nextSteps: ['Pass projectRoot="/abs/path" or a sessionId from qa_test_this.'],
-        clientHint: resolved.hint,
-      }),
+      result: unresolvedProjectRootError(resolved, { what: 'Could not resolve a project root for feature execution' }),
     };
   }
   const session = a.sessions.create(resolved.root, undefined, {});
@@ -88,12 +83,12 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
   const art = await resolveArtifact({ projectRoot: root, platform: a.platform ?? 'any' });
   if (!art.best) {
     return routeToTestThis('NO_BUILD_ARTIFACT', `No installable artifact under ${root} to test "${a.feature}".`, [
-      'Build it: qa_build { mode:"plan" } → qa_build { mode:"run" }.',
+      'Build it: qa_build { mode:"plan" } > qa_build { mode:"run" }.',
       `Searched: ${art.searchedLocations.slice(0, 5).join('; ') || '(root only)'}.`,
     ]);
   }
   if (art.best.type === 'aab') {
-    return routeToTestThis('AAB_NEEDS_BUNDLETOOL', 'Only a .aab is present — convert it to an installable APK first.', [
+    return routeToTestThis('AAB_NEEDS_BUNDLETOOL', 'Only a .aab is present. Convert it to an installable APK first.', [
       `Convert: qa_bundletool { aab:"${art.best.path}" }.`,
     ]);
   }
@@ -105,12 +100,14 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
     adbPresent ? listAvds() : Promise.resolve<string[]>([]),
     simPresent ? listSimulators() : Promise.resolve([]),
   ]);
+  // H6: property-verified emulators (localhost:5555, Genymotion) use the same policy as getDriver.
+  const emulators = await verifiedEmulatorSerials(online);
   const tInputs: TargetInputs = {
     requestedPlatform: a.platform,
     requestedDevice: a.device,
     artifactPlatform: art.best.platform,
     artifactInstallTargets: art.best.installableOn,
-    android: { online, avds },
+    android: { online, avds, emulators },
     ios: {
       bootedSimulators: sims.filter((s) => s.state === 'Booted').map((s) => ({ udid: s.udid, name: s.name })),
       availableSimulators: sims.filter((s) => s.state !== 'Booted').map((s) => ({ udid: s.udid, name: s.name })),
@@ -128,7 +125,7 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
           retrySafe: true,
           failureCode: target.blocked.failureCode,
           nextSteps: [
-            'Bring a device online or create one (qa_doctor), then retry.',
+            'Create an Android AVD (Android Studio > Device Manager, or avdmanager create avd …) or an iOS Simulator (Xcode), then retry.',
             `Or run qa_test_this { projectRoot:"${root}", mode:"execute" }.`,
           ],
         },
@@ -138,7 +135,7 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
   }
   if (target.selected === 'ios-real') {
     return routeToTestThis('IPA_INSTALL_UNSUPPORTED', 'This artifact installs only on a real iOS device (signing/provisioning required).', [
-      'Use qa_prepare_ios_real_target.',
+      'Physical iOS devices are out of scope. Build a simulator .app (qa_build {platform:"ios"}) and use qa_prepare_ios_target.',
     ]);
   }
 
@@ -152,7 +149,7 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
     try {
       externalApk = { path: effectiveApk, sha256: createHash('sha256').update(readFileSync(effectiveApk)).digest('hex') };
     } catch {
-      /* unreadable — treated as in-root install */
+      /* unreadable: treated as in-root install */
     }
   }
   const preflight = buildTestThisPreflight({
@@ -220,23 +217,26 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
             { sessionId: session.id },
           ),
         };
-      const driver = (session.driver as DirectDriver | undefined) ?? new DirectDriver();
-      driver.setSignal?.(a.signal);
-      const res = await prepareAndroid(
-        a.sessions,
-        session,
-        driver,
-        {
-          needBoot: target.willBoot,
-          bootTarget: target.bootTarget,
-          serial: target.device,
-          resolvedAppId: appId,
-          apk: effectiveApk,
-          rnDebug: scan.metroNeed === 'likely',
-          allowLaunchWithoutMetro: false,
-          mutationConsent,
-        },
-        { signal: a.signal },
+      // No unchecked cast: a session left on an iOS (WDA/simctl) driver gets a fresh adb driver.
+      const driver = session.driver instanceof DirectDriver ? session.driver : new DirectDriver();
+      // Cancellation is scoped to this call (abortScope), never bound on the shared driver.
+      const res = await runWithSignal(a.signal ?? currentSignal(), () =>
+        prepareAndroid(
+          a.sessions,
+          session,
+          driver,
+          {
+            needBoot: target.willBoot,
+            bootTarget: target.bootTarget,
+            serial: target.device,
+            resolvedAppId: appId,
+            apk: effectiveApk,
+            rnDebug: scan.metroNeed === 'likely',
+            allowLaunchWithoutMetro: false,
+            mutationConsent,
+          },
+          { signal: a.signal },
+        ),
       );
       if (!res.ok)
         return {
@@ -289,20 +289,22 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
     };
   }
 
-  const { driver } = await getDriver(session);
+  const { driver, blocked } = await getDriver(session);
   if (!driver)
     return {
       ok: false,
-      result: qaError(
-        {
-          what: 'No driver bound after device preparation.',
-          changedState: true,
-          retrySafe: true,
-          failureCode: 'NO_DEVICE',
-          nextSteps: ['Run qa_test_this { mode:"execute" } to prepare a device, then qa_test_feature with that sessionId.'],
-        },
-        { sessionId: session.id },
-      ),
+      result:
+        blockedDeviceResult(blocked) ??
+        qaError(
+          {
+            what: 'No driver bound after device preparation.',
+            changedState: true,
+            retrySafe: true,
+            failureCode: 'NO_DEVICE',
+            nextSteps: ['Run qa_test_this { mode:"execute" } to prepare a device, then qa_test_feature with that sessionId.'],
+          },
+          { sessionId: session.id },
+        ),
     };
   return { ok: true, session, driver };
 }

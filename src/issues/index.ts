@@ -1,4 +1,4 @@
-// SWIPIUM Issue Log — high-level service + query layer (SWIPIUM-REQ-07).
+// SWIPIUM Issue Log: high-level service + query layer.
 //
 // This is the single entry point callers (health oracle, reports, explore, mobile audit, tools)
 // use to record observations and mutate lifecycle. It ties together fingerprinting, classification,
@@ -11,7 +11,16 @@ import { createHash } from 'node:crypto';
 import { classifyObservation, type ClassifyContext } from './classify.js';
 import { fingerprint, issueIdFromFingerprint } from './fingerprint.js';
 import { buildRecurrenceMessage, foldEvent } from './recurrence.js';
-import { appendEvents, eventCountForIssue, findRecord, getIndex, loadPolicy, saveIndex, type IssuePolicyFile } from './store.js';
+import {
+  appendEvents,
+  eventCountForIssue,
+  findRecord,
+  getIndex,
+  loadPolicy,
+  saveIndex,
+  withLedgerLock,
+  type IssuePolicyFile,
+} from './store.js';
 import type {
   IssueEnvironment,
   IssueEvent,
@@ -27,8 +36,9 @@ import type {
   IssueCategory,
   IssueSeverity,
   SourceRevision,
+  SuppressionScope,
 } from './schema.js';
-import { ISSUE_SCHEMA_VERSION } from './schema.js';
+import { ISSUE_SCHEMA_VERSION, OPEN_STATES } from './schema.js';
 
 /** Deterministic, collision-resistant event id from its content. */
 export function makeEventId(issueId: string, createdAt: string, eventType: string, seq = 0): string {
@@ -38,6 +48,13 @@ export function makeEventId(issueId: string, createdAt: string, eventType: strin
 
 export interface ObserveMeta {
   appId?: string;
+  /** Identity category for the fingerprint (`cat:` token, used only when there is no failureCode).
+   *  Manual qa_issue_log entries set it; the report bridge leaves it unset so the fingerprints it
+   *  produced in earlier releases stay byte-identical and existing ledgers keep matching. */
+  fingerprintCategory?: IssueCategory;
+  /** Keep `appId` as event metadata but leave it OUT of the fingerprint (manual qa_issue_log
+   *  entries: whether the caller passed a sessionId or a projectRoot must not change identity). */
+  fingerprintWithoutAppId?: boolean;
   appName?: string;
   platform?: IssuePlatform;
   environment?: IssueEnvironment;
@@ -56,9 +73,24 @@ export interface ObserveResult {
   issueId: string;
 }
 
+/** Typed reasons a ledger mutation was refused (surfaced as the tool's failureCode). */
+export type LedgerErrorCode = 'ISSUE_NOT_FOUND' | 'ISSUE_STATE_INVALID' | 'ISSUE_EVIDENCE_REQUIRED';
+
+export interface LedgerMutationResult {
+  ok: boolean;
+  record?: IssueRecord;
+  reason?: string;
+  code?: LedgerErrorCode;
+}
+
+function notFound(key: { issueId?: string; fingerprint?: string }): LedgerMutationResult {
+  return { ok: false, code: 'ISSUE_NOT_FOUND', reason: `No issue found for ${key.issueId ?? key.fingerprint ?? '(no key)'}` };
+}
+
 /**
- * Record one observation: fingerprint → classify → decide lifecycle → append event(s) → update
+ * Record one observation: fingerprint > classify > decide lifecycle > append event(s) > update
  * index. Reopens a fixed issue (with recurrence message) when its fingerprint is seen again.
+ * The whole read-modify-write runs under the cross-process ledger lock.
  */
 export function recordObservation(
   root: string,
@@ -67,11 +99,22 @@ export function recordObservation(
   ctx: ClassifyContext = {},
   meta: ObserveMeta = {},
 ): ObserveResult {
+  return withLedgerLock(root, () => recordObservationLocked(root, observation, now, ctx, meta));
+}
+
+function recordObservationLocked(
+  root: string,
+  observation: IssueObservation,
+  now: string,
+  ctx: ClassifyContext,
+  meta: ObserveMeta,
+): ObserveResult {
   const policy = loadPolicy(root);
   const fp = fingerprint({
     failureCode: observation.failureCode,
+    category: meta.fingerprintCategory,
     platform: meta.platform,
-    appId: meta.appId,
+    appId: meta.fingerprintWithoutAppId ? undefined : meta.appId,
     observation,
   });
   const issueId = issueIdFromFingerprint(fp);
@@ -134,13 +177,17 @@ export function recordObservation(
   return { record, events, isNew: prev == null, reopened, recurrenceMessage, fingerprint: fp, issueId };
 }
 
+/** States an issue can be marked fixed from: an active defect (open / seen again / regressed /
+ *  untriaged). Fixing a suppressed, noise, or already-fixed issue is refused with a typed error. */
+export const FIXABLE_STATES: IssueState[] = OPEN_STATES;
+
 /** Append a `fixed` lifecycle event and update the index. */
 export function markFixed(
   root: string,
   key: { issueId?: string; fingerprint?: string },
   patch: { fixedInCommit?: string; fixedInVersion?: string; howFixed?: string; fixedBy?: string; sourceRevision?: SourceRevision },
   now: string,
-): { ok: boolean; record?: IssueRecord; reason?: string } {
+): LedgerMutationResult {
   return applyLifecycle(
     root,
     key,
@@ -155,7 +202,45 @@ export function markFixed(
       fixedBy: patch.fixedBy,
     },
     patch.sourceRevision,
+    (existing) =>
+      FIXABLE_STATES.includes(existing.state)
+        ? undefined
+        : {
+            ok: false,
+            code: 'ISSUE_STATE_INVALID',
+            reason: `Issue ${existing.issueId} is "${existing.state}"; only an active issue (${FIXABLE_STATES.join('/')}) can be marked fixed`,
+          },
   );
+}
+
+/** Append a `suppressed` lifecycle event (expected noise / not actionable) and update the index. */
+export function markSuppressed(
+  root: string,
+  key: { issueId?: string; fingerprint?: string },
+  patch: { suppressionReason?: string; suppressedUntil?: string; suppressionScope?: SuppressionScope },
+  now: string,
+): LedgerMutationResult {
+  return applyLifecycle(root, key, now, 'suppressed', {
+    state: 'suppressed',
+    suppressionReason: patch.suppressionReason,
+    suppressedUntil: patch.suppressedUntil,
+    suppressionScope: patch.suppressionScope,
+  });
+}
+
+/**
+ * Lift a suppression early: append a `triaged` event returning the issue to the lane it was in
+ * before it was suppressed (open when unknown). Refused unless the issue is currently suppressed.
+ */
+export function markUnsuppressed(root: string, key: { issueId?: string; fingerprint?: string }, now: string): LedgerMutationResult {
+  return withLedgerLock(root, () => {
+    const index = getIndex(root, now);
+    const existing = findRecord(index, key);
+    if (!existing) return notFound(key);
+    if (existing.state !== 'suppressed')
+      return { ok: false, code: 'ISSUE_STATE_INVALID', reason: `Issue ${existing.issueId} is "${existing.state}", not suppressed` };
+    return applyLifecycleLocked(root, index, existing, now, 'triaged', { state: existing.stateBeforeSuppression ?? 'open' });
+  });
 }
 
 export interface LinkRunOptions {
@@ -171,17 +256,26 @@ export interface LinkRunOptions {
 /**
  * Append a `linked_run` event tying a run (test case / audit check) to an issue with a relationship
  * (observed / verified_fixed / regressed / suppressed) and optional evidence. The issue ledger stays
- * the source of truth; this records HOW a run related to the issue (REQ-08).
+ * the source of truth; this records HOW a run related to the issue.
  */
 export function linkRun(
   root: string,
   key: { issueId?: string; fingerprint?: string },
   opts: LinkRunOptions,
   now: string,
-): { ok: boolean; record?: IssueRecord; reason?: string } {
+): LedgerMutationResult {
+  return withLedgerLock(root, () => linkRunLocked(root, key, opts, now));
+}
+
+function linkRunLocked(
+  root: string,
+  key: { issueId?: string; fingerprint?: string },
+  opts: LinkRunOptions,
+  now: string,
+): LedgerMutationResult {
   const index = getIndex(root, now);
   const existing = findRecord(index, key);
-  if (!existing) return { ok: false, reason: `No issue found for ${key.issueId ?? key.fingerprint ?? '(no key)'}` };
+  if (!existing) return notFound(key);
   const event: IssueEvent = {
     schemaVersion: ISSUE_SCHEMA_VERSION,
     eventId: makeEventId(existing.issueId, now, 'linked_run', eventCountForIssue(root, existing.issueId)),
@@ -210,7 +304,7 @@ export function linkRun(
 }
 
 /**
- * Verify a FIXED issue with current-run evidence (REQ-08 `qa_issue_verify_fixed`). Requires the issue
+ * Verify a FIXED issue with current-run evidence (`qa_issue_log` mode:"verify_fixed"). Requires the issue
  * to be in state `fixed` and at least one evidence reference (report/test/audit). Appends a
  * `verified_fixed` linked_run event so reports can honestly claim "verified this run".
  */
@@ -226,27 +320,37 @@ export function verifyFixed(
     note?: string;
   },
   now: string,
-): { ok: boolean; record?: IssueRecord; reason?: string } {
-  const index = getIndex(root, now);
-  const existing = findRecord(index, key);
-  if (!existing) return { ok: false, reason: `No issue found for ${key.issueId ?? key.fingerprint ?? '(no key)'}` };
-  if (existing.state !== 'fixed')
-    return { ok: false, reason: `Issue ${existing.issueId} is "${existing.state}", not "fixed" — only a fixed issue can be verified` };
-  const hasEvidence = Boolean(opts.reportUri || opts.testCaseId || opts.auditCheckId || (opts.evidenceUris && opts.evidenceUris.length));
-  if (!hasEvidence)
-    return { ok: false, reason: 'verify_fixed needs current-run evidence: a reportUri, testCaseId, auditCheckId, or evidenceUris' };
-  return linkRun(
-    root,
-    { issueId: existing.issueId },
-    {
-      relationship: 'verified_fixed',
-      reportUri: opts.reportUri,
-      testCaseId: opts.testCaseId ?? opts.auditCheckId,
-      evidenceUris: opts.evidenceUris,
-      sourceRevision: opts.sourceRevision,
-    },
-    now,
-  );
+): LedgerMutationResult {
+  return withLedgerLock(root, () => {
+    const index = getIndex(root, now);
+    const existing = findRecord(index, key);
+    if (!existing) return notFound(key);
+    if (existing.state !== 'fixed')
+      return {
+        ok: false,
+        code: 'ISSUE_STATE_INVALID',
+        reason: `Issue ${existing.issueId} is "${existing.state}", not "fixed"; only a fixed issue can be verified`,
+      };
+    const hasEvidence = Boolean(opts.reportUri || opts.testCaseId || opts.auditCheckId || (opts.evidenceUris && opts.evidenceUris.length));
+    if (!hasEvidence)
+      return {
+        ok: false,
+        code: 'ISSUE_EVIDENCE_REQUIRED',
+        reason: 'verify_fixed needs current-run evidence: a reportUri, testCaseId, auditCheckId, or evidenceUris',
+      };
+    return linkRunLocked(
+      root,
+      { issueId: existing.issueId },
+      {
+        relationship: 'verified_fixed',
+        reportUri: opts.reportUri,
+        testCaseId: opts.testCaseId ?? opts.auditCheckId,
+        evidenceUris: opts.evidenceUris,
+        sourceRevision: opts.sourceRevision,
+      },
+      now,
+    );
+  });
 }
 
 function applyLifecycle(
@@ -256,12 +360,28 @@ function applyLifecycle(
   eventType: IssueEvent['eventType'],
   lifecycle: IssueLifecyclePatch,
   sourceRevision?: SourceRevision,
-): { ok: boolean; record?: IssueRecord; reason?: string } {
-  const index = getIndex(root, now);
-  const existing = findRecord(index, key);
-  if (!existing) {
-    return { ok: false, reason: `No issue found for ${key.issueId ?? key.fingerprint ?? '(no key)'}` };
-  }
+  /** Optional precondition on the current record; returning a result refuses the transition. */
+  guard?: (existing: IssueRecord) => LedgerMutationResult | undefined,
+): LedgerMutationResult {
+  return withLedgerLock(root, () => {
+    const index = getIndex(root, now);
+    const existing = findRecord(index, key);
+    if (!existing) return notFound(key);
+    const refused = guard?.(existing);
+    if (refused) return refused;
+    return applyLifecycleLocked(root, index, existing, now, eventType, lifecycle, sourceRevision);
+  });
+}
+
+function applyLifecycleLocked(
+  root: string,
+  index: IssueIndex,
+  existing: IssueRecord,
+  now: string,
+  eventType: IssueEvent['eventType'],
+  lifecycle: IssueLifecyclePatch,
+  sourceRevision?: SourceRevision,
+): LedgerMutationResult {
   const event: IssueEvent = {
     schemaVersion: ISSUE_SCHEMA_VERSION,
     eventId: makeEventId(existing.issueId, now, eventType, eventCountForIssue(root, existing.issueId)),

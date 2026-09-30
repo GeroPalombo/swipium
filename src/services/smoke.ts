@@ -1,4 +1,4 @@
-// Smoke service (hardening P0.1) — the server-side smoke loop, extracted from the qa_smoke tool so
+// Smoke service (hardening P0.1): the server-side smoke loop, extracted from the qa_smoke tool so
 // BOTH the tool and qa_test_this execute mode run the exact same path (no MCP-over-transport). It
 // launches the app, runs the deterministic baseline (snapshot quality + health + evidence shot),
 // then runs every saved flow, recording a structured qa_note per workflow.
@@ -9,9 +9,8 @@ import { settle } from '../snapshot/settle.js';
 import { checkHealth } from '../oracle/health.js';
 import { recordHealthFindings } from '../oracle/record.js';
 import { listFlowFiles } from '../flows/discover.js';
-import { parseFlow } from '../flows/schema.js';
+import { isMutatingFlowStep, parseFlow } from '../flows/schema.js';
 import { runFlow, type FlowRunResult } from '../flows/run.js';
-import { ciMutatingSteps } from '../ci/preflight.js';
 import type { Driver } from '../drivers/Driver.js';
 import type { Session, SessionStore, TestNote, TestOutcome } from '../session/store.js';
 import type { Flow } from '../flows/schema.js';
@@ -29,6 +28,16 @@ export interface SmokeOptions {
   variables?: Record<string, string>;
 }
 
+/** Mutating steps qa_smoke refuses to run implicitly (repo flows are untrusted): the CI set plus
+ *  any `openUrl` that interpolates a `${VAR}` (would carry a resolved value off-device). */
+function mutatingSteps(flow: Flow): Array<{ step: number; kind: string }> {
+  const out: Array<{ step: number; kind: string }> = [];
+  [...flow.setup, ...flow.steps, ...flow.teardown].forEach((step, index) => {
+    if (isMutatingFlowStep(step)) out.push({ step: index + 1, kind: step.kind });
+  });
+  return out;
+}
+
 function externalProviderSteps(flow: Flow): Array<{ step: number; kind: string }> {
   const out: Array<{ step: number; kind: string }> = [];
   [...flow.setup, ...flow.steps, ...flow.teardown].forEach((step, index) => {
@@ -42,7 +51,7 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
   const doLaunch = opts.launch ?? !!session.appId;
   const baseline: Record<string, unknown> = {};
 
-  // ---- baseline: launch → snapshot quality → health → evidence screenshot ----
+  // ---- baseline: launch > snapshot quality > health > evidence screenshot ----
   try {
     if (doLaunch && session.appId) {
       await d.launchApp(session.appId);
@@ -59,25 +68,29 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
         };
         quality = parsed.quality.verdict;
       } catch {
-        /* visual-only screen — health + screenshot still run */
+        /* visual-only screen, health + screenshot still run */
       }
     }
     const health = await checkHealth(d, session.appId);
     await recordHealthFindings(sessions, session, health.findings, d, health.foreground);
     let shotUri: string | undefined;
-    try {
-      const png = await d.screenshot();
-      shotUri = sessions.saveArtifact(
-        session,
-        'screenshot',
-        `smoke-baseline-${Date.now()}.png`,
-        png,
-        'image/png',
-        'qa_smoke baseline evidence',
-      );
-      sessions.bump(session, 'screenshots');
-    } catch {
-      /* best-effort */
+    // Sensitive mode never persists screenshots. The baseline note says so instead.
+    const screenshotSkipped = session.sensitive ? 'screenshot skipped: sensitive mode' : undefined;
+    if (!screenshotSkipped) {
+      try {
+        const png = await d.screenshot();
+        shotUri = sessions.saveArtifact(
+          session,
+          'screenshot',
+          `smoke-baseline-${Date.now()}.png`,
+          png,
+          'image/png',
+          'qa_smoke baseline evidence',
+        );
+        sessions.bump(session, 'screenshots');
+      } catch {
+        /* best-effort */
+      }
     }
     const outcome: TestOutcome = !health.nativeHealthy || health.appStatus === 'error' ? 'fail' : 'pass';
     note({
@@ -85,7 +98,9 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
       outcome,
       category: outcome === 'fail' ? 'app_bug' : undefined,
       reason:
-        `native=${health.nativeHealthy ? 'ok' : health.nativeStatus} app=${health.appStatus}` + (quality ? ` quality=${quality}` : ''),
+        `native=${health.nativeHealthy ? 'ok' : health.nativeStatus} app=${health.appStatus}` +
+        (quality ? ` quality=${quality}` : '') +
+        (screenshotSkipped ? ` (${screenshotSkipped})` : ''),
       artifactUris: shotUri ? [shotUri] : undefined,
     });
     baseline.launch = {
@@ -94,6 +109,7 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
       appHealth: health.appStatus,
       quality,
       screenshotUri: shotUri,
+      ...(screenshotSkipped ? { screenshotSkipped } : {}),
     };
   } catch (e) {
     note({ workflow: 'launch_smoke', outcome: 'fail', category: 'mcp_limitation', reason: `baseline failed: ${String(e)}` });
@@ -122,9 +138,9 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
         flowResults.push({ name: f.name, passed: false, reason: 'invalid flow' });
         continue;
       }
-      const mutatingSteps = ciMutatingSteps(flow);
-      if (mutatingSteps.length) {
-        const reason = `mutating flow requires explicit qa_flow_run consent or CI policy: ${mutatingSteps.map((m) => `${m.step}:${m.kind}`).join(', ')}`;
+      const mutating = mutatingSteps(flow);
+      if (mutating.length) {
+        const reason = `mutating flow requires explicit qa_flow_run consent or CI policy: ${mutating.map((m) => `${m.step}:${m.kind}`).join(', ')}`;
         note({
           workflow: f.name,
           outcome: 'blocked',

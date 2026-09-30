@@ -1,4 +1,4 @@
-// Merge engine for the persistent suite (SWIPIUM-REQ-06 "Merge and Maintenance Requirements"). PURE
+// Merge engine for the persistent suite. PURE
 // + deterministic: given the existing suite and a batch of incoming cases, decide what is created,
 // updated, deprecated, and which fields conflict with human edits. Every run that observes or
 // generates QA knowledge funnels through here so stable IDs, dedup, provenance, and the per-case run
@@ -106,7 +106,7 @@ function applyUpdate(
   const protect = !!existing.manuallyEdited && opts.mode !== 'replace_generated';
   const next: CanonicalTestCase = { ...existing };
 
-  // Generated content fields — protected when a human has curated them (unless replace_generated).
+  // Generated content fields. Protected when a human has curated them (unless replace_generated).
   const existingRec = existing as unknown as Record<string, unknown>;
   const incomingRec = incoming as unknown as Record<string, unknown>;
   const nextRec = next as unknown as Record<string, unknown>;
@@ -118,13 +118,13 @@ function applyUpdate(
       continue;
     }
     if (protect && JSON.stringify(existingRec[field]) !== JSON.stringify(inVal)) {
-      conflicts.push({ id: existing.id, field, reason: 'manually curated — not overwritten (use mergeMode replace_generated to force)' });
+      conflicts.push({ id: existing.id, field, reason: 'manually curated, not overwritten (use mergeMode replace_generated to force)' });
       continue;
     }
     nextRec[field] = inVal;
   }
 
-  // Run facts always update — they describe reality, not curated intent.
+  // Run facts always update: they describe reality, not curated intent.
   if (incoming.actualResult.status !== 'not_run' || existing.actualResult.status === 'not_run') {
     next.actualResult = {
       ...incoming.actualResult,
@@ -164,7 +164,7 @@ function dedupeEvidence(items: CanonicalTestCase['evidence']): CanonicalTestCase
 }
 
 /**
- * Merge `incoming` canonical cases into `suite`. Incoming cases may carry a blank id (`''`) — a new
+ * Merge `incoming` canonical cases into `suite`. Incoming cases may carry a blank id (`''`); a new
  * stable id is allocated; a non-blank id or an identity match updates the existing case instead of
  * creating a duplicate.
  */

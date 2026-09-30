@@ -1,4 +1,4 @@
-// NeedsInput protocol (roadmap §3.2) — a single, consistent shape for the missing-input
+// NeedsInput protocol: a single, consistent shape for the missing-input
 // blockers a QA run hits, so an agent forwards ONE concise question to the user instead of
 // improvising. It is NOT an error: the run is paused, recoverable, and resumable. The payload
 // rides on a normal (ok:true) tool result with `needsInput:true`, and is also embeddable in a
@@ -10,14 +10,14 @@
 // Developer 1 contract (Milestone B): EVERY NeedsInput response carries one concise question,
 // typed fields (with secret flags), safe fallback options, the EXACT resume call, what Swipium
 // already tried (`attempted`), and what happens if the user declines (`ifDeclined`). Agents ask
-// one question — never a bundle of guesses — and resume deterministically.
+// one question (never a bundle of guesses) and resume deterministically.
 
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { currentResponseMode } from './result.js';
 
 export interface NeedsInputField {
   name: string;
-  /** Secret values are redacted everywhere — never logged, never written to artifacts. */
+  /** Secret values are redacted everywhere: never logged, never written to artifacts. */
   secret?: boolean;
   description?: string;
   example?: string;
@@ -31,7 +31,7 @@ export interface NeedsInputResume {
 
 export interface NeedsInputPayload {
   needsInput: true;
-  /** Stable id for the kind of input requested — lets an agent/CLI route the answer. */
+  /** Stable id for the kind of input requested. Lets an agent/CLI route the answer. */
   kind: NeedsInputKind;
   /** One concise, user-facing question. */
   question: string;
@@ -47,7 +47,7 @@ export interface NeedsInputPayload {
 }
 
 export type NeedsInputKind =
-  // roadmap §3.2 Milestone B required set:
+  // Required set (every NeedsInput producer must handle these):
   | 'monorepo_target'
   | 'preferred_platform'
   | 'credentials'
@@ -67,7 +67,7 @@ function resumeVia(kind: NeedsInputKind): NeedsInputResume {
 }
 
 /**
- * The standardized QA questions (roadmap §3.2). Builders, not constants, so callers can splice
+ * The standardized QA questions. Builders, not constants, so callers can splice
  * in context (which app, which screen) while keeping the field/fallback/resume contract stable.
  * `attempted` is left empty here and filled by qaNeedsInput from the live session.
  */
