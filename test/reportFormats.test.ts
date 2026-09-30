@@ -196,6 +196,11 @@ describe('toSarif', () => {
     expect(sarif.runs[0].invocations[0].executionSuccessful).toBe(true);
     expect(sarif.runs[0].properties.releaseGateVerdict).toBe('block'); // risk === 'block'
   });
+
+  it('links the tool to the real repository (code-scanning UIs show this URL)', () => {
+    const sarif = JSON.parse(toSarif(fixture())) as { runs: Array<{ tool: { driver: { informationUri: string } } }> };
+    expect(sarif.runs[0].tool.driver.informationUri).toBe('https://github.com/GeroPalombo/swipium');
+  });
 });
 
 describe('toGithubSummary', () => {

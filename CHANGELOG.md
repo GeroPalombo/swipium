@@ -2,6 +2,18 @@
 
 All notable public changes to Swipium are documented here.
 
+## 2.0.1 - 2026-09-30
+
+A small maintenance release. No behavior changes for agents or flows.
+
+### Fixed
+
+- SARIF exports (`qa_report format:"sarif"`) link the tool to the real repository, `https://github.com/GeroPalombo/swipium`. The old link pointed at a GitHub account that doesn't exist, which code-scanning pages show to users.
+
+### Changed
+
+- Test fixtures no longer contain paths from a developer's machine.
+
 ## 2.0.0 - 2026-09-30
 
 Swipium 2.0.0 fixes the typing, gesture, and secret-handling defects in the core test loop, makes iOS Simulator sessions and background jobs more reliable, adds CI report exports and one visual tool, and narrows the public surface from 60 to 55 tools (6 removed, `qa_visual` added). **It removes and renames public tools and tightens several defaults.** Work through the upgrade checklist before upgrading.

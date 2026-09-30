@@ -1,6 +1,6 @@
 # Swipium Threat Model
 
-Last updated: 2026-09-30 (Swipium 2.0.0)
+Last updated: 2026-09-30 (Swipium 2.0.1)
 
 This document describes what Swipium protects, where its trust boundaries are, who it defends
 against, and which controls enforce each defense. Every control listed here is implemented in the

@@ -917,7 +917,7 @@ export function toSarif(r: ReportData, policy?: PolicyDecision, options: SarifOp
     version: '2.1.0',
     runs: [
       {
-        tool: { driver: { name: 'swipium', informationUri: 'https://github.com/swipium/swipium', rules } },
+        tool: { driver: { name: 'swipium', informationUri: 'https://github.com/GeroPalombo/swipium', rules } },
         automationDetails: { id: `swipium/${r.appId ?? 'app'}/` },
         originalUriBaseIds: {
           '%SRCROOT%': { description: { text: 'The project root Swipium ran against (repository checkout root in CI).' } },

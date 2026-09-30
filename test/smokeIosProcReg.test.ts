@@ -25,7 +25,7 @@ const NOW = 1_800_000_000_000;
 const T1 = 'Wed Sep 30 07:11:30 2026';
 const T2 = 'Wed Sep 30 09:00:00 2026';
 const UDID = '190EA878-5D54-416C-B858-E60588B0DAF9';
-const PROJECT = '/Users/gp/.appium/node_modules/appium-xcuitest-driver/node_modules/appium-webdriveragent/WebDriverAgent.xcodeproj';
+const PROJECT = '/Users/dev/.appium/node_modules/appium-xcuitest-driver/node_modules/appium-webdriveragent/WebDriverAgent.xcodeproj';
 const DD = '/proj/.swipium/cache/wda-derived-data';
 const ARGS = `-project ${PROJECT} -scheme WebDriverAgentRunner -destination id=${UDID} -derivedDataPath ${DD} test-without-building`;
 const SPAWNED = `xcodebuild ${ARGS}`; // captured right after spawn()
@@ -135,10 +135,10 @@ describe('qa_wda stop without a registry entry: locate the managed WDA by signat
 
   it('listener is the XCTest runner (simulator) → ps scan finds the matching xcodebuild only', () => {
     const procs = [
-      { pid: 20001, command: '/Users/gp/Library/Developer/CoreSimulator/…/WebDriverAgentRunner-Runner' },
+      { pid: 20001, command: '/Users/dev/Library/Developer/CoreSimulator/…/WebDriverAgentRunner-Runner' },
       { pid: 16824, command: SHIM },
       { pid: 16900, command: SHIM.replace(UDID, 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE') }, // another simulator
-      { pid: 16901, command: SHIM.replace(DD, '/Users/gp/Library/Developer/Xcode/DerivedData/appium') }, // Appium's own WDA
+      { pid: 16901, command: SHIM.replace(DD, '/Users/dev/Library/Developer/Xcode/DerivedData/appium') }, // Appium's own WDA
       { pid: 16902, command: `/usr/bin/grep xcodebuild ${ARGS}` },
     ];
     expect(reg.findManagedWdaProcesses(sig, scan({ 8100: [20001] }, procs))).toEqual([16824]);
