@@ -106,7 +106,7 @@ MCP clients pick up the new tool list after a restart. Saved prompts or scripts 
   - iOS `press back` only reuses a page source from the last few seconds, and app launches through `qa_ios` reset it.
 - Found in device smoke tests of the release candidate:
   - A managed WebDriverAgent is recognized after a server restart even though Xcode's `xcodebuild` shim re-executes under its full path, so it is adopted (or cleaned up) and `qa_wda stop` can stop it, including when its registry entry was lost.
-  - `qa_ios launch`/`terminate` work while WebDriverAgent is attached, and sending the app to the background on iOS uses WebDriverAgent's session-less home-screen endpoint.
+  - `qa_ios launch`/`terminate` work while WebDriverAgent is attached, and sending the app to the background on iOS uses WebDriverAgent's session-less home-screen endpoint. `qa_app_control background` waits for the home-screen transition and reports the real foreground app; if WebDriverAgent cannot say which app is in front, it reports `unknown` instead of assuming the app under test.
   - Cancelled calls and jobs return `CANCELLED` and are never recorded as tool errors or findings (a cancelled job no longer produces a release-blocking finding).
   - A session that fell back to visual-only on one slow screen returns to structured mode once screen dumps work again.
   - Unknown tool arguments are rejected with `INVALID_ARGUMENT` listing the accepted parameters, instead of being silently ignored.

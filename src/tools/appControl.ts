@@ -189,8 +189,13 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
           case 'background':
             await d.pressKey('home');
             mark();
-            await new Promise((r) => setTimeout(r, 800));
-            foreground = await d.foregroundOwner();
+            // The home transition takes a moment (iOS reported the app as foreground 800 ms after
+            // the press): poll until the foreground actually changes, bounded at ~3 s.
+            foreground = pkg;
+            for (let waited = 0; waited < 3000 && foreground.startsWith(pkg); waited += 300) {
+              await new Promise((r) => setTimeout(r, 300));
+              foreground = await d.foregroundOwner().catch(() => 'unknown');
+            }
             break;
           case 'force_stop':
             await d.terminateApp(pkg);
@@ -251,7 +256,7 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
         status: 'executed',
       });
       return qaOk(
-        { packageName: pkg, action, processKilled, foreground, foregroundIsApp: launchedOk },
+        { packageName: pkg, action, changedState: true, processKilled, foreground, foregroundIsApp: launchedOk },
         `${action} on ${pkg} → foreground=${foreground}${processKilled !== undefined ? ` processKilled=${processKilled}` : ''}`,
       );
     },

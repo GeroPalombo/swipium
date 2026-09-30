@@ -364,12 +364,17 @@ export class WdaDriver implements Driver {
     return this.no('airplane-mode toggle');
   }
   async foregroundOwner(): Promise<string> {
-    try {
-      const info = await this.withSession((sid) => wdaActiveAppInfo(this.baseUrl, sid));
-      return info.bundleId ?? info.name ?? this.bundleId ?? 'unknown';
-    } catch {
-      return this.bundleId ?? 'unknown';
+    // Never guess the app under test on failure: callers treat 'unknown' as "don't judge", while a
+    // guessed bundleId made qa_app_control background report the app as still in front.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const info = await this.withSession((sid) => wdaActiveAppInfo(this.baseUrl, sid));
+        return info.bundleId || info.name || 'unknown';
+      } catch {
+        if (attempt === 0) await new Promise((r) => setTimeout(r, 300));
+      }
     }
+    return 'unknown';
   }
   async screenshot(): Promise<Buffer> {
     return this.withSession((sid) => this.timed('screenshot', () => wdaScreenshot(this.baseUrl, sid)));
