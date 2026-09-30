@@ -736,6 +736,19 @@ export class SessionStore {
     s.mode = mode;
     this.persist(s);
   }
+  /**
+   * A structured UI dump just succeeded on this session: visual-fallback is per-screen, never
+   * permanent — switch back to 'structured' and restart the consecutive-failure count. Returns
+   * true when the session was in visual-fallback (the caller may tell the agent it recovered).
+   */
+  noteStructuredDump(s: Session): boolean {
+    const recovered = s.mode === 'visual-fallback';
+    if (!recovered && s.counters.snapshotFailures === 0) return false;
+    s.mode = 'structured';
+    s.counters.snapshotFailures = 0;
+    this.persist(s);
+    return recovered;
+  }
   bump(s: Session, key: keyof Counters, by = 1): void {
     s.counters[key] += by;
     this.persist(s);
@@ -811,6 +824,7 @@ export class SessionStore {
   }
   /** Record a tool call that returned an error for this session (bounded to the last 200). */
   recordToolError(s: Session, rec: Omit<ToolErrorRecord, 'at'> & { at?: number }): void {
+    if (rec.failureCode === 'CANCELLED') return; // cancelled work is not a tool error
     const list = (s.toolErrors ??= []);
     list.push({ at: rec.at ?? Date.now(), tool: rec.tool, failureCode: rec.failureCode, message: rec.message.slice(0, 500) });
     if (list.length > 200) list.splice(0, list.length - 200);

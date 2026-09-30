@@ -260,7 +260,13 @@ async function routePendingConsent(
  * The same wrapper also routes requiresConsent envelopes through out-of-band elicitation
  * (routePendingConsent), so every consent-gated tool inherits it with zero per-tool changes.
  */
-function installResponseModeWrapper(server: McpServer, sessions: SessionStore, surface: ToolSurfaceEntry[], attempted: Set<string>): void {
+function installResponseModeWrapper(
+  server: McpServer,
+  sessions: SessionStore,
+  surface: ToolSurfaceEntry[],
+  attempted: Set<string>,
+  paramNames: Map<string, readonly string[]>,
+): void {
   const orig = server.registerTool.bind(server) as (name: string, config: unknown, handler: (...a: unknown[]) => unknown) => unknown;
   const valid = (m: unknown): m is 'compact' | 'normal' | 'verbose' => m === 'compact' || m === 'normal' || m === 'verbose';
   (server as unknown as { registerTool: typeof orig }).registerTool = (name, config, handler) => {
@@ -271,6 +277,7 @@ function installResponseModeWrapper(server: McpServer, sessions: SessionStore, s
     const cfg = config as { description?: string; inputSchema?: Record<string, unknown> } | undefined;
     const inputKeys = Object.entries(cfg?.inputSchema ?? {}).map(([k, v]) => `${k}:${describeZodField(v)}`);
     surface.push({ name, description: cfg?.description ?? '', inputKeys });
+    paramNames.set(name, Object.keys(cfg?.inputSchema ?? {}));
     // MCP annotations for every tool, from one reviewed table (src/lib/toolAnnotations.ts).
     const annotated = { ...(config as Record<string, unknown>), annotations: toolAnnotations(name as ToolName) };
     return orig(name, annotated, async (...a: unknown[]) => {
@@ -297,7 +304,7 @@ function installResponseModeWrapper(server: McpServer, sessions: SessionStore, s
       };
       const result = await run(a);
       const out = await routePendingConsent(result, a, run, { sessions, tool: name });
-      recordToolErrorFromResult(sessions, name, a[0], out); // qa_report tool status (report/toolHealth.ts)
+      recordToolErrorFromResult(sessions, name, a[0], out, callSignal); // qa_report tool status (report/toolHealth.ts)
       return out;
     });
   };
@@ -358,14 +365,48 @@ export function stripSchemaDialect(result: unknown): unknown {
   return result;
 }
 
+/** Top-level argument keys a tool's input schema does not declare. The advertised JSON schema
+ * says additionalProperties:false, but the SDK's zod object silently STRIPS unknown keys — so a
+ * call like qa_app_control { action:"force_stop", appId:"other.app" } used to run against the
+ * session's app while the caller believed it targeted another. Deprecated aliases that are still
+ * declared in the schema are accepted (they are schema properties). Exported for tests. */
+export function unknownArgumentKeys(args: Record<string, unknown> | undefined, accepted: readonly string[]): string[] {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return [];
+  const known = new Set(accepted);
+  return Object.keys(args).filter((k) => !known.has(k));
+}
+
+export function unknownArgumentsError(name: string, unknown: string[], accepted: readonly string[]): CallToolResult {
+  const list = (keys: readonly string[]) => keys.map((k) => JSON.stringify(k)).join(', ');
+  return qaError(
+    {
+      what: `${name} does not accept the argument${unknown.length === 1 ? '' : 's'} ${list(unknown)} — nothing was run.`,
+      changedState: false,
+      retrySafe: true,
+      failureCode: 'INVALID_ARGUMENT',
+      nextSteps: [
+        `Remove ${list(unknown)} and re-call. Accepted parameters: ${accepted.length ? list(accepted) : '(none)'}.`,
+        'If the tool list looks outdated, restart the MCP client so it reloads the current schemas.',
+      ],
+    },
+    { unknownArguments: unknown, acceptedParameters: [...accepted] },
+  );
+}
+
 /** tools/call: unknown removed-tool names and legacy call shapes → STALE_CLIENT (with the
- * replacement + stale-client hint); tools/list: strip `$schema`. */
-function installProtocolShims(server: McpServer): void {
+ * replacement + stale-client hint); undeclared top-level arguments → INVALID_ARGUMENT (before the
+ * handler runs); tools/list: strip `$schema`. */
+function installProtocolShims(server: McpServer, paramNames: ReadonlyMap<string, readonly string[]>): void {
   wrapRequestHandler(server, 'tools/call', (orig) => async (request, extra) => {
     const name = String(request?.params?.name ?? '');
     const args = request?.params?.arguments as Record<string, unknown> | undefined;
     const replacement = staleClientReplacement(name, args);
     if (replacement && !TOOL_NAME_SET.has(name)) return staleClientError(name, replacement);
+    const accepted = paramNames.get(name);
+    if (accepted && !replacement) {
+      const unknown = unknownArgumentKeys(args, accepted);
+      if (unknown.length) return unknownArgumentsError(name, unknown, accepted);
+    }
     const result = (await orig(request, extra)) as CallToolResult;
     // Legacy enum values fail the CURRENT schema's validation → rewrite that raw error only.
     if (replacement && result?.isError && !result.structuredContent)
@@ -480,7 +521,8 @@ export function createServer(): ServerContext {
   const sessions = new SessionStore();
   const surface: ToolSurfaceEntry[] = [];
   const attemptedToolNames = new Set<string>();
-  installResponseModeWrapper(server, sessions, surface, attemptedToolNames);
+  const paramNames = new Map<string, readonly string[]>();
+  installResponseModeWrapper(server, sessions, surface, attemptedToolNames, paramNames);
 
   // Setup / context
   registerDoctor(server);
@@ -534,7 +576,7 @@ export function createServer(): ServerContext {
   // freeze the surface's content fingerprint.
   assertToolSurface(attemptedToolNames);
   setSchemaHash(computeSchemaHash(surface));
-  installProtocolShims(server);
+  installProtocolShims(server, paramNames);
 
   // Reusable workflow templates (MCP prompts capability) — thin orchestration of the tools above.
   registerPrompts(server);

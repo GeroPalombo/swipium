@@ -18,3 +18,34 @@ export function runWithSignal<T>(signal: AbortSignal | undefined, fn: () => T): 
 export function currentSignal(): AbortSignal | undefined {
   return scope.getStore();
 }
+
+/**
+ * Is `e` the result of a CANCELLATION rather than a real failure? True when the error (or any
+ * error in its `cause` chain) is an AbortError / has code ABORT_ERR, or when the current call's
+ * cancellation signal (abortScope) has fired — drivers wrap aborted adb/WDA calls in their own
+ * messages ("uiautomator dump failed … AbortError", "WDA GET /source aborted (cancelled)"), so the
+ * signal is the authoritative check.
+ *
+ * Every place that converts an error into a finding, toolError, snapshotFailure, health verdict or
+ * mode switch must check this first and return a CANCELLED result instead: cancelled work is not
+ * evidence about the app or the tool.
+ */
+export function isAbortError(e: unknown, signal: AbortSignal | undefined = currentSignal()): boolean {
+  if (signal?.aborted) return true;
+  let cur: unknown = e;
+  for (let depth = 0; cur && depth < 6; depth++) {
+    const err = cur as { name?: unknown; code?: unknown; cause?: unknown };
+    if (err.name === 'AbortError' || err.name === 'CancelledError' || err.code === 'ABORT_ERR') return true;
+    cur = err.cause;
+  }
+  return false;
+}
+
+/** Thrown by long-running work (e.g. the explore runner) to unwind a cancelled step without
+ *  recording it as a failure. */
+export class CancelledError extends Error {
+  constructor(message = 'cancelled') {
+    super(message);
+    this.name = 'CancelledError';
+  }
+}

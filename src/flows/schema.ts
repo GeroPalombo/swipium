@@ -344,13 +344,19 @@ export function isMutatingFlowStep(step: FlowStep): boolean {
   return step.kind === 'openUrl' && hasFlowVariable(step.url);
 }
 
-/** Human-readable reason for a missing variable (says which env names are readable). */
+/** Human-readable reason for a missing variable (says which env names are readable), e.g.
+ *  "Variables not available: HOME (flows only read SWIPIUM_* environment variables; pass it via
+ *  qa_flow_run { variables } or rename it SWIPIUM_HOME)". */
 export function missingVarMessage(missing: string[]): string {
-  const blockedEnv = missing.filter((n) => !flowEnvAllowed(n) && process.env[n] != null);
+  const names = [...new Set(missing)];
+  const it = names.length === 1 ? 'it' : 'them';
+  const renamable = names.filter((n) => !flowEnvAllowed(n));
+  const rename = renamable.length
+    ? ` or rename ${renamable.length === 1 ? 'it' : 'them'} ${renamable.map((n) => `${FLOW_ENV_PREFIX}${n}`).join(', ')}`
+    : ` or set ${it} in the Swipium server's environment`;
   return (
-    `unresolved variable(s): ${missing.join(', ')} — pass them via qa_flow_run { variables }` +
-    ` (flows read process.env only for ${FLOW_ENV_PREFIX}* names)` +
-    (blockedEnv.length ? `; ${blockedEnv.join(', ')} exist in the server environment but are not ${FLOW_ENV_PREFIX}* so were not read` : '')
+    `Variables not available: ${names.join(', ')} (flows only read ${FLOW_ENV_PREFIX}* environment variables; ` +
+    `pass ${it} via qa_flow_run { variables }${rename})`
   );
 }
 

@@ -6,7 +6,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { qaOk, qaError, qaStop, unknownSessionError } from '../lib/result.js';
+import { qaOk, qaError, qaStop, unknownSessionError, cancelledResult } from '../lib/result.js';
 import { parseSnapshot, signature } from '../snapshot/parse.js';
 import { presentElements } from '../snapshot/present.js';
 import { obstructionAt } from '../snapshot/overlays.js';
@@ -33,7 +33,7 @@ import type { RecordedAction, Session, SessionStore } from '../session/store.js'
 import type { RawNode } from '../snapshot/parse.js';
 import type { Driver, NativeSelectorStrategy, SnapshotElement } from '../drivers/Driver.js';
 import type { FailureCode } from '../oracle/failures.js';
-import { runWithSignal } from '../lib/abortScope.js';
+import { isAbortError, runWithSignal } from '../lib/abortScope.js';
 import { SECRET_VAR_NAME } from '../flows/schema.js';
 
 interface NativeSelector {
@@ -170,7 +170,7 @@ const INPUT_PLACEHOLDER_RE = /\$\{(SWIPIUM_[A-Z0-9_]+)\}/g;
  *  SECRET_VAR_NAME (flows/schema.ts), so `code` (SWIPIUM_VERIFICATION_CODE) counts here too. */
 const SECRET_VAR_NAME_RE = SECRET_VAR_NAME;
 
-/** Expand `${SWIPIUM_*}` placeholders from session inputs (qa_resume values), else the server
+/** Expand `${SWIPIUM_*}` placeholders from session inputs (qa_continue_from_blocker values), else the server
  * env. Returns the expanded text, the variable names used, which of them are secret, and any
  * that could not be resolved. PURE apart from reading `env`. */
 export function expandInputPlaceholders(
@@ -697,7 +697,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
             }
             case 'type': {
               // presence enforced by missingRequiredField (OPP-06)
-              // P1: `${SWIPIUM_*}` placeholders expand from session inputs (qa_resume) or the env,
+              // P1: `${SWIPIUM_*}` placeholders expand from session inputs (qa_continue_from_blocker) or the env,
               // so credentials never have to pass through the agent transcript.
               const secretVars = new Set(session.inputs.filter((i) => i.secret).map((i) => i.varName));
               const expanded = expandInputPlaceholders(args.text!, { values: session.inputValues, secretVars });
@@ -708,7 +708,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
                   retrySafe: true,
                   failureCode: 'MISSING_TEST_DATA',
                   nextSteps: [
-                    'Provide it via qa_resume (needs_input credentials) or set the env var for the Swipium server, then retry. Only ${SWIPIUM_*} placeholders are expanded.',
+                    'Provide it via qa_continue_from_blocker (needs_input credentials) or set the env var for the Swipium server, then retry. Only ${SWIPIUM_*} placeholders are expanded.',
                   ],
                 });
               }
@@ -773,8 +773,9 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
                 const recordSecret = secure || knownSecret;
                 meta = {
                   typedChars: text.length,
-                  redacted: true, // the response never echoes the value…
-                  ...(recordSecret ? { secret: true } : {}), // …and a secure value is registered for scrubbing
+                  // The response never echoes the value; `redacted`/`secret` flag a value treated as
+                  // secret (registered for scrubbing, recorded only as a placeholder).
+                  ...(recordSecret ? { redacted: true, secret: true } : {}),
                   ...(expanded.vars.length ? { placeholders: expanded.vars } : {}),
                   mode: args.mode ?? 'replace',
                   via: 'native-selector',
@@ -822,8 +823,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               const recordSecret = !!t.secure || knownSecret;
               meta = {
                 typedChars: text.length,
-                redacted: true,
-                ...(recordSecret ? { secret: true } : {}),
+                ...(recordSecret ? { redacted: true, secret: true } : {}),
                 ...(expanded.vars.length ? { placeholders: expanded.vars } : {}),
                 mode: args.mode ?? 'replace',
                 via: t.via,
@@ -1016,6 +1016,9 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
             }
           }
         } catch (e) {
+          // Cancelled mid-action: not a driver failure (no WDA_UNREACHABLE / SNAPSHOT_FAILED tool
+          // error, no finding). The action may have partly run, so changedState stays true.
+          if (isAbortError(e)) return cancelledResult(`Action "${action}" cancelled — the call was aborted before it finished`, true);
           const msg = String((e as Error)?.message ?? e);
           const failureCode: FailureCode = /BACKEND_UNSUPPORTED|not supported by the WDA backend/.test(msg)
             ? 'BACKEND_UNSUPPORTED'
@@ -1049,6 +1052,10 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
           // settle → observe → health (seeded with untilVisible's last probe — it was taken after the
           // last swipe, so re-dumping it first would be pure latency)
           let s = await settle(d, { timeoutMs: args.timeoutMs ?? 8000, ...(settleSeed ? { seed: settleSeed } : {}) });
+          // Cancelled while observing: an empty/aborted dump is not evidence (no WDA_UNREACHABLE
+          // health finding, no visual-fallback switch).
+          if (isAbortError(undefined))
+            return cancelledResult(`Action "${action}" ran, but the call was cancelled before its result was observed`, true);
           let post = parseSnapshot(s.xml);
           let postSigs = new Set(post.elements.map(signature));
           // F: for gestures that move content, a bounds shift counts as a change too.
@@ -1074,7 +1081,11 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
           }
 
           session.lastSnapshot = { fullByRef: post.fullByRef, signatures: postSigs, allNodes: post.allNodes };
+          // A structured dump succeeded → a visual-fallback session is structured again (per-screen).
+          const modeRecovered = s.xml ? sessions.noteStructuredDump(session) : false;
           const health = await checkHealth(d, session.appId, s.xml, { nodes: post.allNodes });
+          if (health.cancelled)
+            return cancelledResult(`Action "${action}" ran, but the call was cancelled before its result was observed`, true);
 
           // Track no-change actions for the budget / no-op-loop detector.
           if (!changed && (action === 'tap' || action === 'swipe' || action === 'scroll' || action === 'press')) {
@@ -1093,6 +1104,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
             `${action} ${JSON.stringify(meta)} → changed=${changed}${retriedAsPress ? ' (retried as press)' : ''} ` +
             `settled=${s.settled} quality=${post.quality.verdict} native=${health.nativeHealthy ? 'ok' : health.nativeStatus} app=${health.appStatus}` +
             (budgetReached ? `\n⏹ budget reached: ${budgetReached} — call qa_report.` : '') +
+            (modeRecovered ? '\nmode: structured again (a UI tree dump succeeded; visual-fallback cleared)' : '') +
             (!changed && retriedAsPress
               ? `\nNo change even after a press retry — likely wrong coords / disabled element / overlay / auth wall.`
               : '');
@@ -1166,6 +1178,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               action,
               ...meta,
               ...(keyboardHidden ? { keyboardHidden: true } : {}),
+              ...(modeRecovered ? { modeRecovered: true, mode: 'structured' } : {}),
               changed,
               retriedAsPress,
               settled: s.settled,
@@ -1182,7 +1195,10 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
             { textOmit: ['elements', 'removed', 'hint', 'stateChanged'] },
           );
         } catch (e) {
+          if (isAbortError(e))
+            return cancelledResult(`Action "${action}" ran, but the call was cancelled before its result was observed`, true);
           // The action ran; observing the result failed (often a UI that never reaches idle).
+          // visual-fallback is per-screen: the next successful qa_snapshot / qa_act dump clears it.
           const idle = /idle|dump|hierarchy/i.test(String(e));
           if (idle) sessions.setMode(session, 'visual-fallback');
           const redactErr = makeRedactor(errorSecrets(session, action === 'type' ? (typedValue ?? args.text) : undefined));
@@ -1192,7 +1208,9 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
             retrySafe: false,
             failureCode: classifyFlowDriverError(e, 'SNAPSHOT_FAILED'),
             nextSteps: idle
-              ? ['Switched to visual-fallback. Use qa_screenshot; qa_check_health still works.']
+              ? [
+                  'Switched to visual-fallback for this screen (cleared by the next successful qa_snapshot / qa_act dump). Use qa_screenshot; qa_check_health still works.',
+                ]
               : ['Re-check the device is online, then qa_screenshot / qa_check_health.'],
           });
         }

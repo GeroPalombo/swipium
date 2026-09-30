@@ -220,7 +220,9 @@ const LOCATOR_FAILURES = new Set(['ELEMENT_NOT_FOUND', 'AMBIGUOUS_SELECTOR', 'ST
 /** nextSteps for a failed qa_flow_run: point at qa_flow_repair for the failing step. */
 export function failedFlowNextSteps(name: string, flowArg: string | undefined, failedAtStep?: number, failureCode?: string): string[] {
   const out: string[] = [];
-  if (failedAtStep != null) {
+  // A missing variable is not locator drift — qa_flow_repair cannot fix it (and a cancelled run is
+  // not a failure to repair).
+  if (failedAtStep != null && failureCode !== 'MISSING_FIXTURE' && failureCode !== 'CANCELLED') {
     const target = flowArg ? `flow:"${flowArg}"` : 'flowYaml:<same YAML>';
     out.push(
       `${failureCode && !LOCATOR_FAILURES.has(failureCode) ? 'If this is locator drift (renamed/moved control), ' : ''}call qa_flow_repair { ${target}, failedStep:${failedAtStep} } for a reviewable locator fix (review before apply).`,

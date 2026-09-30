@@ -22,6 +22,7 @@ export const UNCODED_CODES = new Set(['UNKNOWN', 'UNCODED']);
 
 /** Does this recorded tool error, by itself, make the TOOL status DEGRADED? */
 export function isDegradingToolError(failureCode: string): boolean {
+  if (failureCode === 'CANCELLED') return false;
   if (UNCODED_CODES.has(failureCode) || AGENT_PROBING_CODES.has(failureCode)) return false;
   const info = (FAILURES as Record<string, { bucket: string } | undefined>)[failureCode];
   return !(info && NOT_TOOL_ERRORS.has(info.bucket));
@@ -32,6 +33,7 @@ export function toolErrorFromResult(tool: string, result: unknown): Omit<ToolErr
   if (!r || r.isError !== true) return undefined;
   const sc = r.structuredContent ?? {};
   const failureCode = typeof sc.failureCode === 'string' ? sc.failureCode : 'UNKNOWN';
+  if (failureCode === 'CANCELLED') return undefined; // cancelled work is not a tool error
   const info = (FAILURES as Record<string, { bucket: string } | undefined>)[failureCode];
   if (info && NOT_TOOL_ERRORS.has(info.bucket)) return undefined;
   const what = typeof sc.what === 'string' ? sc.what : (r.content?.find((c) => c.type === 'text')?.text ?? '').split('\n')[0];
@@ -39,8 +41,17 @@ export function toolErrorFromResult(tool: string, result: unknown): Omit<ToolErr
 }
 
 /** Record an error result against the calling session (best-effort, never throws). */
-export function recordToolErrorFromResult(sessions: SessionStore, tool: string, args: unknown, result: unknown): void {
+export function recordToolErrorFromResult(
+  sessions: SessionStore,
+  tool: string,
+  args: unknown,
+  result: unknown,
+  signal?: AbortSignal,
+): void {
   try {
+    // A call whose request was aborted produced cancelled work, whatever error it surfaced
+    // (e.g. "uiautomator dump failed … AbortError" / "WDA … aborted") — never a tool error.
+    if (signal?.aborted) return;
     const sessionId = (args as { sessionId?: unknown } | undefined)?.sessionId;
     if (typeof sessionId !== 'string') return;
     const rec = toolErrorFromResult(tool, result);

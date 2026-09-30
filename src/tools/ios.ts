@@ -13,8 +13,21 @@ import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { sensitiveRefusal } from '../lib/sensitive.js';
 import { SimctlDriver } from '../drivers/SimctlDriver.js';
 import * as sim from '../lib/simctl.js';
-import { invalidateWdaPageSource } from '../drivers/WdaDriver.js';
+import { WdaDriver, invalidateWdaPageSource } from '../drivers/WdaDriver.js';
+import { isSimulatorUdid } from '../session/attach.js';
 import type { Session, SessionStore } from '../session/store.js';
+
+/** The simulator UDID this session drives, whatever the iOS backend (SimctlDriver, or WdaDriver
+ *  after qa_wda attach): session.device, else the driver's own device. Undefined when nothing is
+ *  bound, or the bound device is not a simulator (an adb serial / a physical iOS device — simctl
+ *  cannot drive either). Exported for tests. */
+export function boundSimulatorUdid(session: Pick<Session, 'device' | 'driver'>): string | undefined {
+  const driver = session.driver;
+  const iosDriver = driver instanceof SimctlDriver || driver instanceof WdaDriver;
+  const udid = session.device ?? (iosDriver ? driver.currentDevice() : undefined);
+  if (!udid) return undefined;
+  return isSimulatorUdid(udid) ? udid : undefined;
+}
 
 /** Ensure a SimctlDriver is bound for `udid` and recorded on the session. */
 function bind(sessions: SessionStore, session: Session, udid: string): SimctlDriver {
@@ -133,12 +146,15 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
       }
 
       // everything below needs a bound simulator
-      const udid = session.device;
-      if (!udid || !(session.driver instanceof SimctlDriver)) {
+      // Any iOS backend works here: simctl drives the SIMULATOR, not the automation backend, so a
+      // session attached to WebDriverAgent (qa_wda attach) keeps launch/terminate/openurl/…
+      const udid = boundSimulatorUdid(session);
+      if (!udid) {
         return qaError({
           what: 'No simulator bound to this session',
           changedState: false,
           retrySafe: true,
+          failureCode: 'NO_DEVICE',
           nextSteps: ['Call qa_ios { action: "boot" } first.'],
         });
       }
@@ -233,6 +249,7 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
           sessions.milestone(session, 'app_launch_start');
           invalidateWdaPageSource(udid); // the screen changes outside WDA: drop cached page sources
           await sim.launchApp(udid, bundleId!);
+          invalidateWdaPageSource(udid); // …and anything a concurrent read cached mid-launch
           sessions.milestone(session, 'app_launch_end');
         } catch (err) {
           return qaError({
@@ -262,6 +279,7 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
         if (e) return e;
         invalidateWdaPageSource(udid); // the screen changes outside WDA: drop cached page sources
         await sim.terminateApp(udid, bundleId!);
+        invalidateWdaPageSource(udid);
         sessions.recordMutation(session, {
           tool: 'qa_ios',
           action: 'ios_terminate',

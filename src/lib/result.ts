@@ -189,3 +189,18 @@ export function qaStop(reason: string, payload: Record<string, unknown>): CallTo
     structuredContent: structured,
   };
 }
+
+/**
+ * Typed envelope for work that was CANCELLED (the MCP request was aborted, or the job was
+ * cancelled) — failureCode CANCELLED. Not a failure: it is never recorded as a tool error, a
+ * snapshot failure, a finding or a health verdict, and it never switches the session mode.
+ */
+export function cancelledResult(what = 'Cancelled — the call was aborted before it finished', changedState = false): CallToolResult {
+  return qaError({
+    what,
+    changedState,
+    retrySafe: true,
+    failureCode: 'CANCELLED',
+    nextSteps: ['Nothing was recorded as a failure. Re-run the call if you still need its result.'],
+  });
+}

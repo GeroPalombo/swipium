@@ -101,6 +101,7 @@ export type FailureCode =
   | 'UNSAFE_ACTION_REFUSED'
   | 'CONSENT_DECLINED'
   | 'CONSENT_CANCELLED'
+  | 'CANCELLED'
   | 'CONSENT_REFUSED'
   | 'PHYSICAL_DEVICE_UNSUPPORTED'
   | 'VISUAL_PATH_REFUSED'
@@ -758,6 +759,16 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     owner: 'user',
     summary: 'A consent prompt was dismissed, timed out, or failed — treated as a refusal; nothing ran',
     recovery: 'Re-call the tool (without consentId) to show the user a fresh consent prompt.',
+  },
+  CANCELLED: {
+    // Not a failure: the MCP request was aborted or the job cancelled. Never recorded as a tool
+    // error, snapshot failure, finding or health verdict (lib/abortScope.ts isAbortError).
+    bucket: 'unsafe_refused',
+    severity: 'low',
+    retrySafe: true,
+    owner: 'user',
+    summary: 'The call or job was cancelled before it finished — not a failure; nothing was recorded against the app or the tool',
+    recovery: 'Re-run the call if you still need its result.',
   },
   CONSENT_REFUSED: {
     bucket: 'unsafe_refused',

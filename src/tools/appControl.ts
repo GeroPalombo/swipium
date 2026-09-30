@@ -4,7 +4,8 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError, invalidArgumentError, isInvalidArgumentError, unknownSessionError } from '../lib/result.js';
+import { qaOk, qaError, invalidArgumentError, isInvalidArgumentError, unknownSessionError, cancelledResult } from '../lib/result.js';
+import { isAbortError } from '../lib/abortScope.js';
 import { assertAndroidAppId } from '../drivers/DirectDriver.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { blockedDeviceResult, getDriver } from '../session/attach.js';
@@ -17,8 +18,9 @@ const ACTIONS = ['launch', 'foreground', 'background', 'force_stop', 'restart', 
 const DESTRUCTIVE = new Set(['clear_data', 'fresh_start']);
 const APP_ID_NEXT_STEP = 'Re-run qa_prepare_target with a valid appId (e.g. com.example.app).';
 
-async function relaunchAndVerify(d: Driver, pkg: string): Promise<string> {
+async function relaunchAndVerify(d: Driver, pkg: string, onLaunched: () => void = () => {}): Promise<string> {
   await d.launchApp(pkg);
+  onLaunched();
   await new Promise((r) => setTimeout(r, 2500));
   return d.foregroundOwner();
 }
@@ -50,15 +52,22 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
       if (!session || !d) {
         return (
           blockedDeviceResult(blocked) ??
-          qaError({ what: 'No device attached', changedState: false, retrySafe: true, nextSteps: ['Call qa_prepare_target first.'] })
+          qaError({
+            what: 'No device attached',
+            changedState: false,
+            retrySafe: true,
+            failureCode: 'NO_DEVICE',
+            nextSteps: ['Call qa_prepare_target first.'],
+          })
         );
       }
       const pkg = session.appId;
       if (!pkg) {
         return qaError({
-          what: 'No appId on this session',
+          what: 'No appId on this session — nothing was run',
           changedState: false,
           retrySafe: true,
+          failureCode: 'INVALID_ARGUMENT',
           nextSteps: ['Call qa_prepare_target (it sets the appId).'],
         });
       }
@@ -165,34 +174,45 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
       let processKilled: boolean | undefined;
       let foreground = before;
 
+      // changedState on failure reflects what actually ran: a driver call that failed before any
+      // mutation (e.g. WDA homescreen 404 on `background`) changed nothing.
+      let mutated = false;
+      const mark = () => {
+        mutated = true;
+      };
       try {
         switch (action) {
           case 'launch':
           case 'foreground':
-            foreground = await relaunchAndVerify(d, pkg);
+            foreground = await relaunchAndVerify(d, pkg, mark);
             break;
           case 'background':
             await d.pressKey('home');
+            mark();
             await new Promise((r) => setTimeout(r, 800));
             foreground = await d.foregroundOwner();
             break;
           case 'force_stop':
             await d.terminateApp(pkg);
+            mark();
             processKilled = !(await d.isRunning(pkg));
             foreground = await d.foregroundOwner();
             break;
           case 'restart':
             await d.terminateApp(pkg);
+            mark();
             processKilled = !(await d.isRunning(pkg));
             foreground = await relaunchAndVerify(d, pkg);
             break;
           case 'clear_data':
             await d.clearData(pkg);
+            mark();
             sessions.addEnvChange(session, `clear_data ${pkg} (data/cache/permissions wiped)`);
             foreground = await d.foregroundOwner();
             break;
           case 'fresh_start':
             await d.terminateApp(pkg);
+            mark();
             await d.clearData(pkg);
             sessions.addEnvChange(session, `fresh_start ${pkg} (wiped + relaunched)`);
             session.lastSnapshot = undefined; // state reset → refs invalid
@@ -201,6 +221,7 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
         }
       } catch (e) {
         const invalid = isInvalidArgumentError(e);
+        const cancelled = isAbortError(e);
         sessions.recordMutation(session, {
           tool: 'qa_app_control',
           action: `app_${action}`,
@@ -211,9 +232,10 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
           detail: String(e),
         });
         if (invalid) return invalidArgumentError(e, [APP_ID_NEXT_STEP]);
+        if (cancelled) return cancelledResult(`app_control "${action}" cancelled before it finished`, mutated);
         return qaError({
           what: `app_control "${action}" failed: ${String(e)}`,
-          changedState: true,
+          changedState: mutated,
           retrySafe: true,
           nextSteps: ['Confirm the device is online (qa_doctor).'],
         });

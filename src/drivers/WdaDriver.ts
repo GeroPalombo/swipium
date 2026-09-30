@@ -469,7 +469,7 @@ export class WdaDriver implements Driver {
     const cached = this.lastSource; // the screen as last dumped, if nothing acted since
     this.touched();
     if (key === 'home') {
-      await this.withSession((sid) => pressWdaHome(this.baseUrl, sid));
+      await this.withSession(() => pressWdaHome(this.baseUrl)); // session-less route; session kept warm
       return;
     }
     if (key === 'back') {

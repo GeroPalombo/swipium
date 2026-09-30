@@ -1,7 +1,8 @@
 import { XMLParser } from 'fast-xml-parser';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { existsSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { homedir } from 'node:os';
 import { run } from './spawn.js';
 import { currentSignal } from './abortScope.js';
 import type { FailureCode } from '../oracle/failures.js';
@@ -343,6 +344,76 @@ export function discoverWdaProjects(root: string, extraCandidates: string[] = []
   return { candidates: [...found].sort(), searchedRoots };
 }
 
+function defaultGlobalNodeModules(env: NodeJS.ProcessEnv): string[] {
+  return [
+    env.npm_config_prefix ? join(env.npm_config_prefix, 'lib', 'node_modules') : undefined,
+    join(dirname(dirname(process.execPath)), 'lib', 'node_modules'),
+    '/opt/homebrew/lib/node_modules',
+    '/usr/local/lib/node_modules',
+  ].filter((p): p is string => !!p);
+}
+
+/** Standard user-level install locations of Appium's WebDriverAgent (appium-webdriveragent),
+ *  most specific first: `$APPIUM_HOME` / `~/.appium` (the xcuitest driver's nested copy, then any
+ *  appium-webdriveragent found by a bounded walk of its node_modules trees), then the global npm
+ *  roots (`$npm_config_prefix`, next to the running node, Homebrew, /usr/local). These are
+ *  installed by the user (not arriving with a repository checkout), so managed WDA may use them
+ *  when no wdaProjectPath is given. `home` is injectable for tests. */
+export function discoverAppiumWdaProjects(
+  home: string = homedir(),
+  env: NodeJS.ProcessEnv = process.env,
+  globalRoots: string[] = defaultGlobalNodeModules(env),
+): string[] {
+  const XCODEPROJ = 'WebDriverAgent.xcodeproj';
+  const found: string[] = [];
+  const add = (p: string) => {
+    if (!found.includes(p) && existsSync(p)) found.push(p);
+  };
+  const appiumHomes = [env.APPIUM_HOME, join(home, '.appium')].filter((p): p is string => !!p && p.trim().length > 0);
+  for (const ah of appiumHomes) {
+    add(join(ah, 'node_modules', 'appium-xcuitest-driver', 'node_modules', 'appium-webdriveragent', XCODEPROJ));
+    add(join(ah, 'node_modules', 'appium-webdriveragent', XCODEPROJ));
+    // Bounded walk (~/.appium/**/appium-webdriveragent/WebDriverAgent.xcodeproj): only descend
+    // node_modules chains and package dirs, at most 6 levels deep.
+    const stack: Array<{ path: string; depth: number }> = [{ path: ah, depth: 0 }];
+    let visited = 0;
+    while (stack.length && visited < 5000) {
+      const cur = stack.pop()!;
+      visited++;
+      if (cur.depth > 6) continue;
+      let entries: string[];
+      try {
+        entries = readdirSync(cur.path);
+      } catch {
+        continue;
+      }
+      for (const name of entries) {
+        if (name.startsWith('.') && cur.depth > 0) continue;
+        const p = join(cur.path, name);
+        if (name === 'appium-webdriveragent') {
+          add(join(p, XCODEPROJ));
+          continue;
+        }
+        const parent = cur.path.split(/[\\/]/).pop() ?? '';
+        // Descend node_modules dirs, the packages inside them, and @scope dirs' packages.
+        if (name === 'node_modules' || parent === 'node_modules' || parent.startsWith('@')) {
+          try {
+            if (statSync(p).isDirectory()) stack.push({ path: p, depth: cur.depth + 1 });
+          } catch {
+            /* unreadable entry */
+          }
+        }
+      }
+    }
+  }
+  for (const root of globalRoots) {
+    add(join(root, 'appium-xcuitest-driver', 'node_modules', 'appium-webdriveragent', XCODEPROJ));
+    add(join(root, 'appium', 'node_modules', 'appium-xcuitest-driver', 'node_modules', 'appium-webdriveragent', XCODEPROJ));
+    add(join(root, 'appium-webdriveragent', XCODEPROJ));
+  }
+  return found;
+}
+
 export function managedWdaBuildArgs(opts: ManagedWdaOptions): string[] {
   return [
     '-project',
@@ -600,8 +671,11 @@ export async function dragWdaPoint(
   });
 }
 
-export async function pressWdaHome(baseUrl: string, sessionId: string): Promise<void> {
-  await wdaFetch(baseUrl, `/session/${sessionId}/wda/homescreen`, { method: 'POST', body: '{}' });
+/** Home button. WebDriverAgent registers `/wda/homescreen` WITHOUT a session
+ *  (FBCustomCommands.m: `[FBRoute POST:@"/wda/homescreen"].withoutSession`), so the
+ *  `/session/:id/wda/homescreen` form 404s ("Unhandled endpoint"). */
+export async function pressWdaHome(baseUrl: string): Promise<void> {
+  await wdaFetch(baseUrl, '/wda/homescreen', { method: 'POST', body: '{}' });
 }
 
 // iOS "back" lives in WdaDriver.pressKey('back') (nav-bar back button, else a left-edge swipe).

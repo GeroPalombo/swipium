@@ -6,6 +6,7 @@
 
 import type { Driver } from '../drivers/Driver.js';
 import { parseSnapshot, type RawNode } from '../snapshot/parse.js';
+import { isAbortError } from '../lib/abortScope.js';
 
 export type HealthLayer = 'native' | 'app';
 
@@ -29,6 +30,23 @@ export interface HealthResult {
   appStatus: AppStatus; // ok | degraded (recoverable) | error (broken UI)
   foreground: string;
   findings: Finding[];
+  /** The check was CANCELLED (the call/job was aborted while dumping): no verdict, no findings —
+   *  callers must not record anything from it (lib/abortScope.ts isAbortError). */
+  cancelled?: boolean;
+}
+
+/** The verdict-free result of a cancelled health check. */
+function cancelledHealth(): HealthResult {
+  return {
+    healthy: true,
+    nativeHealthy: true,
+    appHealthy: true,
+    nativeStatus: 'ok',
+    appStatus: 'ok',
+    foreground: 'unknown',
+    findings: [],
+    cancelled: true,
+  };
 }
 
 // APP-layer surfaces (JS/UI). Order matters: the first fatal RedBox variant wins over LogBox.
@@ -100,7 +118,15 @@ export function dumpRootPackage(nodes: ReadonlyArray<Pick<RawNode, 'attrs'>> | u
  */
 export async function checkHealth(driver: Driver, appId?: string, xml?: string, opts: { nodes?: RawNode[] } = {}): Promise<HealthResult> {
   let source = xml;
-  if (source === undefined) source = await driver.dumpXml().catch(() => '');
+  let dumpAborted = false;
+  if (source === undefined)
+    source = await driver.dumpXml().catch((e) => {
+      dumpAborted = isAbortError(e);
+      return '';
+    });
+  // Cancelled work is not evidence: an aborted dump (or a check whose call/job was cancelled) must
+  // never become a `wda_unreachable` finding / BLOCK verdict.
+  if (dumpAborted || isAbortError(undefined)) return cancelledHealth();
 
   // Parse to nodes so evidence is the VISIBLE text (not attribute names) — best-effort.
   let raw: RawNode[] | undefined = opts.nodes;
@@ -119,6 +145,7 @@ export async function checkHealth(driver: Driver, appId?: string, xml?: string, 
   // keeps the full dumpsys answer, which also names the resumed activity.
   const trustRoot = xml !== undefined && !!appId && rootPkg === appId && !ANR_RE.test(joined) && !CRASH_RE.test(joined);
   const foreground = trustRoot ? rootPkg! : await driver.foregroundOwner().catch(() => 'unknown');
+  if (isAbortError(undefined)) return cancelledHealth();
 
   const findings: Finding[] = [];
 

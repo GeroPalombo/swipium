@@ -12,6 +12,7 @@ import {
   classifyWdaBuildFailure,
   classifyWdaConnectionFailure,
   createWdaSession,
+  discoverAppiumWdaProjects,
   discoverWdaProjects,
   managedWdaBuildArgs,
   managedWdaStartArgs,
@@ -26,7 +27,15 @@ import { loadWdaConfig, wdaSigningStatus, wdaUrlAllowedByConfig } from '../lib/w
 import { recordWdaTiming, wdaRecommendations, wdaTimingSummary } from '../lib/wdaTune.js';
 import { WdaDriver } from '../drivers/WdaDriver.js';
 import * as sim from '../lib/simctl.js';
-import { reclaimPid, registerManagedProcess, registeredWdaForSession, unregisterManagedProcess } from '../session/processRegistry.js';
+import {
+  findManagedWdaProcesses,
+  killManagedWda,
+  reclaimPid,
+  registerManagedProcess,
+  registeredWdaForSession,
+  unregisterManagedProcess,
+  type ManagedWdaSignature,
+} from '../session/processRegistry.js';
 import type { ArtifactRecord, Session, SessionStore } from '../session/store.js';
 
 const managedProcesses = new Map<string, { pid: number; logUri: string }>();
@@ -52,6 +61,31 @@ function liveManagedWda(sessionId: string): { pid: number; adopted: boolean } | 
   }
   const adopted = registeredWdaForSession(sessionId);
   return adopted && pidIsAlive(adopted.pid) ? { pid: adopted.pid, adopted: true } : undefined;
+}
+
+/** The managed-WDA signature of this session's latest successful `qa_wda start` (from the
+ *  mutation ledger, which survives a server restart) — lets `qa_wda stop` find the xcodebuild
+ *  even when its process-registry entry was lost. Exported for tests. */
+export function lastManagedWdaStart(session: Pick<Session, 'mutations'>): ManagedWdaSignature | undefined {
+  const m = [...(session.mutations ?? [])]
+    .reverse()
+    .find((r) => r.tool === 'qa_wda' && r.action === 'wda_start' && r.status === 'executed' && typeof r.target?.projectPath === 'string');
+  if (!m) return undefined;
+  const t = m.target as { projectPath: string; udid?: unknown; derivedDataPath?: unknown; webDriverAgentUrl?: unknown };
+  if (typeof t.udid !== 'string' || !t.udid) return undefined;
+  let port: number | undefined;
+  try {
+    const u = new URL(String(t.webDriverAgentUrl ?? ''));
+    port = Number(u.port) || undefined;
+  } catch {
+    port = undefined;
+  }
+  return {
+    projectPath: t.projectPath,
+    udid: t.udid,
+    ...(typeof t.derivedDataPath === 'string' && t.derivedDataPath ? { derivedDataPath: t.derivedDataPath } : {}),
+    ...(port ? { port } : {}),
+  };
 }
 
 interface WdaDiagnosticIssue {
@@ -209,7 +243,13 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
       }
 
       const resolvePath = (p: string | undefined) => (p ? (isAbsolute(p) ? p : join(session.root, p)) : undefined);
-      const projectPath = resolvePath(wdaProjectPath);
+      const explicitProjectPath = resolvePath(wdaProjectPath);
+      // Managed build/start without wdaProjectPath: use a user-installed Appium WebDriverAgent
+      // (~/.appium/…/appium-webdriveragent, global npm) — reported as wdaProjectSource.
+      const discoveredAppiumProject =
+        !explicitProjectPath && (action === 'build' || action === 'start') ? discoverAppiumWdaProjects()[0] : undefined;
+      const projectPath = explicitProjectPath ?? discoveredAppiumProject;
+      const wdaProjectSource = explicitProjectPath ? 'argument' : discoveredAppiumProject ? 'appium-discovered' : null;
       const ddPath = resolvePath(derivedDataPath) ?? configured.derivedDataPath;
       // What this call actually uses (args over config) — echoed as `wdaConfig` so a passed
       // derivedDataPath / webDriverAgentUrl is not misreported as the configured default.
@@ -257,24 +297,47 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
         if (!proc) {
           // A WDA started by a previous server run and adopted at startup (processRegistry).
           const adopted = registeredWdaForSession(session.id);
-          if (!adopted) return qaOk({ stopped: false }, 'no managed WDA process recorded for this session');
-          const outcome = reclaimPid(adopted.pid, 'wda', undefined, adopted); // fingerprint-checked: never signals a recycled pid
-          unregisterManagedProcess(adopted.pid);
-          sessions.addEnvChange(session, `wda stop pid ${adopted.pid} (adopted)`);
+          const outcome = adopted ? reclaimPid(adopted.pid, 'wda', undefined, adopted) : undefined; // fingerprint-checked
+          if (adopted) unregisterManagedProcess(adopted.pid);
+          if (adopted && outcome === 'killed') {
+            sessions.addEnvChange(session, `wda stop pid ${adopted.pid} (adopted)`);
+            sessions.recordMutation(session, {
+              tool: 'qa_wda',
+              action: 'wda_stop',
+              risk: 'low',
+              target: { pid: adopted.pid, adopted: true, webDriverAgentUrl: adopted.endpoint ?? null },
+              consent: { required: false, approved: true },
+              status: 'restored',
+              detail: `adopted WDA ${outcome}`,
+            });
+            return qaOk({ stopped: true, pid: adopted.pid, adopted: true, outcome }, `stopped adopted managed WDA pid ${adopted.pid}`);
+          }
+          // Registry entry lost (or unverifiable): find the managed xcodebuild this session started
+          // by its exact signature (project + destination + derived data), never by pid alone.
+          const sig = lastManagedWdaStart(session);
+          const pids = sig ? findManagedWdaProcesses(sig) : [];
+          const killed = pids.filter((pid) => killManagedWda(pid));
+          if (!killed.length) {
+            if (adopted)
+              return qaOk(
+                { stopped: false, pid: adopted.pid, adopted: true, outcome },
+                `adopted WDA pid ${adopted.pid} was already ${outcome}`,
+              );
+            return qaOk({ stopped: false }, 'no managed WDA process recorded for this session');
+          }
+          sessions.addEnvChange(session, `wda stop pid ${killed.join(',')} (recovered by signature)`);
           sessions.recordMutation(session, {
             tool: 'qa_wda',
             action: 'wda_stop',
             risk: 'low',
-            target: { pid: adopted.pid, adopted: true, webDriverAgentUrl: adopted.endpoint ?? null },
+            target: { pids: killed, recovered: true, projectPath: sig!.projectPath, udid: sig!.udid },
             consent: { required: false, approved: true },
             status: 'restored',
-            detail: `adopted WDA ${outcome}`,
+            detail: 'managed WDA located by command signature (registry entry missing)',
           });
           return qaOk(
-            { stopped: outcome === 'killed', pid: adopted.pid, adopted: true, outcome },
-            outcome === 'killed'
-              ? `stopped adopted managed WDA pid ${adopted.pid}`
-              : `adopted WDA pid ${adopted.pid} was already ${outcome}`,
+            { stopped: true, pid: killed[0], pids: killed, recovered: true },
+            `stopped managed WDA pid ${killed.join(', ')} (located by its xcodebuild signature; registry entry was missing)`,
           );
         }
         try {
@@ -362,9 +425,11 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
               changedState: false,
               retrySafe: true,
               failureCode: 'NO_ARTIFACT',
-              nextSteps: ['Pass wdaProjectPath, for example path/to/WebDriverAgent.xcodeproj.'],
+              nextSteps: [
+                "Pass wdaProjectPath, for example path/to/WebDriverAgent.xcodeproj, or install Appium's WebDriverAgent (appium driver install xcuitest) so it is auto-discovered under ~/.appium.",
+              ],
             },
-            { xcode, wdaProjectPath: projectPath ?? null },
+            { xcode, wdaProjectPath: projectPath ?? null, wdaProjectSource },
           );
         }
         const args =
@@ -464,9 +529,20 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
             status: 'executed',
             ledgerUri: logUri,
           });
+          const wdaBuildProduct = managedWdaBuildProductStatus(ddPath);
           return qaOk(
-            { built: true, logUri, xcode, command: ['xcodebuild', ...args], wdaConfig: effectiveConfig },
-            `WDA build completed → ${logUri}`,
+            {
+              built: true,
+              logUri,
+              xcode,
+              command: ['xcodebuild', ...args],
+              wdaConfig: effectiveConfig,
+              wdaProjectPath: projectPath,
+              wdaProjectSource,
+              derivedDataPath: ddPath,
+              wdaBuildProduct,
+            },
+            `WDA build completed (${wdaProjectSource === 'appium-discovered' ? 'auto-discovered Appium WDA ' : ''}${projectPath}) → ${logUri}`,
           );
         }
         const logUri = sessions.saveArtifact(session, 'wda', `wda-start-${Date.now()}.log`, '', 'text/plain', 'WDA start log');
@@ -554,6 +630,8 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
             pid: child.pid ?? null,
             logUri,
             webDriverAgentUrl: url,
+            wdaProjectPath: projectPath,
+            wdaProjectSource,
             command: ['xcodebuild', ...args],
             wdaConfig: effectiveConfig,
             wda: waited.status,
@@ -569,7 +647,10 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
       const appId = bundleId ?? session.appId ?? null;
       const artifactSummary = latestWdaArtifacts(session);
       const wdaProjectDiscovery = discoverWdaProjects(session.root, projectPath ? [projectPath] : []);
-      const wdaBuildProduct = configured.mode === 'managed' || !!projectPath ? managedWdaBuildProductStatus(ddPath) : null;
+      // Reported whenever managed WDA is in play OR a derived-data cache exists (e.g. after a
+      // qa_wda build that used an auto-discovered Appium project and no explicit path).
+      const wdaBuildProduct =
+        configured.mode === 'managed' || !!projectPath || existsSync(ddPath) ? managedWdaBuildProductStatus(ddPath) : null;
       const simctlOk = await sim.simctlAvailable().catch(() => false);
       const simulators = simctlOk ? await sim.listSimulators().catch(() => []) : [];
       const bootedSimulators = simulators.filter((s) => s.state === 'Booted');
@@ -651,7 +732,9 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
               'Boot/select a simulator with qa_ios boot, or pass device explicitly.',
             ),
           );
-        if (wantsManaged && (!projectPath || !existsSync(projectPath))) {
+        // No path given but a user-installed Appium WDA exists: build/start will auto-use it.
+        const appiumAuto = wantsManaged && !projectPath ? discoverAppiumWdaProjects()[0] : undefined;
+        if (wantsManaged && (!projectPath || !existsSync(projectPath)) && !appiumAuto) {
           const discovered = wdaProjectDiscovery.candidates[0];
           issues.push(
             issue(

@@ -8,6 +8,7 @@ import { parseSnapshot } from '../snapshot/parse.js';
 import { settle } from '../snapshot/settle.js';
 import { checkHealth } from '../oracle/health.js';
 import { recordHealthFindings } from '../oracle/record.js';
+import { CancelledError, isAbortError } from '../lib/abortScope.js';
 import { ExploreGraph, type ScreenNode, type EdgeOutcome } from './graph.js';
 import { structuredSignature, visualSignature } from './signatures.js';
 import { actionLikeNonInteractive, rankCandidates, locatorQuality, type RankedCandidate, type SkippedActionLike } from './candidates.js';
@@ -303,10 +304,14 @@ export async function runExplore(
       const parsed = parseSnapshot(xml);
       elements = parsed.elements;
       webviewDominance = parsed.quality.signals.webviewDominance;
-    } catch {
+    } catch (e) {
+      // Cancelled job: an aborted dump is not a visual-only screen, a finding or a blocker.
+      if (isAbortError(e, signal)) throw new CancelledError('exploration cancelled');
       /* snapshot failed → treated as visual-only below */
     }
+    if (signal?.aborted) throw new CancelledError('exploration cancelled');
     const health = await checkHealth(driver, session.appId, xml || undefined);
+    if (health.cancelled || signal?.aborted) throw new CancelledError('exploration cancelled');
     await recordHealthFindings(sessions, session, health.findings, driver, health.foreground);
     if (!health.nativeHealthy) summary.appErrors += 0; // native handled separately below
     const healthSnap = {
@@ -427,260 +432,282 @@ export async function runExplore(
 
   // ---- main loop ----
   let stoppedReason = 'exploration complete';
-  while (true) {
-    if (signal?.aborted) {
-      stoppedReason = 'cancelled';
-      break;
-    }
-    if (summary.actionsTried >= maxActions) {
-      stoppedReason = `action budget reached (${maxActions})`;
-      break;
-    }
-    if (graph.nodeCount() >= maxScreens) {
-      stoppedReason = `screen budget reached (${maxScreens})`;
-      break;
-    }
-    if (Date.now() >= deadline) {
-      stoppedReason = 'time budget reached';
-      break;
-    }
-    const budgetStop = sessions.budgetStop(session);
-    if (budgetStop) {
-      stoppedReason = `session budget: ${budgetStop}`;
-      break;
-    }
-
-    const obs = await observe();
-    progress(`exploring: ${summary.screensVisited} screens, ${summary.actionsTried} actions${obs.visual ? ', visual-only' : ''}`);
-    if (!planned && (opts.strategy === 'task_planner' || opts.strategy === 'hybrid')) {
-      planned = true;
-      const screenText = obs.candidates.map((c) => `${c.label ?? ''} ${c.locator?.value ?? ''}`).join(' ');
-      const domain = inferAppDomain({
-        packageId: session.appId,
-        goal: opts.goal,
-        screenText,
-        fixtures: session.fixtures.map((f) => f.name),
-      });
-      const tasks = proposeTasks({
-        packageId: session.appId,
-        goal: opts.goal,
-        screenText,
-        fixtures: session.fixtures.map((f) => f.name),
-        candidates: obs.candidates,
-      });
-      graph.setTasks(tasks);
-      graph.setHypotheses([`domain:${domain.domain}`, ...tasks.map((t) => `${t.feature}:${t.title}`)]);
-      graph.setBlockedPreconditions([...new Set(tasks.flatMap((t) => t.preconditions))]);
-    }
-
-    // App error → record + stop this path (do not hide bugs; do not keep crawling a broken screen).
-    if (obs.node.health.app === 'error') {
-      note({
-        workflow: 'guided_exploration',
-        outcome: 'fail',
-        category: 'app_bug',
-        reason: `app-layer error on "${obs.node.title}"`,
-        artifactUris: obs.node.screenshotUri ? [obs.node.screenshotUri] : undefined,
-      });
-      summary.blockers++;
-      if (lastNodeId)
-        graph.addEdge({
-          from: lastNodeId,
-          to: obs.node.id,
-          action: { type: 'tap', targetDescription: 'prev action' },
-          outcome: 'app_error',
-          evidenceUris: obs.node.screenshotUri ? [obs.node.screenshotUri] : [],
-        });
-      stoppedReason = 'app-layer error encountered';
-      break;
-    }
-    if (obs.node.health.native === 'error') {
-      summary.blockers++;
-      stoppedReason = 'native error encountered';
-      break;
-    }
-
-    // Auth wall with no credentials.
-    if (obs.authWall && !hasCredentials(session)) {
-      note({
-        workflow: 'guided_exploration',
-        outcome: 'blocked',
-        category: 'missing_test_data',
-        reason: 'login required, no credentials available',
-        missingPrecondition: 'test account credentials',
-        recommendedSetup: 'Provide SWIPIUM_TEST_EMAIL/SWIPIUM_TEST_PASSWORD (qa_continue_from_blocker) or accept pre-login coverage.',
-      });
-      summary.blockers++;
-      if (stopOnAuth) {
-        const suitePromotion = finalizeGraph(graph, summary, sameScreenEdges, destructiveCandidates, ['auth wall blocked exploration']);
-        return {
-          graph,
-          summary,
-          needsInput: NeedsInput.credentials('Exploration hit a login screen.'),
-          state: 'needs_input',
-          stoppedReason: 'auth required (credentials missing)',
-          suitePromotion,
-          destructiveCandidates: [...destructiveCandidates.values()],
-        };
+  // A cancelled job unwinds via CancelledError (thrown by observe) — never recorded as a finding,
+  // blocker or visual-only screen; the partial graph is still finalized below.
+  try {
+    while (true) {
+      if (signal?.aborted) {
+        stoppedReason = 'cancelled';
+        break;
       }
-      // stopOnAuth:false → record blocked and stop crawling further (only public screens were reachable).
-      stoppedReason = 'auth required — recorded blocked, no credentials to proceed';
-      break;
-    }
+      if (summary.actionsTried >= maxActions) {
+        stoppedReason = `action budget reached (${maxActions})`;
+        break;
+      }
+      if (graph.nodeCount() >= maxScreens) {
+        stoppedReason = `screen budget reached (${maxScreens})`;
+        break;
+      }
+      if (Date.now() >= deadline) {
+        stoppedReason = 'time budget reached';
+        break;
+      }
+      const budgetStop = sessions.budgetStop(session);
+      if (budgetStop) {
+        stoppedReason = `session budget: ${budgetStop}`;
+        break;
+      }
 
-    const explored = exploredPerScreen.get(obs.node.id) ?? new Set<string>();
-    exploredPerScreen.set(obs.node.id, explored);
+      const obs = await observe();
+      progress(`exploring: ${summary.screensVisited} screens, ${summary.actionsTried} actions${obs.visual ? ', visual-only' : ''}`);
+      if (!planned && (opts.strategy === 'task_planner' || opts.strategy === 'hybrid')) {
+        planned = true;
+        const screenText = obs.candidates.map((c) => `${c.label ?? ''} ${c.locator?.value ?? ''}`).join(' ');
+        const domain = inferAppDomain({
+          packageId: session.appId,
+          goal: opts.goal,
+          screenText,
+          fixtures: session.fixtures.map((f) => f.name),
+        });
+        const tasks = proposeTasks({
+          packageId: session.appId,
+          goal: opts.goal,
+          screenText,
+          fixtures: session.fixtures.map((f) => f.name),
+          candidates: obs.candidates,
+        });
+        graph.setTasks(tasks);
+        graph.setHypotheses([`domain:${domain.domain}`, ...tasks.map((t) => `${t.feature}:${t.title}`)]);
+        graph.setBlockedPreconditions([...new Set(tasks.flatMap((t) => t.preconditions))]);
+      }
 
-    // Visual-only screens: no safe structured target → step back to keep the graph connected.
-    const pick = obs.candidates.find((c) => !explored.has(c.signatureKey) && allowedCandidate(c, obs.node));
-    const blockedCandidates = obs.candidates.filter((c) => !allowedCandidate(c, obs.node));
-    if (blockedCandidates.length && !skippedNotedScreens.has(obs.node.id)) {
-      skippedNotedScreens.add(obs.node.id);
-      const ex = blockedCandidates[0];
-      note({
-        workflow: 'guided_exploration',
-        outcome: 'skipped',
-        category: ex.risk === 'destructive' ? 'destructive_refused' : 'other',
-        reason: `Skipped ${ex.risk} action "${ex.label ?? ex.locator?.value}": ${ex.reason}`,
-        recommendedSetup:
-          ex.risk === 'destructive'
-            ? 'Run dry_run_destructive to list candidate-bound approvals, then approve one exact candidate with disposable test state.'
-            : 'Add accessibilityLabel/testID so the action can be judged + automated.',
-      });
-      summary.unsafeActionsSkipped += blockedCandidates.length;
-    }
-
-    if (!pick) {
-      if (obs.actionLikeSkipped.length && !testabilityNotedScreens.has(obs.node.id)) {
-        testabilityNotedScreens.add(obs.node.id);
-        for (const s of obs.actionLikeSkipped.slice(0, 8)) {
-          summary.testabilityBlockers.push({
-            screen: obs.node.title ?? 'unknown',
-            visibleText: s.visibleText,
-            role: s.role,
-            bounds: s.bounds,
-            clickable: s.clickable,
-            recommendation: `"${s.visibleText}" looks tappable but the UI tree marks it non-interactive. Add accessibilityRole="button" and a stable testID or accessibility identifier.`,
-            manualCandidate: { x: Math.round(s.bounds.x + s.bounds.w / 2), y: Math.round(s.bounds.y + s.bounds.h / 2) },
+      // App error → record + stop this path (do not hide bugs; do not keep crawling a broken screen).
+      if (obs.node.health.app === 'error') {
+        note({
+          workflow: 'guided_exploration',
+          outcome: 'fail',
+          category: 'app_bug',
+          reason: `app-layer error on "${obs.node.title}"`,
+          artifactUris: obs.node.screenshotUri ? [obs.node.screenshotUri] : undefined,
+        });
+        summary.blockers++;
+        if (lastNodeId)
+          graph.addEdge({
+            from: lastNodeId,
+            to: obs.node.id,
+            action: { type: 'tap', targetDescription: 'prev action' },
+            outcome: 'app_error',
+            evidenceUris: obs.node.screenshotUri ? [obs.node.screenshotUri] : [],
           });
-        }
+        stoppedReason = 'app-layer error encountered';
+        break;
+      }
+      if (obs.node.health.native === 'error') {
+        summary.blockers++;
+        stoppedReason = 'native error encountered';
+        break;
+      }
+
+      // Auth wall with no credentials.
+      if (obs.authWall && !hasCredentials(session)) {
         note({
           workflow: 'guided_exploration',
           outcome: 'blocked',
-          category: 'mcp_limitation',
-          reason: `No safe actionable elements on "${obs.node.title}". ${obs.actionLikeSkipped.length} visible action-like text element(s) are not clickable in the UI tree.`,
-          missingPrecondition: 'tappable controls with accessibilityRole and testID',
-          recommendedSetup: `Add accessibilityRole="button" and a stable testID to primary buttons such as "${obs.actionLikeSkipped[0].visibleText}".`,
+          category: 'missing_test_data',
+          reason: 'login required, no credentials available',
+          missingPrecondition: 'test account credentials',
+          recommendedSetup: 'Provide SWIPIUM_TEST_EMAIL/SWIPIUM_TEST_PASSWORD (qa_continue_from_blocker) or accept pre-login coverage.',
         });
+        summary.blockers++;
+        if (stopOnAuth) {
+          const suitePromotion = finalizeGraph(graph, summary, sameScreenEdges, destructiveCandidates, ['auth wall blocked exploration']);
+          return {
+            graph,
+            summary,
+            needsInput: NeedsInput.credentials('Exploration hit a login screen.'),
+            state: 'needs_input',
+            stoppedReason: 'auth required (credentials missing)',
+            suitePromotion,
+            destructiveCandidates: [...destructiveCandidates.values()],
+          };
+        }
+        // stopOnAuth:false → record blocked and stop crawling further (only public screens were reachable).
+        stoppedReason = 'auth required — recorded blocked, no credentials to proceed';
+        break;
       }
-      // Nothing safe+new here. Go back to keep exploring; if we're at the root with nothing, stop.
-      if (lastNodeId && obs.node.id !== graph.rootId && depth > 1) {
-        await driver.pressKey('back').catch(() => {});
-        graph.addEdge({
-          from: obs.node.id,
-          action: { type: 'back', targetDescription: 'back' },
-          outcome: 'changed_screen',
-          evidenceUris: [],
-        });
-        await settle(driver, { timeoutMs: 4000 }).catch(() => {});
-        lastNodeId = obs.node.id;
-        continue;
-      }
-      stoppedReason = 'no further safe, unexplored actions';
-      break;
-    }
 
-    // ---- act on the chosen candidate ----
-    explored.add(pick.signatureKey);
-    const cx = (pick.bounds?.x ?? 0) + (pick.bounds?.w ?? 0) / 2;
-    const cy = (pick.bounds?.y ?? 0) + (pick.bounds?.h ?? 0) / 2;
-    const fromId = obs.node.id;
+      const explored = exploredPerScreen.get(obs.node.id) ?? new Set<string>();
+      exploredPerScreen.set(obs.node.id, explored);
 
-    // Text entry only with a value source (P1 fix): never type blindly. If none, skip honestly.
-    if (pick.actionType === 'type') {
-      const v = valueForField(session, pick.label, pick.locator?.value, pick.role, pick.secure, genCtx);
-      if (!v) {
+      // Visual-only screens: no safe structured target → step back to keep the graph connected.
+      const pick = obs.candidates.find((c) => !explored.has(c.signatureKey) && allowedCandidate(c, obs.node));
+      const blockedCandidates = obs.candidates.filter((c) => !allowedCandidate(c, obs.node));
+      if (blockedCandidates.length && !skippedNotedScreens.has(obs.node.id)) {
+        skippedNotedScreens.add(obs.node.id);
+        const ex = blockedCandidates[0];
         note({
           workflow: 'guided_exploration',
           outcome: 'skipped',
-          category: 'missing_test_data',
-          reason: `text field "${pick.label ?? pick.locator?.value}" needs a value to exercise`,
-          missingPrecondition: 'a fixture value or credential for this field',
-          recommendedSetup: 'Provide credentials (qa_continue_from_blocker) or a fixture { name, value }.',
+          category: ex.risk === 'destructive' ? 'destructive_refused' : 'other',
+          reason: `Skipped ${ex.risk} action "${ex.label ?? ex.locator?.value}": ${ex.reason}`,
+          recommendedSetup:
+            ex.risk === 'destructive'
+              ? 'Run dry_run_destructive to list candidate-bound approvals, then approve one exact candidate with disposable test state.'
+              : 'Add accessibilityLabel/testID so the action can be judged + automated.',
         });
-        summary.blockers++;
-        continue;
+        summary.unsafeActionsSkipped += blockedCandidates.length;
       }
-      try {
-        await driver.tapXY(Math.round(cx), Math.round(cy)); // focus the field
-        await driver.inputText(v.value);
-      } catch {
+
+      if (!pick) {
+        if (obs.actionLikeSkipped.length && !testabilityNotedScreens.has(obs.node.id)) {
+          testabilityNotedScreens.add(obs.node.id);
+          for (const s of obs.actionLikeSkipped.slice(0, 8)) {
+            summary.testabilityBlockers.push({
+              screen: obs.node.title ?? 'unknown',
+              visibleText: s.visibleText,
+              role: s.role,
+              bounds: s.bounds,
+              clickable: s.clickable,
+              recommendation: `"${s.visibleText}" looks tappable but the UI tree marks it non-interactive. Add accessibilityRole="button" and a stable testID or accessibility identifier.`,
+              manualCandidate: { x: Math.round(s.bounds.x + s.bounds.w / 2), y: Math.round(s.bounds.y + s.bounds.h / 2) },
+            });
+          }
+          note({
+            workflow: 'guided_exploration',
+            outcome: 'blocked',
+            category: 'mcp_limitation',
+            reason: `No safe actionable elements on "${obs.node.title}". ${obs.actionLikeSkipped.length} visible action-like text element(s) are not clickable in the UI tree.`,
+            missingPrecondition: 'tappable controls with accessibilityRole and testID',
+            recommendedSetup: `Add accessibilityRole="button" and a stable testID to primary buttons such as "${obs.actionLikeSkipped[0].visibleText}".`,
+          });
+        }
+        // Nothing safe+new here. Go back to keep exploring; if we're at the root with nothing, stop.
+        if (lastNodeId && obs.node.id !== graph.rootId && depth > 1) {
+          await driver.pressKey('back').catch(() => {});
+          graph.addEdge({
+            from: obs.node.id,
+            action: { type: 'back', targetDescription: 'back' },
+            outcome: 'changed_screen',
+            evidenceUris: [],
+          });
+          await settle(driver, { timeoutMs: 4000 }).catch(() => {});
+          lastNodeId = obs.node.id;
+          continue;
+        }
+        stoppedReason = 'no further safe, unexplored actions';
+        break;
+      }
+
+      // ---- act on the chosen candidate ----
+      explored.add(pick.signatureKey);
+      const cx = (pick.bounds?.x ?? 0) + (pick.bounds?.w ?? 0) / 2;
+      const cy = (pick.bounds?.y ?? 0) + (pick.bounds?.h ?? 0) / 2;
+      const fromId = obs.node.id;
+
+      // Text entry only with a value source (P1 fix): never type blindly. If none, skip honestly.
+      if (pick.actionType === 'type') {
+        const v = valueForField(session, pick.label, pick.locator?.value, pick.role, pick.secure, genCtx);
+        if (!v) {
+          note({
+            workflow: 'guided_exploration',
+            outcome: 'skipped',
+            category: 'missing_test_data',
+            reason: `text field "${pick.label ?? pick.locator?.value}" needs a value to exercise`,
+            missingPrecondition: 'a fixture value or credential for this field',
+            recommendedSetup: 'Provide credentials (qa_continue_from_blocker) or a fixture { name, value }.',
+          });
+          summary.blockers++;
+          continue;
+        }
+        try {
+          await driver.tapXY(Math.round(cx), Math.round(cy)); // focus the field
+          await driver.inputText(v.value);
+        } catch {
+          graph.addEdge({
+            from: fromId,
+            action: { type: 'type', targetDescription: pick.label ?? 'field' },
+            outcome: 'blocked',
+            evidenceUris: [],
+          });
+          continue;
+        }
+        summary.actionsTried++;
+        sessions.bump(session, 'actions');
+        if (v.secret) session.secrets.add(v.value);
+        if (v.source === 'generator') {
+          const rec = session.generatedValues.find((g) => g.varName === v.varName && g.fixture === v.fixture && g.field === v.field);
+          if (rec && !rec.artifactUri) {
+            rec.artifactUri = sessions.saveArtifact(
+              session,
+              'generated_data',
+              `generated-${v.varName.toLowerCase()}-${Date.now()}.json`,
+              JSON.stringify(
+                {
+                  schema: 'swipium.generated_value.v1',
+                  fixture: rec.fixture,
+                  field: rec.field,
+                  varName: rec.varName,
+                  generator: rec.generator,
+                  value: rec.secret ? '<redacted>' : rec.value,
+                  secret: rec.secret,
+                },
+                null,
+                2,
+              ),
+              'application/json',
+              `generated fixture value ${rec.fixture}.${rec.field}`,
+            );
+            sessions.persist(session);
+          }
+        }
+        if (pick.locator && pick.locator.strategy !== 'coordinate') {
+          sessions.addRecordedAction(session, {
+            at: Date.now(),
+            action: 'type',
+            selector: pick.locator.value,
+            selectorKind: strategyToKind(pick.locator.strategy),
+            text: `\${${v.varName}}`,
+            secret: v.secret,
+            exportability: v.secret ? 'needs-human-data' : 'semantic',
+            screen: obs.node.title,
+            provenance: provenanceForCandidate(obs.node, pick),
+          });
+        }
+        await settle(driver, { timeoutMs: 5000 }).catch(() => {});
+        const afterType = await observe();
         graph.addEdge({
           from: fromId,
+          to: afterType.node.id,
           action: { type: 'type', targetDescription: pick.label ?? 'field' },
+          outcome: afterType.node.id === fromId ? 'same_screen' : 'changed_screen',
+          evidenceUris: [],
+        });
+        lastNodeId = afterType.node.id;
+        continue;
+      }
+
+      try {
+        await driver.tapXY(Math.round(cx), Math.round(cy));
+      } catch {
+        if (pick.risk === 'destructive') {
+          sessions.recordMutation(session, {
+            tool: 'qa_explore',
+            action: 'destructive_ui_candidate',
+            risk: 'high',
+            target: destructiveMutationTarget(session, obs.node, pick, opts.destructiveApproval),
+            consent: { required: true, consentId: opts.destructiveApproval?.consentId, approved: true },
+            status: 'blocked',
+            detail: 'Approved destructive exploration candidate could not be tapped.',
+          });
+        }
+        graph.addEdge({
+          from: fromId,
+          action: { type: 'tap', targetDescription: pick.label ?? pick.locator?.value ?? 'control' },
           outcome: 'blocked',
           evidenceUris: [],
         });
         continue;
       }
-      summary.actionsTried++;
-      sessions.bump(session, 'actions');
-      if (v.secret) session.secrets.add(v.value);
-      if (v.source === 'generator') {
-        const rec = session.generatedValues.find((g) => g.varName === v.varName && g.fixture === v.fixture && g.field === v.field);
-        if (rec && !rec.artifactUri) {
-          rec.artifactUri = sessions.saveArtifact(
-            session,
-            'generated_data',
-            `generated-${v.varName.toLowerCase()}-${Date.now()}.json`,
-            JSON.stringify(
-              {
-                schema: 'swipium.generated_value.v1',
-                fixture: rec.fixture,
-                field: rec.field,
-                varName: rec.varName,
-                generator: rec.generator,
-                value: rec.secret ? '<redacted>' : rec.value,
-                secret: rec.secret,
-              },
-              null,
-              2,
-            ),
-            'application/json',
-            `generated fixture value ${rec.fixture}.${rec.field}`,
-          );
-          sessions.persist(session);
-        }
-      }
-      if (pick.locator && pick.locator.strategy !== 'coordinate') {
-        sessions.addRecordedAction(session, {
-          at: Date.now(),
-          action: 'type',
-          selector: pick.locator.value,
-          selectorKind: strategyToKind(pick.locator.strategy),
-          text: `\${${v.varName}}`,
-          secret: v.secret,
-          exportability: v.secret ? 'needs-human-data' : 'semantic',
-          screen: obs.node.title,
-          provenance: provenanceForCandidate(obs.node, pick),
-        });
-      }
-      await settle(driver, { timeoutMs: 5000 }).catch(() => {});
-      const afterType = await observe();
-      graph.addEdge({
-        from: fromId,
-        to: afterType.node.id,
-        action: { type: 'type', targetDescription: pick.label ?? 'field' },
-        outcome: afterType.node.id === fromId ? 'same_screen' : 'changed_screen',
-        evidenceUris: [],
-      });
-      lastNodeId = afterType.node.id;
-      continue;
-    }
-
-    try {
-      await driver.tapXY(Math.round(cx), Math.round(cy));
-    } catch {
       if (pick.risk === 'destructive') {
         sessions.recordMutation(session, {
           tool: 'qa_explore',
@@ -688,75 +715,60 @@ export async function runExplore(
           risk: 'high',
           target: destructiveMutationTarget(session, obs.node, pick, opts.destructiveApproval),
           consent: { required: true, consentId: opts.destructiveApproval?.consentId, approved: true },
-          status: 'blocked',
-          detail: 'Approved destructive exploration candidate could not be tapped.',
+          status: 'executed',
+          detail: 'Approved destructive exploration candidate tapped.',
         });
       }
+      summary.actionsTried++;
+      sessions.bump(session, 'actions');
+      // Record durable taps so qa_generate target:"suite" can promote the path (§9.3).
+      if (pick.locator && pick.locator.strategy !== 'coordinate') {
+        sessions.addRecordedAction(session, {
+          at: Date.now(),
+          action: 'tap',
+          selector: pick.locator.value,
+          selectorKind: strategyToKind(pick.locator.strategy),
+          exportability: 'semantic',
+          screen: obs.node.title,
+          provenance: provenanceForCandidate(obs.node, pick),
+        });
+      }
+      await settle(driver, { timeoutMs: 5000 }).catch(() => {});
+
+      // ---- observe outcome to classify the transition ----
+      const after = await observe();
+      const outcome: EdgeOutcome = after.node.id === fromId ? 'same_screen' : 'changed_screen';
+      if (outcome === 'changed_screen') {
+        summary.workflowsFound++;
+        consecutiveNoChange = 0;
+      } else {
+        consecutiveNoChange++;
+      }
+      if (outcome === 'same_screen') sameScreenEdges++;
       graph.addEdge({
         from: fromId,
-        action: { type: 'tap', targetDescription: pick.label ?? pick.locator?.value ?? 'control' },
-        outcome: 'blocked',
-        evidenceUris: [],
+        to: after.node.id,
+        action: {
+          type: 'tap',
+          targetDescription: pick.label ?? pick.locator?.value ?? 'control',
+          locator: pick.locator as unknown as Record<string, unknown>,
+        },
+        outcome,
+        evidenceUris: after.node.screenshotUri ? [after.node.screenshotUri] : [],
+        riskDecision: pick.riskClass ?? pick.risk,
+        preActionState: obs.node.signature,
+        postActionState: after.node.signature,
+        oracle: outcome === 'changed_screen' ? 'screen_signature_changed' : 'screen_signature_same',
       });
-      continue;
+      lastNodeId = after.node.id;
+      if (consecutiveNoChange >= 3) {
+        stoppedReason = 'repeated no-change actions';
+        break;
+      }
     }
-    if (pick.risk === 'destructive') {
-      sessions.recordMutation(session, {
-        tool: 'qa_explore',
-        action: 'destructive_ui_candidate',
-        risk: 'high',
-        target: destructiveMutationTarget(session, obs.node, pick, opts.destructiveApproval),
-        consent: { required: true, consentId: opts.destructiveApproval?.consentId, approved: true },
-        status: 'executed',
-        detail: 'Approved destructive exploration candidate tapped.',
-      });
-    }
-    summary.actionsTried++;
-    sessions.bump(session, 'actions');
-    // Record durable taps so qa_generate target:"suite" can promote the path (§9.3).
-    if (pick.locator && pick.locator.strategy !== 'coordinate') {
-      sessions.addRecordedAction(session, {
-        at: Date.now(),
-        action: 'tap',
-        selector: pick.locator.value,
-        selectorKind: strategyToKind(pick.locator.strategy),
-        exportability: 'semantic',
-        screen: obs.node.title,
-        provenance: provenanceForCandidate(obs.node, pick),
-      });
-    }
-    await settle(driver, { timeoutMs: 5000 }).catch(() => {});
-
-    // ---- observe outcome to classify the transition ----
-    const after = await observe();
-    const outcome: EdgeOutcome = after.node.id === fromId ? 'same_screen' : 'changed_screen';
-    if (outcome === 'changed_screen') {
-      summary.workflowsFound++;
-      consecutiveNoChange = 0;
-    } else {
-      consecutiveNoChange++;
-    }
-    if (outcome === 'same_screen') sameScreenEdges++;
-    graph.addEdge({
-      from: fromId,
-      to: after.node.id,
-      action: {
-        type: 'tap',
-        targetDescription: pick.label ?? pick.locator?.value ?? 'control',
-        locator: pick.locator as unknown as Record<string, unknown>,
-      },
-      outcome,
-      evidenceUris: after.node.screenshotUri ? [after.node.screenshotUri] : [],
-      riskDecision: pick.riskClass ?? pick.risk,
-      preActionState: obs.node.signature,
-      postActionState: after.node.signature,
-      oracle: outcome === 'changed_screen' ? 'screen_signature_changed' : 'screen_signature_same',
-    });
-    lastNodeId = after.node.id;
-    if (consecutiveNoChange >= 3) {
-      stoppedReason = 'repeated no-change actions';
-      break;
-    }
+  } catch (e) {
+    if (!(e instanceof CancelledError) && !(signal?.aborted && isAbortError(e, signal))) throw e;
+    stoppedReason = 'cancelled';
   }
 
   const suitePromotion = finalizeGraph(graph, summary, sameScreenEdges, destructiveCandidates, []);

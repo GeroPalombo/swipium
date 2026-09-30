@@ -12,6 +12,7 @@ import { parseSnapshot, signature } from '../snapshot/parse.js';
 import { settle } from '../snapshot/settle.js';
 import { checkHealth } from '../oracle/health.js';
 import { recordHealthFindings } from '../oracle/record.js';
+import { isAbortError } from '../lib/abortScope.js';
 import { boundsBucket, resolveTarget, resourceIdMatches, type Target } from '../core/target.js';
 import { imageDiff, findTemplate } from '../lib/image.js';
 import { captureCoordinateSpace, toDevicePoint } from '../lib/coordSpace.js';
@@ -298,6 +299,9 @@ export function detectBackDismissibleOverlay(
 }
 
 export function classifyFlowDriverError(error: unknown, fallback: FailureCode = 'UNKNOWN'): FailureCode {
+  // Cancelled work (the call/job was aborted) is CANCELLED — never WDA_UNREACHABLE / SNAPSHOT_FAILED
+  // because the aborted request's message says "aborted" or "dump failed".
+  if (isAbortError(error)) return 'CANCELLED';
   const msg = String((error as Error)?.message ?? error);
   // A crashing OCR/mask provider (tapOcrText/assertOcrText) is typed, not UNKNOWN.
   if ((error as { code?: unknown } | null)?.code === 'OCR_PROVIDER_FAILED') return 'OCR_PROVIDER_FAILED';

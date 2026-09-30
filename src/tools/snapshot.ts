@@ -3,16 +3,21 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
+import { qaOk, qaError, unknownSessionError, cancelledResult } from '../lib/result.js';
 import { parseSnapshot, signature, renderElements } from '../snapshot/parse.js';
 import { presentElements } from '../snapshot/present.js';
 import { makeRedactor, isSecureNode } from '../lib/redact.js';
 import { detectTreeOverlays, classifyForeground } from '../snapshot/overlays.js';
 import { detectAuthScreen } from '../oracle/auth.js';
 import { dumpRootPackage } from '../oracle/health.js';
-import { blockedDeviceResult, getDriver, REHYDRATE_NOTE } from '../session/attach.js';
+import { blockedDeviceResult, getDriver, rehydrateNote } from '../session/attach.js';
 import type { SessionStore } from '../session/store.js';
-import { runWithSignal } from '../lib/abortScope.js';
+import { isAbortError, runWithSignal } from '../lib/abortScope.js';
+import type { DumpOptions } from '../drivers/Driver.js';
+
+/** The bounded structured-dump probe a visual-fallback session still attempts on each qa_snapshot /
+ *  qa_act observation: one short try, so a still-busy screen costs seconds, not the full retry ladder. */
+export const VISUAL_FALLBACK_PROBE: DumpOptions = { timeoutMs: 6000, attempts: 2 };
 
 export function registerSnapshot(server: McpServer, sessions: SessionStore): void {
   server.registerTool(
@@ -62,22 +67,29 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
           });
         }
 
-        // Already in visual-fallback (uiautomator can't reach idle on this app) → don't keep
-        // hammering structured dumps; point the agent at the visual tools immediately.
-        if (session.mode === 'visual-fallback') {
-          return qaError({
-            what: 'Session is in visual-fallback mode — structured snapshots are unavailable on this screen.',
-            changedState: false,
-            retrySafe: false,
-            failureCode: 'VISUAL_ONLY_SCREEN',
-            nextSteps: ['Use qa_screenshot, then qa_act with coordinate targets (durationMs press). qa_check_health still works.'],
-          });
-        }
-
+        // visual-fallback is per-SCREEN, never permanent (real-device smoke: one slow screen left
+        // the session answering VISUAL_ONLY_SCREEN forever). In visual-fallback we still try ONE
+        // bounded structured dump; success switches the session back to 'structured'.
+        const inFallback = session.mode === 'visual-fallback';
         let xml: string;
         try {
-          xml = await driver.dumpXml();
+          xml = await driver.dumpXml(inFallback ? VISUAL_FALLBACK_PROBE : undefined);
         } catch (e) {
+          // Cancelled (the MCP request was aborted): not a snapshot failure — no counter, no
+          // mode switch, no tool error (the report's tool status is unaffected).
+          if (isAbortError(e)) return cancelledResult('Snapshot cancelled — the call was aborted before the UI tree was captured');
+          if (inFallback) {
+            return qaError({
+              what: 'Session is in visual-fallback mode — a structured UI tree is still unavailable on this screen.',
+              changedState: false,
+              retrySafe: true,
+              failureCode: 'VISUAL_ONLY_SCREEN',
+              nextSteps: [
+                'Use qa_screenshot, then qa_act with coordinate targets (durationMs press). qa_check_health still works.',
+                'Each qa_snapshot / qa_act retries a bounded structured dump; the session returns to structured mode as soon as one succeeds.',
+              ],
+            });
+          }
           // Classify repeated idle-state / dump failures and switch to visual fallback.
           const msg = String(e);
           const idle = /idle|could not get idle|dump/i.test(msg);
@@ -91,7 +103,7 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
               retrySafe: false,
               failureCode: 'VISUAL_ONLY_SCREEN',
               nextSteps: [
-                'Switched session to visual-fallback mode.',
+                'Switched session to visual-fallback mode for this screen (qa_snapshot keeps probing and switches back once a dump succeeds).',
                 'Use qa_screenshot, then qa_act with coordinate targets (taps default to a short press).',
                 'qa_check_health stays available (crash/ANR/foreground).',
               ],
@@ -102,9 +114,12 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
             changedState: false,
             retrySafe: true,
             failureCode: 'SNAPSHOT_FAILED',
-            nextSteps: [`Retry; after ${session.budget.maxSnapshotFailures} failures Swipium switches to visual-fallback (screenshots).`],
+            nextSteps: [
+              `Retry; after ${session.budget.maxSnapshotFailures} consecutive failures Swipium switches to visual-fallback (screenshots).`,
+            ],
           });
         }
+        const modeRecovered = sessions.noteStructuredDump(session);
 
         const parsed = parseSnapshot(xml, { interactiveOnly: true });
         const prev = session.lastSnapshot;
@@ -150,13 +165,15 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
 
         const q = parsed.quality;
         const header =
-          (rehydrated ? REHYDRATE_NOTE + '\n' : '') +
+          (rehydrated ? rehydrateNote(session) + '\n' : '') +
+          (modeRecovered ? 'mode: structured again (a UI tree dump succeeded; visual-fallback cleared)\n' : '') +
           `quality=${q.verdict} (${q.reasons.join('; ')})\n` +
           `screen=${parsed.screen[0]}x${parsed.screen[1]} elements=${parsed.elements.length}${f ? ` (filter "${filter}" matched ${pool.length})` : ''} totalNodes=${parsed.total}` +
           (overlays.length ? `\noverlays: ${overlays.map((o) => o.type).join(', ')} (clear with qa_clear_overlay)` : '');
 
         return qaOk(
           {
+            ...(modeRecovered ? { modeRecovered: true, mode: 'structured' } : {}),
             quality: q.verdict,
             qualityReasons: q.reasons,
             qualitySignals: q.signals,

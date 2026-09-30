@@ -360,6 +360,19 @@ async function retryWdaTransport(session: Session): Promise<Driver | undefined> 
   return driver;
 }
 
+/** Post-restart reattach note, platform-aware: iOS sessions relaunch via qa_prepare_ios_target
+ *  (qa_prepare_target is the Android/Expo path). iOS = an iOS driver (simctl / WDA) or a
+ *  simulator-UDID device. */
+export function rehydrateNote(session?: Pick<Session, 'device' | 'driver'>): string {
+  const driver = session?.driver;
+  const ios = driver instanceof SimctlDriver || driver instanceof WdaDriver || isSimulatorUdid(session?.device);
+  return (
+    'Note: reattached the device transport after a restart — the app may not be in the ' +
+    `foreground (relaunch with ${ios ? 'qa_prepare_ios_target' : 'qa_prepare_target'}) and previous @eN refs are invalid (re-run qa_snapshot).`
+  );
+}
+
+/** Platform-neutral form for callers without the session at hand (prefer rehydrateNote(session)). */
 export const REHYDRATE_NOTE =
   'Note: reattached the device transport after a restart — the app may not be in the ' +
-  'foreground (relaunch with qa_prepare_target) and previous @eN refs are invalid (re-run qa_snapshot).';
+  'foreground (relaunch with qa_prepare_target on Android, qa_prepare_ios_target on iOS) and previous @eN refs are invalid (re-run qa_snapshot).';

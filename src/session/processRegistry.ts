@@ -10,7 +10,10 @@
 //    line (for WDA that includes the project path and `-destination id=<udid>`). Before
 //    signalling (or adopting), both are re-read via `ps`. The START TIME must match exactly (the
 //    hard pid-recycling guard: a recycled pid has a different start time). The command must match
-//    per kind: exactly for WDA / recordings / emulators; for Metro — spawned via `npx`, which
+//    per kind: for WDA / recordings / emulators the program is compared by BASENAME and the
+//    argument tail exactly (Xcode's /usr/bin/xcodebuild and xcrun shims re-exec the real tool
+//    under the same pid + start time, so `xcodebuild -project …` later reads
+//    `/Applications/Xcode.app/…/usr/bin/xcodebuild -project …`); for Metro — spawned via `npx`, which
 //    npm retitles right after spawn (`node …/npx react-native start` → `npm exec react-native
 //    start`) — the launcher-stripped program+args tail must match. A PID recycled by the OS to
 //    an unrelated process (another node, the adb server, the user's own xcodebuild/Appium WDA) is
@@ -250,14 +253,74 @@ export function commandTail(cmd: string): string {
   return tokens.slice(i).join(' ');
 }
 
+/** The real program of each non-metro kind (matched against a token's basename). */
+const KIND_PROGRAM_RE: Partial<Record<ManagedProcessKind, RegExp>> = {
+  wda: /^xcodebuild$/i,
+  recording: /^(?:simctl|adb)$/i,
+  emulator: /^(?:emulator|qemu-system-[\w.-]+)$/i,
+};
+
+/** Launchers that exec the real program under the same pid (`xcrun simctl …` → `…/simctl …`). */
+const EXEC_LAUNCHER = /^(?:xcrun|env)$/i;
+
+/** A command line reduced to `<program basename> <args…>`, anchored at the first token whose
+ *  basename matches `program`. Xcode's `/usr/bin/xcodebuild` (and `xcrun`) shims re-exec the real
+ *  tool under the SAME pid + start time, so `ps` later shows
+ *  `/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -project …` for a child spawned
+ *  as `xcodebuild -project …`. Everything before the program must be either a launcher
+ *  (xcrun/env) or the space-split pieces of the program's own absolute path (`/Applications/Xcode
+ *  16.app/…/xcodebuild`) — never flags or another program. Null when no such anchor exists.
+ *  Exported for tests. */
+export function programTail(cmd: string, program: RegExp): string | null {
+  const tokens = cmd.trim().split(/\s+/);
+  const i = tokens.findIndex((t) => program.test(t.split('/').pop() ?? ''));
+  if (i < 0) return null;
+  const prefix = tokens.slice(0, i);
+  const launcherOnly = prefix.every((t) => EXEC_LAUNCHER.test(t.split('/').pop() ?? ''));
+  // One absolute path split at its spaces: starts with '/', no later piece starts a new path, no
+  // piece is a flag / assignment.
+  const pathPieces =
+    prefix.length > 0 &&
+    prefix[0].startsWith('/') &&
+    tokens[i].includes('/') &&
+    !tokens[i].startsWith('/') &&
+    prefix.slice(1).every((t) => !t.includes('/')) &&
+    prefix.every((t) => !t.startsWith('-') && !t.includes('='));
+  if (!launcherOnly && !pathPieces) return null;
+  return [tokens[i].split('/').pop()!, ...tokens.slice(i + 1)].join(' ');
+}
+
+/** `-project` / `-destination` / `-derivedDataPath` values of a managed-WDA xcodebuild command. */
+export function wdaCommandIdentity(cmd: string): { project?: string; destination?: string; derivedDataPath?: string } {
+  const tokens = cmd.trim().split(/\s+/);
+  const valueOf = (flag: string) => {
+    const i = tokens.indexOf(flag);
+    return i >= 0 && i + 1 < tokens.length ? tokens[i + 1] : undefined;
+  };
+  return { project: valueOf('-project'), destination: valueOf('-destination'), derivedDataPath: valueOf('-derivedDataPath') };
+}
+
 /** Per-kind command identity (on top of the exact start-time match). */
 function commandMatches(kind: ManagedProcessKind, recorded: string, live: string): boolean {
   if (!KIND_COMMAND_RE[kind].test(live)) return false;
   if (live === recorded) return true;
-  if (kind !== 'metro') return false;
-  // Metro is launched via `npx`, which npm retitles shortly after spawn — compare what runs.
-  const tail = commandTail(live);
-  return tail !== '' && tail === commandTail(recorded);
+  if (kind === 'metro') {
+    // Metro is launched via `npx`, which npm retitles shortly after spawn — compare what runs.
+    const tail = commandTail(live);
+    return tail !== '' && tail === commandTail(recorded);
+  }
+  // Program path normalised to its basename (shim re-exec); the argument tail must be identical.
+  const program = KIND_PROGRAM_RE[kind];
+  if (!program) return false;
+  const liveTail = programTail(live, program);
+  const recordedTail = programTail(recorded, program);
+  if (!liveTail || liveTail !== recordedTail) return false;
+  if (kind === 'wda') {
+    // Defence in depth: the managed WDA's project + simulator destination must be present.
+    const id = wdaCommandIdentity(recordedTail);
+    return !!id.project && !!id.destination;
+  }
+  return true;
 }
 
 /** Does the live `pid` still carry the fingerprint recorded at spawn? Start time is the hard
@@ -351,4 +414,95 @@ export async function reapOrphanedProcesses(options: ReapOptions = {}): Promise<
     }
     return keep;
   });
+}
+
+/** OS primitives for locating a managed WDA whose registry entry was lost (injectable for tests). */
+export interface WdaScanOps {
+  /** Pids LISTENing on TCP `port` (`lsof -nP -iTCP:<port> -sTCP:LISTEN -Fp`). */
+  listeners(port: number): number[];
+  /** Every process as `{ pid, command }` (`ps -axo pid=,command=`). */
+  listProcesses(): Array<{ pid: number; command: string }>;
+  psCommand(pid: number): string | null;
+}
+
+function lsofListeners(port: number): number[] {
+  if (process.platform === 'win32') return [];
+  try {
+    const out = spawnSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fp'], { encoding: 'utf8', env: psEnv() });
+    return (out.stdout ?? '')
+      .split('\n')
+      .filter((l) => l.startsWith('p'))
+      .map((l) => Number(l.slice(1)))
+      .filter((n) => Number.isInteger(n) && n > 0);
+  } catch {
+    return [];
+  }
+}
+
+function psAll(): Array<{ pid: number; command: string }> {
+  if (process.platform === 'win32') return [];
+  try {
+    const out = spawnSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8', env: psEnv(), maxBuffer: 16 * 1024 * 1024 });
+    if (out.status !== 0) return [];
+    return (out.stdout ?? '')
+      .split('\n')
+      .map((l) => /^\s*(\d+)\s+(.*)$/.exec(l))
+      .filter((m): m is RegExpExecArray => !!m)
+      .map((m) => ({ pid: Number(m[1]), command: m[2] }));
+  } catch {
+    return [];
+  }
+}
+
+const REAL_WDA_SCAN_OPS: WdaScanOps = { listeners: lsofListeners, listProcesses: psAll, psCommand };
+
+/** What `qa_wda start` launched: identifies the managed xcodebuild without a registry entry. */
+export interface ManagedWdaSignature {
+  projectPath: string;
+  udid: string;
+  derivedDataPath?: string;
+  /** Managed WDA port (from the WDA URL); its LISTEN socket owner is checked first. */
+  port?: number;
+}
+
+/** Does `command` look exactly like the managed WDA runner Swipium starts for `sig`?
+ *  xcodebuild by basename (shim-proof), `test-without-building`, and the recorded
+ *  `-project` / `-destination id=<udid>` (/ `-derivedDataPath`) arguments. Exported for tests. */
+export function isManagedWdaCommand(command: string, sig: ManagedWdaSignature): boolean {
+  const tail = programTail(norm(command) ?? '', /^xcodebuild$/i);
+  if (!tail) return false;
+  const padded = ` ${tail} `;
+  return (
+    padded.includes(` -project ${sig.projectPath} `) &&
+    padded.includes(` -destination id=${sig.udid} `) &&
+    padded.includes(' test-without-building ') &&
+    (!sig.derivedDataPath || padded.includes(` -derivedDataPath ${sig.derivedDataPath} `))
+  );
+}
+
+/** Pids of live managed-WDA xcodebuild processes matching `sig` — used by `qa_wda stop` when the
+ *  registry entry for a WDA this session started was lost. The process LISTENing on the managed
+ *  port is checked first; on a simulator that listener is usually the XCTest runner (not
+ *  xcodebuild), so every process is then scanned for the exact managed-WDA signature. Only
+ *  processes whose command matches (see isManagedWdaCommand) are ever returned. */
+export function findManagedWdaProcesses(sig: ManagedWdaSignature, ops: WdaScanOps = REAL_WDA_SCAN_OPS): number[] {
+  const found = new Set<number>();
+  if (sig.port) {
+    for (const pid of ops.listeners(sig.port)) {
+      const cmd = ops.psCommand(pid);
+      if (pid !== process.pid && cmd && isManagedWdaCommand(cmd, sig)) found.add(pid);
+    }
+  }
+  if (found.size === 0) {
+    for (const p of ops.listProcesses()) {
+      if (p.pid !== process.pid && isManagedWdaCommand(p.command, sig)) found.add(p.pid);
+    }
+  }
+  return [...found];
+}
+
+/** SIGTERM a managed WDA found by signature (its process group when it leads one — `qa_wda
+ *  start` spawns it detached). Exported so qa_wda can share the real kill primitive. */
+export function killManagedWda(pid: number, ops: Pick<ProcessOps, 'psPgid' | 'killTree'> = REAL_OPS): boolean {
+  return ops.killTree(pid, ops.psPgid(pid) === pid);
 }
