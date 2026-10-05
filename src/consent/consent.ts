@@ -10,6 +10,11 @@
 // to the model-mediated re-call. Which path decided an action is tagged as its
 // ApprovalMechanism and lands in the mutation ledger.
 //
+// Protocol 2026-07-28 has no server-to-client requests: the same prompt rides inside an
+// InputRequiredResult and the answer arrives on the client's retry of the tool call, correlated by
+// a single-use server-side handle (issueConsentPrompt / redeemConsentPrompt below). The decision
+// phases and outcomes are shared with the 2025 path; the ledger tags both 'elicitation'.
+//
 // Operator pre-approval (SWIPIUM_CONSENT_PREAPPROVE): headless clients (codex exec, claude -p)
 // advertise elicitation but answer every prompt automatically (decline / cancel), so no gated
 // action can ever run there. The OPERATOR can pre-approve exact action names in the server
@@ -27,7 +32,7 @@
 // A pre-approved challenge is still session-bound and single-use; it is ledgered as
 // 'operator-policy' and logged at warn with the exact command.
 
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { CallToolResult } from '@modelcontextprotocol/server';
 import { log } from '../lib/logger.js';
@@ -87,6 +92,9 @@ function forget(consentId: string): void {
   elicitationApproved.delete(consentId);
   operatorApproved.delete(consentId);
   awaitingElicitation.delete(consentId);
+  const token = promptTokenByConsent.get(consentId);
+  if (token !== undefined) promptHandles.delete(token);
+  promptTokenByConsent.delete(consentId);
 }
 
 /** Every ConsentRequest.action a tool can mint (test/consentPreapprove.test.ts keeps this in sync
@@ -340,7 +348,9 @@ function commandAudit(req: ConsentRequest): Record<string, unknown> {
 export const AUTO_ANSWER_MS = 1500;
 
 /** How a consent was decided (mutation-ledger audit trail, THREAT_MODEL):
- *  - 'elicitation': a real out-of-band user prompt (MCP elicitation) answered it;
+ *  - 'elicitation': a real out-of-band user prompt (MCP elicitation) answered it: an
+ *    `elicitation/create` request on 2025-era connections, or the same form carried inside an
+ *    InputRequiredResult (multi round-trip request) on protocol 2026-07-28;
  *  - 'client-assertion': the client re-called with { consentId, approve:true } (portable path);
  *  - 'policy': the server refused it without asking (SWIPIUM_REQUIRE_ELICITATION=1);
  *  - 'operator-policy': approved without asking because the operator listed the action in
@@ -358,6 +368,9 @@ export interface ElicitationContext {
   signal?: AbortSignal;
   /** The originating tool call's request id (associates the prompt with it on the transport). */
   relatedRequestId?: string | number;
+  /** The provider of the server instance serving this call (falls back to the one installed with
+   *  setElicitationProvider). */
+  provider?: ElicitationProvider;
 }
 export type ElicitationProvider = (req: ConsentRequest, ctx?: ElicitationContext) => Promise<ElicitationAnswer>;
 
@@ -378,6 +391,26 @@ const operatorApproved = new Set<string>();
 // Challenges currently routed to (or decided by) an out-of-band prompt: a client re-call can
 // never approve these. Only the elicitation answer can (no approve:true bypass).
 const awaitingElicitation = new Set<string>();
+
+// Protocol 2026-07-28 (multi round-trip requests): a consent prompt travels to the client inside
+// an InputRequiredResult and its answer comes back on a RETRY of the original tools/call, carrying
+// the `requestState` we issued. That requestState is an opaque, unguessable, SINGLE-USE handle
+// (32 random bytes); everything it stands for (consentId, tool, digest of the call's arguments,
+// sessionId, issue time) stays HERE, server-side, and is never read back from the client. So a
+// tampered or invented handle can only fail the lookup, a replayed one is already gone, and a
+// handle presented on a different tool / arguments / session does not match its binding.
+export interface ConsentPromptBinding {
+  tool: string;
+  /** sha256 of the canonical JSON of the call's validated arguments (sessionId included). */
+  argsDigest: string;
+  sessionId?: string;
+}
+export interface ConsentPromptHandle extends ConsentPromptBinding {
+  consentId: string;
+  issuedAt: number;
+}
+const promptHandles = new Map<string, ConsentPromptHandle>(); // token > handle
+const promptTokenByConsent = new Map<string, string>(); // consentId > its one live token
 
 /** Mechanism that approved an already-consumed consentId (audit trail for the ledger). */
 export function approvalMechanismFor(consentId: string): ApprovalMechanism | undefined {
@@ -448,10 +481,40 @@ export type ConsentDecision =
  *  - unavailable (client does not advertise elicitation): portable re-call convention
  *    ('client-assertion'), unless SWIPIUM_REQUIRE_ELICITATION=1, in which case EVERY
  *    consent-gated action (builds, Metro, installs, data wipes, seeds…) is refused outright.
+ * Protocol 2026-07-28 connections cannot await an answer inside one request: src/server.ts runs
+ * the same phases itself (operatorPolicyDecision, issueConsentPrompt / redeemConsentPrompt,
+ * settleConsentAnswer, noPromptDecision), so both eras share every outcome below.
  */
 export async function requestConsentDecision(consentId: string, ctx?: ElicitationContext): Promise<ConsentDecision> {
   const req = peekConsent(consentId);
   if (!req) return { mechanism: 'client-assertion' };
+  const byPolicy = operatorPolicyDecision(consentId);
+  if (byPolicy) return byPolicy;
+  const startedAt = Date.now();
+  let answer: ElicitationAnswer = 'unavailable';
+  let failure: string | undefined;
+  const provider = ctx?.provider ?? elicitationProvider;
+  if (provider) {
+    awaitingElicitation.add(consentId);
+    try {
+      answer = await provider(req, ctx);
+    } catch (e) {
+      // The client advertised elicitation, so a throw here is a timeout / transport failure /
+      // aborted call / invalid answer while the prompt was outstanding: fail CLOSED.
+      answer = 'cancelled';
+      failure = e instanceof Error ? e.message : String(e);
+    }
+    if (answer === 'unavailable') awaitingElicitation.delete(consentId);
+  }
+  if (answer === 'unavailable') return noPromptDecision(consentId);
+  return settleConsentAnswer(consentId, answer, Date.now() - startedAt, failure);
+}
+
+/** Phase 1 (both eras): the operator pre-approval (SWIPIUM_CONSENT_PREAPPROVE + its tiers), checked
+ *  BEFORE anyone is asked. Returns the approval, or undefined when the user must decide. */
+export function operatorPolicyDecision(consentId: string): ConsentDecision | undefined {
+  const req = peekConsent(consentId);
+  if (!req) return undefined;
   const policy = operatorPolicyCovers(req);
   if (policy.approved) {
     operatorApproved.add(consentId);
@@ -466,42 +529,43 @@ export async function requestConsentDecision(consentId: string, ctx?: Elicitatio
   }
   if (policy.reason)
     log('warn', `${PREAPPROVE_ENV} does not cover this request; asking instead`, { action: req.action, consentId, reason: policy.reason });
-  const startedAt = Date.now();
-  let answer: ElicitationAnswer = 'unavailable';
-  let failure: string | undefined;
-  if (elicitationProvider) {
-    awaitingElicitation.add(consentId);
-    try {
-      answer = await elicitationProvider(req, ctx);
-    } catch (e) {
-      // The client advertised elicitation, so a throw here is a timeout / transport failure /
-      // aborted call / invalid answer while the prompt was outstanding: fail CLOSED.
-      answer = 'cancelled';
-      failure = e instanceof Error ? e.message : String(e);
-    }
-    if (answer === 'unavailable') awaitingElicitation.delete(consentId);
-  }
+  return undefined;
+}
+
+/** Phase 2 (both eras): record what the out-of-band prompt answered. 'approved' lets the caller
+ *  re-invoke the tool (consumeConsent tags it 'elicitation'); anything else burns the challenge. */
+export function settleConsentAnswer(
+  consentId: string,
+  answer: 'approved' | 'declined' | 'cancelled',
+  elapsedMs: number,
+  failure?: string,
+): Extract<ConsentDecision, { mechanism: 'elicitation' }> {
+  const action = peekConsent(consentId)?.action ?? 'unknown';
   if (answer === 'approved') {
     elicitationApproved.add(consentId);
     return { mechanism: 'elicitation', approved: true };
   }
-  if (answer === 'declined' || answer === 'cancelled') {
-    forget(consentId);
-    return {
-      mechanism: 'elicitation',
-      approved: false,
-      outcome: answer,
-      elapsedMs: Date.now() - startedAt,
-      ...(failure !== undefined ? { failure } : {}),
-      reason:
-        answer === 'declined'
-          ? `User declined "${req.action}" in the consent prompt`
-          : failure !== undefined
-            ? `Consent prompt for "${req.action}" failed before anyone answered (${failure}), treated as a refusal`
-            : `Consent prompt for "${req.action}" was dismissed or not answered, treated as a refusal`,
-    };
-  }
-  if (process.env.SWIPIUM_REQUIRE_ELICITATION === '1') {
+  forget(consentId);
+  return {
+    mechanism: 'elicitation',
+    approved: false,
+    outcome: answer,
+    elapsedMs,
+    ...(failure !== undefined ? { failure } : {}),
+    reason:
+      answer === 'declined'
+        ? `User declined "${action}" in the consent prompt`
+        : failure !== undefined
+          ? `Consent prompt for "${action}" failed before anyone answered (${failure}), treated as a refusal`
+          : `Consent prompt for "${action}" was dismissed or not answered, treated as a refusal`,
+  };
+}
+
+/** Phase 2 when the client cannot show a prompt (no form elicitation): the portable re-call
+ *  ('client-assertion'), or a refusal under SWIPIUM_REQUIRE_ELICITATION=1. */
+export function noPromptDecision(consentId: string): ConsentDecision {
+  const req = peekConsent(consentId);
+  if (req && process.env.SWIPIUM_REQUIRE_ELICITATION === '1') {
     forget(consentId);
     return {
       mechanism: 'refused',
@@ -511,6 +575,39 @@ export async function requestConsentDecision(consentId: string, ctx?: Elicitatio
     };
   }
   return { mechanism: 'client-assertion' };
+}
+
+/** Protocol 2026-07-28: open (or re-open) the out-of-band prompt for a pending consent and return
+ *  the single-use requestState handle for its InputRequiredResult. From here on only the prompt's
+ *  answer can approve the consent (an approve:true re-call is refused, as on 2025 elicitation).
+ *  Re-opening replaces the previous handle. Undefined when the consent is no longer pending. */
+export function issueConsentPrompt(consentId: string, binding: ConsentPromptBinding): string | undefined {
+  if (!peekConsent(consentId)) return undefined;
+  const previous = promptTokenByConsent.get(consentId);
+  if (previous !== undefined) promptHandles.delete(previous);
+  const token = `swp1.${randomBytes(32).toString('base64url')}`;
+  promptHandles.set(token, {
+    consentId,
+    tool: binding.tool,
+    argsDigest: binding.argsDigest,
+    ...(binding.sessionId !== undefined ? { sessionId: binding.sessionId } : {}),
+    issuedAt: Date.now(),
+  });
+  promptTokenByConsent.set(consentId, token);
+  awaitingElicitation.add(consentId);
+  return token;
+}
+
+/** Protocol 2026-07-28: redeem a requestState handle. SINGLE-USE: the handle is deleted on the
+ *  first presentation, whatever happens next. Undefined for an unknown, forged, replayed or
+ *  expired handle (the consent behind it is pruned with the challenge, CONSENT_TTL_MS). */
+export function redeemConsentPrompt(token: string): ConsentPromptHandle | undefined {
+  prunePending();
+  const handle = promptHandles.get(token);
+  if (!handle) return undefined;
+  promptHandles.delete(token);
+  if (promptTokenByConsent.get(handle.consentId) === token) promptTokenByConsent.delete(handle.consentId);
+  return handle;
 }
 
 export interface ConsentOutcome {

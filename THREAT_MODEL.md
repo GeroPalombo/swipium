@@ -58,6 +58,24 @@ Swipium.
   challenge is burned, so a later `approve:true` re-call cannot revive it, and a `refused` row goes
   into the mutation ledger. If the action changes while the prompt is open, the approval is
   discarded and nothing runs.
+- **MCP 2026-07-28 consent (InputRequiredResult)** (`src/server.ts`, `issueConsentPrompt` /
+  `redeemConsentPrompt` in `src/consent/consent.ts`). That protocol has no server-to-client
+  requests, so the same form is returned inside an `InputRequiredResult` and the client's retry of
+  the tool call carries the user's answer (`inputResponses`) and the `requestState` Swipium issued.
+  The spec treats `requestState` as attacker-controlled. Swipium's is an opaque 256-bit random
+  handle to a server-side record (consentId, tool name, SHA-256 of the canonical call arguments,
+  sessionId, issue time); nothing in it is decoded or trusted. It is single-use (deleted on first
+  presentation, whatever the outcome), so a replay fails. A handle presented with a different tool,
+  different arguments or another session fails and burns the consent. Unknown, forged, reused or
+  re-targeted handles are rejected with JSON-RPC `-32602` before the tool runs. Outcomes match the
+  2025 path: accept with `approve: true` runs once (ledgered `elicitation`), `approve: false` or
+  decline is `CONSENT_DECLINED`, cancel or an answer later than 10 minutes is `CONSENT_CANCELLED`,
+  a retry without an answer gets a fresh prompt. Operator pre-approval is checked first, and the
+  prompt is only sent when that request's `_meta` client capabilities declare form elicitation
+  (otherwise the portable envelope, or `CONSENT_REFUSED` under `SWIPIUM_REQUIRE_ELICITATION=1`).
+  While a prompt is open, an `approve:true` re-call cannot approve it. The model never receives
+  the `consentId` on this path. The handle lives in the server process: a restarted server rejects
+  it and the tool has to be called again.
 - **`SWIPIUM_REQUIRE_ELICITATION=1`**. Without elicitation support, the fallback is the portable
   re-call (`consentId` + `approve:true`). This variable removes that fallback for every consent-gated
   action, whatever its risk. Such actions then fail with `CONSENT_REFUSED`.
@@ -211,6 +229,12 @@ their limits.
 
 ## Residual risks
 
+- **The client answers the prompt**. On both protocol versions the answer to the consent form comes
+  from the MCP client. A client that fabricates `accept` (on 2026-07-28: retries with
+  `inputResponses` saying `approve: true` without showing the user) approves the action; the
+  `requestState` handle only guarantees the answer belongs to that one call, once. The
+  `likelyAutomatic` flag (answer under 1.5 s) and the ledger are the remaining signals. This is the
+  same trust placed in `elicitation/create` on 2025-era clients.
 - **Self-approval without elicitation**. On a client without elicitation, the re-call is made by
   the client. A compromised or prompt-injected agent can approve its own challenge. The remaining
   controls are the human reading the transcript, where both the challenge and the approving call

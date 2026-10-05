@@ -51,7 +51,7 @@ When a tool call is cancelled (MCP `notifications/cancelled`) or its job is canc
 Tools that need a project resolve it in this order; the first hit wins:
 
 1. The `projectRoot` argument. It must be an absolute, existing directory. An invalid value is an error, never silently replaced.
-2. MCP roots, when the client exposes a workspace. The first root with a project marker wins, else the first root that is not `/` or `$HOME`.
+2. MCP roots, when the client exposes a workspace. The first root with a project marker wins, else the first root that is not `/` or `$HOME`. Only on 2025-era connections: MCP 2026-07-28 deprecates roots and has no server-to-client `roots/list`, so 2026 clients go straight to the next steps (pass `projectRoot`, or set `SWIPIUM_PROJECT_ROOT`).
 3. `SWIPIUM_PROJECT_ROOT` from the server environment.
 4. `CLAUDE_PROJECT_DIR`, which Claude Code sets for stdio servers.
 5. The server's working directory, but never `/` or `$HOME`, and only when it contains a project marker.
@@ -68,7 +68,9 @@ Privileged actions (build, boot, install, Metro start, data wipes, recordings, n
 
 ### Mechanisms
 
-- **Elicitation**: when the client supports MCP form elicitation, the server asks the user directly and the tool continues on approval. The model never sees a `consentId`. The prompt times out after 10 minutes.
+- **Elicitation**: when the client supports MCP form elicitation, the server asks the user directly and the tool continues on approval. The model never sees a `consentId`. The prompt times out after 10 minutes. How the prompt travels depends on the protocol version the client speaks:
+  - MCP 2025-06-18 / 2025-11-25 (`initialize`): an `elicitation/create` request while the tool call waits.
+  - MCP 2026-07-28 (`server/discover`): the tool call answers with an `InputRequiredResult` carrying the same one-checkbox form, and the client retries the call with the user's answer (multi round-trip request). The `requestState` in that result is an opaque single-use handle: Swipium keeps what it stands for (the consent, the tool, a digest of the arguments, the session) on its side, so an answer cannot be replayed or moved to another call. Swipium uses this only when the request's `_meta` client capabilities declare form elicitation; otherwise the envelope below applies.
 - **Consent envelope** (client assertion): otherwise the tool returns `{requiresConsent:true, consentId, action, risk, explain, exactCommand, affects}`. The agent shows it to the user and, only after they agree, re-calls the same tool with the same arguments plus `consentId` and `approve:true`. Only `qa_test_this`'s envelope also carries `sessionId`, so its approving re-call reuses the session without `projectRoot`; for every other tool, re-call with the `sessionId` you already passed.
 - **Policy**: with `SWIPIUM_REQUIRE_ELICITATION=1` in the server environment, a client that cannot elicit gets `CONSENT_REFUSED` for every gated action, before the model sees a `consentId`, so the envelope path cannot be used. The setting has no effect on clients that support elicitation.
 
@@ -79,7 +81,7 @@ Privileged actions (build, boot, install, Metro start, data wipes, recordings, n
   - **`wda_non_loopback`** cannot be pre-approved by name. List the exact URL in `SWIPIUM_ALLOW_REMOTE_WDA` instead.
   - Unknown names are ignored with one warning on stderr at startup, with a suggestion for near misses (`INSTALL-APP`: did you mean `install_app`?).
 
-How each action was approved (`elicitation`, `client-assertion`, `operator-policy`, or `policy`) is recorded in the report's [mutation ledger](#glossary).
+How each action was approved (`elicitation`, `client-assertion`, `operator-policy`, or `policy`) is recorded in the report's [mutation ledger](#glossary). `elicitation` covers both protocol versions (the user answered the form either way).
 
 ### Outcomes
 

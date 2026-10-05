@@ -17,6 +17,10 @@ Swipium 2.1.2 makes the server work properly under headless and non-Claude clien
 
 ### Added
 
+- **MCP 2026-07-28 support (dual-era stdio).** Swipium answers `server/discover` for 2026-07-28 clients and `initialize` for 2025-06-18 and 2025-11-25 clients; 2025-era behavior and output are unchanged. Claude Code 2.1.289 and later now connect on 2026-07-28; Codex 0.146 stays on 2025-06-18.
+  - Consent prompts on 2026-07-28 travel as an `InputRequiredResult` (the same one-checkbox form) and the answer arrives on the client's retry. `requestState` is a single-use server-side handle bound to the tool, its arguments and the session; a forged, reused or re-targeted handle fails with `-32602` and nothing runs. Operator pre-approval is checked first, as before.
+  - `tools/list` is sorted by name, and list results carry `ttlMs` / `cacheScope` (1 h public for tools, prompts, templates and discover; 0 private for resources).
+  - MCP roots are not requested on 2026-07-28 (deprecated in that revision). Swipium uses `projectRoot`, `SWIPIUM_PROJECT_ROOT`, `CLAUDE_PROJECT_DIR` (set by Claude Code) or the working directory.
 - `SWIPIUM_CONSENT_PREAPPROVE`: a comma-separated list of exact consent action names (for example `prepare_plan,install_app`) that are approved without a prompt. Only the server environment can set it, never a file in the repository. Approvals stay single-use and session-bound, are recorded in the audit trail as `operator-policy`, and each use is logged at `warn` with the exact command. Unknown names are ignored with a warning that suggests the closest valid name.
 - `SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE=1`: required in addition before actions that run repository or model-chosen code can be pre-approved (`build_from_source`, `flow_mutation_run`, `ocr_run`, `seed_state`, `start_metro`, `suite_fresh_state_replay`, `wda_build`, `wda_start`). Pre-approving `test_this_plan` does not cover a plan that includes a build unless `build_from_source` is pre-approvable too. `wda_non_loopback` can never be pre-approved; use `SWIPIUM_ALLOW_REMOTE_WDA`.
 - `qa_wait { for:"wda_ready" }` polls the session's WebDriverAgent `/status`.
@@ -38,13 +42,14 @@ Swipium 2.1.2 makes the server work properly under headless and non-Claude clien
 - Server instructions are 1,900 characters (were 2,518), under Claude Code's 2,048-character limit, and the first 512 characters stand alone.
 - `tools/list` is about 10% smaller (descriptions trimmed; no parameters added or removed).
 - `qa_wait` `timeoutMs` and `qa_test_this` `waitForCompletion` `timeoutMs` default to 45000 (were 60000 or 180000 for `qa_wait`, 120000 for `qa_test_this`). Values above 50000 are clamped with a note; negative values are rejected. `qa_act` `timeoutMs` is clamped the same way.
-- `@modelcontextprotocol/sdk` is `^1.32.1` (was `^1.19.1`), which includes the UriTemplate ReDoS fix (CVE-2026-0621).
+- **MCP SDK v2.** Swipium moved from `@modelcontextprotocol/sdk` 1.x to `@modelcontextprotocol/server` and `@modelcontextprotocol/client` 2.3.1, and zod is `^4.2.0` (was `^3`). This also drops the 1.x HTTP server dependencies: a production install goes from 100 packages to 21 and includes the UriTemplate ReDoS fix (CVE-2026-0621). `tools/list` and every tool result are byte-identical for 2025-06-18 and 2025-11-25 clients and the schema hash is unchanged; in `qa_act`, `for.selector` is now inlined instead of a `$ref`.
+- Argument validation, unknown-argument rejection and stale-client mapping no longer patch private SDK internals: Swipium answers `tools/list` and `tools/call` through the public request-handler API and validates each call against one strict schema per tool. A test fails on any private SDK or zod member access in `src/`.
 
 ### Fixed
 
 - Cancelling a call now stops its work. `qa_wait`, the `qa_job_status` long-poll, element waits in `qa_act` and flows, UI settling, emulator boot and appear waits, WebDriverAgent startup and UI dump retries used to keep running until their deadline.
 - The server exits when the client closes stdin, even during a long call. Before, it lingered until the call finished.
-- Reading a missing resource returns `-32002` (resource not found) instead of `-32603` (internal error).
+- Reading a missing `swipium://` resource returns `-32602` with the URI in `error.data.uri`, instead of `-32603` (internal error). This is the code the 2026-07-28 spec uses and what SDK v2 sends on every protocol version; clients should also accept the older `-32002`.
 - `resources/read` caps what it returns: text over 1 MB comes back as a head or tail (the tail for logs) with a marker, binaries over 8 MB are not inlined, non-text files are returned as blobs instead of being decoded as text, and a cut never splits a UTF-8 character.
 - Errors no longer echo unbounded caller input. A multi-MB argument (or argument name) used to produce an error response larger than a client's read buffer, and the client dropped the connection. Long error messages keep both their start and their end, where the deciding line of a command failure usually is.
 - Cancelled smoke runs and mobile audits are no longer recorded as failures or issues, and a cancelled mobile audit restores the device network instead of leaving it offline.

@@ -97,7 +97,7 @@ If a tool returns `PROJECT_ROOT_UNRESOLVED`, name the absolute project path in y
 
 ### What you'll see
 
-- **One approval prompt** listing the exact build, boot, and install commands. Clients with MCP elicitation show a real prompt; others return `requiresConsent`, which the agent must relay to you.
+- **One approval prompt** listing the exact build, boot, and install commands. Clients with MCP elicitation show a real prompt (on MCP 2026-07-28 it travels as an `InputRequiredResult`); others return `requiresConsent`, which the agent must relay to you.
 - **The first build can take minutes.** The run is a background job the agent polls with `qa_job_status`.
 - **Two states.** The job `status` is `running`, `done`, `failed`, or `cancelled`. The run's `result.state` is `completed` or `needs_input` (job `done`), or `blocked` or `unsafe` (job `failed`). `needs_input` means one question for you, such as login credentials.
 - **A report** with separate verdicts for the app, coverage, and Swipium itself. Read it with `npx swipium report --latest --format markdown`.

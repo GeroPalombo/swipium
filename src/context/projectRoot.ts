@@ -2,7 +2,9 @@
 // Order (first hit wins):
 //   1. explicit `projectRoot` arg (must be absolute + an existing directory; an invalid explicit
 //      value is an error, never silently replaced by a fallback)
-//   2. MCP roots (the client's declared workspace, the proper mechanism)
+//   2. MCP roots (the client's declared workspace), on 2025-era connections only: protocol
+//      2026-07-28 deprecates roots and has no server-to-client roots/list, so 2026 clients go
+//      straight to the fallbacks below (pass projectRoot, or set SWIPIUM_PROJECT_ROOT)
 //   3. env SWIPIUM_PROJECT_ROOT (user-set in the client's server config)
 //   4. env CLAUDE_PROJECT_DIR (Claude Code sets it for every stdio server it launches)
 //   5. process.cwd(), only when it is a real directory that is NOT the filesystem root and NOT
@@ -19,6 +21,7 @@ import { isAbsolute, join, parse, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import type { McpServer, CallToolResult } from '@modelcontextprotocol/server';
 import { qaError } from '../lib/result.js';
+import { servesModernEra } from './protocolEra.js';
 
 export type ProjectRootSource = 'arg' | 'mcp-roots' | 'env:SWIPIUM_PROJECT_ROOT' | 'env:CLAUDE_PROJECT_DIR' | 'cwd' | 'none';
 
@@ -177,9 +180,10 @@ async function resolveProjectRootUnrecorded(server: McpServer, explicit?: string
     return { source: 'none', hint: `Path not found or not a directory: ${p}` };
   }
 
-  // 2) MCP roots (workspace the client exposed)
+  // 2) MCP roots (workspace the client exposed). Never on a 2026-07-28 instance: listRoots()
+  // throws there (no server-to-client requests), and roots are deprecated in that revision.
   try {
-    const caps = server.server.getClientCapabilities?.();
+    const caps = servesModernEra(server) ? undefined : server.server.getClientCapabilities?.();
     if (caps?.roots) {
       // Same 5 s cap as currentProjectRoots (src/server.ts); the SDK default is 60 s.
       const res = await server.server.listRoots(undefined, { timeout: 5_000 });

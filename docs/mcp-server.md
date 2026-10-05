@@ -50,8 +50,9 @@ instead. From a source checkout, run `npm run build` and use
 ## Project root
 
 Every tool call works in one app repository. Swipium takes it from the `projectRoot` argument, then
-the client's MCP roots, then `SWIPIUM_PROJECT_ROOT`, then `CLAUDE_PROJECT_DIR`, then the server's
-working directory when that looks like an app. The full rules are in
+the client's MCP roots (2025-era clients only; MCP 2026-07-28 deprecates roots), then
+`SWIPIUM_PROJECT_ROOT`, then `CLAUDE_PROJECT_DIR`, then the server's working directory when that
+looks like an app. The full rules are in
 [concepts.md](concepts.md#project-root). For client setup, the practical rule is: if your client
 neither sends MCP roots nor lets you set a `cwd` (Claude Desktop, Windsurf), set
 `SWIPIUM_PROJECT_ROOT` in the server `env`.
@@ -185,13 +186,39 @@ Environment variables (test credentials, OCR provider, remote WDA allowlist, eli
 retention) are listed in the
 [README's configuration section](../README.md#configuration--environment-variables).
 
+## Protocol versions
+
+Swipium is a dual-era stdio server. The client's first message picks the era for the whole
+connection:
+
+| Client opens with | Protocol | Served as |
+| --- | --- | --- |
+| `initialize` (`protocolVersion` 2025-06-18 or 2025-11-25), e.g. Codex | 2025-era | Handshake, session-scoped capabilities, `elicitation/create` and `roots/list` requests to the client. Unchanged from Swipium 2.1. |
+| `server/discover` or any request with the `io.modelcontextprotocol/*` `_meta` envelope, e.g. Claude Code | 2026-07-28 | No handshake: version and client capabilities come with every request. |
+
+What differs on a 2026-07-28 connection:
+
+- `server/discover` returns the supported versions (`2026-07-28`), capabilities, the server
+  instructions and `serverInfo`; every result carries `resultType`.
+- `tools/list` is sorted by tool name (2025-era connections keep the registration order; the schema
+  hash does not depend on order). List results carry cache hints: `tools/list`, `prompts/list`,
+  `resources/templates/list` and `server/discover` are `ttlMs: 3600000`, `cacheScope: "public"`
+  (fixed for the life of the process); `resources/list` and `resources/read` are `ttlMs: 0`,
+  `cacheScope: "private"` (they change during a run and name local paths).
+- Consent prompts travel inside an `InputRequiredResult` and come back on the client's retry of the
+  tool call (see Consent below). There are no server-to-client requests, so MCP roots are not
+  asked for.
+- Cancellation is the same `notifications/cancelled` notification; `INVALID_ARGUMENT`,
+  `STALE_CLIENT`, `CONSENT_*` envelopes and the `-32602` resource-not-found error are identical in
+  both eras. `ping` and `logging/setLevel` do not exist in 2026-07-28 (Swipium logs to stderr).
+
 ## What the server exposes
 
 - **Tools**: listed in [tools.md](tools.md). Run `swipium verify` to see the exact list and count
   your installed version serves. Every tool carries MCP annotations: read-only tools set
   `readOnlyHint: true` and `openWorldHint: false`, and the others also set `destructiveHint` and
   `idempotentHint`.
-- **Server instructions**: sent on `initialize`. They give the first call
+- **Server instructions**: sent on `initialize` (2025) or `server/discover` (2026-07-28). They give the first call
   (`qa_test_this { mode: "execute" }`), the polling loop (`qa_job_status … waitMs`), how to relay
   `needs_input`, blockers and consent, and the project-root order. `qa_status` without a
   `sessionId` returns the same orientation plus the tool groups.
@@ -203,8 +230,8 @@ retention) are listed in the
   - `swipium://project/{projectId}/app-map`: the full app map.
   - `swipium://project/{projectId}/app-map/{kind}/{id}`: one feature, screen or test-suite section.
 
-  `resources/list` shows only the current client's project roots (its MCP roots plus roots of
-  sessions in this server process), never lists sensitive-mode sessions, and is capped at 100
+  `resources/list` shows only the current client's project roots (its MCP roots, on 2025-era
+  connections, plus roots of sessions in this server process), never lists sensitive-mode sessions, and is capped at 100
   entries per template, with the cap stated on the last entry. Anything not listed can still be
   read by URI. Clients without resource support use `qa_get_artifact` and `qa_app_map_read`.
 
@@ -259,7 +286,11 @@ retention) are listed in the
   `expectedVersion`, `expectedToolCount` and `expectedSchemaHash` and reports a mismatch.
 - **Consent.** Privileged actions (builds, boots, installs, data wipes and similar) return
   `requiresConsent` with a `consentId` instead of running. On clients that support MCP elicitation,
-  Swipium asks the user directly. How consent works, and what each outcome returns, is in
+  Swipium asks the user directly: an `elicitation/create` request on 2025-era connections, an
+  `InputRequiredResult` (form elicitation, single-use `requestState`) on 2026-07-28 connections whose
+  request declares form elicitation. A `requestState` that is forged, reused or presented on another
+  tool call fails with JSON-RPC `-32602` (`Invalid or expired requestState`) and nothing runs.
+  How consent works, and what each outcome returns, is in
   [concepts.md](concepts.md#consent); the security reasoning is in
   [THREAT_MODEL.md](../THREAT_MODEL.md).
 - **Startup and shutdown.** The version and tool count are logged to stderr at startup, and
