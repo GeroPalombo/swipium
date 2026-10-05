@@ -22,7 +22,7 @@ function fenceOf(text: string): Record<string, unknown> {
 }
 
 describe('result text size (normal mode)', () => {
-  it('qa_snapshot with 32 elements renders < 4K chars; structuredContent keeps every element', async () => {
+  it('qa_snapshot with 32 elements renders < 4K chars; structuredContent keeps every element (as @eN lines)', async () => {
     const id = await h.start(new FakeDriver(buttonScreen('Details', 31)));
     const res = await h.call('qa_snapshot', { sessionId: id });
     const text = textOf(res);
@@ -125,7 +125,10 @@ describe('structuredContent growth from summary/next stays small', () => {
     const out: Record<string, number> = {};
     out.statusNoSession = growth(await h.call('qa_status', {}));
     const fake = new FakeDriver(buttonScreen('Home', 5));
-    const id = await h.start(fake);
+    // verbose: element lists as full objects, the payload base this 15% cap was set against. Outside
+    // verbose the elements are one-line strings (~40% smaller payload), so the same summary/next
+    // bytes are a larger share without having grown.
+    const id = await h.start(fake, { responseMode: 'verbose' });
     out.statusSession = growth(await h.call('qa_status', { sessionId: id }));
     out.snapshot = growth(await h.call('qa_snapshot', { sessionId: id }));
     fake.onTap = () => (fake.xml = buttonScreen('Details', 5));

@@ -223,11 +223,15 @@ retention) are listed in the
   approval instruction in `next`. Errors carry `what` and `nextSteps`. The text block stays as a
   plain-text copy for clients that read it.
 - **Response modes.** Pass `responseMode: "compact" | "normal" | "verbose"` on `qa_start_session`
-  or `qa_test_this`, and every later call in that session uses it. The mode only changes the text
+  or `qa_test_this`, and every later call in that session uses it. The mode mostly changes the text
   block: `compact` cuts it to the summary plus URIs, `normal` adds a compact JSON copy without the
-  keys the summary already rendered, `verbose` adds the full JSON. `structuredContent` is always
-  the full payload in every mode, so on Claude Code and Codex the mode makes little difference to
-  what the model reads.
+  keys the summary already rendered, `verbose` adds the full JSON. `structuredContent` carries
+  every field in every mode, so on Claude Code and Codex the mode makes little difference to what
+  the model reads, with one exception: element lists. Outside `verbose`, the `elements` of
+  `qa_snapshot` and `qa_act` are one-line strings such as
+  `@e3 [button] "Log in" #login_btn [40,200][1040,245]`, the same lines the text block renders
+  (about 40% smaller than one JSON object per element); `verbose` returns the objects. See
+  [Element lines](tools.md#element-lines).
 - **Artifacts.** Evidence is stored under `~/.swipium/runs/` and returned as `swipium://` URIs.
   `qa_get_artifact` returns metadata for images and other binaries (screen recordings) by
   default. Pass `mode: "inline"` only when you need the bytes. `resources/read` and

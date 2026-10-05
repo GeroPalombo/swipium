@@ -108,7 +108,7 @@ export function registerStartSession(server: McpServer, sessions: SessionStore):
         responseMode: z
           .enum(['compact', 'normal', 'verbose'])
           .optional()
-          .describe('Text channel for this session: compact (summary + URIs), normal (default, + JSON), verbose.'),
+          .describe('Output detail: compact (summary + URIs), normal (default, + JSON), verbose (all JSON, element objects).'),
         sensitive: z.boolean().optional().describe('Refuse all screenshots, recordings, and on-screen evidence.'),
         profile: z.enum(['guardrail', 'login_smoke', 'full_smoke', 'install_smoke']).optional().describe('Budget class.'),
         budget: z

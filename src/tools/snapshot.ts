@@ -128,7 +128,7 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
         const pool = f
           ? parsed.elements.filter((e) => [e.text, e.label, e.id, e.role].some((v) => v?.toLowerCase().includes(f)))
           : parsed.elements;
-        const { elements: shown, rendered, omitted } = presentElements(pool, redact);
+        const { payload: shown, rendered, omitted } = presentElements(pool, redact);
 
         let diffText = '';
         let diffPayload: { added: string[]; removed: string[] } | undefined;

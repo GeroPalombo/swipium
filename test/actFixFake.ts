@@ -10,6 +10,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { Driver, DumpOptions, ImeState } from '../src/drivers/Driver.js';
 import { currentSignal } from '../src/lib/abortScope.js';
+import { parseElementLine, type DecodedElementLine } from '../src/snapshot/parse.js';
 
 type Rect = [number, number, number, number];
 
@@ -177,6 +178,18 @@ export class FakeDriver implements Driver {
 export function structured(res: CallToolResult): Record<string, unknown> {
   expect(res.structuredContent, JSON.stringify(res.content)).toBeTruthy();
   return res.structuredContent as Record<string, unknown>;
+}
+
+/** A result's `elements` (one-line @eN strings outside verbose mode) decoded back into fields. */
+export function elementsOf(s: Record<string, unknown>): DecodedElementLine[] {
+  const lines = s.elements as unknown[];
+  expect(Array.isArray(lines), JSON.stringify(s).slice(0, 300)).toBe(true);
+  return lines.map((l) => {
+    expect(typeof l, 'elements are @eN lines outside verbose mode').toBe('string');
+    const d = parseElementLine(l as string);
+    expect(d, `not an element line: ${String(l)}`).toBeTruthy();
+    return d!;
+  });
 }
 
 export function textOf(res: CallToolResult): string {

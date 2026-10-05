@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { elementsOf } from './actFixFake.js';
 
 // Hermetic on-disk state: SessionStore persists under ~/.swipium, so point HOME at a temp
 // dir BEFORE the store module is loaded (dynamic imports below).
@@ -250,7 +251,7 @@ describe('qa_act per-action contract + observe modes (fake driver)', () => {
       const first = structured(await act(sessionId, { action: 'press', key: 'back' }));
       expect(first.ok).toBe(true);
       expect(first.observe).toBe('full');
-      const fullElements = first.elements as Array<{ ref: string }>;
+      const fullElements = elementsOf(first);
       expect(fullElements.length).toBeGreaterThan(0);
       expect(first.unchangedElements).toBeUndefined();
 
@@ -278,17 +279,17 @@ describe('qa_act per-action contract + observe modes (fake driver)', () => {
       ]);
       const sessionId = await startSession(fake);
       const snap = structured((await client.callTool({ name: 'qa_snapshot', arguments: { sessionId } })) as CallToolResult);
-      const login = (snap.elements as Array<{ ref: string; text?: string }>).find((e) => e.text === 'Log in');
+      const login = elementsOf(snap).find((e) => e.name === 'Log in');
       expect(login).toBeTruthy();
 
       const res = await act(sessionId, { action: 'tap', target: { ref: login!.ref }, observe: 'diff' });
       const s = structured(res);
       expect(s.ok).toBe(true);
       expect(s.changed).toBe(true);
-      const added = s.elements as Array<{ text?: string; label?: string }>;
+      const added = elementsOf(s);
       // Only screen-2-only elements are listed — the shared Email field and rows are not.
-      expect(added.some((e) => e.text === 'Search flights')).toBe(true);
-      expect(added.every((e) => e.label !== 'Email' && !(e.text ?? '').startsWith('Row item'))).toBe(true);
+      expect(added.some((e) => e.name === 'Search flights')).toBe(true);
+      expect(added.every((e) => e.name !== 'Email' && !e.name.startsWith('Row item'))).toBe(true);
       const removed = s.removed as string[];
       expect(removed.some((sig) => sig.includes('Log in'))).toBe(true);
       // Honesty: the unchanged remainder is counted, not hidden silently.
@@ -316,10 +317,10 @@ describe('qa_act per-action contract + observe modes (fake driver)', () => {
       const s = structured(await act(sessionId, { action: 'press', key: 'back', observe: 'full' }));
       expect(s.ok).toBe(true);
       expect(s.observe).toBe('full');
-      const elements = s.elements as Array<{ text?: string; label?: string }>;
+      const elements = elementsOf(s);
       // Unchanged screen, yet the full list (including unchanged elements) is returned.
-      expect(elements.some((e) => e.text === 'Search flights')).toBe(true);
-      expect(elements.some((e) => e.label === 'Email')).toBe(true);
+      expect(elements.some((e) => e.name === 'Search flights')).toBe(true);
+      expect(elements.some((e) => e.name === 'Email')).toBe(true);
     }, 20_000);
   });
 });

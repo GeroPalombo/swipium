@@ -5,8 +5,10 @@
 // broken server (the model can't act on those).
 //
 // Response modes: a session can ask for `compact | normal | verbose`
-// output. The human-readable text is rendered per mode; `structuredContent` is ALWAYS the
-// full payload, so a client that reads structured data loses nothing in compact mode. The
+// output. The human-readable text is rendered per mode; `structuredContent` ALWAYS carries every
+// field, so a client that reads structured data loses nothing in compact mode. One exception to
+// "the mode only changes the text": element lists (qa_snapshot / qa_act `elements`) are one-line
+// @eN strings outside verbose and full objects in verbose (snapshot/present.ts presentElements). The
 // active mode is carried in AsyncLocalStorage so EVERY tool inherits it without touching a
 // single call site, and concurrent JSON-RPC requests can't clobber each other's mode.
 //

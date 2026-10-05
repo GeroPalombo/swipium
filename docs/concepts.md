@@ -208,7 +208,7 @@ See [iOS modes](#ios-modes). `qa_ios` and `qa_prepare_ios_target` pick a simulat
 
 | Term | Meaning |
 | --- | --- |
-| **`@eN` ref** | A handle such as `@e3` for one element of the latest `qa_snapshot`. Refs are invalid after navigation; an old one returns `STALE_REF`. |
+| **`@eN` ref** | A handle such as `@e3` for one element of the latest `qa_snapshot`. Results list elements as one line each, starting with the ref (see [Element lines](tools.md#element-lines)). Refs are invalid after navigation; an old one returns `STALE_REF`. |
 | **App map** | Swipium's durable memory of the app in `.swipium/app-map.json`: features, screens, navigation, tests, and a code index, each with provenance. Built by `qa_app_map_build` and updated by runs. |
 | **Approval mechanism** | How a consent was decided: `elicitation` (a real user prompt), `client-assertion` (the client re-called with `consentId` and `approve:true`), `operator-policy` (pre-approved by `SWIPIUM_CONSENT_PREAPPROVE`), or `policy` (refused by `SWIPIUM_REQUIRE_ELICITATION=1`). Recorded in the mutation ledger. |
 | **Budget** | A session's limits on time, actions, screenshots, consecutive snapshot failures, and no-change actions. A spent budget returns `{ok:true, stopped:true, reason}`. |

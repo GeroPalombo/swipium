@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { elementsOf } from './actFixFake.js';
 
 const fakeHome = mkdtempSync(join(tmpdir(), 'swipium-test-home-'));
 process.env.HOME = fakeHome;
@@ -156,7 +157,7 @@ describe('qa_act execution-layer fixes (fake driver)', () => {
   }
   async function refOf(sessionId: string, text: string): Promise<string> {
     const snap = structured((await client.callTool({ name: 'qa_snapshot', arguments: { sessionId } })) as CallToolResult);
-    const el = (snap.elements as Array<{ ref: string; text?: string }>).find((e) => e.text === text);
+    const el = elementsOf(snap).find((e) => e.name === text);
     expect(el, `element ${text}`).toBeTruthy();
     return el!.ref;
   }

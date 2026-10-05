@@ -554,7 +554,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
                 signatures: new Set(post.elements.map(signature)),
                 allNodes: post.allNodes,
               };
-              const { elements: shown, rendered, omitted } = presentElements(post.elements, makeRedactor(session.secrets));
+              const { payload: shown, rendered, omitted } = presentElements(post.elements, makeRedactor(session.secrets));
               return qaOk(
                 { action, settled: s.settled, quality: post.quality.verdict, elementsOmitted: omitted, elements: shown },
                 `wait(settled)=${s.settled}\n\n${rendered}`,
@@ -1146,7 +1146,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
             observe === 'diff' && post.elements.length > 0 && added.length > post.elements.length * DIFF_FULL_FALLBACK_RATIO;
           if (observe === 'diff' && !diffAsFull) {
             const removed = [...preSigs].filter((sig) => !postSigs.has(sig)).map((sig) => redact(sig) ?? sig);
-            const { elements: addedShown, rendered: renderedAdded, omitted } = presentElements(added, redact);
+            const { payload: addedShown, rendered: renderedAdded, omitted } = presentElements(added, redact);
             const unchangedElements = post.elements.length - added.length;
             const hint = `${unchangedElements} unchanged element(s) not shown; pass observe:"full" to see the whole screen.`;
             elementPayload = { elementsOmitted: omitted, elements: addedShown, removed, unchangedElements, hint };
@@ -1157,7 +1157,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               `\n${hint}`;
           } else if (diffAsFull) {
             const removedCount = [...preSigs].filter((sig) => !postSigs.has(sig)).length;
-            const { elements: outElements, rendered, omitted } = presentElements(post.elements, redact);
+            const { payload: outElements, rendered, omitted } = presentElements(post.elements, redact);
             elementPayload = {
               diffAsFull: true,
               elementsOmitted: omitted,
@@ -1169,7 +1169,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               `\n\nNEW SCREEN (${added.length}/${post.elements.length} elements new, ${removedCount} previous gone), full list:` +
               `\n${rendered}`;
           } else if (observe === 'full') {
-            const { elements: outElements, rendered, omitted } = presentElements(post.elements, redact);
+            const { payload: outElements, rendered, omitted } = presentElements(post.elements, redact);
             elementPayload = { elementsOmitted: omitted, elements: outElements };
             elementsText = `\n\n${rendered}`;
           } else {

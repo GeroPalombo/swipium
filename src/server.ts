@@ -297,7 +297,8 @@ async function routePendingConsent(
 /**
  * Wrap every tool handler so it runs inside the calling session's response mode.
  * Resolved once, centrally. Individual tools stay mode-agnostic.
- * `compact` shrinks the text channel; `structuredContent` is always full.
+ * `compact` shrinks the text channel; `structuredContent` always carries every field (element
+ * lists are one-line @eN strings outside `verbose`, see snapshot/present.ts).
  * The same wrapper also routes requiresConsent envelopes through out-of-band elicitation
  * (routePendingConsent), so every consent-gated tool inherits it with zero per-tool changes.
  */
