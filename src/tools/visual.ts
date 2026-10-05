@@ -761,21 +761,19 @@ export function registerVisual(server: McpServer, sessions: SessionStore): void 
     {
       title: 'Visual assert / baseline / diff / find text / find image',
       description:
-        'Screenshot-based checks for screens without a usable UI tree (maps, canvases, WDA-less iOS). mode: assert (pass/fail ' +
-        'with screenshot evidence; pass:false if NOT visible), baseline (save .swipium/baselines/<name>.png in the repo), diff ' +
-        '(vs a baseline; pass within threshold), find_text (OCR via a locally configured provider; consent-gated), find_image ' +
-        '(template-match a project PNG). Finds return device coordinates + coordinateSpace; tap:true taps the hit (recorded + ' +
-        'budgeted). Withheld when a password/OTP field is on screen unless force:true; on an unverified screen in a credential ' +
-        'session only baseline needs force (diff/assert evidence is not saved). Details: docs/tools.md#qa_visual.',
+        'Screenshot checks where the UI tree fails (maps, canvases, WDA-less iOS). mode: assert, baseline ' +
+        '(.swipium/baselines/<name>.png), diff, find_text (OCR, consent-gated), find_image. Finds return device coordinates + ' +
+        'coordinateSpace; tap:true taps it (recorded + budgeted). Password/OTP screens need force:true; ' +
+        'unverified credential screens: assert/diff not saved. Details: docs/tools.md#qa_visual.',
       inputSchema: {
         sessionId: z.string(),
         mode: z.enum(VISUAL_MODES),
-        assertion: z.string().optional().describe('assert: what you visually confirmed, e.g. "Live Map shows the route".'),
+        assertion: z.string().optional().describe('assert: what you visually confirmed.'),
         pass: z.boolean().optional().describe('assert: default true; false if the expected result is NOT visible.'),
-        reason: z.string().optional().describe('assert: extra detail (what you saw / why it failed).'),
+        reason: z.string().optional().describe('assert: extra detail.'),
         name: z.string().optional().describe('baseline/diff: baseline name, [A-Za-z0-9._-]{1,64}.'),
         query: z.string().optional().describe('find_text: text to find.'),
-        template: z.string().optional().describe('find_image: PNG inside the project root, or a swipium:// artifact URI.'),
+        template: z.string().optional().describe('find_image: project PNG or swipium:// URI.'),
         threshold: z.number().optional().describe('diff: max changed fraction to pass (default 0.02).'),
         minScore: z.number().optional().describe('find_image: min match score 0..1 (default 0.85).'),
         minConfidence: z.number().optional().describe('find_text: min OCR confidence 0..1 (default 0.8).'),

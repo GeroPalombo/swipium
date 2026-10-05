@@ -59,9 +59,8 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
     {
       title: 'Clear an overlay',
       description:
-        'Clear what blocks the screen: auto (topmost), hide_keyboard, press_back, tap_outside, minimize_logbox / dismiss_logbox ' +
-        '(RN), allow_permission / deny_permission, dismiss_toast_if_possible. targetRef reports whether that element was ' +
-        'obstructed before/after. Returns what was cleared and what remains.',
+        'Clear what blocks the screen (keyboard, LogBox, permission dialog, toast); strategy "auto" handles the topmost. ' +
+        'targetRef checks whether that element is still obstructed. Returns what was cleared and what remains.',
       inputSchema: {
         sessionId: z.string(),
         strategy: z.enum(STRATEGIES).optional().describe('default "auto"'),

@@ -65,7 +65,7 @@ perform it. After a successful apply it runs `swipium verify`. Options: `--scope
 | Client | `swipium init` does | Where it lands |
 | --- | --- | --- |
 | Claude Code | Runs `claude mcp add swipium [--scope …] -- <command>` | `local` / `user`: `~/.claude.json`; `project`: `.mcp.json` |
-| Codex | Appends a `[mcp_servers.swipium]` block with `cwd` and timeouts (refuses if `--cwd` doesn't exist; leaves an existing block alone) | `~/.codex/config.toml` |
+| Codex | Appends a `[mcp_servers.swipium]` block with `cwd`, timeouts and `env_vars` (refuses if `--cwd` doesn't exist; leaves an existing block alone and, if it has no `env_vars`, prints the line to add) | `~/.codex/config.toml` (`$CODEX_HOME/config.toml` when set) |
 | Gemini CLI | Runs `gemini mcp add --scope project\|user swipium …`; prints a manual block if that fails | `.gemini/settings.json` (project, the default), `~/.gemini/settings.json` (`--scope user`) |
 | Cursor | Merges a `swipium` entry under `mcpServers` | `.cursor/mcp.json` (for all projects, add the same entry to `~/.cursor/mcp.json` yourself) |
 | VS Code | Merges a `swipium` entry under `servers`; prints a `code --add-mcp …` line for the user profile | `.vscode/mcp.json` |
@@ -77,7 +77,10 @@ Which command gets written:
 - **Team-shared files** get the portable `npx -y swipium`. That covers Claude `--scope project`,
   Gemini project scope, `.cursor/mcp.json` and `.vscode/mcp.json`.
 - **Machine-local registrations** get this machine's `node` and the absolute path of the installed
-  `dist/index.js`. That covers Claude local and user scope, Gemini user scope, and Codex. The
+  `dist/index.js`. That covers Claude local and user scope, Gemini user scope, and Codex. A
+  Homebrew `node` is written as its stable `opt` path (for example `/opt/homebrew/opt/node@20/bin/node`)
+  rather than the versioned `Cellar` path that `brew upgrade` removes; otherwise `init` prefers the
+  `node` on your `PATH` that resolves to the running binary. The
   exception is when Swipium itself runs from the npx cache; that path would disappear, so these
   also get `npx -y swipium`.
 
@@ -103,7 +106,30 @@ args = ["-y", "swipium"]
 cwd = "/absolute/path/to/your/mobile-app"
 startup_timeout_sec = 30
 tool_timeout_sec = 600
+env_vars = ["SWIPIUM_TEST_EMAIL", "SWIPIUM_TEST_USERNAME", "SWIPIUM_TEST_PASSWORD", "SWIPIUM_TEST_OTP", "SWIPIUM_TEST_PIN", "SWIPIUM_TEST_TOKEN", "SWIPIUM_TEST_DEEP_LINK", "SWIPIUM_VERIFICATION_CODE", "SWIPIUM_PROJECT_ROOT", "SWIPIUM_REQUIRE_ELICITATION", "SWIPIUM_LOG_LEVEL", "SWIPIUM_OCR_CMD", "SWIPIUM_VISUAL_MASK_CMD", "SWIPIUM_RETENTION_DAYS", "SWIPIUM_RETENTION_KEEP", "ANDROID_HOME", "ANDROID_SDK_ROOT", "ANDROID_SDK_HOME", "ANDROID_USER_HOME", "ANDROID_AVD_HOME", "ANDROID_EMULATOR_HOME", "JAVA_HOME", "JAVA_TOOL_OPTIONS", "GRADLE_USER_HOME", "GRADLE_OPTS", "BUNDLETOOL_JAR", "APPIUM_HOME", "DEVELOPER_DIR", "DEVELOPMENT_TEAM", "XCODE_DEVELOPMENT_TEAM", "WDA_PROJECT_PATH", "WEBDRIVERAGENT_PROJECT", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "CI", "GITHUB_SHA", "GITHUB_REF_NAME", "GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID", "CI_COMMIT_SHA", "CI_COMMIT_REF_NAME", "CI_PIPELINE_URL", "BITBUCKET_COMMIT", "BITBUCKET_BRANCH"]
+# Optional: a smaller tool list. Off by default; `swipium init codex` prints the core list as a comment
+# (it includes every tool the server instructions and qa_status point to).
+# enabled_tools = ["qa_test_this", "qa_status", ...]
 ```
+
+**Codex does not pass your shell environment to MCP servers.** A stdio server only gets a fixed
+whitelist (`HOME`, `LANG`, `LC_ALL`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `TMPDIR`, `USER`,
+`__CF_USER_TEXT_ENCODING` and the CA certificate variables), plus the names in `env_vars` and the
+`env = { NAME = "value" }` table of `[mcp_servers.swipium]` (see the
+[Codex config reference](https://developers.openai.com/codex/config-reference)). So
+`SWIPIUM_TEST_*`, other `SWIPIUM_*` settings, `ANDROID_HOME` and `JAVA_HOME` exported in your shell
+never reach Swipium unless they are listed. `env_vars` forwards a name from the environment Codex
+was started in (unset names are skipped); `env` sets a literal value. Add any custom `SWIPIUM_*`
+flow variables and `ORG_GRADLE_PROJECT_*` signing variables you use. The default list deliberately
+leaves out the names that grant approval (`SWIPIUM_CONSENT_PREAPPROVE`, `SWIPIUM_ALLOW_REMOTE_WDA`):
+forwarding them would let an inherited shell export, or a per-directory env tool such as direnv in a
+cloned repo, pre-approve actions. If you want them, set them literally in `env = { ... }`. `env_vars` is config-only: `codex mcp add --env NAME=value` sets literal
+values but cannot forward names, so add the `env_vars` line and the timeouts to `config.toml` after
+`codex mcp add`. When Codex is the client (or you pass `qa_doctor { client: "codex" }`), `qa_doctor`
+adds a `codex-env` row and prints the `env_vars` line. The row warns when no Android SDK is found
+(no `ANDROID_HOME`/`ANDROID_SDK_ROOT`, no SDK at the OS default location, no `adb` on `PATH`) or
+`java -version` fails on the server's `PATH` without `JAVA_HOME`: if you installed the SDK or JDK in
+a custom location, forward `ANDROID_HOME` / `JAVA_HOME`; if not, install it first. It can't read `tool_timeout_sec`, so it only reminds you to keep it at 600 or more.
 
 Known caveat: in the Codex Desktop app, custom stdio MCP tools can show up in `/mcp` without being
 available in threads ([openai/codex#19425](https://github.com/openai/codex/issues/19425)). If that
@@ -184,15 +210,42 @@ retention) are listed in the
 
 ## Server behavior
 
+- **What the model sees.** Every tool result has a text block and `structuredContent`. Claude Code
+  and Codex give the model the `structuredContent` JSON, not the text, for successful results
+  (Codex does it for every result that has `structuredContent`; Claude Code shows the text only
+  for errors). So successful results put the summary's first line (its headline) first under
+  `summary`, and any next-step guidance ("Next: ...", "Call qa_report ...") under `next`, a list
+  where each entry starts with the tool to call. The rest of the summary mostly re-renders payload
+  fields, so it is left out; results whose later lines say something the payload does not (for
+  example `qa_job_status` with the job's result text) keep the whole summary. `next` is left out
+  when the payload already has `nextBestAction`, `nextAction`, `nextRecommendedAction` or
+  `nextSteps`. Budget stops always carry `next: ["qa_report ..."]`; consent requests carry the
+  approval instruction in `next`. Errors carry `what` and `nextSteps`. The text block stays as a
+  plain-text copy for clients that read it.
 - **Response modes.** Pass `responseMode: "compact" | "normal" | "verbose"` on `qa_start_session`
-  or `qa_test_this`, and every later call in that session uses it. `compact` shortens only the
-  text channel to a summary plus URIs. `structuredContent` always carries the full payload.
+  or `qa_test_this`, and every later call in that session uses it. The mode only changes the text
+  block: `compact` cuts it to the summary plus URIs, `normal` adds a compact JSON copy without the
+  keys the summary already rendered, `verbose` adds the full JSON. `structuredContent` is always
+  the full payload in every mode, so on Claude Code and Codex the mode makes little difference to
+  what the model reads.
 - **Artifacts.** Evidence is stored under `~/.swipium/runs/` and returned as `swipium://` URIs.
-  `qa_get_artifact` returns metadata for images by default. Pass `mode: "inline"` only when you
-  need the pixels.
-- **Unknown arguments are rejected.** A top-level argument a tool doesn't declare returns
+  `qa_get_artifact` returns metadata for images and other binaries (screen recordings) by
+  default. Pass `mode: "inline"` only when you need the bytes. `resources/read` and
+  `qa_get_artifact` share the same size caps: text over 1 MB returns the first 1 MB (the last
+  1 MB for logs, including `*.log` files such as Metro and WDA logs) with a
+  `[swipium: truncated ...]` marker naming the local file to read for the rest, and binaries over
+  8 MB are not inlined (you get a note with the size and local path).
+  A URI that matches a Swipium template but names nothing that exists (unknown artifact, project
+  without an app map, unknown section) fails with JSON-RPC error `-32002` (resource not found).
+- **Invalid arguments are rejected.** A top-level argument a tool doesn't declare returns
   `INVALID_ARGUMENT` with the accepted parameter list, and nothing runs. Swipium doesn't silently
-  drop it.
+  drop it. A missing required argument or a wrong type returns the same typed `INVALID_ARGUMENT`
+  envelope, with a per-field `what` (for example `uri: Required`) and `invalidArguments`, instead
+  of the SDK's raw validation dump. An unknown tool name stays the SDK's protocol error. Errors
+  never echo caller input at full size: argument names and validation paths are cut at 100
+  characters (20 listed at most), `what` keeps its first and last part around a marker, every
+  string in an error is capped, and an error still over 64 KB drops its extra fields
+  (`extraDropped` names them).
 - **Stale clients.** A call to a tool removed in 2.0 (`qa_agent_brief`, `qa_capabilities`,
   `qa_next_best_action`, `qa_detect_context`, `qa_plan`, `qa_assert_visual`), or a legacy call
   shape (`qa_ios` `wda_*` or `screenshot` actions, `qa_wait for:"job_done"`), returns
@@ -238,6 +291,23 @@ one is) and Android elsewhere. Pass `platform: "android" | "ios" | "both"` to be
 | Long tool calls time out | Raise the client's tool timeout (Codex `tool_timeout_sec = 600`, Gemini `timeout: 600000`). For builds and runs, prefer `qa_test_this { mode: "execute" }` plus `qa_job_status` polling. |
 | `adb` or `emulator` not found from a GUI client | Set `ANDROID_HOME` in the server `env`, or install the SDK in its default location. See [How Android tools are found](#how-android-tools-are-found). |
 | `INVALID_ARGUMENT` listing accepted parameters | Remove the undeclared argument. If the tool list looks outdated, restart the client. |
+| Codex: test credentials, `ANDROID_HOME` or `JAVA_HOME` ignored | Codex only passes a fixed env whitelist to MCP servers. List the names in `env_vars` under `[mcp_servers.swipium]` (see [Manual configuration](#manual-configuration)); `qa_doctor` prints the line. |
 | Tools missing in Codex Desktop threads | Known Codex Desktop issue ([openai/codex#19425](https://github.com/openai/codex/issues/19425)). Use the Codex CLI. |
 | `swipium init cursor --apply` or `init vscode --apply` exits with status 2 | The existing file isn't plain JSON. Add the printed entry by hand. |
 | `PHYSICAL_DEVICE_UNSUPPORTED` | A phone was the only device, or was requested explicitly. Start an emulator or simulator. See [physical-devices.md](physical-devices.md). |
+
+## Debugging
+
+Swipium logs JSON lines to stderr only (stdout carries the MCP stream). Set `SWIPIUM_LOG_LEVEL`
+in the server `env` to change how much it writes:
+
+| Value | Writes |
+| --- | --- |
+| `error` | Errors only. |
+| `warn` | Errors and warnings. |
+| `info` (default) | Startup, shutdown, and notable events. |
+| `debug` | Everything above, plus one `tool call` line per call. |
+
+A `tool call` line carries `tool`, `sessionId` (when the call has one), `durationMs`, `isError`,
+`failureCode` (on errors) and `cancelled`. Argument values are never logged, since they can hold
+secrets. Most clients show server stderr in their MCP logs.

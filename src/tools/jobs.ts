@@ -3,14 +3,19 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
+import { cancelledResult, qaOk, qaError, unknownSessionError } from '../lib/result.js';
+import { currentSignal, isAbortError, sleepOrCancel } from '../lib/abortScope.js';
 import { progressLine } from '../session/progress.js';
 import type { SessionStore } from '../session/store.js';
 
-/** Upper bound for qa_job_status waitMs. Keeps one call well under typical client tool timeouts. */
-export const MAX_JOB_WAIT_MS = 120_000;
+/** Upper bound for qa_job_status waitMs. One long-poll must end before the client's tool timeout
+ *  (Codex defaults to 60 s, others are similar), so this is a hard 50 s for every client rather
+ *  than a per-client clamp keyed on clientInfo.name. Larger values are clamped, not rejected, so
+ *  callers still sending the old recommended 60000 keep working. */
+export const MAX_JOB_WAIT_MS = 50_000;
+/** The waitMs the instructions and nextSteps recommend: under MAX_JOB_WAIT_MS with headroom. */
+export const RECOMMENDED_JOB_WAIT_MS = 45_000;
 const JOB_POLL_INTERVAL_MS = 500;
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, Math.max(0, ms)));
 
 export function registerJobs(server: McpServer, sessions: SessionStore): void {
   server.registerTool(
@@ -30,7 +35,9 @@ export function registerJobs(server: McpServer, sessions: SessionStore): void {
           .int()
           .min(0)
           .optional()
-          .describe(`Block up to this many ms for the job to finish (capped at ${MAX_JOB_WAIT_MS}). Default 0 = return immediately.`),
+          .describe(
+            `Block up to this many ms for the job to finish (use ${RECOMMENDED_JOB_WAIT_MS}; capped at ${MAX_JOB_WAIT_MS}). Default 0 = return immediately.`,
+          ),
       },
     },
     async ({ sessionId, jobId, waitMs }, extra) => {
@@ -48,9 +55,17 @@ export function registerJobs(server: McpServer, sessions: SessionStore): void {
       }
       const budget = Math.min(Math.max(0, waitMs ?? 0), MAX_JOB_WAIT_MS);
       const started = Date.now();
-      while (budget > 0 && job.status === 'running' && Date.now() - started < budget && !extra?.signal?.aborted) {
-        await sleep(Math.min(JOB_POLL_INTERVAL_MS, budget - (Date.now() - started)));
-        job = session.jobs.get(jobId) ?? job;
+      // Cancelling THIS poll (notifications/cancelled) ends the wait at once; the job keeps running.
+      const signal = extra?.signal ?? currentSignal();
+      try {
+        while (budget > 0 && job.status === 'running' && Date.now() - started < budget) {
+          await sleepOrCancel(Math.min(JOB_POLL_INTERVAL_MS, budget - (Date.now() - started)), signal);
+          job = session.jobs.get(jobId) ?? job;
+        }
+      } catch (e) {
+        if (isAbortError(e, signal))
+          return cancelledResult(`qa_job_status wait cancelled; job ${jobId} was not cancelled (qa_job_cancel does that)`);
+        throw e;
       }
       const waited = budget > 0 ? { waitedMs: Date.now() - started, timedOut: job.status === 'running' } : undefined;
       const progLine = progressLine(job.progressDetail);
@@ -68,6 +83,8 @@ export function registerJobs(server: McpServer, sessions: SessionStore): void {
         },
         `job ${job.jobId} [${job.kind}] = ${job.status}${progLine ? `\n  ${progLine}` : job.progress ? ` (${job.progress})` : ''}${job.resultText ? `\n${job.resultText}` : ''}${job.error ? `\nerror: ${job.error}` : ''}` +
           (waited?.timedOut ? `\nstill running after ${waited.waitedMs}ms, call again (waitMs) or qa_job_cancel.` : ''),
+        // The job's resultText and the still-running hint are not payload fields: keep them all.
+        { structuredSummary: 'full' },
       );
     },
   );

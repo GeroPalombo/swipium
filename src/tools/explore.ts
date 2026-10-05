@@ -70,26 +70,26 @@ export function registerExplore(server: McpServer, sessions: SessionStore): void
     {
       title: 'Guided exploration',
       description:
-        'Bounded, safe-by-default exploration of the launched app: observes screens, taps ranked safe actions, checks health after ' +
-        'each, and builds a screen graph (JSON + Markdown). Destructive actions (delete/pay/send/logout) are skipped unless a ' +
-        'candidate is explicitly approved; an auth wall without credentials returns needs_input. Taps are recorded for qa_generate. ' +
-        'Runs as a job (graphUri + terminal state in the qa_job_status result); updates the app map. Needs a prepared device.',
+        'Bounded, safe exploration of the prepared app as a job (poll qa_job_status): taps ranked safe actions, checks ' +
+        'health, builds a screen graph, updates the app map, and records taps for qa_generate. Destructive actions ' +
+        '(delete/pay/send/logout) are skipped unless one candidate is approved; an auth wall without credentials returns ' +
+        'needs_input.',
       inputSchema: {
         sessionId: z.string(),
-        goal: z.string().optional().describe('Natural-language focus, e.g. "exercise the main tabs".'),
+        goal: z.string().optional().describe('Focus, e.g. "exercise the main tabs".'),
         depth: z.number().optional().describe('Max navigation depth (default 3).'),
         maxActions: z.number().optional().describe('Default 20.'),
         maxScreens: z.number().optional().describe('Default 12.'),
-        maxDurationMs: z.number().optional().describe('Wall-clock cap in ms (default 360000).'),
+        maxDurationMs: z.number().optional().describe('Default 360000.'),
         strategy: z
           .enum(['crawl', 'task_planner', 'hybrid'])
           .optional()
-          .describe('crawl (default, deterministic) | task_planner (infer QA tasks first) | hybrid.'),
+          .describe('crawl (default) | task_planner (infer QA tasks first) | hybrid.'),
         safeMode: z
           .enum(['strict', 'balanced', 'dry_run_destructive', 'approved_destructive_candidate', 'approved_destructive'])
           .optional()
           .describe(
-            'strict (default) | balanced (unknown-risk ok) | dry_run_destructive (list candidates, no taps) | approved_destructive_candidate (one exact candidate; consent-gated). approved_destructive is refused.',
+            'strict (default) | balanced | dry_run_destructive (list candidates, no taps) | approved_destructive_candidate (one candidate, consent-gated). approved_destructive is refused.',
           ),
         destructiveCandidate: z
           .object({
@@ -100,19 +100,13 @@ export function registerExplore(server: McpServer, sessions: SessionStore): void
             riskClass: z.string().optional(),
           })
           .optional()
-          .describe('The exact candidate from a dry_run_destructive run (for approved_destructive_candidate).'),
-        confirmHighImpact: z.boolean().optional().describe('Required for payment/send/permission/account-delete/bulk-delete candidates.'),
-        generateSuite: z
-          .boolean()
-          .optional()
-          .describe('Also write + compile a POM suite from the promoted paths (suitePromotion scoring is always returned).'),
-        includeTextEntry: z.boolean().optional().describe('Allow typing into fields that have a value source (default false).'),
-        stopOnAuth: z.boolean().optional().describe('needs_input on an auth wall without credentials (default true).'),
-        accountCycle: z
-          .boolean()
-          .optional()
-          .describe('On a DISPOSABLE generated account, permit logout (only) as a step; needs allowGeneratedData.'),
-        allowGeneratedData: z.boolean().optional().describe('Allow generated disposable test data (test/staging).'),
+          .describe('approved_destructive_candidate: the candidate from a dry_run_destructive run.'),
+        confirmHighImpact: z.boolean().optional().describe('Required for payment/send/permission/delete candidates.'),
+        generateSuite: z.boolean().optional().describe('Also write + compile a POM suite from promoted paths.'),
+        includeTextEntry: z.boolean().optional().describe('Type into fields that have a value source (default false).'),
+        stopOnAuth: z.boolean().optional().describe('needs_input at an auth wall without credentials (default true).'),
+        accountCycle: z.boolean().optional().describe('Allow logout on a disposable generated account (needs allowGeneratedData).'),
+        allowGeneratedData: z.boolean().optional().describe('Allow generated test data (test/staging).'),
         consentId: z.string().optional(),
         approve: z.boolean().optional(),
       },

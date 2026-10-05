@@ -48,7 +48,12 @@ describes the full model, including its residual risks. In short:
 - **Real user prompts where possible.** If your MCP client supports elicitation, Swipium asks you
   directly, and only an explicit approval runs the action. On other clients the agent relays the
   approval. Set `SWIPIUM_REQUIRE_ELICITATION=1` to refuse every consent-gated action unless the
-  client can show you the prompt.
+  client can show you the prompt. For headless clients that answer prompts automatically, you can
+  pre-approve exact action names with `SWIPIUM_CONSENT_PREAPPROVE` in the server env (never read
+  from the repository). Actions that run repository- or model-chosen code also need
+  `SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE=1`, which under `codex exec` lets that code run outside the
+  client's sandbox; a remote WebDriverAgent can only be pre-approved with
+  `SWIPIUM_ALLOW_REMOTE_WDA`.
 - **Cloned repositories are untrusted.** Every command from `.swipium/` is shown verbatim in its
   consent prompt. Flows and fixtures read only `SWIPIUM_*` environment variables. The repository
   cannot pre-approve a remote WebDriverAgent; only your own `SWIPIUM_ALLOW_REMOTE_WDA` can. An

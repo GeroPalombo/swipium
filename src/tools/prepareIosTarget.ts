@@ -38,16 +38,18 @@ export function registerPrepareIosTarget(server: McpServer, sessions: SessionSto
     {
       title: 'Prepare an iOS simulator target',
       description:
-        'Prepare an iOS Simulator: pick + boot, install a simulator .app (consent-gated), launch the bundle id, verify ' +
-        'foreground, and report whether WDA structured automation is available or it is visual-only. A .ipa is refused ' +
-        '(IPA_NEEDS_REAL_DEVICE). attachWda: auto | required | skip.',
+        'Prepare an iOS Simulator: boot, install a simulator .app (consent-gated), launch, verify, and report whether WDA ' +
+        'structured automation or visual-only mode is available. .ipa files are refused.',
       inputSchema: {
         sessionId: z.string(),
         app: z.string().optional().describe('Simulator .app path (absolute or project-relative).'),
         bundleId: z.string().optional(),
         device: z.string().optional().describe('Simulator UDID or name substring.'),
         launch: z.boolean().optional(),
-        attachWda: z.enum(['auto', 'required', 'skip']).optional(),
+        attachWda: z
+          .enum(['auto', 'required', 'skip'])
+          .optional()
+          .describe('auto (default): attach WDA if reachable, else visual-only; required: fail if it cannot attach; skip: visual-only.'),
         consentId: z.string().optional(),
         approve: z.boolean().optional(),
       },

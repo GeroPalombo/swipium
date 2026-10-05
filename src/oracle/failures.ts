@@ -750,7 +750,8 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     retrySafe: false,
     owner: 'user',
     summary: 'The user declined a consent prompt (MCP elicitation); nothing ran',
-    recovery: 'Expected guardrail. Do not retry; ask the user before attempting the action again.',
+    recovery:
+      'Expected guardrail. Do not retry; ask the user before attempting the action again. If the prompt was answered automatically (headless client, likelyAutomatic: true), the result names the operator setting that can pre-approve it.',
   },
   CONSENT_CANCELLED: {
     bucket: 'unsafe_refused',
@@ -758,7 +759,8 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     retrySafe: true,
     owner: 'user',
     summary: 'A consent prompt was dismissed, timed out, or failed. Treated as a refusal; nothing ran',
-    recovery: 'Re-call the tool (without consentId) to show the user a fresh consent prompt.',
+    recovery:
+      'Re-call the tool (without consentId) to show the user a fresh consent prompt. If the prompt was answered automatically (headless client, likelyAutomatic: true), do not loop; the result names the operator setting that can pre-approve it.',
   },
   CANCELLED: {
     // Not a failure: the MCP request was aborted or the job cancelled. Never recorded as a tool

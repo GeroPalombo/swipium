@@ -112,10 +112,10 @@ export function registerIssues(server: McpServer, sessions: SessionStore): void 
     {
       title: 'Project issue ledger (list + lifecycle)',
       description:
-        'Durable project issue ledger (.swipium/issues-log.jsonl). mode: history (default; list + counts + recurrence, filterable), ' +
-        'log (record an observation; identity = normalized title + category + platform; re-observing a fixed issue reopens it), ' +
-        'mark_fixed (active issues only), verify_fixed (needs current-run evidence), suppress (suppressedUntil auto-expires; ' +
-        'unsuppress:true lifts it), metrics (trends from the event log). Transitions take issueId (or fingerprint).',
+        'Durable project issue ledger (.swipium/issues-log.jsonl). mode: history (default, filterable), log (record an ' +
+        'observation; re-observing a fixed issue reopens it), mark_fixed, verify_fixed (needs current-run evidence), suppress ' +
+        '(expires; unsuppress:true lifts it), metrics (trends). Transitions take issueId or fingerprint. Each param names its ' +
+        'modes.',
       inputSchema: {
         projectRoot: z.string().optional(),
         sessionId: z.string().optional(),
@@ -137,9 +137,9 @@ export function registerIssues(server: McpServer, sessions: SessionStore): void 
         includeSuppressed: z.boolean().optional().describe('history/metrics: include suppressed issues.'),
         issueId: z.string().optional().describe('Transition key (from history).'),
         fingerprint: z.string().optional().describe('Alternative transition key.'),
-        title: z.string().optional().describe('log (required): what was observed, descriptive.'),
+        title: z.string().optional().describe('log (required): what was observed.'),
         summary: z.string().optional().describe('log: one-line summary.'),
-        failureCode: z.string().optional().describe('log: typed code (e.g. REDBOX, ANR); sharpens the fingerprint.'),
+        failureCode: z.string().optional().describe('log: typed code, e.g. REDBOX, ANR.'),
         evidenceUris: z.array(z.string()).optional().describe('log/verify_fixed: swipium:// evidence URIs.'),
         fixedInCommit: z.string().optional().describe('mark_fixed'),
         fixedInVersion: z.string().optional().describe('mark_fixed'),
@@ -149,10 +149,10 @@ export function registerIssues(server: McpServer, sessions: SessionStore): void 
         testCaseId: z.string().optional().describe('verify_fixed evidence'),
         auditCheckId: z.string().optional().describe('verify_fixed evidence'),
         suppressionReason: z.string().optional().describe('suppress'),
-        suppressedUntil: z.string().optional().describe('suppress: ISO expiry (then the issue returns to its prior state).'),
+        suppressedUntil: z.string().optional().describe('suppress: ISO expiry.'),
         unsuppress: z.boolean().optional().describe('suppress: lift an existing suppression now.'),
         suppressionScope: z.enum(['fingerprint', 'platform', 'environment', 'appVersion']).optional().describe('suppress'),
-        until: z.string().optional().describe('metrics: ISO end; suppress: alias of suppressedUntil.'),
+        until: z.string().optional().describe('metrics: ISO end; suppress: = suppressedUntil.'),
         groupBy: z
           .enum(['day', 'week', 'version', 'commit', 'category', 'owner', 'screen', 'feature'])
           .optional()

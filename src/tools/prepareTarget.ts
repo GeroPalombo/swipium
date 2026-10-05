@@ -35,10 +35,8 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
     {
       title: 'Prepare a target device + app',
       description:
-        'Prepare an Android Emulator target in order: device > Metro > install > launch, with one combined consent for ' +
-        'privileged steps (boot, install). Binds the single online device (asks if several), sets adb reverse for RN/Expo, ' +
-        'waits for Metro to serve, installs if needed, launches, verifies. Long operations return a jobId. bindOnly binds/boots ' +
-        'without install/launch.',
+        'Prepare an Android Emulator: bind or boot the device, Metro + adb reverse for RN/Expo, install, launch, verify. One ' +
+        'combined consent covers boot/install; long steps return a jobId. bindOnly stops after bind/boot.',
       inputSchema: {
         sessionId: z.string(),
         apk: z.string().optional(),
@@ -47,7 +45,7 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
         device: z.string().optional().describe('Target serial; required when >1 device is online.'),
         force: z.boolean().optional(),
         headless: z.boolean().optional().describe('Boot the AVD headless (default true).'),
-        bindOnly: z.boolean().optional().describe('Bind/boot + adb reverse only (breaks a device/Metro deadlock).'),
+        bindOnly: z.boolean().optional().describe('Bind/boot + adb reverse only.'),
         allowLaunchWithoutMetro: z.boolean().optional().describe('Launch a debug RN/Expo build without Metro (may RedBox).'),
         consentId: z.string().optional(),
         approve: z.boolean().optional(),

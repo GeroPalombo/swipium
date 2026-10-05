@@ -14,15 +14,14 @@ export function registerReport(server: McpServer, sessions: SessionStore): void 
     {
       title: 'Build a session report',
       description:
-        'Assemble the session report: executive summary (release risk ship/caution/block + next action), health, outcomes by ' +
-        'workflow, findings, evidence links, env changes + restoration, workarounds. Saves the full report as an artifact and returns ' +
-        'a summary + URIs. format adds an export artifact: markdown, json, junit, sarif (SARIF 2.1.0), github-summary, playwright, or ' +
-        'flow. qa_test_this execute calls this automatically. CI usage: docs/ci-reports.md.',
+        'Build the session report (release risk, health, outcomes, findings, evidence, env changes) as an artifact; returns a ' +
+        'summary + URIs. format adds an export: markdown, json, junit, sarif, github-summary, playwright, or flow. ' +
+        'qa_test_this execute calls it for you. CI: docs/ci-reports.md.',
       inputSchema: {
         sessionId: z.string(),
         format: z.enum(['summary', 'markdown', 'json', 'junit', 'sarif', 'github-summary', 'flow', 'playwright']).optional(),
         baseline: z.string().optional().describe('Baseline report.json path; adds comparison links.'),
-        trendRoot: z.string().optional().describe('Project root with .swipium/runs history; adds trend/flake context.'),
+        trendRoot: z.string().optional().describe('Project root with run history; adds trends/flakes.'),
       },
     },
     async ({ sessionId, format, baseline, trendRoot }) => {

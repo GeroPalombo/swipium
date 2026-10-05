@@ -163,3 +163,23 @@ describe('prepareAndroid target selection', () => {
     expect(late.installedOn).toEqual([]);
   });
 });
+
+describe('prepareAndroid cancellation', () => {
+  it('cancelling while waiting for the booted emulator to appear returns aborted at once, not after the 2 s poll', async () => {
+    env.polls = [[]]; // the emulator never shows up
+    const store = new SessionStore();
+    const s = store.create(root);
+    const ctl = new AbortController();
+    const started = Date.now();
+    setTimeout(() => ctl.abort(), 300);
+    const res = await prepareAndroid(
+      store,
+      s,
+      fakeDriver() as never,
+      { needBoot: true, bootTarget: 'Pixel_7', resolvedAppId: 'com.example.app', apkPath: apk },
+      { signal: ctl.signal },
+    );
+    expect(res).toMatchObject({ ok: false, aborted: true });
+    expect(Date.now() - started).toBeLessThan(1500);
+  });
+});

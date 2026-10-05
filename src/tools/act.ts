@@ -6,7 +6,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { qaOk, qaError, qaStop, unknownSessionError, cancelledResult } from '../lib/result.js';
+import { qaOk, qaError, qaStop, qaAnnotate, unknownSessionError, cancelledResult } from '../lib/result.js';
 import { parseSnapshot, signature } from '../snapshot/parse.js';
 import { presentElements } from '../snapshot/present.js';
 import { obstructionAt } from '../snapshot/overlays.js';
@@ -33,7 +33,7 @@ import type { RecordedAction, Session, SessionStore } from '../session/store.js'
 import type { RawNode } from '../snapshot/parse.js';
 import type { Driver, NativeSelectorStrategy, SnapshotElement } from '../drivers/Driver.js';
 import type { FailureCode } from '../oracle/failures.js';
-import { isAbortError, runWithSignal } from '../lib/abortScope.js';
+import { isAbortError, runWithSignal, sleepOrCancel, throwIfCancelled } from '../lib/abortScope.js';
 import { SECRET_VAR_NAME } from '../flows/schema.js';
 
 interface NativeSelector {
@@ -69,14 +69,15 @@ async function awaitIme(d: Driver, capMs: number, floorMs = 0): Promise<void> {
         // Field hop: the IME was ALREADY up before the tap, so "shown" says nothing about the
         // new field having focus yet, so give RN a floor to move focus before typing.
         const rest = floorMs - (Date.now() - started);
-        if (rest > 0) await new Promise((r) => setTimeout(r, rest));
+        if (rest > 0) await sleepOrCancel(rest);
         return;
       }
-      await new Promise((r) => setTimeout(r, Math.min(100, Math.max(1, deadline - Date.now()))));
+      await sleepOrCancel(Math.min(100, Math.max(1, deadline - Date.now())));
     }
-  } catch {
+  } catch (e) {
+    if (isAbortError(e)) throw e; // cancelled: unwind, the action's catch returns CANCELLED
     // imeShown unsupported here: keep the original fixed-sleep behavior
-    await new Promise((r) => setTimeout(r, Math.max(0, deadline - Date.now())));
+    await sleepOrCancel(Math.max(0, deadline - Date.now()));
   }
 }
 
@@ -163,6 +164,9 @@ function stateLabel(n: RawNode): string {
  * (after a navigation "diff" = every new element + every old one listed as removed, larger
  * than "full"). */
 export const DIFF_FULL_FALLBACK_RATIO = 0.5;
+
+/** qa_act timeoutMs ceiling (wait / settle cap); larger values are clamped with a note. */
+export const ACT_TIMEOUT_MAX_MS = 50_000;
 
 /** Only `${SWIPIUM_*}` placeholders are expanded in typed text (anything else stays literal). */
 const INPUT_PLACEHOLDER_RE = /\$\{(SWIPIUM_[A-Z0-9_]+)\}/g;
@@ -428,10 +432,10 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
     {
       title: 'Act on the screen',
       description:
-        'Perform one UI action, wait for the screen to settle, and observe: changed/settled, snapshot quality, a health check, and ' +
-        'post-action elements per observe. action: tap, type, clear, swipe, scroll, press, open_url, wait (each param names its ' +
-        'actions). Target @eN refs from qa_snapshot (invalid after navigation), text, id, a native selector (WDA iOS), or x/y. A field ' +
-        'hidden under the keyboard is handled (hide + re-resolve; KEYBOARD_OBSTRUCTION if still covered). See docs/tools.md#qa_act.',
+        'One UI action (tap, type, clear, swipe, scroll, press, open_url, wait), then wait for the screen to settle and ' +
+        'report changed/settled, snapshot quality, health, and new elements (observe). Target: an @eN ref from qa_snapshot, ' +
+        'text, id, a native selector (WDA iOS), or x/y. Each param names the actions it applies to. Details: ' +
+        'docs/tools.md#qa_act.',
       inputSchema: {
         sessionId: z.string(),
         action: z.enum(['tap', 'type', 'clear', 'swipe', 'scroll', 'press', 'open_url', 'wait']),
@@ -470,7 +474,11 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
           })
           .optional()
           .describe('wait: {settled:true} (default) or an element.'),
-        timeoutMs: z.number().optional().describe('wait: max ms (default 8000); others: settle-wait cap.'),
+        timeoutMs: z
+          .number()
+          .min(0)
+          .optional()
+          .describe('wait: max ms (default 8000, max 50000; larger values are clamped); others: settle-wait cap.'),
         observe: z
           .enum(['diff', 'full', 'none'])
           .optional()
@@ -480,8 +488,11 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
     // Cancellation (MCP notifications/cancelled): the call's signal is scoped to THIS call
     // (abortScope): an in-flight adb child / WDA request is aborted without touching a
     // concurrently running job's own cancellation.
-    async (args, extra) =>
-      runWithSignal(extra?.signal, async () => {
+    async (rawArgs, extra) => {
+      // timeoutMs is clamped (not rejected) like qa_job_status waitMs, with a note on the result.
+      const clampedFrom = rawArgs.timeoutMs != null && rawArgs.timeoutMs > ACT_TIMEOUT_MAX_MS ? rawArgs.timeoutMs : undefined;
+      const args = clampedFrom != null ? { ...rawArgs, timeoutMs: ACT_TIMEOUT_MAX_MS } : rawArgs;
+      const res = await runWithSignal(extra?.signal, async (): Promise<CallToolResult> => {
         const { sessionId, action } = args;
         // Single validation layer for the per-action field contract (see REQUIRED_BY_ACTION).
         const invalid = missingRequiredField(action, args);
@@ -532,75 +543,83 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
 
         // ---- wait is its own path (no settle/health afterward) ----
         if (action === 'wait') {
-          const timeoutMs = args.timeoutMs ?? 8000;
-          if (args.for?.settled || !args.for) {
-            const s = await settle(d, { timeoutMs });
-            const post = parseSnapshot(s.xml);
-            session.lastSnapshot = {
-              fullByRef: post.fullByRef,
-              signatures: new Set(post.elements.map(signature)),
-              allNodes: post.allNodes,
-            };
-            const { elements: shown, rendered, omitted } = presentElements(post.elements, makeRedactor(session.secrets));
-            return qaOk(
-              { action, settled: s.settled, quality: post.quality.verdict, elementsOmitted: omitted, elements: shown },
-              `wait(settled)=${s.settled}\n\n${rendered}`,
-              { textOmit: ['elements'] },
-            );
-          }
-          const deadline = Date.now() + timeoutMs;
-          const want = args.for;
-          const native: NativeSelector | null = want?.selector ?? null;
-          if (native) {
-            if (!d.existsBySelector)
-              return qaError({
-                what: `${native.using} waits require backend-native selector support`,
-                changedState: false,
-                retrySafe: false,
-                failureCode: 'BACKEND_UNSUPPORTED',
-                nextSteps: ['Use a WDA-backed iOS session, or wait by text/id/ref on this backend.'],
-              });
-            while (Date.now() < deadline) {
-              if (await d.existsBySelector(native.using, native.value)) {
-                return qaOk(
-                  { action, found: true, selector: want?.selector, via: 'native-selector' },
-                  `wait: found ${native.using}=${native.value}`,
-                );
+          // A cancelled wait (notifications/cancelled) stops polling at once and is not a failure.
+          try {
+            const timeoutMs = args.timeoutMs ?? 8000;
+            if (args.for?.settled || !args.for) {
+              const s = await settle(d, { timeoutMs });
+              const post = parseSnapshot(s.xml);
+              session.lastSnapshot = {
+                fullByRef: post.fullByRef,
+                signatures: new Set(post.elements.map(signature)),
+                allNodes: post.allNodes,
+              };
+              const { elements: shown, rendered, omitted } = presentElements(post.elements, makeRedactor(session.secrets));
+              return qaOk(
+                { action, settled: s.settled, quality: post.quality.verdict, elementsOmitted: omitted, elements: shown },
+                `wait(settled)=${s.settled}\n\n${rendered}`,
+                { textOmit: ['elements'] },
+              );
+            }
+            const deadline = Date.now() + timeoutMs;
+            const want = args.for;
+            const native: NativeSelector | null = want?.selector ?? null;
+            if (native) {
+              if (!d.existsBySelector)
+                return qaError({
+                  what: `${native.using} waits require backend-native selector support`,
+                  changedState: false,
+                  retrySafe: false,
+                  failureCode: 'BACKEND_UNSUPPORTED',
+                  nextSteps: ['Use a WDA-backed iOS session, or wait by text/id/ref on this backend.'],
+                });
+              while (Date.now() < deadline) {
+                throwIfCancelled();
+                if (await d.existsBySelector(native.using, native.value)) {
+                  return qaOk(
+                    { action, found: true, selector: want?.selector, via: 'native-selector' },
+                    `wait: found ${native.using}=${native.value}`,
+                  );
+                }
+                await sleepOrCancel(400);
               }
-              await new Promise((r) => setTimeout(r, 400));
+              return qaError({
+                what: `wait timed out (${timeoutMs}ms) for ${JSON.stringify(want)}`,
+                changedState: false,
+                retrySafe: true,
+                failureCode: 'ELEMENT_NOT_FOUND',
+                nextSteps: ['Re-check the native selector value, or run qa_snapshot to inspect the current screen.'],
+              });
+            }
+            while (Date.now() < deadline) {
+              throwIfCancelled();
+              const parsed = parseSnapshot(await d.dumpXml());
+              session.lastSnapshot = {
+                fullByRef: parsed.fullByRef,
+                signatures: new Set(parsed.elements.map(signature)),
+                allNodes: parsed.allNodes,
+              };
+              const hit = parsed.elements.find(
+                (e) =>
+                  (want.ref && e.ref === want.ref) ||
+                  (want.id && e.id === want.id) ||
+                  (want.text &&
+                    (e.text?.toLowerCase().includes(want.text.toLowerCase()) || e.label?.toLowerCase().includes(want.text.toLowerCase()))),
+              );
+              if (hit) return qaOk({ action, found: true, ref: hit.ref }, `wait: found ${hit.ref}`);
+              await sleepOrCancel(400);
             }
             return qaError({
               what: `wait timed out (${timeoutMs}ms) for ${JSON.stringify(want)}`,
               changedState: false,
               retrySafe: true,
               failureCode: 'ELEMENT_NOT_FOUND',
-              nextSteps: ['Re-check the native selector value, or run qa_snapshot to inspect the current screen.'],
+              nextSteps: ['Re-snapshot; the element may use different text/id.'],
             });
+          } catch (e) {
+            if (isAbortError(e)) return cancelledResult('wait cancelled: the call was aborted before the condition held');
+            throw e;
           }
-          while (Date.now() < deadline) {
-            const parsed = parseSnapshot(await d.dumpXml());
-            session.lastSnapshot = {
-              fullByRef: parsed.fullByRef,
-              signatures: new Set(parsed.elements.map(signature)),
-              allNodes: parsed.allNodes,
-            };
-            const hit = parsed.elements.find(
-              (e) =>
-                (want.ref && e.ref === want.ref) ||
-                (want.id && e.id === want.id) ||
-                (want.text &&
-                  (e.text?.toLowerCase().includes(want.text.toLowerCase()) || e.label?.toLowerCase().includes(want.text.toLowerCase()))),
-            );
-            if (hit) return qaOk({ action, found: true, ref: hit.ref }, `wait: found ${hit.ref}`);
-            await new Promise((r) => setTimeout(r, 400));
-          }
-          return qaError({
-            what: `wait timed out (${timeoutMs}ms) for ${JSON.stringify(want)}`,
-            changedState: false,
-            retrySafe: true,
-            failureCode: 'ELEMENT_NOT_FOUND',
-            nextSteps: ['Re-snapshot; the element may use different text/id.'],
-          });
         }
 
         // Phase timing (P1.6): mark the first real action so the report can split setup vs active.
@@ -1214,6 +1233,8 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               : ['Re-check the device is online, then qa_screenshot / qa_check_health.'],
           });
         }
-      }),
+      });
+      return clampedFrom != null ? qaAnnotate(res, [`timeoutMs ${clampedFrom} clamped to ${ACT_TIMEOUT_MAX_MS}.`]) : res;
+    },
   );
 }

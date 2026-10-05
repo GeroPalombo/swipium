@@ -28,10 +28,9 @@ export function registerFirstRun(server: McpServer, sessions: SessionStore): voi
     {
       title: 'First run: plan or continue through login/onboarding',
       description:
-        'Get past a first-run gate (login, sign-up, OTP, onboarding, permissions, paywall) safely. mode:"plan" (default, ' +
-        'read-only) classifies the screen and returns the safe plan. mode:"continue" runs bounded steps: in test/staging it ' +
-        'fills forms with generated data (password kept secret), advances onboarding, records paywalls without purchasing; it ' +
-        'refuses sign-up in production-like environments and returns one needs_input question on OTP. Needs a prepared device.',
+        'Get past a first-run gate (login, sign-up, OTP, onboarding, permissions, paywall). mode:"plan" (default, read-only) ' +
+        'classifies the screen and returns a safe plan. mode:"continue" runs bounded steps: generated data only in ' +
+        'test/staging, never purchases, one needs_input question on OTP. Needs a prepared device.',
       inputSchema: {
         sessionId: z.string(),
         mode: z.enum(['plan', 'continue']).optional(),
@@ -87,7 +86,7 @@ export function registerFirstRun(server: McpServer, sessions: SessionStore): voi
           `environment: ${environment.environment} (prodRisk=${environment.productionRisk}); generated account ${decision.allowed ? 'ALLOWED' : 'NOT allowed'} (${decision.reason})\n` +
           `state: ${plan.state}${plan.pathTaken ? ` [${plan.pathTaken}]` : ''}; planned actions: ${plan.actions.length}` +
           (plan.needsInput ? `\n❓ ${plan.needsInput.reason}` : '') +
-          `\nnext: execute with qa_first_run { sessionId:"${session.id}", mode:"continue", until:"one_step" }`;
+          `\nnext: qa_first_run { sessionId:"${session.id}", mode:"continue", until:"one_step" } to execute it`;
 
         return qaAnnotate(
           qaOk(

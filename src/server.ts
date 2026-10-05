@@ -1,16 +1,19 @@
-import { readFileSync, statSync } from 'node:fs';
+import { statSync } from 'node:fs';
 import { basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { McpError, type CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { SessionStore, decodeUriSegment, encodeUriSegment, isWithinRoot, type Session } from './session/store.js';
 import {
+  AUTO_ANSWER_MS,
   burnConsent,
   peekConsent,
+  preapproveHint,
   requestConsentDecision,
   runWithConsentScope,
   setElicitationProvider,
+  warnIgnoredPreapprovals,
   type ApprovalMechanism,
   type ConsentRequest,
   type ElicitationProvider,
@@ -31,7 +34,7 @@ import { registerIos } from './tools/ios.js';
 import { registerWda } from './tools/wda.js';
 import { registerClearOverlay } from './tools/clearOverlay.js';
 import { registerJobs } from './tools/jobs.js';
-import { registerGetArtifact } from './tools/getArtifact.js';
+import { registerGetArtifact, readArtifactResource } from './tools/getArtifact.js';
 import { registerNote } from './tools/note.js';
 import { registerVisual } from './tools/visual.js';
 import { registerFlow } from './tools/flow.js';
@@ -57,8 +60,8 @@ import { registerResolveTarget } from './tools/resolveTarget.js';
 import { registerBuild } from './tools/build.js';
 import { registerBundletool } from './tools/bundletool.js';
 import { registerPrompts } from './prompts/index.js';
-import { log } from './lib/logger.js';
-import { qaError, runWithResponseMode } from './lib/result.js';
+import { log, logEnabled } from './lib/logger.js';
+import { qaAnnotate, qaError, runWithResponseMode } from './lib/result.js';
 import { recordToolErrorFromResult } from './report/toolHealth.js';
 import { computeSchemaHash, describeZodField, setSchemaHash, type ToolSurfaceEntry } from './lib/schemaHash.js';
 import { REMOVED_TOOLS, STALE_CLIENT_HINT, SWIPIUM_VERSION, TOOL_COUNT, TOOL_NAMES, TOOL_NAME_SET, type ToolName } from './version.js';
@@ -187,6 +190,9 @@ function pendingConsentId(result: unknown): string | undefined {
  *  - elicitation declined > CONSENT_DECLINED; cancelled/timed out/transport error >
  *    CONSENT_CANCELLED (retry-safe: a re-call issues a fresh prompt). Either way the challenge
  *    is burned (no approve:true self-approval afterwards) and a `refused` ledger row is written;
+ *  - operator-policy (action listed in SWIPIUM_CONSENT_PREAPPROVE and allowed by its tier, see
+ *    consent.ts operatorPolicyCovers) > re-invoke exactly like an elicitation approval, without
+ *    prompting (consumeConsent tags it 'operator-policy');
  *  - refused (SWIPIUM_REQUIRE_ELICITATION=1 and no elicitation support) > CONSENT_REFUSED;
  *  - client-assertion (client does not advertise elicitation) > the portable envelope unchanged.
  * The re-invocation's result is never routed again, so this cannot loop; if it asks for a NEW
@@ -215,25 +221,60 @@ async function routePendingConsent(
       nextSteps: ['Connect with an MCP client that supports elicitation, or unset SWIPIUM_REQUIRE_ELICITATION.'],
     });
   }
-  if (decision.mechanism === 'elicitation') {
+  if (decision.mechanism === 'elicitation' || decision.mechanism === 'operator-policy') {
     if (!decision.approved) {
-      recordConsentRefusal(ledger.sessions, ledger.tool, first.sessionId, consentId, req, 'elicitation', decision.reason);
+      // A failed elicitation (timeout, transport error, aborted call) is not an answer: ledger it
+      // as 'transport/abort' and never flag it as likely automatic.
+      const failed = decision.failure !== undefined;
+      recordConsentRefusal(
+        ledger.sessions,
+        ledger.tool,
+        first.sessionId,
+        consentId,
+        req,
+        'elicitation',
+        failed ? `transport/abort: ${decision.reason}` : decision.reason,
+      );
+      // Headless clients (codex exec, claude -p) answer prompts automatically: a near-instant
+      // answer is flagged as likely automatic and only then carries the pre-approve hint (a real
+      // human decline must not be nudged toward disabling consent).
+      const action = req?.action ?? 'unknown';
+      const likelyAutomatic = !failed && decision.elapsedMs < AUTO_ANSWER_MS;
+      const extra = failed
+        ? { action, answeredInMs: decision.elapsedMs, likelyAutomatic: false, elicitationFailure: decision.failure }
+        : { action, answeredInMs: decision.elapsedMs, likelyAutomatic };
+      const hint = likelyAutomatic ? [preapproveHint(action, req)] : [];
       if (decision.outcome === 'cancelled') {
-        return qaError({
-          what: decision.reason,
-          changedState: false,
-          retrySafe: true,
-          failureCode: 'CONSENT_CANCELLED',
-          nextSteps: ['Nothing ran. Re-call the tool (without consentId) to show the user a fresh consent prompt, or ask them first.'],
-        });
+        return qaError(
+          {
+            what: decision.reason,
+            changedState: false,
+            retrySafe: true,
+            failureCode: 'CONSENT_CANCELLED',
+            nextSteps: [
+              failed
+                ? 'Nothing ran. The consent prompt failed (timeout, transport error or cancelled call) before anyone answered: re-call the tool (without consentId) to prompt again, or ask the user first.'
+                : likelyAutomatic
+                  ? 'Nothing ran. The prompt was answered too fast for a human: do not re-call in a loop, ask the user first.'
+                  : 'Nothing ran. Re-call the tool (without consentId) to show the user a fresh consent prompt, or ask them first.',
+              ...hint,
+            ],
+          },
+          extra,
+        );
       }
-      return qaError({
-        what: 'User declined via elicitation prompt',
-        changedState: false,
-        retrySafe: false,
-        failureCode: 'CONSENT_DECLINED',
-        nextSteps: ['Do not retry this action; ask the user before attempting it again.'],
-      });
+      return qaError(
+        {
+          what: likelyAutomatic
+            ? `The client declined "${action}" in ${decision.elapsedMs} ms, likely automatically without showing the user`
+            : 'User declined via elicitation prompt',
+          changedState: false,
+          retrySafe: false,
+          failureCode: 'CONSENT_DECLINED',
+          nextSteps: ['Do not retry this action; ask the user before attempting it again.', ...hint],
+        },
+        extra,
+      );
     }
     const out = await reinvoke([{ ...first, consentId, approve: true }, ...args.slice(1)]);
     const again = pendingConsentId(out);
@@ -260,6 +301,84 @@ async function routePendingConsent(
  * The same wrapper also routes requiresConsent envelopes through out-of-band elicitation
  * (routePendingConsent), so every consent-gated tool inherits it with zero per-tool changes.
  */
+// Job kinds that never touch the device (host-side build / conversion); everything else a job
+// runs (test_this, explore, test_feature, boot+install) drives the session's device.
+const HOST_ONLY_JOB_PREFIXES = ['build:', 'bundletool:'];
+/** Tools that DRIVE the device or the app on it (tap/type/swipe, install/launch/stop, boot/erase,
+ * orientation/location/network, recorder, WDA/Metro wiring, or start a job that does). Explicit
+ * allowlist: the readOnlyHint test also warned for tools that never touch the device (qa_note,
+ * qa_generate, qa_suite_*, qa_app_map_*, qa_issue_log, qa_build...). Observation-only device
+ * tools (qa_snapshot, qa_screenshot, qa_device_info, qa_check_health, qa_flow_repair) are left
+ * out: they do not change what the job sees. Exported for tests. */
+export const DEVICE_DRIVING_TOOLS: ReadonlySet<ToolName> = new Set<ToolName>([
+  'qa_test_this',
+  'qa_continue_from_blocker',
+  'qa_prepare_target',
+  'qa_prepare_ios_target',
+  'qa_ios',
+  'qa_wda',
+  'qa_orientation',
+  'qa_geolocation',
+  'qa_network',
+  'qa_metro',
+  'qa_app_control',
+  'qa_screen_record',
+  'qa_act',
+  'qa_clear_overlay',
+  'qa_visual',
+  'qa_smoke',
+  'qa_explore',
+  'qa_test_feature',
+  'qa_flow_run',
+  'qa_first_run',
+  'qa_mobile_audit',
+]);
+
+/** Advisory note (never a block) when a device-driving tool is called on a session whose
+ * background job is still driving the same device: the two can interleave taps/installs.
+ * Exported for tests. */
+export function runningJobNote(sessions: SessionStore, tool: string, sessionId: string | undefined): string | undefined {
+  if (!sessionId || !DEVICE_DRIVING_TOOLS.has(tool as ToolName)) return undefined;
+  const s = sessions.get(sessionId);
+  if (!s) return undefined;
+  for (const j of s.jobs.values()) {
+    if (j.status !== 'running' || HOST_ONLY_JOB_PREFIXES.some((p) => j.kind.startsWith(p))) continue;
+    return `job ${j.jobId} is still driving this device; actions may interleave. Poll qa_job_status or qa_job_cancel first.`;
+  }
+  return undefined;
+}
+
+/** qaAnnotate, but keeps any notes the tool already put in structuredContent.notes. */
+function annotateKeepingNotes(result: CallToolResult, note: string): CallToolResult {
+  const prior = (result.structuredContent as { notes?: unknown } | undefined)?.notes;
+  const out = qaAnnotate(result, [note]);
+  if (Array.isArray(prior)) out.structuredContent = { ...out.structuredContent, notes: [...prior, note] };
+  return out;
+}
+
+/** One debug line per tool call (SWIPIUM_LOG_LEVEL=debug). Metadata only: argument values can
+ * carry secrets and are never logged. */
+function logToolCall(
+  tool: string,
+  sessionId: string | undefined,
+  startedAt: number,
+  out: CallToolResult | undefined,
+  signal: AbortSignal | undefined,
+): void {
+  if (!logEnabled('debug')) return;
+  const sc = out?.structuredContent as { failureCode?: unknown } | undefined;
+  const failureCode = typeof sc?.failureCode === 'string' ? sc.failureCode : undefined;
+  log('debug', 'tool call', {
+    tool,
+    ...(sessionId ? { sessionId } : {}),
+    durationMs: Date.now() - startedAt,
+    isError: out ? out.isError === true : true,
+    ...(out ? {} : { threw: true }),
+    ...(failureCode ? { failureCode } : {}),
+    cancelled: signal?.aborted === true || failureCode === 'CANCELLED',
+  });
+}
+
 function installResponseModeWrapper(
   server: McpServer,
   sessions: SessionStore,
@@ -302,10 +421,18 @@ function installResponseModeWrapper(
         );
         return annotateRootSource(value, resolved);
       };
-      const result = await run(a);
-      const out = await routePendingConsent(result, a, run, { sessions, tool: name });
-      recordToolErrorFromResult(sessions, name, a[0], out, callSignal); // qa_report tool status (report/toolHealth.ts)
-      return out;
+      // Checked BEFORE the call so a tool that starts its own job never warns about itself.
+      const jobNote = runningJobNote(sessions, name, first?.sessionId);
+      const startedAt = Date.now();
+      let out: CallToolResult | undefined;
+      try {
+        const result = await run(a);
+        out = (await routePendingConsent(result, a, run, { sessions, tool: name })) as CallToolResult;
+        recordToolErrorFromResult(sessions, name, a[0], out, callSignal); // qa_report tool status (report/toolHealth.ts)
+        return jobNote ? annotateKeepingNotes(out, jobNote) : out;
+      } finally {
+        logToolCall(name, first?.sessionId, startedAt, out, callSignal);
+      }
     });
   };
 }
@@ -376,41 +503,142 @@ export function unknownArgumentKeys(args: Record<string, unknown> | undefined, a
   return Object.keys(args).filter((k) => !known.has(k));
 }
 
+/** Longest argument key name / validation path echoed back in an error (a key name is caller input). */
+export const MAX_ECHOED_KEY_CHARS = 100;
+/** Most unknown keys / validation issues listed individually in an error. */
+const MAX_ECHOED_KEYS = 20;
+
+function echoKey(k: string): string {
+  return k.length > MAX_ECHOED_KEY_CHARS ? `${k.slice(0, MAX_ECHOED_KEY_CHARS)}...[${k.length} chars]` : k;
+}
+
 export function unknownArgumentsError(name: string, unknown: string[], accepted: readonly string[]): CallToolResult {
+  const shown = unknown.slice(0, MAX_ECHOED_KEYS).map(echoKey);
+  const more = unknown.length > shown.length ? ` (+${unknown.length - shown.length} more)` : '';
   const list = (keys: readonly string[]) => keys.map((k) => JSON.stringify(k)).join(', ');
   return qaError(
     {
-      what: `${name} does not accept the argument${unknown.length === 1 ? '' : 's'} ${list(unknown)}. Nothing was run.`,
+      what: `${name} does not accept the argument${unknown.length === 1 ? '' : 's'} ${list(shown)}${more}. Nothing was run.`,
       changedState: false,
       retrySafe: true,
       failureCode: 'INVALID_ARGUMENT',
       nextSteps: [
-        `Remove ${list(unknown)} and re-call. Accepted parameters: ${accepted.length ? list(accepted) : '(none)'}.`,
+        `Remove ${list(shown)}${more} and re-call. Accepted parameters: ${accepted.length ? list(accepted) : '(none)'}.`,
         'If the tool list looks outdated, restart the MCP client so it reloads the current schemas.',
       ],
     },
-    { unknownArguments: unknown, acceptedParameters: [...accepted] },
+    { unknownArguments: shown, ...(more ? { unknownArgumentCount: unknown.length } : {}), acceptedParameters: [...accepted] },
+  );
+}
+
+/** JSON-RPC code for "resource not found" (MCP spec 2025-11-25; the SDK enum has no name for it). */
+export const RESOURCE_NOT_FOUND = -32002;
+
+/** resources/read for a URI that matches a template but names nothing that exists: a typed
+ * -32002 (with the URI in `data`) instead of the SDK's generic -32603 for a plain Error. */
+export function resourceNotFound(uri: string, why: string): McpError {
+  return new McpError(RESOURCE_NOT_FOUND, `Resource not found: ${uri}: ${why}`, { uri });
+}
+
+const SDK_VALIDATION_PREFIX = /^MCP error -32602: Input validation error:\s*(?:Invalid arguments for tool \S+:\s*)?/;
+
+/** Per-field summary of the SDK's zod validation message (a JSON array of zod issues in zod 3),
+ * e.g. "sessionId: Required; target: Expected string, received number". Falls back to the raw
+ * message (trimmed) when it is not an issue list. Exported for tests. */
+/** A zod message can quote caller input (record keys, unrecognized keys). */
+function capIssueMessage(m: string): string {
+  return m.length > 300 ? `${m.slice(0, 300)}...` : m;
+}
+
+function issueWhat(issues: ReadonlyArray<{ path: string; message: string }>, total: number): string {
+  const more = total > issues.length ? `; (+${total - issues.length} more)` : '';
+  return issues.map((i) => `${i.path}: ${i.message}`).join('; ') + more;
+}
+
+export function summarizeValidationIssues(message: string): { what: string; issues: Array<{ path: string; message: string }> } {
+  const body = message.replace(SDK_VALIDATION_PREFIX, '').trim();
+  try {
+    const parsed = JSON.parse(body) as unknown;
+    if (Array.isArray(parsed) && parsed.length) {
+      const issues = parsed.slice(0, MAX_ECHOED_KEYS).map((i: { path?: unknown[]; message?: unknown }) => ({
+        path: Array.isArray(i?.path) && i.path.length ? echoKey(i.path.map(String).join('.')) : '(arguments)',
+        message: capIssueMessage(String(i?.message ?? 'invalid')),
+      }));
+      return { what: issueWhat(issues, parsed.length), issues };
+    }
+  } catch {
+    // not JSON: SDK >= 1.32 prints one "<message> at <path>" line per issue
+  }
+  const lines = body
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const atLines = lines.map((l) => /^(.*\S) at ([\w.[\]-]+)$/.exec(l));
+  if (atLines.length && atLines.every(Boolean)) {
+    const issues = atLines.slice(0, MAX_ECHOED_KEYS).map((m) => ({ path: echoKey(m![2]), message: capIssueMessage(m![1]) }));
+    return { what: issueWhat(issues, atLines.length), issues };
+  }
+  const what = body.length > 300 ? `${body.slice(0, 300)}...` : body;
+  return { what, issues: [] };
+}
+
+/** The SDK reports schema validation failures as an isError result with only a raw text block
+ * ("MCP error -32602: Input validation error: ..." + a zod dump). Rewrite that into the typed
+ * INVALID_ARGUMENT envelope every other Swipium error uses; anything else passes through. */
+export function validationErrorEnvelope(name: string, result: CallToolResult, accepted: readonly string[] | undefined): CallToolResult {
+  if (!result?.isError || result.structuredContent) return result;
+  const first = result.content?.[0];
+  const text = first && first.type === 'text' ? String(first.text) : '';
+  if (!SDK_VALIDATION_PREFIX.test(text)) return result;
+  const { what, issues } = summarizeValidationIssues(text);
+  const list = (keys: readonly string[]) => keys.map((k) => JSON.stringify(k)).join(', ');
+  return qaError(
+    {
+      what: `${name}: invalid arguments: ${what}. Nothing was run.`,
+      changedState: false,
+      retrySafe: true,
+      failureCode: 'INVALID_ARGUMENT',
+      nextSteps: [
+        `Fix the listed argument(s) and re-call.${accepted ? ` Accepted parameters: ${accepted.length ? list(accepted) : '(none)'}.` : ''}`,
+        'If the tool list looks outdated, restart the MCP client so it reloads the current schemas.',
+      ],
+    },
+    { invalidArguments: issues, ...(accepted ? { acceptedParameters: [...accepted] } : {}) },
   );
 }
 
 /** tools/call: unknown removed-tool names and legacy call shapes > STALE_CLIENT (with the
  * replacement + stale-client hint); undeclared top-level arguments > INVALID_ARGUMENT (before the
- * handler runs); tools/list: strip `$schema`. */
+ * handler runs); SDK schema-validation failures > INVALID_ARGUMENT envelope (after); unknown tool
+ * names stay the SDK's protocol error; tools/list: strip `$schema`. */
 function installProtocolShims(server: McpServer, paramNames: ReadonlyMap<string, readonly string[]>): void {
   wrapRequestHandler(server, 'tools/call', (orig) => async (request, extra) => {
     const name = String(request?.params?.name ?? '');
     const args = request?.params?.arguments as Record<string, unknown> | undefined;
+    const startedAt = Date.now();
+    // Envelopes built here never reach the tool wrapper (the handler did not run): still log the
+    // debug tool-call line for them. Session ids are caller input here: only a sane string is logged.
+    const rejected = (out: CallToolResult): CallToolResult => {
+      const sid = typeof args?.sessionId === 'string' && args.sessionId.length <= 64 ? args.sessionId : undefined;
+      logToolCall(name.slice(0, 100), sid, startedAt, out, undefined);
+      return out;
+    };
     const replacement = staleClientReplacement(name, args);
-    if (replacement && !TOOL_NAME_SET.has(name)) return staleClientError(name, replacement);
+    if (replacement && !TOOL_NAME_SET.has(name)) return rejected(staleClientError(name, replacement));
     const accepted = paramNames.get(name);
     if (accepted && !replacement) {
       const unknown = unknownArgumentKeys(args, accepted);
-      if (unknown.length) return unknownArgumentsError(name, unknown, accepted);
+      if (unknown.length) return rejected(unknownArgumentsError(name, unknown, accepted));
     }
     const result = (await orig(request, extra)) as CallToolResult;
     // Legacy enum values fail the CURRENT schema's validation > rewrite that raw error only.
     if (replacement && result?.isError && !result.structuredContent)
-      return staleClientError(`${name} ${JSON.stringify(args?.action ?? args?.for)}`, replacement);
+      return rejected(staleClientError(`${name} ${JSON.stringify(args?.action ?? args?.for)}`, replacement));
+    // Schema validation failures (missing/wrong-typed args) > typed INVALID_ARGUMENT envelope.
+    if (TOOL_NAME_SET.has(name)) {
+      const envelope = validationErrorEnvelope(name, result, accepted);
+      return envelope === result ? result : rejected(envelope);
+    }
     return result;
   });
   wrapRequestHandler(server, 'tools/list', (orig) => async (request, extra) => stripSchemaDialect(await orig(request, extra)));
@@ -518,6 +746,7 @@ export function createServer(): ServerContext {
   // model-mediated re-call. The provider checks client capabilities lazily per call,
   // since they are only known after `initialize` (long after tool registration).
   setElicitationProvider(makeElicitationProvider(server));
+  warnIgnoredPreapprovals(); // SWIPIUM_CONSENT_PREAPPROVE: one stderr line for ignored names
   const sessions = new SessionStore();
   const surface: ToolSurfaceEntry[] = [];
   const attemptedToolNames = new Set<string>();
@@ -609,12 +838,14 @@ export function createServer(): ServerContext {
     { title: 'QA artifact', description: 'Session artifacts: screenshots, dumps, reports, logs.' },
     async (uri) => {
       const found = sessions.findArtifact(uri.href);
-      if (!found) throw new Error(`Unknown artifact ${uri.href}`);
-      const { rec } = found;
-      if (rec.mime.startsWith('image/')) {
-        return { contents: [{ uri: uri.href, mimeType: rec.mime, blob: readFileSync(rec.path).toString('base64') }] };
+      if (!found) throw resourceNotFound(uri.href, 'unknown artifact (check the URI, or list artifacts via resources/list or qa_report)');
+      try {
+        // Size-capped: big text returns head/tail + marker, big binaries are not inlined.
+        return readArtifactResource(uri.href, found.rec);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'ENOENT') throw resourceNotFound(uri.href, 'the artifact file is gone (cleaned up?)');
+        throw e;
       }
-      return { contents: [{ uri: uri.href, mimeType: rec.mime, text: readFileSync(rec.path, 'utf8') }] };
     },
   );
 
@@ -635,10 +866,10 @@ export function createServer(): ServerContext {
     async (uri, vars) => {
       const projectId = decodeUriSegment(String(vars.projectId));
       const root = resolveAppMapRoot(projectId, sessions);
-      if (!root) throw new Error(`Unknown project ${projectId} (build the map first)`);
+      if (!root) throw resourceNotFound(uri.href, `unknown project ${projectId} (build the map first with qa_app_map_build)`);
       const kind = vars.kind ? decodeUriSegment(String(vars.kind)) : undefined;
       const res = readAppMapResource(root, { kind, id: vars.id ? decodeUriSegment(String(vars.id)) : undefined });
-      if (!res) throw new Error(`No app-map resource for ${uri.href}`);
+      if (!res) throw resourceNotFound(uri.href, 'no such app-map section (list ids with qa_app_map_read)');
       return { contents: [{ uri: uri.href, mimeType: res.mimeType, text: res.text }] };
     },
   );
@@ -652,9 +883,9 @@ export function createServer(): ServerContext {
     async (uri, vars) => {
       const projectId = decodeUriSegment(String(vars.projectId));
       const root = resolveAppMapRoot(projectId, sessions);
-      if (!root) throw new Error(`Unknown project ${projectId} (build the map first)`);
+      if (!root) throw resourceNotFound(uri.href, `unknown project ${projectId} (build the map first with qa_app_map_build)`);
       const res = readAppMapResource(root, {});
-      if (!res) throw new Error(`No app map for ${uri.href}`);
+      if (!res) throw resourceNotFound(uri.href, 'no app map on disk for this project (build it with qa_app_map_build)');
       return { contents: [{ uri: uri.href, mimeType: res.mimeType, text: res.text }] };
     },
   );
@@ -686,8 +917,12 @@ export async function startServer(): Promise<void> {
     if (restoring) return;
     restoring = true;
     const changed = sessions.list().filter((s) => s.network?.changed).length;
-    log('info', 'shutdown: restoring network', { why, changed });
+    // Cancel every running job FIRST: a job left running could flip device network state (or
+    // anything else) back after the restore below.
+    const cancelledJobs = cancelAllRunningJobs(sessions);
+    log('info', 'shutdown: restoring network', { why, changed, cancelledJobs });
     try {
+      if (cancelledJobs) await new Promise((r) => setImmediate(r)); // let aborted workers unwind
       await restoreAllNetwork(sessions);
       await stopAllRecordings(); // don't leave a device screen-recording after we exit
       await stopAllMetro(sessions); // don't leave a node bundler holding :8081 after we exit
@@ -714,6 +949,10 @@ export async function startServer(): Promise<void> {
     sdkOnClose?.();
     void restoreThenExit(0, 'transport-close');
   };
+  // The SDK's StdioServerTransport (1.29 to 1.32) never listens for stdin 'end', so onclose above
+  // does not fire on EOF and an in-flight call (a 30 s qa_wait, a long job) kept the process
+  // alive after the client was gone. Treat EOF as the disconnect it is.
+  process.stdin.once('end', () => void restoreThenExit(0, 'stdin-end'));
   log('info', 'swipium connected over stdio');
   // Reap long-lived children (Metro, managed WDA, recorders) left behind by a crashed previous
   // server run. Runs AFTER connect and in the background, so a slow sweep (lock wait, WDA /status
@@ -722,6 +961,23 @@ export async function startServer(): Promise<void> {
   // WDA < 12 h old whose /status is healthy is ADOPTED instead (re-owned by this server) so a
   // resumed iOS session keeps its WDA (shutdown intentionally leaves managed WDA running).
   void startOrphanSweep();
+}
+
+/** Shutdown: cancel (abort) every running job in every session. Returns how many were cancelled.
+ *  Exported for tests. */
+export function cancelAllRunningJobs(sessions: Pick<SessionStore, 'list' | 'cancelJob'>): number {
+  let n = 0;
+  for (const s of sessions.list()) {
+    for (const j of [...(s.jobs?.values() ?? [])]) {
+      if (j.status !== 'running') continue;
+      try {
+        if (sessions.cancelJob(s, j.jobId)) n++;
+      } catch (e) {
+        log('warn', 'shutdown: cancel job failed', { sessionId: s.id, jobId: j.jobId, err: String(e) });
+      }
+    }
+  }
+  return n;
 }
 
 /** Background orphan sweep; never rejects. Exported for tests. */

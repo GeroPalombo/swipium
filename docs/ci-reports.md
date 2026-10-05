@@ -198,7 +198,7 @@ JSON
 claude --bare -p "You are running unattended in CI. An Android emulator is booted and $APP_ID is installed.
 Use only the swipium MCP tools. Always pass projectRoot=\"$GITHUB_WORKSPACE\" where a tool accepts it.
 1. qa_start_session { projectRoot, profile: \"full_smoke\" }.
-2. qa_prepare_target { sessionId, appId: \"$APP_ID\" }. If it returns a jobId, poll qa_job_status { sessionId, jobId, waitMs: 60000 } until it is no longer running.
+2. qa_prepare_target { sessionId, appId: \"$APP_ID\" }. If it returns a jobId, poll qa_job_status { sessionId, jobId, waitMs: 45000 } until it is no longer running.
 3. qa_smoke { sessionId }.
 4. If any result is requiresConsent, CONSENT_*, needs_input or blocked, do not try to work around it: record it with qa_note and go to step 5.
 5. qa_report { sessionId, format: \"summary\" } so the report is saved, then stop." \

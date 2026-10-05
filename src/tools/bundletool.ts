@@ -20,9 +20,9 @@ export function registerBundletool(server: McpServer, sessions: SessionStore): v
     {
       title: 'Convert .aab > installable .apk',
       description:
-        'Convert an .aab (not directly installable) into an installable APK with bundletool, cached under .swipium/artifacts/, before ' +
-        'qa_prepare_target. Default: a universal .apk (debug keystore). connectedDevice:true builds a device-specific APK set; ' +
-        'install:true also installs it (consent-gated). Runs as a job; typed blockers (BUNDLETOOL_MISSING, AAB_BUILD_APKS_FAILED, …).',
+        'Convert an .aab into an installable APK with bundletool (cached in .swipium/artifacts/) before qa_prepare_target. ' +
+        'Default: a universal APK; connectedDevice:true builds a device APK set, install:true installs it (consent-gated). ' +
+        'Runs as a job.',
       inputSchema: {
         sessionId: z.string(),
         aab: z.string().optional().describe('Default: the best .aab in the project.'),

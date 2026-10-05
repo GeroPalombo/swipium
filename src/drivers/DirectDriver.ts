@@ -6,7 +6,7 @@
 // React Native custom inputs that don't respond to programmatic clicks.
 
 import { run, runBinary } from '../lib/spawn.js';
-import { currentSignal } from '../lib/abortScope.js';
+import { currentSignal, isAbortError, sleepOrCancel } from '../lib/abortScope.js';
 import { adbDevices } from '../lib/android.js';
 import type { DumpOptions, Driver, ImeState, TextDeliverability } from './Driver.js';
 
@@ -358,13 +358,15 @@ export class DirectDriver implements Driver {
         }
         lastErr = r.stdout.trim() || r.stderr.trim();
       } catch (e) {
+        // Cancelled: rethrow at once (still an AbortError for isAbortError) instead of retrying.
+        if (isAbortError(e)) throw e;
         lastErr = String(e);
       }
       if (attempt + 1 >= ATTEMPTS || (deadline !== undefined && deadline - Date.now() <= 400)) {
         attempt++;
         break;
       }
-      await new Promise((res) => setTimeout(res, 400));
+      await sleepOrCancel(400);
     }
     throw new Error(`uiautomator dump failed after ${attempt} attempt(s): ${lastErr}`);
   }

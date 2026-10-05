@@ -2,7 +2,7 @@
 //
 // Default = PREVIEW the exact registration (safe, no mutation). `--apply` executes it by
 // DELEGATING to the client's own CLI where that is the documented path (claude/gemini
-// `mcp add`), writing Codex's ~/.codex/config.toml (so the block carries cwd + timeouts, which
+// `mcp add`), writing Codex's ~/.codex/config.toml (so the block carries cwd, timeouts and env_vars, which
 // `codex mcp add` cannot set), or merging a project file for Cursor (.cursor/mcp.json) and
 // VS Code (.vscode/mcp.json). After a successful apply it runs `verify` (the server starts +
 // tools inject).
@@ -16,12 +16,14 @@
 // NOTE: this is the CLI path, not the MCP server, so writing to stdout is fine here.
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, appendFileSync, mkdirSync, writeFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, appendFileSync, mkdirSync, writeFileSync, statSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve, join } from 'node:path';
+import { dirname, resolve, join, delimiter } from 'node:path';
 import { runVerify } from './verify.js';
 import { initFlowTemplates } from '../flows/templates.js';
+import { codexEnvVarsLine } from '../lib/codexEnv.js';
+import { CAPABILITY_GROUPS } from '../core/capabilityGroups.js';
 
 const SELF = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'index.js'); // dist/index.js
 
@@ -43,6 +45,46 @@ export function serverCommand(portable: boolean, node: string = process.execPath
   return { command: node, args: [self] };
 }
 
+export interface StableNodeDeps {
+  exists?: (p: string) => boolean;
+  realpath?: (p: string) => string;
+  pathEnv?: string;
+  platform?: NodeJS.Platform;
+}
+
+/**
+ * A node path that survives upgrades. Homebrew's process.execPath is the versioned Cellar path
+ * (/opt/homebrew/Cellar/node@20/20.19.6/bin/node), which disappears on `brew upgrade`. Prefer:
+ * 1. the Homebrew `opt` symlink for that formula ($prefix/opt/<formula>/bin/node) when it exists;
+ * 2. the first `node` on PATH that resolves (realpath) to this same binary;
+ * 3. execPath itself.
+ */
+export function stableNodePath(execPath: string = process.execPath, deps: StableNodeDeps = {}): string {
+  const exists = deps.exists ?? existsSync;
+  const realpath = deps.realpath ?? ((p: string) => realpathSync(p));
+  const real = (p: string): string | null => {
+    try {
+      return realpath(p);
+    } catch {
+      return null;
+    }
+  };
+  const cellar = /^(.*)\/Cellar\/([^/]+)\/[^/]+\/bin\/node$/.exec(execPath);
+  if (cellar) {
+    const opt = `${cellar[1]}/opt/${cellar[2]}/bin/node`;
+    if (exists(opt)) return opt;
+  }
+  const self = real(execPath) ?? execPath;
+  const win = (deps.platform ?? process.platform) === 'win32';
+  for (const dir of (deps.pathEnv ?? process.env.PATH ?? '').split(win ? ';' : delimiter)) {
+    if (!dir) continue;
+    const cand = join(dir, win ? 'node.exe' : 'node');
+    if (cand === execPath) return execPath;
+    if (exists(cand) && real(cand) === self) return cand;
+  }
+  return execPath;
+}
+
 /** A delegated CLI registration succeeded only if it both ran and exited 0. */
 export function applyOk(r: { error?: unknown; status: number | null }): boolean {
   return !r.error && r.status === 0;
@@ -54,8 +96,48 @@ export function geminiBlock(node: string, cwd: string, self: string = SELF): str
   return `  "swipium": { "command": ${JSON.stringify(c.command)}, "args": ${JSON.stringify(c.args)}, "cwd": ${JSON.stringify(cwd)}, "timeout": 600000 }`;
 }
 
+/** Capability groups a lean Codex profile keeps (shown commented out; no filter by default). */
+export const CODEX_CORE_GROUPS = ['start', 'setup', 'build', 'drive', 'run'] as const;
+
+/** Tools outside the core groups that the server instructions, qa_status orientation or
+ *  nextBestAction point to: a lean profile must still expose them (test/cliInit.test.ts). */
+export const CODEX_CORE_EXTRA_TOOLS = [
+  'qa_metro',
+  'qa_app_control',
+  'qa_app_map_read',
+  'qa_app_map_query',
+  'qa_app_map_feature_scope',
+  'qa_test_feature',
+  'qa_flow_run',
+  'qa_generate',
+] as const;
+
+/** Tool names in the core groups (+ the extras above), for the optional `enabled_tools` comment line. */
+export function codexCoreTools(): string[] {
+  const core = CAPABILITY_GROUPS.filter((g) => (CODEX_CORE_GROUPS as readonly string[]).includes(g.group)).flatMap((g) => g.tools);
+  return [...core, ...CODEX_CORE_EXTRA_TOOLS.filter((t) => !core.includes(t))];
+}
+
+const CODEX_BLOCK_HEADER = /^[ \t]*\[mcp_servers\.(?:"swipium"|swipium)\][ \t]*(?:#.*)?$/m;
+
+/** The existing [mcp_servers.swipium] table in a config.toml (header to the next table), or null. */
+export function findCodexServerBlock(toml: string): string | null {
+  const m = CODEX_BLOCK_HEADER.exec(toml);
+  if (!m) return null;
+  const rest = toml.slice(m.index + m[0].length);
+  const next = /^[ \t]*\[/m.exec(rest);
+  return m[0] + (next ? rest.slice(0, next.index) : rest);
+}
+
+/** True when that table already sets env_vars. */
+export function codexBlockHasEnvVars(block: string): boolean {
+  return /^[ \t]*env_vars[ \t]*=/m.test(block);
+}
+
 /** Codex keeps servers in ~/.codex/config.toml; its defaults (10 s startup, 60 s per tool) are too
- *  short for `npx` first runs and for device work (builds, boots, flows). */
+ *  short for `npx` first runs and for device work (builds, boots, flows). Codex also does not pass
+ *  the parent env to stdio servers (only a fixed whitelist), so `env_vars` forwards the names
+ *  Swipium reads (test credentials, SWIPIUM_* config, ANDROID_HOME, JAVA_HOME...). */
 export function codexBlock(node: string, cwd: string, self: string = SELF): string {
   const c = serverCommand(false, node, self);
   return [
@@ -65,6 +147,15 @@ export function codexBlock(node: string, cwd: string, self: string = SELF): stri
     `cwd = ${JSON.stringify(cwd)}`,
     'startup_timeout_sec = 30',
     'tool_timeout_sec = 600',
+    '# Codex only passes HOME, PATH, SHELL, USER, TMPDIR, LANG... to MCP servers; forward the rest by name',
+    '# (add any custom SWIPIUM_* flow variables and ORG_GRADLE_PROJECT_* signing vars you use).',
+    '# Literal values go in env = { NAME = "value" }. Approval grants (SWIPIUM_CONSENT_PREAPPROVE,',
+    '# SWIPIUM_ALLOW_REMOTE_WDA) are deliberately not forwarded: set them literally in env if you want them.',
+    codexEnvVarsLine(),
+    '# Optional: expose only the core tools to keep the tool list small (uncomment to enable).',
+    `# enabled_tools = [${codexCoreTools()
+      .map((t) => JSON.stringify(t))
+      .join(', ')}]`,
   ].join('\n');
 }
 
@@ -198,7 +289,7 @@ export async function runInit(args: string[]): Promise<void> {
   const apply = args.includes('--apply');
   const scopeIdx = args.indexOf('--scope');
   const scope = scopeIdx >= 0 ? (args[scopeIdx + 1] ?? 'local') : 'local';
-  const node = process.execPath;
+  const node = stableNodePath();
 
   if (client === 'flows') {
     const rootIdx = args.indexOf('--root');
@@ -271,20 +362,30 @@ export async function runInit(args: string[]): Promise<void> {
       process.stdout.write(`Preview (run with --apply):\n  gemini ${cmd.join(' ')}\nor ${manual}\n`);
     }
   } else if (client === 'codex') {
-    // Written to config.toml directly (rather than `codex mcp add`) so the block carries cwd and
-    // longer startup/tool timeouts, which `codex mcp add` has no flags for.
-    const cfg = join(homedir(), '.codex', 'config.toml');
+    // Written to config.toml directly (rather than `codex mcp add`) so the block carries cwd,
+    // longer startup/tool timeouts and env_vars, which `codex mcp add` has no flags for.
+    // Codex itself honours CODEX_HOME (default ~/.codex).
+    const cfg = join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'config.toml');
     const block = codexBlock(node, cwd);
     const c = serverCommand(false, node);
-    const alt = `  codex mcp add swipium --env SWIPIUM_PROJECT_ROOT=${cwd} -- ${[c.command, ...c.args].join(' ')}\n  (then add startup_timeout_sec = 30 and tool_timeout_sec = 600 under [mcp_servers.swipium] in ${cfg})`;
+    const alt =
+      `  codex mcp add swipium --env SWIPIUM_PROJECT_ROOT=${cwd} -- ${[c.command, ...c.args].join(' ')}\n` +
+      `  (--env only sets literal values; then add startup_timeout_sec = 30, tool_timeout_sec = 600 and the env_vars line\n` +
+      `  under [mcp_servers.swipium] in ${cfg}: env_vars is config-only, and without it your shell exports never reach Swipium)`;
     const caveat =
       '⚠ Codex Desktop threads may not expose tools from custom stdio MCP servers (openai/codex#19425, open). If the tools are missing in the Desktop app, try the Codex CLI.\n';
     if (apply) {
       if (refuseMissingCwd()) return;
       mkdirSync(dirname(cfg), { recursive: true });
       const cur = existsSync(cfg) ? readFileSync(cfg, 'utf8') : '';
-      if (cur.includes('[mcp_servers.swipium]')) {
-        process.stdout.write(`Already present in ${cfg} (left unchanged). Expected block:\n${block}\n`);
+      const existing = findCodexServerBlock(cur);
+      if (existing !== null) {
+        process.stdout.write(
+          codexBlockHasEnvVars(existing)
+            ? `Already present in ${cfg} (left unchanged). Expected block (check it has env_vars and tool_timeout_sec):\n${block}\n`
+            : `Already present in ${cfg} (left unchanged), but it has no env_vars, so your shell exports never reach Swipium.\n` +
+                `Add this line under [mcp_servers.swipium]:\n${codexEnvVarsLine()}\n`,
+        );
       } else {
         appendFileSync(cfg, `\n${block}\n`);
         process.stdout.write(`Appended to ${cfg}\n`);

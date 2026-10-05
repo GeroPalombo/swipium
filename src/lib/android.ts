@@ -5,6 +5,7 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { run } from './spawn.js';
+import { CancelledError, currentSignal, isAbortError, sleepOrCancel, throwIfCancelled } from './abortScope.js';
 import { registerManagedProcess } from '../session/processRegistry.js';
 import type { FailureCode } from '../oracle/failures.js';
 
@@ -311,22 +312,28 @@ export function fmtBytes(n: number | null): string {
   return `${v.toFixed(1)} ${u[i]}`;
 }
 
-/** Wait until sys.boot_completed === 1 (or timeout). */
+/** Wait until sys.boot_completed === 1 (or timeout). Honors the current call's cancellation
+ *  (abortScope): the adb children are killed and CancelledError is thrown instead of polling on
+ *  until the deadline. */
 export async function waitForBoot(serial: string, timeoutMs = 180000): Promise<boolean> {
+  const signal = currentSignal();
   const deadline = Date.now() + timeoutMs;
   try {
-    await run('adb', ['-s', serial, 'wait-for-device'], { timeoutMs });
-  } catch {
+    await run('adb', ['-s', serial, 'wait-for-device'], { timeoutMs, signal });
+  } catch (e) {
+    if (isAbortError(e, signal)) throw new CancelledError();
     /* keep polling below */
   }
   while (Date.now() < deadline) {
+    throwIfCancelled(signal);
     try {
-      const r = await run('adb', ['-s', serial, 'shell', 'getprop', 'sys.boot_completed'], { timeoutMs: 5000 });
+      const r = await run('adb', ['-s', serial, 'shell', 'getprop', 'sys.boot_completed'], { timeoutMs: 5000, signal });
       if (r.stdout.trim() === '1') return true;
-    } catch {
+    } catch (e) {
+      if (isAbortError(e, signal)) throw new CancelledError();
       /* not up yet */
     }
-    await new Promise((res) => setTimeout(res, 2000));
+    await sleepOrCancel(Math.min(2000, Math.max(0, deadline - Date.now())), signal);
   }
   return false;
 }

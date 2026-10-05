@@ -17,9 +17,8 @@ export function registerResolveArtifact(server: McpServer, sessions: SessionStor
     {
       title: 'Resolve a build artifact',
       description:
-        'Find the best installable build (.apk/.aab/.ipa/.app): searches Gradle/Flutter/Xcode outputs (DerivedData opt-in). ' +
-        'Returns ranked candidates (build type, installability, app id, ABIs, warnings) and the exact locations searched; ' +
-        'NO_BUILD_ARTIFACT / AAB_NEEDS_BUNDLETOOL / ARTIFACT_OUTSIDE_ROOT_REQUIRES_APPROVAL when relevant. Side-effect free.',
+        'Find the best installable build (.apk/.aab/.ipa/.app) in Gradle/Flutter/Xcode outputs. Returns ranked candidates ' +
+        '(build type, installability, app id, warnings) and the paths searched. Side-effect free.',
       inputSchema: {
         sessionId: z.string().optional().describe("Use this session's projectRoot if given."),
         projectRoot: z.string().optional().describe('Absolute path; else the usual root resolution.'),

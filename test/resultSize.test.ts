@@ -56,6 +56,82 @@ describe('result text size (normal mode)', () => {
     const compact = runWithResponseMode('compact', () => qaOk(payload, 'sum', { textOmit: ['elements'] }));
     expect(textOf(compact)).toBe('sum');
     const normal = runWithResponseMode('normal', () => qaOk(payload, 'sum', { textOmit: ['elements'] }));
-    expect(normal.structuredContent).toEqual({ ok: true, ...payload });
+    expect(normal.structuredContent).toEqual({ summary: 'sum', ok: true, ...payload });
+  });
+});
+
+describe('error size cap', () => {
+  it('caps an echoed multi-MB `what`, keeping the head AND the tail (where exit codes live)', async () => {
+    const { qaError, MAX_ERROR_WHAT_CHARS } = await import('../src/lib/result.js');
+    const r = qaError({
+      what: `Unknown artifact ${'a'.repeat(4_000_000)} exit 1: INSTALL_FAILED_UPDATE_INCOMPATIBLE`,
+      changedState: false,
+      retrySafe: true,
+      nextSteps: [],
+    });
+    expect(JSON.stringify(r).length).toBeLessThan(MAX_ERROR_WHAT_CHARS * 4);
+    const what = String((r.structuredContent as { what: string }).what);
+    expect(what.startsWith('Unknown artifact aaa')).toBe(true);
+    expect(what).toMatch(/ \.\.\. \[\d+ chars cut\] \.\.\. /);
+    expect(what.endsWith('exit 1: INSTALL_FAILED_UPDATE_INCOMPATIBLE')).toBe(true);
+  });
+
+  it('caps nextSteps, clientHint and every string inside extra (nested, arrays); drops extra over 64 KB', async () => {
+    const { qaError, MAX_ERROR_PAYLOAD_CHARS } = await import('../src/lib/result.js');
+    const big = 'k'.repeat(2_000_000);
+    const r = qaError(
+      { what: 'x', changedState: false, retrySafe: true, nextSteps: [big, ...Array.from({ length: 100 }, () => 'step')], clientHint: big },
+      { echoed: big, nested: { list: [big, { deeper: big }] }, when: new Date(0) },
+    );
+    const sc = r.structuredContent as Record<string, unknown>;
+    expect(JSON.stringify(r).length).toBeLessThan(80_000);
+    expect((sc.nextSteps as string[]).length).toBe(20);
+    expect((sc.nextSteps as string[])[0].length).toBeLessThan(2100);
+    expect(String(sc.clientHint).length).toBeLessThan(2100);
+    expect(String(sc.echoed).length).toBeLessThan(8100);
+    expect(sc.when).toBe('1970-01-01T00:00:00.000Z');
+    const nested = sc.nested as { list: [string, { deeper: string }] };
+    expect(nested.list[0].length).toBeLessThan(8100);
+    expect(nested.list[1].deeper.length).toBeLessThan(8100);
+
+    // Many capped fields can still add up: the safety net drops extra and says so.
+    const many = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`f${i}`, big]));
+    const d = qaError({ what: 'x', changedState: false, retrySafe: true, nextSteps: [] }, many);
+    const ds = d.structuredContent as Record<string, unknown>;
+    expect(JSON.stringify(ds).length).toBeLessThan(MAX_ERROR_PAYLOAD_CHARS);
+    expect(ds.f0).toBeUndefined();
+    expect((ds.extraDropped as string[]).length).toBe(40);
+    expect(String(ds.extraDroppedNote)).toMatch(/dropped/);
+  });
+});
+
+// structuredContent is what Claude Code / Codex show the model. 2.1.2 added `summary` + `next` to
+// it; the default `headline` summary (first line) and skipping `next` when the payload has its own
+// guidance keep the growth vs the bare payload (2.1.1) small. HEAD size = current minus the
+// summary/next copies. Measured before this cap: qa_status (no session) +32%, qa_status (session)
+// +46-66%, qa_act tap +17%, qa_doctor +15%, qa_report +32-35%, qa_snapshot +13%.
+describe('structuredContent growth from summary/next stays small', () => {
+  const growth = (r: Awaited<ReturnType<typeof h.call>>) => {
+    const s = structured(r);
+    const cur = JSON.stringify(s).length;
+    const rest = { ...s };
+    if (typeof rest.summary === 'string') delete rest.summary;
+    if (Array.isArray(rest.next) && rest.next.every((x) => typeof x === 'string')) delete rest.next;
+    const head = JSON.stringify(rest).length;
+    return (cur - head) / head;
+  };
+
+  it('qa_status, qa_snapshot, qa_act, qa_doctor, qa_report: < 15% each', async () => {
+    const out: Record<string, number> = {};
+    out.statusNoSession = growth(await h.call('qa_status', {}));
+    const fake = new FakeDriver(buttonScreen('Home', 5));
+    const id = await h.start(fake);
+    out.statusSession = growth(await h.call('qa_status', { sessionId: id }));
+    out.snapshot = growth(await h.call('qa_snapshot', { sessionId: id }));
+    fake.onTap = () => (fake.xml = buttonScreen('Details', 5));
+    out.actTap = growth(await h.call('qa_act', { sessionId: id, action: 'tap', target: { text: 'Home item 3' } }));
+    out.doctor = growth(await h.call('qa_doctor', {}));
+    out.report = growth(await h.call('qa_report', { sessionId: id }));
+    for (const [k, v] of Object.entries(out)) expect(v, `${k} grew ${(v * 100).toFixed(1)}%`).toBeLessThan(0.15);
   });
 });

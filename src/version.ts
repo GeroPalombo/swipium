@@ -1,7 +1,7 @@
 // Single source of truth for the Swipium version and the public tool surface. Used by the
 // server identity, qa_doctor / qa_start_session, qa_status orientation, and `swipium verify`.
 
-export const SWIPIUM_VERSION = '2.0.1';
+export const SWIPIUM_VERSION = '2.1.2';
 
 export const TOOL_NAMES = [
   // Start: autopilot, orientation, polling, blockers, artifacts

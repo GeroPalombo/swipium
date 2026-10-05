@@ -45,18 +45,17 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
     {
       title: 'iOS simulator control',
       description:
-        'Control an iOS Simulator (macOS only). actions: list, boot (binds it to the session), install (.app, consent-gated), launch, ' +
-        'terminate, openurl (deep link), logs, privacy_reset (consent-gated), erase (consent-gated, wipes the simulator). Screenshots: ' +
-        'qa_screenshot; WebDriverAgent (structured tap/type/snapshot): qa_wda.',
+        'Control an iOS Simulator (macOS): list, boot (binds it to the session), install (.app), launch, terminate, openurl, ' +
+        'logs, privacy_reset, erase (wipes it). install, privacy_reset, and erase are consent-gated. Structured automation: qa_wda.',
       inputSchema: {
         sessionId: z.string(),
         action: z.enum(['list', 'boot', 'install', 'launch', 'terminate', 'openurl', 'logs', 'privacy_reset', 'erase']),
-        device: z.string().optional().describe('Simulator udid or name substring (for boot/erase).'),
-        app: z.string().optional().describe('Path to a .app bundle (for install); absolute or relative to the project root.'),
-        bundleId: z.string().optional().describe('App bundle id (for launch/terminate/privacy_reset).'),
-        url: z.string().optional().describe('Deep link (for openurl).'),
-        last: z.string().optional().describe('Time range for logs, e.g. 5m, 30m, 1h. Defaults to 5m.'),
-        service: z.string().optional().describe('Privacy service for privacy_reset (e.g. location, photos, camera, all).'),
+        device: z.string().optional().describe('boot/erase: simulator udid or name substring.'),
+        app: z.string().optional().describe('install: .app path (absolute or project-relative).'),
+        bundleId: z.string().optional().describe('launch/terminate/privacy_reset: bundle id.'),
+        url: z.string().optional().describe('openurl: deep link.'),
+        last: z.string().optional().describe('logs: time range, e.g. 30m (default 5m).'),
+        service: z.string().optional().describe('privacy_reset: service, e.g. location, photos, all.'),
         consentId: z.string().optional(),
         approve: z.boolean().optional(),
       },

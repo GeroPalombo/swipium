@@ -50,7 +50,7 @@ describe('public tool surface', () => {
       { inputSchema?: { properties?: Record<string, unknown> } } | undefined;
     await client.close();
 
-    expect(SWIPIUM_VERSION).toBe('2.0.1');
+    expect(SWIPIUM_VERSION).toBe('2.1.2');
     expect(TOOL_COUNT).toBe(TOOL_NAMES.length);
     expect(listed).toEqual([...TOOL_NAMES].sort());
     expect(doctor?.inputSchema?.properties?.platform).toBeTruthy();

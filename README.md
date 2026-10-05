@@ -30,7 +30,7 @@ Agent > qa_test_this { sessionId: "3f9c2a1b", mode: "execute", goal: "smoke" }
                                    • install_apk: adb install -r -g android/app/.../app-release.apk
 You:    Approve                                               (one prompt covers boot + install)
         state: "running", jobId: "a41c09e2"
-Agent > qa_job_status { sessionId: "3f9c2a1b", jobId: "a41c09e2", waitMs: 60000 }
+Agent > qa_job_status { sessionId: "3f9c2a1b", jobId: "a41c09e2", waitMs: 45000 }
         status: "done", result.state: "completed"
         reportSummary: "PASS app · COVERED coverage · PASS tool. Read swipium://session/3f9c2a1b/report/…"
 Agent:  The app launched and passed the smoke checks with no crashes or error screens.
@@ -166,6 +166,8 @@ Every tool carries MCP annotations: read-only tools declare `readOnlyHint:true` 
 
 Set these in the MCP server's `env` block (or your shell, for CLI commands). This is the complete list.
 
+**Codex** does not inherit your shell environment: a stdio MCP server only gets `HOME`, `PATH`, `SHELL`, `USER`, `TMPDIR`, `LANG` and a few more, so variables have to be forwarded by name in `env_vars = [...]` (or set literally in `env = {...}`) under `[mcp_servers.swipium]` in `~/.codex/config.toml`. `swipium init codex` writes an `env_vars` line that covers the variables below plus the toolchain ones Swipium's tools rely on (`JAVA_HOME`, Gradle, proxy, Android user dirs, CI). It deliberately leaves out `CLAUDE_PROJECT_DIR`, `SWIPIUM_DISABLE_DEVICE_DISCOVERY`, and the approval grants `SWIPIUM_CONSENT_PREAPPROVE`, `SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE` and `SWIPIUM_ALLOW_REMOTE_WDA`: set those literally in `env = {...}` so an inherited shell export or a per-directory env tool (direnv) in a cloned repo cannot grant approvals. Add your own custom `SWIPIUM_*` flow variables and `ORG_GRADLE_PROJECT_*` signing variables to the list. See [docs/mcp-server.md](docs/mcp-server.md#manual-configuration).
+
 | Variable | Purpose |
 | --- | --- |
 | `SWIPIUM_PROJECT_ROOT` | Absolute path of the app repository when the client provides no MCP roots. |
@@ -181,8 +183,11 @@ Set these in the MCP server's `env` block (or your shell, for CLI commands). Thi
 | `SWIPIUM_OCR_CMD` | OCR command for `qa_visual` `find_text` (none bundled; consent-gated). `{image}` becomes a PNG path; it prints `[{"text","confidence","bbox"}]` JSON. `ocrCommand` in `config.json` wins. |
 | `SWIPIUM_VISUAL_MASK_CMD` | Masks screenshots before OCR and visual providers see them (`visualMaskCommand` in config wins). |
 | `SWIPIUM_REQUIRE_ELICITATION=1` | Refuse every consent-gated action (`CONSENT_REFUSED`) when the client can't show a real consent prompt. |
+| `SWIPIUM_CONSENT_PREAPPROVE` | Comma-separated exact consent action names approved without a prompt (e.g. `prepare_plan,install_app,test_this_plan`), for headless clients such as `codex exec` or `claude -p` that answer prompts automatically. No wildcards; unknown names are ignored with a warning. Actions that run code also need `SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE=1`; `wda_non_loopback` is never accepted (use `SWIPIUM_ALLOW_REMOTE_WDA`). Read from the server process env (what your client passes; for Codex set it in the `env` table), never the repository. Each approval is logged at `warn`. See [Consent](docs/concepts.md#consent). |
+| `SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE` | `1` lets `SWIPIUM_CONSENT_PREAPPROVE` cover actions that run repository- or model-chosen code (`build_from_source`, `flow_mutation_run`, `ocr_run`, `seed_state`, `start_metro`, `suite_fresh_state_replay`, `wda_build`, `wda_start`, and a `test_this_plan` that includes a build). Under `codex exec` that code runs outside the client's sandbox. Trusted repositories only. |
 | `SWIPIUM_RETENTION_DAYS` | Age limit in days for `~/.swipium/runs` session directories (default 30). `0` or `off` disables the automatic prune; `swipium gc` still works. |
 | `SWIPIUM_RETENTION_KEEP` | Number of newest sessions per project always kept (default 20). |
+| `SWIPIUM_LOG_LEVEL` | Minimum stderr log level: `debug`, `info` (default), `warn`, or `error`. `debug` adds one line per tool call (tool, session, duration, error code; never argument values). |
 | `CI` | When set, reports label the run environment as CI. |
 | `SWIPIUM_DISABLE_DEVICE_DISCOVERY` | Test-suite isolation only: disables device auto-discovery. Not for normal use. |
 
@@ -236,7 +241,7 @@ Every error has a `failureCode`, `nextSteps`, and `retrySafe`. `qa_explain_block
 | `EXPO_PREBUILD_REQUIRED` | The Expo project has no native directories. | Run `npx expo prebuild`, then retry. |
 | `WDA_UNREACHABLE` | WebDriverAgent isn't running or answering. | `qa_wda {action:"status"}`, then `start` or `attach`. For a plain smoke check, use `goal:"smoke"`, which works visual-only. |
 | `BACKEND_UNSUPPORTED` | The action needs WDA (iOS visual-only mode). | Attach WDA with `qa_wda`, or use `qa_visual` and `qa_screenshot`. |
-| `CONSENT_DECLINED` / `CONSENT_CANCELLED` / `CONSENT_REFUSED` | Nothing ran: you declined, the prompt was dismissed or timed out, or `SWIPIUM_REQUIRE_ELICITATION=1` blocked it. | Re-call to get a fresh prompt if you want the action. |
+| `CONSENT_DECLINED` / `CONSENT_CANCELLED` / `CONSENT_REFUSED` | Nothing ran: you declined, the prompt was dismissed or timed out, or `SWIPIUM_REQUIRE_ELICITATION=1` blocked it. Headless clients answer prompts automatically. | Re-call to get a fresh prompt if you want the action. If `likelyAutomatic` is true (headless client), an operator can pre-approve the `action` with `SWIPIUM_CONSENT_PREAPPROVE`. |
 
 ## Security
 

@@ -128,7 +128,7 @@ Hints: **RO** read-only, **D** destructive, **I** idempotent write, blank for ot
 | `qa_screenshot` | drive |  |  | Screenshot artifact with coordinate-space metadata. |
 | `qa_note` | drive |  |  | Record a workflow outcome for the report. |
 | `qa_visual` | drive |  | yes | Screenshot checks: assert, baseline, diff, OCR find, image find. |
-| `qa_wait` | drive | RO |  | Wait for `device_online` or `metro_ready`. |
+| `qa_wait` | drive | RO |  | Wait for `device_online`, `metro_ready`, or `wda_ready`. |
 | `qa_smoke` | run |  |  | Launch, baseline health, evidence, and every saved flow. |
 | `qa_explore` | run |  | yes | Bounded, safe-by-default exploration job; builds a screen graph. |
 | `qa_report` | run |  |  | Session report, plus optional CI exports. |
@@ -160,7 +160,7 @@ Autopilot, orientation, job polling, blockers, and artifacts.
 
 Autopilot for a low-context request such as "test this app". It resolves the project, finds or builds an artifact, picks a simulator, then plans or executes prepare > smoke > (explore) > report > (suite).
 
-- **`mode`**: `plan` (default) has no side effects and returns the plan, preconditions, and any consent it will need. `execute` returns `state:"running"` and a `jobId` at once. `interactive` asks the credentials question up front (when the project likely has a login and no credentials are available) and then runs as a job like `execute`. `waitForCompletion:true` blocks up to `timeoutMs` (default 120000) and returns the terminal result directly.
+- **`mode`**: `plan` (default) has no side effects and returns the plan, preconditions, and any consent it will need. `execute` returns `state:"running"` and a `jobId` at once. `interactive` asks the credentials question up front (when the project likely has a login and no credentials are available) and then runs as a job like `execute`. `waitForCompletion:true` blocks up to `timeoutMs` (default 45000, max 50000; larger values are clamped to 50000 with a note in `notes`, never rejected) and returns the terminal result directly, or `state:"running"` with the `jobId` to poll.
 - **`goal`** sets default flags; explicit `explore`, `generateSuite`, and `stopOnNeedsInput` win.
 
   | goal | Explore | Suite | Stops for input | Notes |
@@ -173,7 +173,7 @@ Autopilot for a low-context request such as "test this app". It resolves the pro
   | `test_login` | no | no | yes | Stops for credentials when none are available. |
   | `reproduce_bug` | yes | no | no | Focus with `goalText`. |
 
-- **Other parameters**: `platform` (`android` or `ios`, default inferred), `device`, `buildIfNeeded` (default true), `allowOutsideRoot`, `fastSmoke`, `responseMode`, `consentId`/`approve`. `preferRealDevice:true` always returns `PHYSICAL_DEVICE_UNSUPPORTED`, even when no phone is connected (see [Devices](concepts.md#devices)).
+- **Other parameters**: `platform` (`android` or `ios`, default inferred), `device`, `buildIfNeeded` (default true), `allowOutsideRoot`, `fastSmoke`, `responseMode` (`compact` returns the summary + URIs only; it stays the session's default for later calls), `consentId`/`approve`. `preferRealDevice:true` always returns `PHYSICAL_DEVICE_UNSUPPORTED`, even when no phone is connected (see [Devices](concepts.md#devices)).
 - **Consent**: one combined `test_this_plan` consent covers build, boot, and install; its risk is the highest of its steps. Its envelope carries `sessionId`, so the approving re-call reuses the session.
 - **Terminal states** (in the `qa_job_status` result): `completed`, `blocked`, `unsafe`, or `needs_input`. Every terminal state writes a report. The result keeps the report compact (`reportSummary`, `reportUri`, suite and app-map counts) and adds `attempted`, `workaroundsAttempted`, `artifactChoice`, `targetChoice`, `blockers[]`, and `nextRecommendedAction`.
 - **needs_input**: the run stopped on one question it was asked to stop for (`stopOnNeedsInput`, `goal:"test_login"`, or `interactive`), such as a login form that needs credentials. The result carries `needsInput` (the question, its fields, and a `resume` call), and `nextRecommendedAction` is that call. When the question can be asked before any work starts, `qa_test_this` returns `state:"needs_input"` directly, with no `jobId`. Without those flags, the run completes with pre-login coverage and returns the question as `optionalQuestion`. Answering "test pre-login only" sets `loginOutOfScope:true` for the session.
@@ -199,7 +199,7 @@ Autopilot for a low-context request such as "test this app". It resolves the pro
 
 ### qa_job_status
 
-Polls a job. Parameters: `sessionId`, `jobId`, `waitMs` (0 to 120000; long-polls until the job leaves `running`). Returns `{jobId, kind, status, progress, progressDetail, error, result, artifactUris}`, plus `waited:{waitedMs, timedOut}` when `waitMs` is set. See [Sessions and jobs](concepts.md#jobs).
+Polls a job. Parameters: `sessionId`, `jobId`, `waitMs` (long-polls until the job leaves `running`; use 45000, values above 50000 are clamped to 50000 so one call ends before a 60 s client tool timeout). Cancelling the call ends the wait with `CANCELLED` and leaves the job running (use `qa_job_cancel` to stop it). Returns `{jobId, kind, status, progress, progressDetail, error, result, artifactUris}`, plus `waited:{waitedMs, timedOut}` when `waitMs` is set. See [Sessions and jobs](concepts.md#jobs).
 
 ### qa_job_cancel
 
@@ -221,7 +221,7 @@ Answers a `needs_input` question. Parameters: `sessionId`, `kind` (for example `
 
 ### qa_get_artifact
 
-Reads a `swipium://session/<id>/<kind>/<name>` artifact, for clients without MCP resources. `mode` defaults to `metadata` for images and `inline` for text. A text artifact whose redaction was `partial` reports `redaction:"partial"` plus `redactionNote` (see [Secrets and redaction](concepts.md#secrets-and-redaction)).
+Reads a `swipium://session/<id>/<kind>/<name>` artifact, for clients without MCP resources. `mode` defaults to `inline` for text and `metadata` for images and every other binary (screen recordings, archives); `inline` returns an image as image content and any other binary as a base64 blob resource. Text over 1 MB returns the first 1 MB (the last 1 MB for logs, including `*.log` files) with a `[swipium: truncated ...]` marker naming the local file; binaries over 8 MB are not inlined. A text artifact whose redaction was `partial` reports `redaction:"partial"` plus `redactionNote` (see [Secrets and redaction](concepts.md#secrets-and-redaction)).
 
 ## Setup
 
@@ -229,7 +229,13 @@ Check the toolchain, open a session, and prepare a simulator.
 
 ### qa_doctor
 
-Checks Node, the Android SDK and emulator, Xcode and `simctl`, WDA, and client freshness. `platform` is `android`, `ios`, or `both` (default `both` on macOS, where it is ready if either platform is; `android` elsewhere). `client` (`claude`, `gemini`, `codex`, `cursor`, or `vscode`) tailors registration hints. `expectedVersion`, `expectedToolCount`, and `expectedSchemaHash` add a `client-freshness` check that reports a stale client.
+Checks Node, the Android SDK and emulator, Xcode and `simctl`, WDA, and client freshness. `platform` is `android`, `ios`, or `both` (default `both` on macOS, where it is ready if either platform is; `android` elsewhere). `client` (`claude`, `gemini`, `codex`, `cursor`, or `vscode`) adds a `clientHint` with registration advice. When the connected client is Codex (or `client:"codex"`), the result adds two optional rows and a `codex` field:
+
+- **`codex-env`**: Codex passes MCP servers only a fixed env whitelist plus `env_vars` and the `env` table, so shell exports never arrive otherwise. The row lists which Swipium env names are visible (names only, never values) and warns when no Android SDK is found or `java -version` fails without `JAVA_HOME`: forward `ANDROID_HOME` / `JAVA_HOME` if you installed them in a custom location, or install them first. Approval grants (`SWIPIUM_CONSENT_PREAPPROVE`, `SWIPIUM_ALLOW_REMOTE_WDA`) are never in the default list; set them literally in `env = { ... }`.
+- **`codex-tool-timeout`**: a reminder to keep `tool_timeout_sec` at 600 or more (the server cannot read it).
+- **`codex`**: `{envVarsLine, toolTimeoutSec}`, the exact `env_vars = [...]` line for `[mcp_servers.swipium]`; the text output prints it too.
+
+`expectedVersion`, `expectedToolCount`, and `expectedSchemaHash` add a `client-freshness` check that reports a stale client.
 
 ### qa_start_session
 
@@ -306,8 +312,11 @@ Screenshots go through `qa_screenshot`, and WebDriverAgent through `qa_wda`. The
 Diagnoses, attaches, or manages WebDriverAgent for structured iOS automation. Without WDA, iOS stays visual-only and `qa_visual` does the checking (see [iOS modes](concepts.md#ios-modes)).
 
 - **`action`**: `status`, `doctor`, `diagnose`, `logs`, and `tune` inspect an existing setup. `attach` connects to an external WDA at `webDriverAgentUrl` (default `http://127.0.0.1:8100`). `build` and `start` manage one (consent `wda_build` / `wda_start`, medium) from `wdaProjectPath` (default: an installed Appium WebDriverAgent when one is found), with `derivedDataPath` and `scheme` (default `WebDriverAgentRunner`); build and start output is captured as artifacts. `stop` terminates it.
+- **Long-running actions** (one call stays under a 60 s client tool timeout):
+  - `build` runs `xcodebuild build-for-testing` as a background job (kill timer 10 min) and returns `{jobId, status:"running"}` at once. Poll `qa_job_status` (with `waitMs`); the job result carries `built`, `logUri`, `wdaBuildProduct`, and on failure `failureCode` (`WDA_BUILD_FAILED` or `WDA_SIGNING_FAILED`) and `nextSteps`. `qa_job_cancel` stops the build.
+  - `start` launches WDA and waits for `/status` for at most 45 s (or `ios.wda.startupTimeoutMs`, default 120000, when smaller). If WDA is still starting, it returns `ok` with `status:"starting"`, `pid`, `logUri`, and `remainingStartupMs`; poll `qa_wait {for:"wda_ready"}` until satisfied, then `attach`. `WDA_START_FAILED` is returned when the xcodebuild process exits early or the startup timeout is already spent.
 - **`device`**: the simulator UDID behind this WDA (default: the session device). `udid` is a deprecated alias. `bundleId` defaults to the session's app. A non-loopback URL needs `allowNonLoopback:true` plus consent (see [iOS modes](concepts.md#ios-modes)).
-- **Failure codes**:
+- **Failure codes** (for `build`, the build failures arrive in the job result):
   - `attach`: `MULTIPLE_DEVICES` whenever no `device` is given and none is bound to the session (it never guesses), `WDA_UNREACHABLE`, `WDA_SESSION_FAILED`, `STALE_WDA_DEVICE`, `DESTRUCTIVE_REFUSED` (non-loopback URL without approval).
   - `build` and `start`: `NO_DEVICE` (no UDID given or bound), `BACKEND_UNSUPPORTED` (no Xcode command line tools), `NO_ARTIFACT` (no WebDriverAgent project found), `WDA_BUILD_FAILED`, `WDA_SIGNING_FAILED`, `WDA_START_FAILED` (with `managedPid` while a managed WDA is still running: attach to it or `stop` it first).
 
@@ -423,7 +432,7 @@ Performs one action, waits for the screen to settle, and observes: `changed`, `s
 | `open_url` | `url` | |
 | `wait` | | `for` (`{settled:true}` by default, or an element), `timeoutMs` (default 8000) |
 
-Every action also takes `observe` and `timeoutMs` (the settle-wait cap).
+Every action also takes `observe` and `timeoutMs` (the settle-wait cap). `timeoutMs` is at most 50000: larger values are clamped to 50000 with a note in `notes` (not rejected); negative values are `INVALID_ARGUMENT`.
 
 - **Targets**: an `@eN` ref, `text`, `id`, a native `selector` on WDA (`accessibility id`, `name`, `predicate string`, or `class chain`), or `x`/`y` coordinates.
 - **Observe**: `diff` (the default once a snapshot exists) returns added and removed elements; `full` returns the capped list; `none` returns verdicts only. When more than half of the post-action elements are new (a navigation), `diff` returns the full capped list with `diffAsFull:true`, `addedCount`, and `removedCount`.
@@ -485,7 +494,7 @@ A mode called without its required argument returns `INVALID_ARGUMENT`.
 
 ### qa_wait
 
-Blocks (bounded) until a setup condition holds, instead of a shell `sleep`. `for`: `device_online` (default timeout 180000 ms) or `metro_ready` (60000 ms). Returns `satisfied`, `timedOut`, and the current state. To wait for a job, use `qa_job_status` with `waitMs`.
+Blocks (bounded) until a setup condition holds, instead of a shell `sleep`. `for`: `device_online`, `metro_ready`, or `wda_ready` (the session's WebDriverAgent `/status` reports ready: the attached WDA, else the URL of the last `qa_wda start`, else the configured `ios.wda.url`; a non-loopback configured URL is refused with `DESTRUCTIVE_REFUSED` until it is attached with consent). `timeoutMs`: integer of at least 0, default 45000; larger values (older docs used 60000 or 180000) are accepted and clamped to 50000 with a note, so one call stays under a 60 s client tool timeout. On `timedOut`, call again. Returns `satisfied`, `timedOut`, and the current state. Cancelling the call stops polling at once and returns `CANCELLED`. To wait for a job, use `qa_job_status` with `waitMs`.
 
 ## Run
 

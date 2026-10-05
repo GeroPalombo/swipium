@@ -182,7 +182,8 @@ async function resolveProjectRootUnrecorded(server: McpServer, explicit?: string
   try {
     const caps = server.server.getClientCapabilities?.();
     if (caps?.roots) {
-      const res = await server.server.listRoots();
+      // Same 5 s cap as currentProjectRoots (src/server.ts); the SDK default is 60 s.
+      const res = await server.server.listRoots(undefined, { timeout: 5_000 });
       const picked = pickMcpRoot(
         (res.roots ?? []).map((r) => r.uri),
         opts.home ?? homedir(),

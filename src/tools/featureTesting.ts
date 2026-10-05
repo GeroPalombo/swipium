@@ -103,13 +103,12 @@ export function registerFeatureTesting(server: McpServer, sessions: SessionStore
     {
       title: 'Test a feature (focused)',
       description:
-        'Focused test of one named feature. mode:"plan" (default, read-only): scope, objective, generated cases, required ' +
-        'fixtures, ordered plan. mode:"execute": a job that explores toward the feature, records pass/fail/blocked per case, ' +
-        'updates the app map, and writes a report (see the qa_job_status result). Without sessionId, execute bootstraps a ' +
-        'device from projectRoot (consent-gated). A feature behind auth/paywall/permission/missing fixture is blocked with ' +
-        'setup guidance, not failed.',
+        'Test one named feature. mode:"plan" (default, read-only): scope, cases, fixtures, ordered plan. mode:"execute": a ' +
+        'job that explores toward the feature, records pass/fail/blocked per case, and writes a report (poll qa_job_status). ' +
+        'Without sessionId it bootstraps from projectRoot (consent-gated). Auth, paywall, or missing-fixture gates report ' +
+        'blocked, not failed.',
       inputSchema: {
-        sessionId: z.string().optional().describe('Prepared session; omitted > bootstrap from projectRoot.'),
+        sessionId: z.string().optional().describe('Prepared session (else bootstrap from projectRoot).'),
         projectRoot: z.string().optional(),
         feature: z.string().describe('The feature to test, in natural language.'),
         mode: z

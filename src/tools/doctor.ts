@@ -12,6 +12,7 @@ import { checkWda, discoverWdaProjects, xcodeAvailable } from '../lib/wda.js';
 import { loadWdaConfig } from '../lib/wdaConfig.js';
 import { resolveProjectRoot } from '../context/projectRoot.js';
 import { SWIPIUM_VERSION, TOOL_NAMES, TOOL_COUNT, STALE_CLIENT_HINT } from '../version.js';
+import { codexEnvChecks, codexEnvVarsLine, isCodexClient } from '../lib/codexEnv.js';
 
 export interface Check {
   name: string;
@@ -26,7 +27,7 @@ const CLIENT_HINTS: Record<string, string> = {
   gemini:
     'Register with: gemini mcp add swipium npx -y swipium (project scope), or add to .gemini/settings.json mcpServers with "cwd" set to your app repo. Preview: `swipium init gemini`.',
   codex:
-    'Register with `codex mcp add swipium -- npx -y swipium` or `swipium init codex` (sets cwd + startup_timeout_sec/tool_timeout_sec). Codex Desktop threads may not expose custom stdio MCP tools (openai/codex#19425), so confirm the tools appear.',
+    'Register with `swipium init codex` (writes cwd, startup_timeout_sec/tool_timeout_sec and env_vars to ~/.codex/config.toml) or `codex mcp add swipium -- npx -y swipium` plus those keys by hand. Codex does not inherit your shell env: list SWIPIUM_TEST_*, ANDROID_HOME, JAVA_HOME etc. in env_vars (approval grants like SWIPIUM_CONSENT_PREAPPROVE go literally in env = { ... }). Codex Desktop threads may not expose custom stdio MCP tools (openai/codex#19425), so confirm the tools appear.',
   cursor:
     'Add to .cursor/mcp.json under "mcpServers": { "swipium": { "command": "npx", "args": ["-y", "swipium"], "env": { "SWIPIUM_PROJECT_ROOT": "${workspaceFolder}" } } } (or run `swipium init cursor --apply`).',
   vscode:
@@ -95,16 +96,13 @@ export function registerDoctor(server: McpServer): void {
     {
       title: 'QA environment doctor',
       description:
-        'Check the local toolchain for simulator QA: Node, Android SDK/emulator, Xcode/simctl, WDA, and stale-client symptoms. ' +
-        'platform: android | ios | both (default both on macOS). client tailors MCP registration hints.',
+        'Check the local toolchain (Node, Android SDK/emulator, Xcode/simctl, WDA) and stale-client symptoms. Run it first ' +
+        'when setup fails.',
       inputSchema: {
-        platform: z.enum(['android', 'ios', 'both']).optional().describe('Default both on macOS (ready if either is), android elsewhere.'),
-        client: z
-          .enum(['claude', 'gemini', 'codex', 'cursor', 'vscode'])
-          .optional()
-          .describe('Optional: tailor hints to a specific MCP client.'),
+        platform: z.enum(['android', 'ios', 'both']).optional().describe('Default both on macOS (ready if either is), else android.'),
+        client: z.enum(['claude', 'gemini', 'codex', 'cursor', 'vscode']).optional().describe('Tailor setup hints to this MCP client.'),
         expectedToolCount: z.number().optional().describe('Tool count you expect; a mismatch means a stale client.'),
-        expectedVersion: z.string().optional().describe('Swipium version your docs expect; mismatch ⇒ stale client.'),
+        expectedVersion: z.string().optional().describe('Version you expect; a mismatch means a stale client.'),
         expectedSchemaHash: z.string().optional().describe('Surface hash you expect; a mismatch means a stale client.'),
       },
     },
@@ -140,13 +138,17 @@ export function registerDoctor(server: McpServer): void {
       const nodeOk = checks[checks.length - 1].ok;
 
       let devices: string[] = [];
+      let androidSdkFound: boolean | null = null;
+      let javaFound: boolean | null = null;
       let avds: string[] = [];
       let androidReady = true;
       if (wantsAndroid) {
         // PATH lookup: at startup src/index.ts prepends the SDK's platform-tools/ and emulator/
         // ($ANDROID_HOME, $ANDROID_SDK_ROOT, OS default) to PATH, so this sees SDK copies too.
         const hasAdb = await which('adb');
-        const sdkDirs = androidSdkCandidates().join(', ');
+        const sdkCandidates = androidSdkCandidates();
+        const sdkDirs = sdkCandidates.join(', ');
+        androidSdkFound = hasAdb || sdkCandidates.some((d) => existsSync(d));
         androidChecks.push({
           name: 'adb',
           ok: hasAdb,
@@ -212,6 +214,7 @@ export function registerDoctor(server: McpServer): void {
         });
 
         const java = await firstLine('java', ['-version']);
+        javaFound = java !== null;
         androidChecks.push({
           name: 'java',
           ok: java !== null,
@@ -294,6 +297,11 @@ export function registerDoctor(server: McpServer): void {
         };
       }
 
+      // Codex hands stdio servers a fixed env whitelist (see lib/codexEnv.ts): explain it, flag a
+      // missing ANDROID_HOME/JAVA_HOME, and remind about tool_timeout_sec (not readable from here).
+      const codex = isCodexClient(server.server.getClientVersion()?.name) || client === 'codex';
+      if (codex) checks.push(...codexEnvChecks({ env: process.env, androidSdkFound, javaFound }));
+
       // An explicit platform:"both" means "both must work"; the macOS default only needs one of them
       // (an iOS-only or Android-only developer on a Mac must not be told the environment is broken).
       const platformOk =
@@ -312,7 +320,8 @@ export function registerDoctor(server: McpServer): void {
 
       const summary =
         `Swipium v${SWIPIUM_VERSION} · ${TOOL_COUNT} tools · schema ${schemaHash}\n${STALE_CLIENT_HINT}\n\n` +
-        `${requiredOk ? `Environment ready for ${readyLabel} simulator QA.` : `Environment NOT ready for ${requested} simulator QA. See [fail] rows.`}\n${table}`;
+        `${requiredOk ? `Environment ready for ${readyLabel} simulator QA.` : `Environment NOT ready for ${requested} simulator QA. See [fail] rows.`}\n${table}` +
+        (codex ? `\n\nCodex: forward shell env with this line under [mcp_servers.swipium]:\n${codexEnvVarsLine()}` : '');
 
       return qaOk(
         {
@@ -341,6 +350,9 @@ export function registerDoctor(server: McpServer): void {
           simulators: wantsIos ? simulators : undefined,
           wda: wdaSummary,
           ...(clientHint ? { clientHint } : {}),
+          ...(codex
+            ? { codex: { envVarsLine: codexEnvVarsLine(), toolTimeoutSec: '>= 600 (set in config.toml; not readable by the server)' } }
+            : {}),
         },
         summary,
       );

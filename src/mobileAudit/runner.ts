@@ -8,6 +8,7 @@ import { recordObservation } from '../issues/index.js';
 import { queryIssues } from '../issues/index.js';
 import type { IssueEnvironment, IssuePlatform, SourceRevision } from '../issues/schema.js';
 import { restoreNetwork } from '../tools/network.js';
+import { runWithSignal, throwIfCancelled } from '../lib/abortScope.js';
 import { runFirstRun } from '../firstRun/firstRunRunner.js';
 import type { Driver } from '../drivers/Driver.js';
 import type { Session, SessionStore } from '../session/store.js';
@@ -101,6 +102,9 @@ export async function runMobileAudit(
 
   const checks: MobileAuditCheckResult[] = [];
   const finalize = async (id: string, title: string, raw: RawCheckResult): Promise<void> => {
+    // Cancelled call: a check that errored/fell short because it was aborted is not evidence about
+    // the app. Unwind (CancelledError) instead of recording a fail/blocked check or an issue.
+    throwIfCancelled();
     const issueId = await recordIssue(title, raw);
     if (issueId) issueIds.push(issueId);
     checks.push({
@@ -179,8 +183,12 @@ export async function runMobileAudit(
         // GUARANTEED network restore to the recorded ORIGINAL state, even if a check threw.
         if (networkApproved) {
           try {
-            if (auditOwnsRestore) await restoreNetwork(sessions, session, driver);
-            else if (preAudit !== undefined) await driver.setAirplane(preAudit);
+            // Outside the (possibly cancelled) call's signal scope: a cancelled audit must still
+            // put the network back, so the restore's adb calls must not inherit the abort.
+            await runWithSignal(undefined, async () => {
+              if (auditOwnsRestore) await restoreNetwork(sessions, session, driver);
+              else if (preAudit !== undefined) await driver.setAirplane(preAudit);
+            });
           } catch {
             /* best-effort */
           }

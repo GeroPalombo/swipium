@@ -14,13 +14,18 @@ import { runFlow, type FlowRunResult } from '../flows/run.js';
 import type { Driver } from '../drivers/Driver.js';
 import type { Session, SessionStore, TestNote, TestOutcome } from '../session/store.js';
 import type { Flow } from '../flows/schema.js';
+import { isAbortError, throwIfCancelled } from '../lib/abortScope.js';
 
 export interface SmokeResult {
   baseline: Record<string, unknown>;
   flows: Array<{ name: string; passed: boolean; failedAtStep?: number; reason?: string }>;
   flowsPassed: number;
   flowsTotal: number;
+  /** The call/job was cancelled: the remaining work was skipped (not recorded as failures). */
+  cancelled?: boolean;
 }
+
+const CANCELLED_REASON = 'cancelled: the call/job was aborted; not evidence about the app';
 
 export interface SmokeOptions {
   launch?: boolean;
@@ -50,6 +55,7 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
   const note = (n: Omit<TestNote, 'at'>) => sessions.addNote(session, { at: Date.now(), ...n });
   const doLaunch = opts.launch ?? !!session.appId;
   const baseline: Record<string, unknown> = {};
+  let cancelled = false;
 
   // ---- baseline: launch > snapshot quality > health > evidence screenshot ----
   try {
@@ -72,6 +78,8 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
       }
     }
     const health = await checkHealth(d, session.appId);
+    // A health probe interrupted by cancellation reads as unhealthy: never record it as a finding.
+    throwIfCancelled();
     await recordHealthFindings(sessions, session, health.findings, d, health.foreground);
     let shotUri: string | undefined;
     // Sensitive mode never persists screenshots. The baseline note says so instead.
@@ -112,14 +120,24 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
       ...(screenshotSkipped ? { screenshotSkipped } : {}),
     };
   } catch (e) {
-    note({ workflow: 'launch_smoke', outcome: 'fail', category: 'mcp_limitation', reason: `baseline failed: ${String(e)}` });
-    baseline.launch = { outcome: 'fail', error: String(e) };
+    if (isAbortError(e)) {
+      cancelled = true;
+      note({ workflow: 'launch_smoke', outcome: 'skipped', category: 'intentionally_skipped', reason: CANCELLED_REASON });
+      baseline.launch = { outcome: 'skipped', cancelled: true };
+    } else {
+      note({ workflow: 'launch_smoke', outcome: 'fail', category: 'mcp_limitation', reason: `baseline failed: ${String(e)}` });
+      baseline.launch = { outcome: 'fail', error: String(e) };
+    }
   }
 
   // ---- run saved flows ----
   const flowResults: SmokeResult['flows'] = [];
-  if (opts.runFlows ?? true) {
+  if (!cancelled && (opts.runFlows ?? true)) {
     for (const f of listFlowFiles(session.root)) {
+      if (isAbortError(undefined)) {
+        cancelled = true;
+        break;
+      }
       const stop = sessions.budgetStop(session);
       if (stop) {
         note({ workflow: f.name, outcome: 'skipped', category: 'intentionally_skipped', reason: `budget: ${stop}` });
@@ -169,9 +187,21 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
       try {
         r = await runFlow(sessions, session, d, flow, { variables: opts.variables });
       } catch (e) {
+        if (isAbortError(e)) {
+          cancelled = true;
+          note({ workflow: f.name, outcome: 'skipped', category: 'intentionally_skipped', reason: CANCELLED_REASON });
+          flowResults.push({ name: f.name, passed: false, reason: 'cancelled' });
+          break;
+        }
         note({ workflow: f.name, outcome: 'fail', category: 'mcp_limitation', reason: `flow run error: ${String(e)}` });
         flowResults.push({ name: f.name, passed: false, reason: String(e) });
         continue;
+      }
+      if (!r.passed && (r.failureCode === 'CANCELLED' || isAbortError(undefined))) {
+        cancelled = true;
+        note({ workflow: f.name, outcome: 'skipped', category: 'intentionally_skipped', reason: CANCELLED_REASON });
+        flowResults.push({ name: f.name, passed: false, failedAtStep: r.failedAtStep, reason: 'cancelled' });
+        break;
       }
       const failShot = r.steps.find((s) => s.screenshotUri)?.screenshotUri;
       note({
@@ -187,5 +217,11 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
     }
   }
 
-  return { baseline, flows: flowResults, flowsPassed: flowResults.filter((f) => f.passed).length, flowsTotal: flowResults.length };
+  return {
+    baseline,
+    flows: flowResults,
+    flowsPassed: flowResults.filter((f) => f.passed).length,
+    flowsTotal: flowResults.length,
+    ...(cancelled ? { cancelled: true } : {}),
+  };
 }

@@ -70,15 +70,14 @@ export function registerGenerate(server: McpServer, sessions: SessionStore): voi
     {
       title: 'Generate test assets from recorded actions',
       description:
-        'Turn the actions recorded in this session (qa_act / qa_smoke / qa_explore) into reusable assets. target: flow (Flow V2 YAML ' +
-        'for qa_flow_run), pom (page objects + locator audit), suite (full per-run POM suite under .swipium/, compiled to runnable ' +
-        'flows unless compile:false, with a replay gate), testcases (TC-xxx catalog as YAML/Markdown), appium (runnable WebdriverIO ' +
-        'TS/JS or Python suite; can bootstrap from projectRoot; UNEMITTABLE_STEP if a step cannot be expressed). mode:"plan" is a ' +
-        'read-only preview. Parameters for other targets are ignored with a note. For the durable repo-level suite use qa_suite_generate.',
+        'Turn the actions recorded in this session into reusable assets. target: flow (Flow V2 YAML), pom (page objects), ' +
+        'suite (POM suite under .swipium/, compiled to flows, replay-gated), testcases (TC catalog), appium (WebdriverIO or ' +
+        'Python project; can bootstrap from projectRoot). mode:"plan" previews. For the durable repo suite use ' +
+        'qa_suite_generate.',
       inputSchema: {
         target: z.enum(['flow', 'pom', 'suite', 'testcases', 'appium']),
-        mode: z.enum(['plan', 'generate']).optional().describe('generate (default) or plan (read-only preview; appium: plan + blockers).'),
-        sessionId: z.string().optional().describe('Session with recorded actions (required except for target:"appium").'),
+        mode: z.enum(['plan', 'generate']).optional().describe('generate (default) or plan (read-only preview).'),
+        sessionId: z.string().optional().describe('Required except for target:"appium".'),
         name: z.string().optional().describe('Asset name (default from the app id).'),
         save: z.boolean().optional().describe('Write files (default: suite/appium true, others false).'),
         budgetProfile: z.enum(['guardrail', 'login_smoke', 'full_smoke', 'install_smoke']).optional().describe('flow'),
@@ -86,24 +85,24 @@ export function registerGenerate(server: McpServer, sessions: SessionStore): voi
         replay: z
           .enum(['none', 'dry_run', 'same_session', 'fresh_state'])
           .optional()
-          .describe('suite: replay gate (default dry_run; fresh_state needs stateProfile, proves CI readiness).'),
+          .describe('suite: replay gate (default dry_run; fresh_state needs stateProfile).'),
         stateProfile: z.string().optional().describe('suite: for replay:"fresh_state".'),
         format: z.enum(['yaml', 'markdown', 'both']).optional().describe('testcases (default both)'),
         projectRoot: z.string().optional().describe('appium: plan/bootstrap without a session.'),
         bootstrap: z
           .union([z.boolean(), z.literal('auto')])
           .optional()
-          .describe('appium: smoke+explore to record actions when none exist.'),
+          .describe('appium: record actions first when none exist.'),
         feature: z.string().optional().describe('appium: focus for plan/bootstrap.'),
         device: z.string().optional().describe('appium: device to bootstrap on.'),
         language: z.enum(['auto', 'javascript', 'typescript', 'python']).optional().describe('appium (default auto-detected)'),
         platform: z.enum(['auto', 'android', 'ios', 'both']).optional().describe('appium'),
         backend: z.enum(['auto', 'appium', 'swipium_flow']).optional().describe('appium plan: preferred backend.'),
-        integrateIntoProject: z.boolean().optional().describe('appium: write into the project test dir (consent-gated, never overwrites).'),
+        integrateIntoProject: z.boolean().optional().describe('appium: write into the project (consent-gated, never overwrites).'),
         includeCi: z.boolean().optional().describe('appium: also emit ci.example.yml.'),
         candidateOnly: z.boolean().optional().describe('appium: brittle locators do not fail validation.'),
         brittleThreshold: z.number().optional().describe('appium: max brittle-locator % (default 40).'),
-        consentId: z.string().optional().describe('suite fresh_state replay / appium project write.'),
+        consentId: z.string().optional().describe('suite fresh_state / appium project write.'),
         approve: z.boolean().optional(),
       },
     },

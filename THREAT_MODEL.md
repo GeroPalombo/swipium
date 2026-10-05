@@ -1,6 +1,6 @@
 # Swipium Threat Model
 
-Last updated: 2026-09-30 (Swipium 2.0.1)
+Last updated: 2026-10-05 (Swipium 2.1.2)
 
 This document describes what Swipium protects, where its trust boundaries are, who it defends
 against, and which controls enforce each defense. Every control listed here is implemented in the
@@ -61,6 +61,24 @@ Swipium.
 - **`SWIPIUM_REQUIRE_ELICITATION=1`**. Without elicitation support, the fallback is the portable
   re-call (`consentId` + `approve:true`). This variable removes that fallback for every consent-gated
   action, whatever its risk. Such actions then fail with `CONSENT_REFUSED`.
+- **`SWIPIUM_CONSENT_PREAPPROVE`** (operator pre-approval). Headless clients (`codex exec`,
+  `claude -p`) advertise elicitation but decline or cancel every prompt themselves. The operator
+  can list exact action names that are approved without asking. It is read only from the server
+  process environment (whatever the MCP client passes, e.g. the Codex `env` table, plus anything
+  inherited from the launching shell), never from `.swipium/` or other repository files, so a
+  compromised model or a cloned project cannot grant it. No wildcards or risk thresholds; unknown
+  names are ignored with a warning. Code-level tiers narrow what a name grants
+  (`CONSENT_ACTION_TIERS` in `src/consent/consent.ts`): actions that run repository- or
+  model-chosen code (`build_from_source`, `flow_mutation_run`, `ocr_run`, `seed_state`,
+  `start_metro`, `suite_fresh_state_replay`, `wda_build`, `wda_start`) are honoured only with
+  `SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE=1` as well; `test_this_plan` does not cover a bundled
+  `build_from_source` step unless that action is itself pre-approvable; `wda_non_loopback` is never
+  pre-approvable by name (see the WebDriverAgent control below). It wins over
+  `SWIPIUM_REQUIRE_ELICITATION=1` (an explicit operator decision). Pre-approved challenges stay
+  single-use and session-bound, are ledgered as `operator-policy`, and are logged at `warn` with
+  the exact command. A decline or cancel answered in under 1.5 s is flagged `likelyAutomatic` and
+  only then points at this variable; a failed prompt (timeout, transport error, aborted call) is
+  never flagged and is ledgered as `transport/abort`.
 - **Prompt sanitising**. The elicitation text quotes every interpolated field. It strips control
   characters, newlines, bidi overrides and zero-width characters, and caps each field and the whole
   message in length. A flow name or URL therefore cannot forge an extra "Will run:" line.
@@ -68,7 +86,7 @@ Swipium.
   `adb install -r -g <path>`, a SHA-256 for APKs from outside the project, and seed and provider
   argv labelled with their origin.
 - **Audit trail**. The mutation ledger records how each consent was decided: `elicitation`,
-  `client-assertion` or `policy`.
+  `client-assertion`, `operator-policy` or `policy`.
 - **Strict arguments**. Top-level arguments a tool does not declare are rejected with
   `INVALID_ARGUMENT` before the handler runs. For example, `appId` is refused on a tool that would
   otherwise act on the session's app.
@@ -97,7 +115,8 @@ A developer clones an untrusted repository and points Swipium at it.
   `src/services/prepareIos.ts`). Only `localhost`, `127.0.0.0/8` and `[::1]` are used without
   asking. A non-loopback URL needs `allowNonLoopback:true` and a per-call consent. The repository's
   `ios.wda.allowNonLoopbackUrls` is ignored as a pre-approval. The only pre-approval is the user's
-  own `SWIPIUM_ALLOW_REMOTE_WDA` exact-URL list in the MCP server environment. iOS preparation
+  own `SWIPIUM_ALLOW_REMOTE_WDA` exact-URL list in the MCP server environment
+  (`SWIPIUM_CONSENT_PREAPPROVE` ignores `wda_non_loopback`). iOS preparation
   never auto-connects to a non-loopback configured URL.
 - **Path confinement**. Image templates, visual baselines and `qa_flow_repair` targets must resolve
   inside the project root after symlinks are followed (`src/flows/paths.ts`, `src/tools/visual.ts`).
@@ -197,6 +216,20 @@ their limits.
   controls are the human reading the transcript, where both the challenge and the approving call
   are visible, and the mutation ledger (`client-assertion`). Set `SWIPIUM_REQUIRE_ELICITATION=1`
   to close this path.
+- **Operator pre-approval is blanket for its actions**. Every call of a listed action runs without
+  a prompt, whatever the model asks for, including targets the operator never saw. The ledger
+  (`operator-policy`) and a `warn` line on stderr record each use with its exact command. List only
+  what the run needs.
+- **`SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE=1` escapes the client sandbox**. With it, listed actions
+  run repository- or model-chosen code (build scripts, seed scripts, OCR commands, `xcodebuild` on a
+  model-chosen project, the project's Metro config) with the user's privileges. Under `codex exec`
+  that code runs in the Swipium server process, outside the client's sandbox. Set it only for
+  trusted repositories.
+- **Inherited environment can grant approvals**. The server reads both variables from its own
+  process environment, which includes whatever the client forwards and, for clients that inherit
+  it, the shell that launched them. A value exported in a shell profile silently pre-approves
+  actions in every later session. Set them per client config (for Codex, the `env` table), not
+  globally, and check the startup log line that lists the honoured names.
 - **Approved commands are not sandboxed**. An approved build, seed script or provider command runs
   with the user's privileges.
 - **On-screen prompt injection**. Swipium cannot stop an agent from believing text the app shows.

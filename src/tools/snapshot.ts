@@ -25,9 +25,8 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
     {
       title: 'Snapshot the screen',
       description:
-        'Capture the screen as compact addressable elements (@e1, @e2 …) with a snapshotQuality verdict. Interactive-only and ' +
-        'no screenshot by default; busy screens are capped (use filter for the rest). Use @eN refs with qa_act; re-snapshot ' +
-        'after navigation.',
+        'Capture the screen as addressable elements (@e1, @e2...) with a snapshotQuality verdict. Interactive elements only, ' +
+        'capped on busy screens (filter finds the rest). Refs feed qa_act; re-snapshot after navigation.',
       inputSchema: {
         sessionId: z.string(),
         diff: z.boolean().optional().describe('Only what changed since the previous snapshot.'),
@@ -197,8 +196,7 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
     'qa_inspect',
     {
       title: 'Inspect one element',
-      description:
-        'Return the full attributes (class, resource-id, content-desc, text, bounds, all flags) of a single @eN ref from the most recent qa_snapshot. Use this instead of dumping the whole tree.',
+      description: 'Full attributes (class, ids, text, bounds, flags) of one @eN ref from the last qa_snapshot.',
       inputSchema: { sessionId: z.string(), ref: z.string().describe('e.g. "@e3"') },
     },
     async ({ sessionId, ref }) => {

@@ -232,6 +232,7 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
     const driver = session.driver;
     if (!driver) return await finish('blocked', 'NO_DEVICE', '❌ No driver bound after prepare.');
     const smoke = await runSmoke(sessions, session, driver, { variables: sessions.inputVariables(session) });
+    if (smoke.cancelled || signal?.aborted) return; // cancelled smoke: not completed, nothing more to run
     sessions.milestone(session, 'smoke_completed'); // persisted flag: qa_status must not re-recommend qa_smoke
     for (const art of session.artifacts) if (!artifacts.includes(art.uri)) artifacts.push(art.uri);
     smokeProg.done(`smoke done: flows ${smoke.flowsPassed}/${smoke.flowsTotal}.`);

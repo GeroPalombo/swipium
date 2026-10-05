@@ -100,21 +100,17 @@ export function registerStartSession(server: McpServer, sessions: SessionStore):
     {
       title: 'Start a QA session',
       description:
-        'Open a QA session (only needed for low-level tools; qa_test_this creates one). projectRoot: arg, else MCP roots, else ' +
-        'SWIPIUM_PROJECT_ROOT / CLAUDE_PROJECT_DIR, else the server cwd if it is not / or $HOME and contains a project marker (package.json, app.json, pubspec.yaml, Gradle/Xcode files, Podfile, android/, ios/). Budget defaults to 8 min / 20 ' +
-        'actions / 8 screenshots; profile resizes it. fixtures (or .swipium/fixtures.json) declare preconditions so unmet ones ' +
-        'report as blocked, not failed. responseMode compact keeps transcripts small.',
+        'Open a QA session for the low-level tools (qa_test_this makes its own). projectRoot defaults to MCP roots > ' +
+        'SWIPIUM_PROJECT_ROOT > CLAUDE_PROJECT_DIR > a project-like cwd. Default budget: 8 min / 20 actions / 8 screenshots ' +
+        '(profile or budget changes it). fixtures declare preconditions so unmet ones report blocked, not failed.',
       inputSchema: {
-        projectRoot: z.string().optional().describe('Absolute app path (optional with MCP roots).'),
+        projectRoot: z.string().optional().describe('Absolute app path.'),
         responseMode: z
           .enum(['compact', 'normal', 'verbose'])
           .optional()
-          .describe('Text channel for every tool in this session: compact = summary + URIs; normal (default) = + JSON; verbose.'),
-        sensitive: z.boolean().optional().describe('Refuse all screenshots, recordings, and on-screen evidence capture for this session.'),
-        profile: z
-          .enum(['guardrail', 'login_smoke', 'full_smoke', 'install_smoke'])
-          .optional()
-          .describe('Budget class sizing the time budget.'),
+          .describe('Text channel for this session: compact (summary + URIs), normal (default, + JSON), verbose.'),
+        sensitive: z.boolean().optional().describe('Refuse all screenshots, recordings, and on-screen evidence.'),
+        profile: z.enum(['guardrail', 'login_smoke', 'full_smoke', 'install_smoke']).optional().describe('Budget class.'),
         budget: z
           .object({
             maxMinutes: z.number().optional(),
@@ -128,9 +124,7 @@ export function registerStartSession(server: McpServer, sessions: SessionStore):
         fixtures: z
           .array(z.object({ name: z.string() }).passthrough())
           .optional()
-          .describe(
-            'Declared preconditions (merged with .swipium/fixtures.json): {name, requiredState?, recommendedSetup?, value?, disposable?, fields?, seed?, …}. Full shape in docs/tools.md#qa_start_session.',
-          ),
+          .describe('Preconditions, merged with .swipium/fixtures.json: {name, requiredState?, ...} (docs/tools.md#qa_start_session).'),
       },
     },
     async ({ projectRoot, profile, budget, fixtures, responseMode, sensitive }) => {

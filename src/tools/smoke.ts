@@ -10,7 +10,7 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
+import { cancelledResult, qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import { runSmoke } from '../services/smoke.js';
 import type { SessionStore } from '../session/store.js';
@@ -47,6 +47,7 @@ export function registerSmoke(server: McpServer, sessions: SessionStore): void {
       }
 
       const result = await runSmoke(sessions, session, d, { launch, runFlows, variables });
+      if (result.cancelled) return cancelledResult('qa_smoke cancelled: the remaining baseline/flows were skipped, not failed', true);
       const launchOutcome = (result.baseline.launch as { outcome?: string } | undefined)?.outcome ?? 'unknown';
       const summary =
         `qa_smoke done: launch=${launchOutcome}, flows ${result.flowsPassed}/${result.flowsTotal} passed.\n` +

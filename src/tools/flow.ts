@@ -240,15 +240,15 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
     {
       title: 'Check a flow',
       description:
-        'Statically validate a flow (.swipium/flows/*.yaml: name + steps) without running it: syntax/schema errors with the offending ' +
-        'step, plus warnings. Pass flow (name or path) or flowYaml. For an execution preview per backend use qa_flow_run mode:"plan".',
+        'Validate a flow (flow name/path or flowYaml) without running it: schema errors with the offending step, plus ' +
+        'warnings. Per-backend preview: qa_flow_run mode:"plan".',
       inputSchema: {
         sessionId: z.string().optional(),
-        projectRoot: z.string().optional().describe('Absolute app root (default: session root > MCP roots > env > cwd).'),
+        projectRoot: z.string().optional().describe('Absolute app root.'),
         flow: z.string().optional().describe('Flow name under .swipium/flows, or a path to a .yaml file.'),
         flowYaml: z.string().optional().describe('Inline flow YAML (instead of a file).'),
         platform: z.enum(['android', 'ios', 'cross-platform']).optional().describe('Authoring target for platform-aware warnings.'),
-        ci: z.boolean().optional().describe('Add CI preflight warnings (missing variables, mutating steps policy forbids).'),
+        ci: z.boolean().optional().describe('Add CI preflight warnings (missing variables, forbidden mutating steps).'),
       },
     },
     async ({ sessionId, projectRoot, flow, flowYaml, platform, ci }) => {
@@ -380,25 +380,21 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
     {
       title: 'Run a flow (or preview its execution plan)',
       description:
-        'Run a flow on the prepared app (mode:"run", default) or preview it without a device (mode:"plan"). run executes steps ' +
-        'server-side with setup/teardown, fail-fast, no auto-retry of mutating steps (consent-gated, like OCR steps); a failure ' +
-        'returns the step, screenshot, failureCode, and health. plan reports, per backend (Android, iOS simulator, iOS WDA, ' +
-        'Appium), whether each step is native / fallback / visual_only / unsupported. Pass flow (name/path) or flowYaml, plus ' +
-        'variables for ${VAR}. Steps: docs/tools.md#flow-steps.',
+        'Run a flow on the prepared app (mode:"run", default) or preview per-backend support without a device (mode:"plan"). ' +
+        'run is server-side and fail-fast with setup/teardown; mutating and OCR steps are consent-gated; a failure returns ' +
+        'the step, screenshot, failureCode, and health. Pass flow (name/path) or flowYaml, plus variables. Steps: ' +
+        'docs/tools.md#flow-steps.',
       inputSchema: {
         mode: z.enum(['plan', 'run']).optional(),
-        sessionId: z.string().optional().describe('Required for run; plan: resolves names + marks the attached backend.'),
-        projectRoot: z
-          .string()
-          .optional()
-          .describe('plan: absolute app root for flow names (default: session root > MCP roots > env > cwd).'),
+        sessionId: z.string().optional().describe('Required for run.'),
+        projectRoot: z.string().optional().describe('plan: absolute app root for flow names.'),
         flow: z.string().optional().describe('Flow name under .swipium/flows, or a .yaml path.'),
         flowYaml: z.string().optional().describe('Inline flow YAML.'),
         variables: z
           .record(z.string())
           .optional()
-          .describe('run: ${VAR} values (win over stored session inputs, then SWIPIUM_* env only); credential-like names redacted.'),
-        repeat: z.number().int().min(1).max(10).optional().describe('run: repeat N times for flake classification (default 1).'),
+          .describe('run: ${VAR} values (over session inputs and SWIPIUM_* env); secret-like names are redacted.'),
+        repeat: z.number().int().min(1).max(10).optional().describe('run: repeat N times to classify flakes.'),
         consentId: z.string().optional().describe('run: consent for mutating / OCR steps.'),
         approve: z.boolean().optional(),
         backend: z

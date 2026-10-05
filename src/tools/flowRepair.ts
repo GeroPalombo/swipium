@@ -13,16 +13,14 @@ export function registerFlowRepair(server: McpServer, sessions: SessionStore): v
     {
       title: 'Repair a failed flow step',
       description:
-        'Given a failed flow step and the current screen, suggest a stronger locator (same role, most similar text), app code changes such as adding accessibilityIdentifier/testID, and optionally patch simple YAML selector steps (apply only at high/medium confidence; flows must be under the project root).',
+        'For a failed flow step, suggest a stronger locator and app changes (testID/accessibilityIdentifier); apply:true ' +
+        'patches simple selector steps at high/medium confidence (low confidence: refused, applied:false + a note).',
       inputSchema: {
         sessionId: z.string(),
         flow: z.string().optional().describe('Flow name/path under .swipium/flows.'),
         flowYaml: z.string().optional().describe('Inline flow YAML.'),
         failedStep: z.number().int().min(0).describe('Zero-based failed step index from qa_flow_run.failedAtStep.'),
-        apply: z
-          .boolean()
-          .optional()
-          .describe('Patch the flow file when safe (default false); refused at low confidence (applied:false + note).'),
+        apply: z.boolean().optional().describe('Patch the flow file when safe (default false).'),
       },
     },
     async ({ sessionId, flow, flowYaml, failedStep, apply }) => {

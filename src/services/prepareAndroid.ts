@@ -25,6 +25,7 @@ import { log } from '../lib/logger.js';
 import type { DirectDriver } from '../drivers/DirectDriver.js';
 import { isInvalidArgumentError } from '../lib/result.js';
 import type { Session, SessionStore } from '../session/store.js';
+import { isAbortError, sleepOrCancel } from '../lib/abortScope.js';
 
 export interface PrepareAndroidArgs {
   needBoot: boolean;
@@ -109,7 +110,7 @@ export async function prepareAndroid(
           const { emulators } = await classifyAndroidSerials(fresh);
           serial = fresh.find((s) => emulators.includes(s));
         }
-        if (!serial) await new Promise((r) => setTimeout(r, 2000));
+        if (!serial) await sleepOrCancel(2000, signal); // wakes on cancel (CancelledError > aborted below)
       }
       if (!serial)
         return {
@@ -299,7 +300,7 @@ export async function prepareAndroid(
       resultText: `${launchedOk ? '✅' : '⚠️'} ${a.resolvedAppId} on ${serial} [${display}${viewHint}]; foreground=${foreground}.${metroHint ? '\n' + metroHint : ''}`,
     };
   } catch (e) {
-    if (aborted()) return { ok: false, aborted: true };
+    if (aborted() || isAbortError(e)) return { ok: false, aborted: true };
     log('error', 'prepareAndroid failed', { err: String(e) });
     // A malformed app id (driver-side validation) is a caller error, not a launch failure.
     if (isInvalidArgumentError(e)) return { ok: false, failureCode: 'INVALID_ARGUMENT', error: e.message };

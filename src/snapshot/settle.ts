@@ -7,6 +7,7 @@
 // longer run 5 attempts x 20 s past the settle budget.
 
 import type { Driver } from '../drivers/Driver.js';
+import { CancelledError, currentSignal, isAbortError, sleepOrCancel } from '../lib/abortScope.js';
 
 export interface SettleResult {
   xml: string;
@@ -33,6 +34,10 @@ export async function settle(
   const stableForMs = opts.stableForMs ?? 600;
   const intervalMs = opts.intervalMs ?? 400;
   const deadline = Date.now() + timeoutMs;
+  // Cancellation (abortScope): a cancelled call/job throws CancelledError instead of re-dumping
+  // (each aborted dump fails fast) until the settle deadline.
+  const signal = currentSignal();
+  const cancelled = (e?: unknown) => (e === undefined ? !!signal?.aborted : isAbortError(e, signal));
   const dumpOpts = () => ({
     timeoutMs: Math.max(SETTLE_MIN_DUMP_TIMEOUT_MS, deadline - Date.now()),
     attempts: SETTLE_DUMP_ATTEMPTS,
@@ -48,7 +53,8 @@ export async function settle(
     const started = Date.now();
     try {
       lastXml = await driver.dumpXml(dumpOpts());
-    } catch {
+    } catch (e) {
+      if (cancelled(e)) throw new CancelledError();
       /* try again in the loop */
     }
     lastDumpMs = Date.now() - started;
@@ -57,13 +63,15 @@ export async function settle(
 
   while (Date.now() < deadline) {
     const wait = Math.min(Math.max(0, intervalMs - lastDumpMs), Math.max(0, deadline - Date.now()));
-    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    if (cancelled()) throw new CancelledError();
+    if (wait > 0) await sleepOrCancel(wait, signal);
     if (Date.now() >= deadline && lastXml) break;
     const started = Date.now();
     let cur: string;
     try {
       cur = await driver.dumpXml(dumpOpts());
-    } catch {
+    } catch (e) {
+      if (cancelled(e)) throw new CancelledError();
       lastDumpMs = Date.now() - started;
       continue;
     }
