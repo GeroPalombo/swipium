@@ -77,6 +77,7 @@ Adding, removing, or renaming a tool means updating all of these in the same cha
 - **Files.** Shared JSON under `~/.swipium` and `.swipium/` is written with `writeFileAtomicSync` and guarded by `withFileLock` / `withFileLockAsync` from `src/lib/lockfile.ts`.
 - **Processes.** Run commands through `run` / `runBinary` in `src/lib/spawn.ts`: argv arrays only (never a shell string), a default timeout, the current cancellation signal, and a refusal to execute `git` (`assertNoGitScope`), because Git operations are outside Swipium's scope. The few long-lived detached children (emulator, Metro, WebDriverAgent, screen recorders) are spawned directly, also with argv arrays, and are tracked in `src/session/processRegistry.ts` so a later server can reap or adopt them safely.
 - **Sensitive mode.** Any new pixel, video, or log capture must return `sensitiveRefusal()` (`src/lib/sensitive.ts`) when the session is in sensitive mode.
+- **Schemas (zod 4).** Tool input shapes use zod 4: `z.record(z.string(), value)` (the key schema is required), `z.looseObject({...})` instead of `.passthrough()`, and no reads of zod internals (`_def`, `_zod`). The advertised JSON is normalized by `src/lib/toolSchema.ts`, so check `tools/list` (or `test/toolSchema.test.ts`) when you add an unusual zod type.
 - **Scope.** Keep emulator and simulator behavior separate from any real-device work; physical devices must keep failing with `PHYSICAL_DEVICE_UNSUPPORTED`.
 
 ## Testing

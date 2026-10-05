@@ -25,6 +25,7 @@ export const FIXTURE_SCHEMA = z.object({
   environment: z.string().optional().describe('Environment label. Use "test" for non-production disposable test state.'),
   fields: z
     .record(
+      z.string(),
       z.object({
         value: z.string().optional(),
         var: z.string().optional().describe('Environment/secure-input variable name to read at runtime.'),
@@ -70,7 +71,7 @@ export const FIXTURE_SCHEMA = z.object({
         .describe('script: argv array preferred (string is deprecated).'),
       method: z.string().optional(),
       body: z.string().optional(),
-      headers: z.record(z.string()).optional(),
+      headers: z.record(z.string(), z.string()).optional(),
       idempotent: z.boolean().optional().describe('True when re-running this seed safely converges to the same state.'),
       cleanup: z
         .object({
@@ -82,7 +83,7 @@ export const FIXTURE_SCHEMA = z.object({
             .describe('script: argv array preferred (string is deprecated).'),
           method: z.string().optional(),
           body: z.string().optional(),
-          headers: z.record(z.string()).optional(),
+          headers: z.record(z.string(), z.string()).optional(),
         })
         .optional()
         .describe('Optional teardown/rollback action used for state-profile transactions.'),
@@ -122,7 +123,7 @@ export function registerStartSession(server: McpServer, sessions: SessionStore):
           .optional()
           .describe('Override default budget caps.'),
         fixtures: z
-          .array(z.object({ name: z.string() }).passthrough())
+          .array(z.looseObject({ name: z.string() }))
           .optional()
           .describe('Preconditions, merged with .swipium/fixtures.json: {name, requiredState?, ...} (docs/tools.md#qa_start_session).'),
       },

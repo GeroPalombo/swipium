@@ -113,7 +113,7 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
         projectRoot: z.string().optional(),
         source: z.enum(['report', 'exploration', 'feature', 'ticket', 'manual', 'generate', 'suite']),
         sourceUri: z.string().optional(),
-        cases: z.array(z.record(z.any())).optional().describe('Canonical or partial cases (normalized).'),
+        cases: z.array(z.record(z.string(), z.any())).optional().describe('Canonical or partial cases (normalized).'),
         mergeMode: z.enum(['append', 'update', 'replace_generated']).optional(),
       },
     },

@@ -391,7 +391,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
         flow: z.string().optional().describe('Flow name under .swipium/flows, or a .yaml path.'),
         flowYaml: z.string().optional().describe('Inline flow YAML.'),
         variables: z
-          .record(z.string())
+          .record(z.string(), z.string())
           .optional()
           .describe('run: ${VAR} values (over session inputs and SWIPIUM_* env); secret-like names are redacted.'),
         repeat: z.number().int().min(1).max(10).optional().describe('run: repeat N times to classify flakes.'),

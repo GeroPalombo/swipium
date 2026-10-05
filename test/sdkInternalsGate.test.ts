@@ -8,8 +8,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
 const SRC = join(import.meta.dirname, '..', 'src');
-// lib/schemaHash.ts reads zod 3 `_def` (zod, not the SDK) until the zod 4 move replaces it.
-const ALLOWED_FILES = new Set(['automationGen/pythonEmitter.ts', 'lib/schemaHash.ts']);
+const ALLOWED_FILES = new Set(['automationGen/pythonEmitter.ts']);
 
 function tsFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((n) => {

@@ -422,7 +422,7 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
         sessionId: z.string(),
         kind: z.string().describe('The needs_input kind (e.g. credentials, monorepo_target).'),
         values: z
-          .record(z.union([z.string(), z.boolean()]))
+          .record(z.string(), z.union([z.string(), z.boolean()]))
           .optional()
           .describe('Field name > value. Secret fields are redacted on receipt.'),
         secretFields: z.array(z.string()).optional().describe('Secret keys (default: password/otp/token-like names).'),
