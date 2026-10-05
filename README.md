@@ -226,8 +226,8 @@ With no subcommand, `swipium` runs the stdio MCP server (what clients launch). `
 
 Restart your MCP client after every upgrade; a client still running the old server gets `STALE_CLIENT` errors.
 
-- **From 2.0.x to 2.1.2:** element lists in `structuredContent` are now `@eN` strings (pass `responseMode:"verbose"` for objects), Codex needs the `env_vars` line, `qa_wda build` returns a job, and waits end within about 50 s. See the [2.1.2 upgrade checklist](CHANGELOG.md#212---2026-10-05).
-- **From 1.5.x:** 2.0 removed and renamed tools, reads only `SWIPIUM_*` variables in flows and fixtures, and asks consent for every install. Work through the [2.0.0 upgrade checklist](CHANGELOG.md#200---2026-09-30) and the [migration table](CHANGELOG.md#migrating-from-150) first, then the 2.1.2 one.
+- **From 2.0.x to 2.2.0:** element lists in `structuredContent` are now `@eN` strings (pass `responseMode:"verbose"` for objects), Codex needs the `env_vars` line, `qa_wda build` returns a job, and waits end within about 50 s. See the [2.2.0 upgrade checklist](CHANGELOG.md#220---2026-10-05).
+- **From 1.5.x:** 2.0 removed and renamed tools, reads only `SWIPIUM_*` variables in flows and fixtures, and asks consent for every install. Work through the [2.0.0 upgrade checklist](CHANGELOG.md#200---2026-09-30) and the [migration table](CHANGELOG.md#migrating-from-150) first, then the 2.2.0 one.
 
 ## Troubleshooting
 

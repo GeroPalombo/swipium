@@ -18,6 +18,7 @@ import {
 import { loadWdaConfig } from '../lib/wdaConfig.js';
 import { appBuildDestination } from '../ios/signing.js';
 import * as sim from '../lib/simctl.js';
+import { isAbortError } from '../lib/abortScope.js';
 import type { Session, SessionStore } from '../session/store.js';
 
 export type WdaMode = 'auto' | 'required' | 'skip';
@@ -29,6 +30,10 @@ export interface PrepareIosArgs {
   launch?: boolean;
   attachWda?: WdaMode;
   mutationConsent?: { required: boolean; consentId?: string; approved: boolean; payloadHash?: string };
+  /** Tool-facing callers only: wait at most this long for a simulator boot. When it is still
+   *  booting, the simulator is bound and the result is { ok:true, booting:true } (nothing else
+   *  ran). Omitted (background jobs): wait for the full boot. */
+  bootWaitMs?: number;
 }
 
 export interface PrepareIosResult {
@@ -45,10 +50,16 @@ export interface PrepareIosResult {
   wdaSessionId?: string;
   requiresAttach?: boolean;
   resultText?: string;
+  /** Set (with ok:true) when bootWaitMs elapsed before the boot finished; nothing past the boot ran. */
+  booting?: boolean;
+  bootElapsedMs?: number;
 }
 
 export interface PrepareIosCtx {
   onProgress?: (text: string) => void;
+  /** A background job's signal: checked after the (uncancellable) boot wait so a cancelled job
+   *  does not go on to install/launch. */
+  signal?: AbortSignal;
 }
 
 export async function prepareIos(
@@ -90,13 +101,22 @@ export async function prepareIos(
       error: 'No iOS simulator available. Install a runtime or create one in Xcode.',
     };
 
-  if (pick.state !== 'Booted') {
+  // A simulator this process is still booting lists as Booted before bootstatus says it is done:
+  // join that boot instead of installing onto a half-booted device.
+  let stillBooting: sim.BoundedBootResult | undefined;
+  if (pick.state !== 'Booted' || sim.bootInFlight(pick.udid)) {
     progress(`booting ${pick.name}`);
     try {
       sessions.milestone(session, 'simulator_boot_start');
-      await sim.boot(pick.udid);
-      sessions.milestone(session, 'simulator_boot_end');
+      if (args.bootWaitMs !== undefined) {
+        const r = await sim.bootWithin(pick.udid, args.bootWaitMs);
+        if (!r.booted) stillBooting = r;
+      } else {
+        await sim.boot(pick.udid);
+      }
+      if (!stillBooting) sessions.milestone(session, 'simulator_boot_end');
     } catch (e) {
+      if (isAbortError(e)) throw e;
       const msg = String(e);
       return {
         ok: false,
@@ -105,7 +125,7 @@ export async function prepareIos(
       };
     }
   }
-  // bind a SimctlDriver
+  // bind a SimctlDriver (also while still booting: follow-up polls and calls use the binding)
   const driver = session.driver instanceof SimctlDriver ? session.driver : new SimctlDriver(pick.udid);
   driver.useDevice(pick.udid);
   session.driver = driver;
@@ -118,8 +138,20 @@ export async function prepareIos(
     target: { udid: pick.udid, name: pick.name, runtime: pick.runtime },
     consent: { required: false, approved: true },
     status: 'executed',
+    ...(stillBooting ? { detail: 'boot started; still booting when the call returned' } : {}),
   });
   sessions.persist(session);
+  if (ctx.signal?.aborted) return { ok: false, failureCode: 'CANCELLED', error: 'cancelled', udid: pick.udid, name: pick.name };
+  if (stillBooting) {
+    return {
+      ok: true,
+      booting: true,
+      bootElapsedMs: stillBooting.elapsedMs,
+      udid: pick.udid,
+      name: pick.name,
+      resultText: `iOS ${pick.name} still booting after ${Math.round(stillBooting.elapsedMs / 1000)} s.`,
+    };
+  }
 
   // ---- install .app (if provided) ----
   let bundleId = args.bundleId ?? session.appId ?? undefined;

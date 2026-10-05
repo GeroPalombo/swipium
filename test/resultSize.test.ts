@@ -105,7 +105,7 @@ describe('error size cap', () => {
   });
 });
 
-// structuredContent is what Claude Code / Codex show the model. 2.1.2 added `summary` + `next` to
+// structuredContent is what Claude Code / Codex show the model. 2.2.0 added `summary` + `next` to
 // it; the default `headline` summary (first line) and skipping `next` when the payload has its own
 // guidance keep the growth vs the bare payload (2.1.1) small. HEAD size = current minus the
 // summary/next copies. Measured before this cap: qa_status (no session) +32%, qa_status (session)

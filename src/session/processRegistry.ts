@@ -159,15 +159,25 @@ export function captureFingerprint(
 
 /** Record a long-lived child we spawned so a future server instance can reap it if we crash.
  *  Must be called right after spawn() returned a pid (the child has exec'd by then), so the
- *  recorded fingerprint is the child's own. */
+ *  recorded fingerprint is the child's own. `spawnCommand` is the command line we spawned (cmd +
+ *  args), used for Metro when the live title carries no program (see below). */
 export function registerManagedProcess(
   pid: number | undefined,
   kind: ManagedProcessKind,
   sessionId?: string,
-  extra: { endpoint?: string; ops?: ProcessOps } = {},
+  extra: { endpoint?: string; ops?: ProcessOps; spawnCommand?: string } = {},
 ): void {
   if (!pid || pid <= 0) return;
   const fp = captureFingerprint(pid, extra.ops);
+  // npx titles itself a bare `npm` for a few tens of ms (npm's cli entry, before the final
+  // `npm exec <bin> …` title). A registration that lands there (a loaded host makes the `ps`
+  // spawns slow enough) would record a command with no program, which never matches again, so
+  // the orphan would be dropped unsignalled. Fall back to what we spawned: same tail after the
+  // retitle. The exact start time stays the hard identity check.
+  if (kind === 'metro' && extra.spawnCommand && (!fp.command || commandTail(fp.command) === '')) {
+    const spawned = norm(extra.spawnCommand);
+    if (spawned) fp.command = spawned;
+  }
   mutateEntries((entries) => [
     ...entries.filter((e) => e.pid !== pid),
     { pid, kind, serverPid: process.pid, sessionId, startedAt: Date.now(), ...(extra.endpoint ? { endpoint: extra.endpoint } : {}), ...fp },

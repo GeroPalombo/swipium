@@ -129,7 +129,7 @@ describe('qa_wait', () => {
     const ok = structured(await h.call('qa_wait', { sessionId: id, for: 'device_online', timeoutMs: 0 }));
     expect(ok.timedOut).toBe(true);
     expect(ok.notes).toBeUndefined();
-    // 180000 (documented before 2.1.2) is accepted and clamped; cancel it so the test stays fast.
+    // 180000 (documented before 2.2.0) is accepted and clamped; cancel it so the test stays fast.
     const tools = capture((s) => registerWait(s, h.sessions));
     const ctl = new AbortController();
     const p = runWithSignal(ctl.signal, () =>

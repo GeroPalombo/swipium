@@ -75,7 +75,7 @@ Adding, removing, or renaming a tool means updating all of these in the same cha
 
 The surface also has size budgets, because clients load it into the model's context:
 
-- `test/toolListBudget.test.ts`: each tool description is at most 400 characters, and the serialized `tools/list` stays under a fixed byte budget (66,000 bytes in 2.1.2). Put detail in `docs/tools.md`, not in the description. Raise the budget only on purpose.
+- `test/toolListBudget.test.ts`: each tool description is at most 400 characters, and the serialized `tools/list` stays under a fixed byte budget (66,000 bytes in 2.2.0). Put detail in `docs/tools.md`, not in the description. Raise the budget only on purpose.
 - `test/instructionsBudget.test.ts`: `SERVER_INSTRUCTIONS` (`src/tools/agent.ts`) is at most 2,000 characters, and its first 512 characters stand alone (what Swipium is, `qa_test_this`, and the `qa_job_status` poll).
 - If the instructions or `qa_status` start pointing at a tool outside the Codex core groups, add it to `CODEX_CORE_EXTRA_TOOLS` in `src/cli/init.ts` (`test/cliInit.test.ts` checks this).
 

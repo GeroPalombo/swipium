@@ -208,7 +208,7 @@ describe('5: qa_wda build auto-discovers the Appium WebDriverAgent', () => {
     const gate = await call('qa_wda', { sessionId, action: 'build', device: UDID });
     expect(gate.requiresConsent).toBe(true);
     expect(String(gate.exactCommand)).toContain(APPIUM_WDA);
-    // build runs as a background job (2.1.2): the result lands on the job.
+    // build runs as a background job (2.2.0): the result lands on the job.
     const started = await call('qa_wda', { sessionId, action: 'build', device: UDID, consentId: gate.consentId, approve: true });
     expect(started).toMatchObject({ ok: true, status: 'running' });
     expect((await call('qa_job_status', { sessionId, jobId: started.jobId, waitMs: 5000 })).status).toBe('done');

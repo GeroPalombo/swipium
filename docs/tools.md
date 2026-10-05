@@ -142,7 +142,7 @@ Hints: **RO** read-only, **D** destructive, **I** idempotent write, blank for ot
 | `qa_screenshot` | drive |  |  | Screenshot artifact with coordinate-space metadata. |
 | `qa_note` | drive |  |  | Record a workflow outcome for the report. |
 | `qa_visual` | drive |  | yes | Screenshot checks: assert, baseline, diff, OCR find, image find. |
-| `qa_wait` | drive | RO |  | Wait for `device_online`, `metro_ready`, or `wda_ready`. |
+| `qa_wait` | drive | RO |  | Wait for `device_online`, `metro_ready`, `wda_ready`, or `simulator_booted`. |
 | `qa_smoke` | run |  |  | Launch, baseline health, evidence, and every saved flow. |
 | `qa_explore` | run |  | yes | Bounded, safe-by-default exploration job; builds a screen graph. |
 | `qa_report` | run |  |  | Session report, plus optional CI exports. |
@@ -302,6 +302,7 @@ Prepares an iOS Simulator: picks and boots one, installs a simulator `.app`, lau
 - **Parameters**: `sessionId`, `app` (absolute or project-relative), `bundleId`, `device` (UDID or name substring), `launch`, `attachWda`, `consentId`/`approve`.
 - **`attachWda`**: `auto` (default) probes WDA and stays visual-only, with a recorded workaround, when it is unreachable, non-loopback, or session creation fails. `required` fails instead (`WDA_UNREACHABLE`, `WDA_SESSION_FAILED`, or `DESTRUCTIVE_REFUSED` for a non-loopback URL). `skip` does not probe.
 - **Consent**: `install_app`, risk low for an app inside the project root, medium outside it.
+- **Cold boot**: the call waits at most 30 s for the simulator to boot. If it is still booting, the simulator is bound to the session and the call returns `ok` with `status:"booting"`, `udid`, `name`, `elapsedMs`, and a `jobId`: the rest (boot, install, launch, WDA check) runs as a `prepare_ios` job with the consent already given. Poll `qa_job_status {jobId, waitMs:45000}`; the finished job's `result` has the same fields as a direct answer.
 - **Failure codes**: `IPA_NEEDS_REAL_DEVICE` (a `.ipa` is refused), `IOS_SIMULATOR_APP_MISSING`, `IOS_APP_WRONG_ARCH`, `SIMULATOR_RUNTIME_MISSING`, `SIMULATOR_BOOT_FAILED`, `SIMULATOR_BOOT_TIMEOUT`, `BUNDLE_ID_NOT_FOUND`.
 
 ### qa_ios
@@ -318,6 +319,8 @@ Direct iOS Simulator control (macOS only). `action` is one of:
 | `logs` | `last` (default `5m`) | |
 | `privacy_reset` | `service` (for example `location`, `photos`, `camera`, `all`), `bundleId` (default: the session's app) | `privacy_reset`, low |
 | `erase` | `device` (default: the bound simulator). Wipes the simulator. | `erase_device`, high |
+
+`boot` waits at most 40 s. A booted simulator returns `status:"booted"`. A cold boot that takes longer returns `ok` with `status:"booting"`, `udid`, `name`, `elapsedMs`, and `next`; the simulator is already bound and keeps booting in the background, so poll `qa_wait {for:"simulator_booted"}` before `install` or `launch`. Cancelling the call returns `CANCELLED` (`changedState:true`) and leaves the boot running.
 
 Every action except `list` and `boot` needs a simulator bound to the session (by `boot`, `qa_prepare_ios_target`, or `qa_test_this`), else `NO_DEVICE`. Screenshots go through `qa_screenshot`, and WebDriverAgent through `qa_wda`. The old `wda_*` and `screenshot` actions return `STALE_CLIENT`.
 
@@ -509,7 +512,7 @@ A mode called without its required argument returns `INVALID_ARGUMENT`.
 
 ### qa_wait
 
-Blocks (bounded) until a setup condition holds, instead of a shell `sleep`. `for`: `device_online`, `metro_ready`, or `wda_ready` (the session's WebDriverAgent `/status` reports ready: the attached WDA, else the URL of the last `qa_wda start`, else the configured `ios.wda.url`; a non-loopback configured URL is refused with `DESTRUCTIVE_REFUSED` until it is attached with consent). `timeoutMs`: integer of at least 0, default 45000; larger values (older docs used 60000 or 180000) are accepted and clamped to 50000 with a note, so one call stays under a 60 s client tool timeout. On `timedOut`, call again. Returns `satisfied`, `timedOut`, and the current state. Cancelling the call stops polling at once and returns `CANCELLED`. To wait for a job, use `qa_job_status` with `waitMs`.
+Blocks (bounded) until a setup condition holds, instead of a shell `sleep`. `for`: `device_online` (an adb device; Android only), `metro_ready`, `wda_ready` (the session's WebDriverAgent `/status` reports ready: the attached WDA, else the URL of the last `qa_wda start`, else the configured `ios.wda.url`; a non-loopback configured URL is refused with `DESTRUCTIVE_REFUSED` until it is attached with consent), or `simulator_booted` (the iOS Simulator bound to the session finished booting, for example after `qa_ios boot` returned `status:"booting"`; no bound simulator is `NO_DEVICE`, and a boot that failed in the background is `SIMULATOR_BOOT_FAILED` or `SIMULATOR_BOOT_TIMEOUT` instead of a timeout). `timeoutMs`: integer of at least 0, default 45000; larger values (older docs used 60000 or 180000) are accepted and clamped to 50000 with a note, so one call stays under a 60 s client tool timeout. On `timedOut`, call again. Returns `satisfied`, `timedOut`, and the current state. Cancelling the call stops polling at once and returns `CANCELLED`. To wait for a job, use `qa_job_status` with `waitMs`.
 
 ## Run
 
@@ -592,7 +595,7 @@ A focused test of one named `feature` (natural language).
 
 - **`mode:"plan"`** (default, read-only): scope, objective, generated cases, required fixtures, and an ordered plan.
 - **`mode:"execute"`**: a job that explores toward the feature, records pass, fail, or blocked per case, updates the app map, and writes a report (see the `qa_job_status` result). `interactive` runs until the first question.
-- **Without `sessionId`**, `execute` bootstraps a device from `projectRoot` (optionally `platform` and `device`) with one consent for boot, install, and launch.
+- **Without `sessionId`**, `execute` bootstraps a device from `projectRoot` (optionally `platform` and `device`) with one consent for boot, install, and launch. The boot, install, and launch run inside the job, so the call returns at once; a preparation failure fails the job with the same blocker the call used to return.
 - A feature behind auth, a paywall, a permission, or a missing fixture is **blocked** with setup guidance, not failed.
 - Other parameters: `creativity` (`conservative`, `standard`, `creative`, `adversarial`) with `allowAdversarial`, `maxScreens` (default 8), `maxActions` (default 20), `timeoutMs`, `generateCases` (default true), `includeCode`, `limit`.
 

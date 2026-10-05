@@ -2,12 +2,12 @@
 
 ## Supported versions
 
-Security fixes go into the latest release only. Currently that is the 2.1.x line. Older lines,
+Security fixes go into the latest release only. Currently that is the 2.2.x line. Older lines,
 including 2.0.x and 1.5.x, receive no fixes, so upgrade to the latest release.
 
 | Version | Supported |
 | --- | --- |
-| 2.1.x (latest) | Yes |
+| 2.2.x (latest) | Yes |
 | 2.0.x and older | No |
 
 ## Reporting a vulnerability

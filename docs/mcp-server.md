@@ -324,11 +324,17 @@ and long work runs as a background job:
   with a note (`qa_wait` and `qa_test_this` default to 45000).
 - `qa_wda build` runs as a job. `qa_wda start` waits at most 45 s, then returns
   `status: "starting"`; poll `qa_wait { for: "wda_ready" }` until WebDriverAgent is up.
-- Builds, test runs, exploration and Android boot and install steps are jobs too (see
-  [Jobs](concepts.md#jobs)).
+- `qa_ios { action: "boot" }` waits at most 40 s for an iOS Simulator. A slower cold boot returns
+  `status: "booting"` with the simulator already bound; poll `qa_wait { for: "simulator_booted" }`.
+  `qa_prepare_ios_target` waits at most 30 s, then hands the rest (boot, install, launch) to a job
+  and returns `status: "booting"` with its `jobId`.
+- Builds, test runs, exploration, Android boot and install steps, and the device preparation of
+  `qa_test_feature` are jobs too (see [Jobs](concepts.md#jobs)).
 
-A few synchronous steps can still take longer, notably booting an iOS Simulator, so keep the
-client's tool timeout generous (Codex `tool_timeout_sec = 600`).
+A few synchronous steps can still take longer: a large app install (`qa_ios install`, or
+`qa_prepare_ios_target` on a simulator that is already booted), `qa_flow_run` and `qa_smoke` with
+long saved flows, `qa_mobile_audit`, and `qa_generate { target: "appium" }` when it bootstraps a
+device. Keep the client's tool timeout generous (Codex `tool_timeout_sec = 600`).
 
 ### Cancellation
 

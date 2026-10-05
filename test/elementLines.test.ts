@@ -187,7 +187,7 @@ describe('through the server', () => {
     const verbose = structured(await h.call('qa_snapshot', { sessionId: await h.start(new FakeDriver(xml), { responseMode: 'verbose' }) }));
     expect((normal.elements as unknown[]).length).toBe(40);
     const size = (v: unknown) => JSON.stringify(v).length;
-    // Measured at 2.1.2: elements 4474 > 2519 chars (-43.7%), structuredContent 4865 > 2910 (-40.2%).
+    // Measured at 2.2.0: elements 4474 > 2519 chars (-43.7%), structuredContent 4865 > 2910 (-40.2%).
     // The rest of the payload (quality signals, overlays, summary) is the same in both modes.
     expect(size(normal.elements)).toBeLessThanOrEqual(size(verbose.elements) * 0.6);
     expect(size(normal)).toBeLessThanOrEqual(size(verbose) * 0.62);

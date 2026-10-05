@@ -87,7 +87,8 @@ describe('readArtifactResource size caps', () => {
     const r = readArtifactResource('swipium://x/report/r.json', { path, mime: 'application/json', kind: 'report' }, { textMax: 50 });
     const text = String((r.contents[0] as { text: string }).text);
     expect(text.startsWith('A'.repeat(50))).toBe(true);
-    expect(text).not.toContain('B');
+    // The marker names a random temp path, so only check the content before it.
+    expect(text.slice(0, text.indexOf('[swipium:'))).not.toContain('B');
     expect(text).toMatch(/truncated, showing the first 50 of 100 bytes/);
     // The marker used to promise "qa_get_artifact returns the full text"; it applies the same cap.
     expect(text).not.toMatch(/full text/);
@@ -182,7 +183,8 @@ describe('qa_get_artifact caps and modes', () => {
     const report = sessions.saveArtifact(s, 'report', 'big.json', big, 'application/json');
     const r = text(await client.callTool({ name: 'qa_get_artifact', arguments: { uri: report } }));
     expect(r.length).toBeLessThan(RESOURCE_TEXT_MAX_BYTES + 1000);
-    expect(r).not.toContain('B');
+    // The marker names a random session/temp path, so only check the content before it.
+    expect(r.slice(0, r.indexOf('[swipium:'))).not.toContain('B');
     expect(r).toMatch(/truncated, showing the first \d+ of \d+ bytes \(qa_get_artifact cap/);
     const log = sessions.saveArtifact(s, 'wda', 'wda-start.log', big, 'text/plain');
     const l = text(await client.callTool({ name: 'qa_get_artifact', arguments: { uri: log } }));

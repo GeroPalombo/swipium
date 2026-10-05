@@ -306,7 +306,7 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
       child.unref();
       closeSync(fd); // child inherited the fd; the parent must not keep it open (review #2)
       session.metroPid = child.pid;
-      registerManagedProcess(child.pid, 'metro', session.id); // reapable if this server crashes
+      registerManagedProcess(child.pid, 'metro', session.id, { spawnCommand: [cmd, ...args].join(' ') }); // reapable if this server crashes
       sessions.persistNow(session); // the pid must hit disk before a crash for reload/reap to see it
 
       sessions.recordMutation(session, {

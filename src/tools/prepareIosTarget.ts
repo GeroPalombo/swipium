@@ -6,12 +6,18 @@ import { z } from 'zod';
 import { isAbsolute, join } from 'node:path';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import type { McpServer } from '@modelcontextprotocol/server';
-import { qaOk, unknownSessionError } from '../lib/result.js';
+import type { CallToolResult, McpServer } from '@modelcontextprotocol/server';
+import { cancelledResult, qaOk, unknownSessionError } from '../lib/result.js';
+import { isAbortError, runWithSignal } from '../lib/abortScope.js';
 import { qaFail, type FailureCode } from '../oracle/failures.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
-import { prepareIos } from '../services/prepareIos.js';
-import type { Session, SessionStore } from '../session/store.js';
+import { prepareIos, type PrepareIosArgs, type PrepareIosResult } from '../services/prepareIos.js';
+import type { JobRecord, Session, SessionStore } from '../session/store.js';
+
+/** How long one qa_prepare_ios_target call waits for a simulator boot. Lower than qa_ios boot's
+ *  wait because install/launch/WDA still run in the same call after a boot that made it in time.
+ *  A boot still running after this hands the rest to a background job (status:"booting"). */
+export const PREPARE_IOS_BOOT_CALL_WAIT_MS = 30_000;
 
 /** A .app is a directory, so hash a stable signature (Info.plist) for consent binding. */
 function appSignature(appPath: string): string {
@@ -95,41 +101,115 @@ export function registerPrepareIosTarget(server: McpServer, sessions: SessionSto
         });
       }
 
-      const res = await prepareIos(
-        sessions,
-        session,
-        { app, bundleId, simulator: device, launch, attachWda, mutationConsent },
-        { onProgress: () => {} },
-      );
-      if (!res.ok) {
-        if (installAffects) {
-          sessions.recordMutation(session, {
-            tool: 'qa_prepare_ios_target',
-            action: 'install_app',
-            risk: installAffects.external ? 'medium' : 'low',
-            target: installAffects,
-            consent: mutationConsent,
-            status: 'blocked',
-            detail: res.error ?? res.failureCode ?? 'prepare failed',
-          });
-        }
-        return qaFail((res.failureCode as FailureCode) ?? 'APP_LAUNCH_FAILED', {
-          what: res.error ?? 'iOS prepare failed',
-          extra: { udid: res.udid ?? null, name: res.name ?? null },
-        });
+      const prepArgs: PrepareIosArgs = { app, bundleId, simulator: device, launch, attachWda, mutationConsent };
+      let res: PrepareIosResult;
+      try {
+        // Bounded boot wait: a cold boot that is still running hands the rest to a background job.
+        res = await prepareIos(sessions, session, { ...prepArgs, bootWaitMs: PREPARE_IOS_BOOT_CALL_WAIT_MS }, { onProgress: () => {} });
+      } catch (e) {
+        if (isAbortError(e))
+          return cancelledResult('qa_prepare_ios_target cancelled while the simulator was booting; it keeps booting', true);
+        throw e;
       }
-      return qaOk(
-        {
-          udid: res.udid,
-          name: res.name,
-          bundleId: res.bundleId ?? null,
-          installed: res.installed,
-          launched: res.launched,
-          mode: res.mode,
-          wda: res.wda ?? null,
-        },
-        res.resultText ?? 'iOS target prepared.',
-      );
+      if (res.ok && res.booting) {
+        const job = sessions.createJob(session, 'prepare_ios');
+        const rest: PrepareIosArgs = { ...prepArgs, simulator: res.udid };
+        void runWithSignal(sessions.abortSignal(session, job.jobId), () => runPrepareIosJob(sessions, session, job, rest, installAffects));
+        return qaOk(
+          {
+            status: 'booting',
+            udid: res.udid,
+            name: res.name,
+            bound: true,
+            elapsedMs: res.bootElapsedMs ?? null,
+            jobId: job.jobId,
+            kind: job.kind,
+            next: `qa_job_status { sessionId:"${session.id}", jobId:"${job.jobId}", waitMs:45000 }`,
+          },
+          `${res.name} is still booting after ${Math.round((res.bootElapsedMs ?? 0) / 1000)} s (cold boot); bound to the session. ` +
+            `Boot > install > launch > WDA check continue as job ${job.jobId}.\n` +
+            `Next: qa_job_status { sessionId:"${session.id}", jobId:"${job.jobId}", waitMs:45000 } (repeat while running).`,
+        );
+      }
+      return prepareResultToTool(sessions, session, res, installAffects, mutationConsent);
     },
   );
+}
+
+type InstallAffects = { appPath: string; sig: string; external: boolean } | undefined;
+
+/** Map a finished prepareIos result to the tool result (also the job's result payload). */
+function prepareResultToTool(
+  sessions: SessionStore,
+  session: Session,
+  res: PrepareIosResult,
+  installAffects: InstallAffects,
+  mutationConsent: PrepareIosArgs['mutationConsent'],
+): CallToolResult {
+  if (!res.ok) {
+    if (installAffects) {
+      sessions.recordMutation(session, {
+        tool: 'qa_prepare_ios_target',
+        action: 'install_app',
+        risk: installAffects.external ? 'medium' : 'low',
+        target: installAffects,
+        consent: mutationConsent,
+        status: 'blocked',
+        detail: res.error ?? res.failureCode ?? 'prepare failed',
+      });
+    }
+    return qaFail((res.failureCode as FailureCode) ?? 'APP_LAUNCH_FAILED', {
+      what: res.error ?? 'iOS prepare failed',
+      extra: { udid: res.udid ?? null, name: res.name ?? null },
+    });
+  }
+  return qaOk(
+    {
+      udid: res.udid,
+      name: res.name,
+      bundleId: res.bundleId ?? null,
+      installed: res.installed,
+      launched: res.launched,
+      mode: res.mode,
+      wda: res.wda ?? null,
+    },
+    res.resultText ?? 'iOS target prepared.',
+  );
+}
+
+/** Background rest of qa_prepare_ios_target after the in-call boot wait ran out: full boot wait
+ *  (joins the running boot) > install > launch > WDA check. Consent was consumed by the call.
+ *  Exported for tests. */
+export async function runPrepareIosJob(
+  sessions: SessionStore,
+  session: Session,
+  job: JobRecord,
+  args: PrepareIosArgs,
+  installAffects?: InstallAffects,
+): Promise<void> {
+  const signal = sessions.abortSignal(session, job.jobId);
+  const upd = (patch: Partial<JobRecord>) => sessions.updateJobIfRunning(session, job, patch);
+  let res: PrepareIosResult;
+  try {
+    res = await prepareIos(sessions, session, args, { signal, onProgress: (p) => upd({ progress: p }) });
+  } catch (e) {
+    if (isAbortError(e, signal)) return; // cancelled: the job already says so
+    upd({ status: 'failed', error: String(e), resultText: `iOS prepare failed: ${String(e)}`, endedAt: Date.now() });
+    return;
+  }
+  if (signal?.aborted) return;
+  const out = prepareResultToTool(sessions, session, res, installAffects, args.mutationConsent);
+  const result = (out.structuredContent ?? {}) as Record<string, unknown>;
+  const resultText = (out.content?.[0] as { text?: string } | undefined)?.text ?? res.resultText;
+  if (!res.ok) {
+    upd({
+      status: 'failed',
+      error: `${res.failureCode ?? 'APP_LAUNCH_FAILED'}: ${res.error ?? 'iOS prepare failed'}`,
+      result,
+      resultText,
+      endedAt: Date.now(),
+    });
+    return;
+  }
+  upd({ status: 'done', progress: 'done', result, resultText, endedAt: Date.now() });
 }

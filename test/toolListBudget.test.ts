@@ -1,6 +1,6 @@
 // tools/list is loaded into the agent's context by clients that don't defer it (Codex loads every
 // tool up front), so its size is a real cost. This pins a byte budget for the serialized list.
-// 2.1.2 trimmed descriptions from ~69.8 KB to ~62.7 KB; the budget keeps ~5% headroom over that.
+// 2.2.0 trimmed descriptions from ~69.8 KB to ~62.7 KB; the budget keeps ~5% headroom over that.
 // If you add a tool or a long description, move the detail to docs/tools.md first; raise the
 // budget only on purpose.
 

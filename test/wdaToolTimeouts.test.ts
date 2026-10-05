@@ -1,4 +1,4 @@
-// 2.1.2 review: one MCP tool call stays under ~50 s (Codex default tool_timeout_sec is 60).
+// 2.2.0 review: one MCP tool call stays under ~50 s (Codex default tool_timeout_sec is 60).
 //  - qa_wda build runs xcodebuild as a background job (qa_job_status), consent gating unchanged
 //  - qa_wda start waits at most 45 s in-call, then returns ok status:"starting"; qa_wait
 //    for:"wda_ready" polls /status (cancellable, same 50 s clamp)
