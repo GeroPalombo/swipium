@@ -5,7 +5,7 @@
 // toolchain, blockers) and the former qa_plan tool (READY / BLOCKED / UNSAFE workflows, src/plan/plan.ts).
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk } from '../lib/result.js';
 import { qaFail } from '../oracle/failures.js';
 import { resolveProjectRoot, unresolvedProjectRootError } from '../context/projectRoot.js';

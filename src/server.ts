@@ -1,15 +1,9 @@
 import { statSync } from 'node:fs';
 import { basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-  McpError,
-  type CallToolResult,
-  type ListToolsResult,
-} from '@modelcontextprotocol/sdk/types.js';
+import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
+import { McpServer, ProtocolErrorCode, ResourceNotFoundError, ResourceTemplate, type ProtocolError } from '@modelcontextprotocol/server';
+import type { CallToolResult, ListToolsResult, ServerContext as SdkServerContext } from '@modelcontextprotocol/server';
 import { SessionStore, decodeUriSegment, encodeUriSegment, isWithinRoot, type Session } from './session/store.js';
 import {
   AUTO_ANSWER_MS,
@@ -224,9 +218,9 @@ async function routePendingConsent(
   const consentId = pendingConsentId(result);
   if (!consentId) return result;
   const first = (args[0] ?? {}) as Record<string, unknown>;
-  const extra = args[1] as { signal?: AbortSignal; requestId?: string | number } | undefined;
+  const mcpReq = (args[1] as ToolCallContext | undefined)?.mcpReq;
   const req = peekConsent(consentId);
-  const decision = await requestConsentDecision(consentId, { signal: extra?.signal, relatedRequestId: extra?.requestId });
+  const decision = await requestConsentDecision(consentId, { signal: mcpReq?.signal, relatedRequestId: mcpReq?.id });
   if (decision.mechanism === 'refused') {
     recordConsentRefusal(ledger.sessions, ledger.tool, first.sessionId, consentId, req, 'policy', decision.reason);
     return qaError({
@@ -369,7 +363,7 @@ export function runningJobNote(sessions: SessionStore, tool: string, sessionId: 
 function annotateKeepingNotes(result: CallToolResult, note: string): CallToolResult {
   const prior = (result.structuredContent as { notes?: unknown } | undefined)?.notes;
   const out = qaAnnotate(result, [note]);
-  if (Array.isArray(prior)) out.structuredContent = { ...out.structuredContent, notes: [...prior, note] };
+  if (Array.isArray(prior)) out.structuredContent = { ...(out.structuredContent as Record<string, unknown>), notes: [...prior, note] };
   return out;
 }
 
@@ -409,8 +403,12 @@ export interface ToolEntry {
   /** Declared top-level parameters, in declaration order. */
   accepted: readonly string[];
   /** The wrapped handler (response mode, consent routing, cancellation scope); takes VALIDATED args. */
-  handler: (args: Record<string, unknown>, extra: unknown) => Promise<unknown>;
+  handler: (args: Record<string, unknown>, ctx: SdkServerContext) => Promise<unknown>;
 }
+
+/** The parts of the SDK's per-request context (ServerContext) the tool wrapper reads; loose so
+ * tests can hand a handler a minimal `{ mcpReq: { signal } }`. */
+type ToolCallContext = { mcpReq?: { signal?: AbortSignal; id?: string | number } };
 
 function installResponseModeWrapper(
   server: McpServer,
@@ -441,11 +439,11 @@ function installResponseModeWrapper(
       // Every call records the project root it resolves (if any) so the result carries
       // `rootSource` (+ a note when the root was only guessed from the server cwd).
       // Consents minted/consumed during this call are bound to its sessionId (consent.ts).
-      // Cancellation: the call's MCP signal (extra.signal, the handler's last argument) is scoped
-      // to THIS call (abortScope): driver adb/WDA calls made by the tool abort with it, and a
+      // Cancellation: the call's MCP signal (ctx.mcpReq.signal, the handler's last argument) is
+      // scoped to THIS call (abortScope): driver adb/WDA calls made by the tool abort with it, and a
       // background job's signal (bound by the job itself) never leaks into or out of it.
-      const extra = a[a.length - 1] as { signal?: unknown } | undefined;
-      const callSignal = extra?.signal instanceof AbortSignal ? extra.signal : undefined;
+      const signal = (a[a.length - 1] as ToolCallContext | undefined)?.mcpReq?.signal;
+      const callSignal = signal instanceof AbortSignal ? signal : undefined;
       const run = async (callArgs: unknown[]) => {
         const { value, resolved } = await runWithSignal(callSignal, () =>
           withRootResolutionRecording(async () =>
@@ -569,13 +567,17 @@ export function invalidArgumentsError(
   );
 }
 
-/** JSON-RPC code for "resource not found" (MCP spec 2025-11-25; the SDK enum has no name for it). */
-export const RESOURCE_NOT_FOUND = -32002;
+/** JSON-RPC code for "resource not found" on the wire: -32602 (Invalid params) with the URI in
+ * `data`. MCP 2025-11-25 suggested -32002 (what Swipium sent up to 2.1); SDK v2 rewrites -32002 to
+ * -32602 at its encode seam on every protocol revision, and 2026-07-28 requires -32602. The spec
+ * asks clients to accept both. */
+export const RESOURCE_NOT_FOUND = ProtocolErrorCode.InvalidParams;
 
-/** resources/read for a URI that matches a template but names nothing that exists: a typed
- * -32002 (with the URI in `data`) instead of the SDK's generic -32603 for a plain Error. */
-export function resourceNotFound(uri: string, why: string): McpError {
-  return new McpError(RESOURCE_NOT_FOUND, `Resource not found: ${uri}: ${why}`, { uri });
+/** resources/read for a URI that matches a template but names nothing that exists: the SDK's
+ * typed ResourceNotFoundError (code RESOURCE_NOT_FOUND, `data.uri`) with a reason, instead of the
+ * generic -32603 a plain Error becomes. */
+export function resourceNotFound(uri: string, why: string): ProtocolError {
+  return new ResourceNotFoundError(uri, `Resource not found: ${uri}: ${why}`);
 }
 
 /** tools/call result for a tool name nobody registered: the isError text result SDK 1.x has always
@@ -593,12 +595,12 @@ function unknownToolResult(name: string): CallToolResult {
  *    replacement + stale-client hint); unknown tool names > the SDK 1.x "Tool not found" isError
  *    result; undeclared top-level arguments > INVALID_ARGUMENT (unknownArguments); schema failures
  *    > INVALID_ARGUMENT (invalidArguments), or STALE_CLIENT when the call is a legacy shape; then
- *    the wrapped handler runs with the validated arguments. A handler that throws becomes an
- *    isError text result, as McpServer does.
+ *    the wrapped handler runs with the validated arguments and the SDK request context. A handler
+ *    that throws becomes an isError text result, as McpServer does.
  */
 function installToolHandlers(server: McpServer, tools: ReadonlyMap<string, ToolEntry>): void {
   let listed: Array<Record<string, unknown>> | undefined;
-  server.server.setRequestHandler(ListToolsRequestSchema, () => {
+  server.server.setRequestHandler('tools/list', () => {
     listed ??= [...tools.values()].map((t) => ({
       name: t.name,
       ...(t.title !== undefined ? { title: t.title } : {}),
@@ -609,7 +611,7 @@ function installToolHandlers(server: McpServer, tools: ReadonlyMap<string, ToolE
     }));
     return { tools: listed } as ListToolsResult;
   });
-  server.server.setRequestHandler(CallToolRequestSchema, async (request, extra): Promise<CallToolResult> => {
+  server.server.setRequestHandler('tools/call', async (request, ctx): Promise<CallToolResult> => {
     const name = String(request.params.name);
     const args = request.params.arguments as Record<string, unknown> | undefined;
     const startedAt = Date.now();
@@ -634,7 +636,9 @@ function installToolHandlers(server: McpServer, tools: ReadonlyMap<string, ToolE
       return rejected(invalidArgumentsError(name, checked.issues, checked.total, tool.accepted));
     }
     try {
-      return (await tool.handler(checked.data, extra)) as CallToolResult;
+      // projectCallToolResult: the SDK's per-era result projection, which low-level tools/call
+      // handlers apply themselves (identity for Swipium's object-shaped structuredContent).
+      return server.server.projectCallToolResult((await tool.handler(checked.data, ctx)) as CallToolResult, undefined);
     } catch (error) {
       return { content: [{ type: 'text', text: error instanceof Error ? error.message : String(error) }], isError: true };
     }
@@ -946,9 +950,10 @@ export async function startServer(): Promise<void> {
     sdkOnClose?.();
     void restoreThenExit(0, 'transport-close');
   };
-  // The SDK's StdioServerTransport (1.29 to 1.32) never listens for stdin 'end', so onclose above
-  // does not fire on EOF and an in-flight call (a 30 s qa_wait, a long job) kept the process
-  // alive after the client was gone. Treat EOF as the disconnect it is.
+  // stdin EOF = the client is gone. SDK v2's StdioServerTransport closes itself on EOF (onclose
+  // above); SDK 1.x never did, and an in-flight call (a 30 s qa_wait, a long job) kept the process
+  // alive. Listen ourselves too, so the cleanup never depends on the SDK version (restoreThenExit
+  // runs once).
   process.stdin.once('end', () => void restoreThenExit(0, 'stdin-end'));
   log('info', 'swipium connected over stdio');
   // Reap long-lived children (Metro, managed WDA, recorders) left behind by a crashed previous

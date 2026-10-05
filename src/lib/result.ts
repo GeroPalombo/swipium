@@ -20,7 +20,7 @@
 // backwards-compatible copy.
 
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { CallToolResult } from '@modelcontextprotocol/server';
 
 export type ResponseMode = 'compact' | 'normal' | 'verbose';
 export const DEFAULT_RESPONSE_MODE: ResponseMode = 'normal';

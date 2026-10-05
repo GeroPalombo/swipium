@@ -30,7 +30,7 @@
 //   openWorldHint   false:  everywhere. Swipium only talks to local simulators, local toolchains,
 //                           and the local project (a non-loopback WDA URL is consent-gated).
 
-import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
+import type { ToolAnnotations } from '@modelcontextprotocol/server';
 import type { ToolName } from '../version.js';
 
 type Kind = 'read' | 'write' | 'write-idempotent' | 'destructive';

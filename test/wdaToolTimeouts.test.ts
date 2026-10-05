@@ -197,9 +197,12 @@ describe('qa_wait for:"wda_ready"', () => {
     const sessionId = await h.start(new FakeDriver(buttonScreen('A', 1)));
     const ac = new AbortController();
     const started = Date.now();
-    const p = h.client.callTool({ name: 'qa_wait', arguments: { sessionId, for: 'wda_ready', timeoutMs: 30_000 } }, undefined, {
-      signal: ac.signal,
-    });
+    const p = h.client.callTool(
+      { name: 'qa_wait', arguments: { sessionId, for: 'wda_ready', timeoutMs: 30_000 } },
+      {
+        signal: ac.signal,
+      },
+    );
     setTimeout(() => ac.abort(), 150);
     await expect(p).rejects.toThrow();
     expect(Date.now() - started).toBeLessThan(3000);

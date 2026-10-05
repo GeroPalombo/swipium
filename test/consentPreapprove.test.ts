@@ -11,9 +11,8 @@ import { describe, expect, it, afterEach, beforeAll, afterAll, vi } from 'vitest
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { ElicitRequestSchema, type CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
+import type { CallToolResult } from '@modelcontextprotocol/client';
 
 const fakeHome = mkdtempSync(join(tmpdir(), 'swipium-preapprove-home-'));
 process.env.HOME = fakeHome;
@@ -341,7 +340,7 @@ describe('headless client through the in-memory server (qa_network)', () => {
     sessions = ctx.sessions;
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     client = new Client({ name: 'headless', version: '0' }, { capabilities: { elicitation: { form: {} } } });
-    client.setRequestHandler(ElicitRequestSchema, async () => {
+    client.setRequestHandler('elicitation/create', async () => {
       elicited++;
       if (answerThrows) throw new Error('client transport exploded');
       if (answerDelayMs) await new Promise((r) => setTimeout(r, answerDelayMs));

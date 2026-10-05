@@ -2,7 +2,7 @@
 // so the agent doesn't shell out to `adb shell wm size/density` or measure screenshots.
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError } from '../../lib/result.js';
 import { getOrientation } from '../../lib/device.js';
 import { blockedDeviceResult, getDriver } from '../../session/attach.js';

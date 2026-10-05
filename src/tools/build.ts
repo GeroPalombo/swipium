@@ -9,7 +9,7 @@
 // re-resolves the produced artifact so the next step (qa_prepare_target / qa_test_this) has it.
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, qaAnnotate, unknownSessionError } from '../lib/result.js';
 import { qaFail } from '../oracle/failures.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';

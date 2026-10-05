@@ -14,9 +14,9 @@ import { delimiter, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { z } from 'zod';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
+import { Client } from '@modelcontextprotocol/client';
+import type { CallToolResult } from '@modelcontextprotocol/client';
 import { PROMPT_COUNT, SWIPIUM_VERSION, TOOL_COUNT } from '../src/version.js';
 
 const REPO = resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
@@ -152,12 +152,13 @@ describe.skipIf(process.platform === 'win32')('stdio conformance (real binary)',
     expect(err?.code).toBe(-32601);
   });
 
-  it('an unknown resource is -32002', async () => {
+  it('an unknown resource is -32602 with the URI in data (SDK v2; Swipium <= 2.1 sent -32002)', async () => {
     const err = await client.readResource({ uri: 'swipium://session/x/y/z' }).then(
       () => undefined,
-      (e: { code?: number }) => e,
+      (e: { code?: number; data?: { uri?: string } }) => e,
     );
-    expect(err?.code).toBe(-32002);
+    expect(err?.code).toBe(-32602);
+    expect(err?.data?.uri).toBe('swipium://session/x/y/z');
   });
 
   it('a 4 MB argument gets a small error and keeps the connection', async () => {
@@ -185,7 +186,7 @@ describe.skipIf(process.platform === 'win32')('stdio conformance (real binary)',
     const before = adbDevicesCalls();
     const ac = new AbortController();
     const pending = client
-      .callTool({ name: 'qa_wait', arguments: { sessionId, for: 'device_online', timeoutMs: 30_000 } }, undefined, { signal: ac.signal })
+      .callTool({ name: 'qa_wait', arguments: { sessionId, for: 'device_online', timeoutMs: 30_000 } }, { signal: ac.signal })
       .catch(() => undefined);
     await sleep(2_500);
     expect(adbDevicesCalls()).toBeGreaterThan(before); // it really was polling

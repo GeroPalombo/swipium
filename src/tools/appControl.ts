@@ -3,7 +3,7 @@
 // clear_data / fresh_start (destructive, needs consent). Reports package, foreground, killed.
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, invalidArgumentError, isInvalidArgumentError, unknownSessionError, cancelledResult } from '../lib/result.js';
 import { isAbortError } from '../lib/abortScope.js';
 import { assertAndroidAppId } from '../drivers/DirectDriver.js';

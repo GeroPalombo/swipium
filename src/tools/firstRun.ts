@@ -8,7 +8,7 @@
 // generated emails are recorded as evidence so a developer can reproduce the throwaway account.
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, qaAnnotate, unknownSessionError } from '../lib/result.js';
 import { qaNeedsInput, NeedsInput, type NeedsInputPayload } from '../lib/needsInput.js';
 import { blockedDeviceResult, getDriver } from '../session/attach.js';

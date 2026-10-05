@@ -3,7 +3,7 @@
 // by default (pixels can't be redacted) unless force:true.
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, qaStop, unknownSessionError } from '../lib/result.js';
 import { isSecureNode } from '../lib/redact.js';
 import { sensitiveRefusal } from '../lib/sensitive.js';

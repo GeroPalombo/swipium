@@ -29,7 +29,7 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { CallToolResult } from '@modelcontextprotocol/server';
 import { log } from '../lib/logger.js';
 
 export type Risk = 'low' | 'medium' | 'high';

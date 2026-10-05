@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { CallToolResult } from '@modelcontextprotocol/server';
 
 const adbDevicesCalls: number[] = [];
 vi.mock('../src/lib/android.js', async (orig) => ({
@@ -78,7 +78,7 @@ describe('qa_wait', () => {
       adbDevicesCalls.length = 0;
       const started = Date.now();
       const p = runWithSignal(ctl.signal, () =>
-        tools.get('qa_wait')!.h({ sessionId: id, for: 'device_online', timeoutMs: 30_000 }, { signal: ctl.signal }),
+        tools.get('qa_wait')!.h({ sessionId: id, for: 'device_online', timeoutMs: 30_000 }, { mcpReq: { signal: ctl.signal } }),
       );
       setTimeout(() => ctl.abort(), 200);
       const res = await p;
@@ -99,9 +99,12 @@ describe('qa_wait', () => {
       const id = await h.start(new FakeDriver(buttonScreen('A', 1)));
       const ctl = new AbortController();
       adbDevicesCalls.length = 0;
-      const p = h.client.callTool({ name: 'qa_wait', arguments: { sessionId: id, for: 'device_online', timeoutMs: 30_000 } }, undefined, {
-        signal: ctl.signal,
-      });
+      const p = h.client.callTool(
+        { name: 'qa_wait', arguments: { sessionId: id, for: 'device_online', timeoutMs: 30_000 } },
+        {
+          signal: ctl.signal,
+        },
+      );
       await delay(300);
       ctl.abort();
       await expect(p).rejects.toBeTruthy();
@@ -130,7 +133,7 @@ describe('qa_wait', () => {
     const tools = capture((s) => registerWait(s, h.sessions));
     const ctl = new AbortController();
     const p = runWithSignal(ctl.signal, () =>
-      tools.get('qa_wait')!.h({ sessionId: id, for: 'device_online', timeoutMs: 180_000 }, { signal: ctl.signal }),
+      tools.get('qa_wait')!.h({ sessionId: id, for: 'device_online', timeoutMs: 180_000 }, { mcpReq: { signal: ctl.signal } }),
     );
     setTimeout(() => ctl.abort(), 100);
     expect(((await p).structuredContent as Record<string, unknown>).failureCode).toBe('CANCELLED');
@@ -160,7 +163,7 @@ describe('qa_job_status long-poll', () => {
     const ctl = new AbortController();
     const started = Date.now();
     const p = runWithSignal(ctl.signal, () =>
-      tools.get('qa_job_status')!.h({ sessionId: id, jobId: job.jobId, waitMs: 30_000 }, { signal: ctl.signal }),
+      tools.get('qa_job_status')!.h({ sessionId: id, jobId: job.jobId, waitMs: 30_000 }, { mcpReq: { signal: ctl.signal } }),
     );
     setTimeout(() => ctl.abort(), 100);
     const res = await p;
@@ -178,7 +181,6 @@ describe('qa_act wait', () => {
     const ctl = new AbortController();
     const p = h.client.callTool(
       { name: 'qa_act', arguments: { sessionId: id, action: 'wait', for: { text: 'Never there' }, timeoutMs: 20_000 } },
-      undefined,
       { signal: ctl.signal },
     );
     await delay(300);

@@ -3,7 +3,7 @@
 // Jobs are waited on with qa_job_status waitMs. Returns timeout + current state + next steps.
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { cancelledResult, qaAnnotate, qaError, qaOk, unknownSessionError } from '../lib/result.js';
 import { isAbortError, sleepOrCancel, throwIfCancelled } from '../lib/abortScope.js';
 import { resolveDevice } from '../session/attach.js';

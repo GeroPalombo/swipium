@@ -84,7 +84,7 @@ Adding, removing, or renaming a tool means updating all of these in the same cha
 
 Tests use [Vitest](https://vitest.dev) and never need a device, emulator, or simulator:
 
-- **In-memory server.** Create the server with `createServer()` from `src/server.ts` and connect a client through `InMemoryTransport.createLinkedPair()` from the MCP SDK, then call tools as a real client would (see `test/publicSurface.test.ts`).
+- **In-memory server.** Create the server with `createServer()` from `src/server.ts` and connect a `Client` through `InMemoryTransport.createLinkedPair()` (both from `@modelcontextprotocol/client`), then call tools as a real client would (see `test/publicSurface.test.ts`).
 - **Fake drivers.** `setDriverFactoryForTests()` (`src/session/attach.ts`) injects a fake `Driver`. `test/actFixFake.ts` is a shared harness with a fake Android driver, a UI-dump builder, and a connected client.
 - **Isolation.** Set `SWIPIUM_DISABLE_DEVICE_DISCOVERY=1` so a machine with a running emulator doesn't change results, and point `HOME` at a temporary directory for anything that touches `~/.swipium`.
 
@@ -100,7 +100,7 @@ Put it in the `src/tools/` module for its tool family, or in a new module (for e
 
 ```ts
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { cancelledResult, qaError, qaOk, unknownSessionError } from '../lib/result.js';
 import { consumeConsent, requireConsent } from '../consent/consent.js';
 import { currentSignal, isAbortError } from '../lib/abortScope.js';

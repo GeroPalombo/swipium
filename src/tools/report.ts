@@ -3,7 +3,7 @@
 // terminal state. This tool resolves the session, runs the service, and surfaces its result.
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { generateSessionReport } from '../services/report.js';
 import type { SessionStore } from '../session/store.js';

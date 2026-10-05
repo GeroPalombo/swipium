@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, qaStop, qaAnnotate, unknownSessionError } from '../lib/result.js';
 import {
   FLOW_ENV_PREFIX,

@@ -9,7 +9,7 @@
 import { z } from 'zod';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError } from '../lib/result.js';
 import { unresolvedProjectRootError } from '../context/projectRoot.js';
 import { loadProjectConfig } from '../cli/scan.js';

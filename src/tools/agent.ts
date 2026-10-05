@@ -6,7 +6,7 @@
 import { realpathSync, statSync } from 'node:fs';
 import { isAbsolute, resolve as resolvePath, sep } from 'node:path';
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { FAILURES, failureOwner, isSelfFixable, type FailureCode } from '../oracle/failures.js';
 import { progressLine } from '../session/progress.js';

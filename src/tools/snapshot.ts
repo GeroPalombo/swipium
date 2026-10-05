@@ -2,7 +2,7 @@
 // Snapshot returns compact @eN refs + a snapshotQuality verdict (+ optional diff).
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, unknownSessionError, cancelledResult } from '../lib/result.js';
 import { parseSnapshot, signature, renderElements } from '../snapshot/parse.js';
 import { presentElements } from '../snapshot/present.js';
@@ -33,7 +33,7 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
         filter: z.string().optional().describe('Substring match on text/label/id/role (finds capped elements).'),
       },
     },
-    async ({ sessionId, diff, filter }, extra) => {
+    async ({ sessionId, diff, filter }, ctx) => {
       const session = sessions.get(sessionId);
       if (!session) {
         return unknownSessionError(sessionId);
@@ -53,7 +53,7 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
       }
       // Cancellation: this call's signal is scoped to the call (abortScope), so aborting it never
       // touches a concurrently running job's adb/WDA calls (and vice versa).
-      return runWithSignal(extra?.signal, async () => {
+      return runWithSignal(ctx?.mcpReq.signal, async () => {
         if (driver.kind === 'simulator') {
           return qaError({
             what: 'A structured UI tree is not available on the iOS simulator backend',

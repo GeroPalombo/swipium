@@ -12,7 +12,7 @@
 // already tried (`attempted`), and what happens if the user declines (`ifDeclined`). Agents ask
 // one question (never a bundle of guesses) and resume deterministically.
 
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { CallToolResult } from '@modelcontextprotocol/server';
 import { currentResponseMode } from './result.js';
 
 export interface NeedsInputField {

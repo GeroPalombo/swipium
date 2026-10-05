@@ -1,7 +1,7 @@
 // qa_doctor: proactive environment self-diagnosis. Run first.
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { qaOk } from '../lib/result.js';

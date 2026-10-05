@@ -12,7 +12,7 @@
 
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer, CallToolResult } from '@modelcontextprotocol/server';
 import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { unresolvedProjectRootError } from '../context/projectRoot.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
@@ -33,7 +33,6 @@ import { mergeFromAutomation } from '../services/testSuiteKnowledge.js';
 import { bootstrapFeatureExecution } from '../featureTesting/executionBootstrap.js';
 import { log } from '../lib/logger.js';
 import type { ProjectIdentity } from '../appMap/schema.js';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { Session, SessionStore } from '../session/store.js';
 
 type AutomationLanguage = 'auto' | 'javascript' | 'typescript' | 'python';

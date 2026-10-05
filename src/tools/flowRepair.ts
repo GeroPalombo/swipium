@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaError, qaOk, unknownSessionError } from '../lib/result.js';
 import { parseSnapshot, signature } from '../snapshot/parse.js';
 import { repairFlow } from '../flows/repair.js';

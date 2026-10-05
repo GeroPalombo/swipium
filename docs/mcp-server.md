@@ -240,12 +240,14 @@ retention) are listed in the
   `[swipium: truncated ...]` marker naming the local file to read for the rest, and binaries over
   8 MB are not inlined (you get a note with the size and local path).
   A URI that matches a Swipium template but names nothing that exists (unknown artifact, project
-  without an app map, unknown section) fails with JSON-RPC error `-32002` (resource not found).
+  without an app map, unknown section) fails with JSON-RPC error `-32602` and the URI in
+  `error.data.uri` (resource not found; Swipium 2.1 and earlier sent `-32002`, and the MCP SDK v2
+  sends `-32602` on every protocol revision).
 - **Invalid arguments are rejected.** A top-level argument a tool doesn't declare returns
   `INVALID_ARGUMENT` with the accepted parameter list, and nothing runs. Swipium doesn't silently
   drop it. A missing required argument or a wrong type returns the same typed `INVALID_ARGUMENT`
   envelope, with a per-field `what` (for example `uri: Required`) and `invalidArguments`, instead
-  of the SDK's raw validation dump. An unknown tool name stays the SDK's protocol error. Errors
+  of the SDK's raw validation dump. An unknown tool name returns an `isError` result ("Tool ... not found"). Errors
   never echo caller input at full size: argument names and validation paths are cut at 100
   characters (20 listed at most), `what` keeps its first and last part around a marker, every
   string in an error is capped, and an error still over 64 KB drops its extra fields

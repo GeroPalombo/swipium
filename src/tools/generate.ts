@@ -7,8 +7,7 @@
 // (.swipium/test-suite.json) across runs; qa_generate emits per-run assets from this run.
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { McpServer, CallToolResult } from '@modelcontextprotocol/server';
 import { qaError, qaAnnotate as annotate } from '../lib/result.js';
 import { runFlowGenerate } from '../services/flowGenerate.js';
 import { runPomGenerate, runSuiteGenerate, runTestcaseGenerate } from './suite.js';

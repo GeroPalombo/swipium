@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { spawn } from 'node:child_process';
 import { closeSync, existsSync, openSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { cancelledResult, qaError, qaOk, unknownSessionError } from '../lib/result.js';
 import { isAbortError, runWithSignal } from '../lib/abortScope.js';
 import { consumeConsent, requireConsent } from '../consent/consent.js';

@@ -5,8 +5,7 @@
 
 import { z } from 'zod';
 import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { CallToolResult, ReadResourceResult } from '@modelcontextprotocol/sdk/types.js';
+import type { McpServer, CallToolResult, ReadResourceResult } from '@modelcontextprotocol/server';
 import { qaError } from '../lib/result.js';
 import type { ArtifactRecord, SessionStore } from '../session/store.js';
 

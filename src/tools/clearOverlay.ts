@@ -3,7 +3,7 @@
 // dismiss_logbox | allow_permission | deny_permission | dismiss_toast_if_possible.
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import { parseSnapshot, boundsContain, type RawNode } from '../snapshot/parse.js';

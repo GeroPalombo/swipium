@@ -4,7 +4,7 @@
 // tells a developer exactly which controls need testIDs to make flows non-brittle.
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError } from '../../lib/result.js';
 import { parseSnapshot, signature } from '../../snapshot/parse.js';
 import { suggestLocator, automationReadiness, locatorReadinessIssues, type LocatorPlatform } from '../../oracle/locator.js';

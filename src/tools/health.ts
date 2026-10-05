@@ -1,7 +1,7 @@
 // qa_check_health: run the Tier-1 deterministic oracle on demand.
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { checkHealth } from '../oracle/health.js';
 import { recordHealthFindings } from '../oracle/record.js';

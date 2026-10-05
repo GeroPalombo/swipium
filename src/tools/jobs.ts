@@ -2,7 +2,7 @@
 // Lets a client reconnect after a tool-call timeout instead of restarting the work.
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { cancelledResult, qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { currentSignal, isAbortError, sleepOrCancel } from '../lib/abortScope.js';
 import { progressLine } from '../session/progress.js';
@@ -40,7 +40,7 @@ export function registerJobs(server: McpServer, sessions: SessionStore): void {
           ),
       },
     },
-    async ({ sessionId, jobId, waitMs }, extra) => {
+    async ({ sessionId, jobId, waitMs }, ctx) => {
       const session = sessions.get(sessionId);
       let job = session?.jobs.get(jobId);
       if (!session) return unknownSessionError(sessionId);
@@ -56,7 +56,7 @@ export function registerJobs(server: McpServer, sessions: SessionStore): void {
       const budget = Math.min(Math.max(0, waitMs ?? 0), MAX_JOB_WAIT_MS);
       const started = Date.now();
       // Cancelling THIS poll (notifications/cancelled) ends the wait at once; the job keeps running.
-      const signal = extra?.signal ?? currentSignal();
+      const signal = ctx?.mcpReq.signal ?? currentSignal();
       try {
         while (budget > 0 && job.status === 'running' && Date.now() - started < budget) {
           await sleepOrCancel(Math.min(JOB_POLL_INTERVAL_MS, budget - (Date.now() - started)), signal);

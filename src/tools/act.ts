@@ -4,8 +4,7 @@
 // call both acts AND observes the result.
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { McpServer, CallToolResult } from '@modelcontextprotocol/server';
 import { qaOk, qaError, qaStop, qaAnnotate, unknownSessionError, cancelledResult } from '../lib/result.js';
 import { parseSnapshot, signature } from '../snapshot/parse.js';
 import { presentElements } from '../snapshot/present.js';
@@ -488,11 +487,11 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
     // Cancellation (MCP notifications/cancelled): the call's signal is scoped to THIS call
     // (abortScope): an in-flight adb child / WDA request is aborted without touching a
     // concurrently running job's own cancellation.
-    async (rawArgs, extra) => {
+    async (rawArgs, ctx) => {
       // timeoutMs is clamped (not rejected) like qa_job_status waitMs, with a note on the result.
       const clampedFrom = rawArgs.timeoutMs != null && rawArgs.timeoutMs > ACT_TIMEOUT_MAX_MS ? rawArgs.timeoutMs : undefined;
       const args = clampedFrom != null ? { ...rawArgs, timeoutMs: ACT_TIMEOUT_MAX_MS } : rawArgs;
-      const res = await runWithSignal(extra?.signal, async (): Promise<CallToolResult> => {
+      const res = await runWithSignal(ctx?.mcpReq.signal, async (): Promise<CallToolResult> => {
         const { sessionId, action } = args;
         // Single validation layer for the per-action field contract (see REQUIRED_BY_ACTION).
         const invalid = missingRequiredField(action, args);

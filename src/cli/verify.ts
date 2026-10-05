@@ -3,8 +3,8 @@
 // asserts the full Phase-0 surface is present, and calls qa_doctor. This is the same
 // JSON-RPC path the real clients use. It's the closest automatable check to the in-client test.
 
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
+import { Client } from '@modelcontextprotocol/client';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 

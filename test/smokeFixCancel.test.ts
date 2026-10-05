@@ -7,7 +7,7 @@
 // CANCELLED result that is never a tool error, snapshot failure, finding, health verdict or mode switch.
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { CallToolResult } from '@modelcontextprotocol/server';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -82,7 +82,7 @@ describe('cancelled qa_snapshot is not a snapshot failure (Android)', () => {
     for (let i = 0; i < session.budget.maxSnapshotFailures + 1; i++) {
       const before = fake.finishedDumps;
       const ctl = new AbortController();
-      const p = h.client.callTool({ name: 'qa_snapshot', arguments: { sessionId: id } }, undefined, { signal: ctl.signal });
+      const p = h.client.callTool({ name: 'qa_snapshot', arguments: { sessionId: id } }, { signal: ctl.signal });
       setTimeout(() => ctl.abort('user cancelled'), 50);
       await expect(p).rejects.toBeTruthy();
       for (let j = 0; j < 100 && fake.finishedDumps === before; j++) await new Promise((r) => setTimeout(r, 10));
@@ -106,9 +106,12 @@ describe('cancelled qa_snapshot is not a snapshot failure (Android)', () => {
     const session = h.sessions.get(id)!;
     fake.hangTap = true;
     const ctl = new AbortController();
-    const p = h.client.callTool({ name: 'qa_act', arguments: { sessionId: id, action: 'tap', target: { x: 5, y: 5 } } }, undefined, {
-      signal: ctl.signal,
-    });
+    const p = h.client.callTool(
+      { name: 'qa_act', arguments: { sessionId: id, action: 'tap', target: { x: 5, y: 5 } } },
+      {
+        signal: ctl.signal,
+      },
+    );
     setTimeout(() => ctl.abort('user cancelled'), 100);
     await expect(p).rejects.toBeTruthy();
     for (let i = 0; i < 100 && !fake.abortedDuringTap; i++) await new Promise((r) => setTimeout(r, 10));

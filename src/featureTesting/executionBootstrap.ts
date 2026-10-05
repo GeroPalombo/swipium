@@ -9,8 +9,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { sep } from 'node:path';
 import { createHash } from 'node:crypto';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { McpServer, CallToolResult } from '@modelcontextprotocol/server';
 import { qaError } from '../lib/result.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { scanProject } from '../context/scan.js';

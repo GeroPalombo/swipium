@@ -3,7 +3,7 @@
 // privacy-sensitive project can run Swipium with no screen contents leaving the device.
 
 import { qaError } from './result.js';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { CallToolResult } from '@modelcontextprotocol/server';
 
 export function sensitiveRefusal(what: string): CallToolResult {
   return qaError({

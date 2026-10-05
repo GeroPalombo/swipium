@@ -13,7 +13,7 @@
 // src/orchestration/testThis/ (plan resolution, execute gate, pipeline, terminal assembly).
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import type { SessionStore } from '../session/store.js';
 import { handleTestThis } from '../orchestration/testThis/plan.js';
 import { TEST_THIS_WAIT_DEFAULT_MS, TEST_THIS_WAIT_MAX_MS } from '../orchestration/testThis/execute.js';

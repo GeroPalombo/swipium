@@ -1340,7 +1340,7 @@ export const ALL_BUCKETS: FailureBucket[] = ['app_bug', 'environment', 'missing_
 
 // qaFail lives here (not in result.ts) so the taxonomy is the single source of a failure's
 // retry-safety + recovery. Tools emit `qaFail('CODE')` and inherit the registry defaults.
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { CallToolResult } from '@modelcontextprotocol/server';
 import { qaError } from '../lib/result.js';
 
 export function qaFail(

@@ -9,8 +9,8 @@
 //  #14 unknown session → typed INVALID_ARGUMENT (qa_act / qa_snapshot / qa_inspect)
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { buttonScreen, dump, elementsOf, FakeDriver, harness, structured, textOf, type NodeSpec } from './actFixFake.js';
+import type { CallToolResult } from '@modelcontextprotocol/server';
+import { elementsOf, buttonScreen, dump, FakeDriver, harness, structured, textOf, type NodeSpec } from './actFixFake.js';
 import { expandInputPlaceholders, recordableTypedText } from '../src/tools/act.js';
 
 let h: Awaited<ReturnType<typeof harness>>;
@@ -239,9 +239,12 @@ describe('#8 cancellation reaches the driver', () => {
     const id = await h.start(fake);
     fake.hangTap = true;
     const ctl = new AbortController();
-    const p = h.client.callTool({ name: 'qa_act', arguments: { sessionId: id, action: 'tap', target: { x: 5, y: 5 } } }, undefined, {
-      signal: ctl.signal,
-    });
+    const p = h.client.callTool(
+      { name: 'qa_act', arguments: { sessionId: id, action: 'tap', target: { x: 5, y: 5 } } },
+      {
+        signal: ctl.signal,
+      },
+    );
     setTimeout(() => ctl.abort('user cancelled'), 150);
     await expect(p).rejects.toBeTruthy();
     for (let i = 0; i < 50 && !fake.got('pressXY').length; i++) await new Promise((r) => setTimeout(r, 20));

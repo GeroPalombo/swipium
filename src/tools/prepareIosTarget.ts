@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { isAbsolute, join } from 'node:path';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, unknownSessionError } from '../lib/result.js';
 import { qaFail, type FailureCode } from '../oracle/failures.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';

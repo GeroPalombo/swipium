@@ -3,7 +3,7 @@
 // AAB_NEEDS_BUNDLETOOL / AAB_BUILD_APKS_FAILED blocker when it cannot, never a generic error.
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, unknownSessionError } from '../lib/result.js';
 import { qaFail } from '../oracle/failures.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';

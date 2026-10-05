@@ -5,8 +5,7 @@ import { describe, expect, it, beforeAll, afterAll, afterEach, vi } from 'vitest
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 
 const fakeHome = mkdtempSync(join(tmpdir(), 'swipium-loglevel-home-'));
 process.env.HOME = fakeHome;

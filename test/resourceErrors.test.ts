@@ -1,6 +1,7 @@
 // F5 + I6: resources/read errors and size caps.
-//  - an unknown artifact / app-map URI is a typed -32002 (resource not found, MCP spec
-//    2025-11-25), not the SDK's generic -32603 for a plain Error;
+//  - an unknown artifact / app-map URI is a typed resource-not-found error: -32602 with `data.uri`
+//    (SDK v2 sends -32602 on every protocol revision; Swipium <= 2.1 sent -32002), not the SDK's
+//    generic -32603 for a plain Error;
 //  - artifact reads are size-capped: big text returns head (or tail, for logs) + a marker, big
 //    binaries are not inlined, non-text non-image files (recordings) go out as a blob.
 
@@ -8,9 +9,7 @@ import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { McpError } from '@modelcontextprotocol/sdk/types.js';
+import { Client, InMemoryTransport, ProtocolError } from '@modelcontextprotocol/client';
 
 const fakeHome = mkdtempSync(join(tmpdir(), 'swipium-resource-errors-home-'));
 process.env.HOME = fakeHome;
@@ -38,30 +37,31 @@ afterAll(async () => {
   for (const d of [fakeHome, projectRoot, scratch]) rmSync(d, { recursive: true, force: true });
 });
 
-async function readError(uri: string): Promise<McpError> {
+async function readError(uri: string): Promise<ProtocolError> {
   try {
     await client.readResource({ uri });
   } catch (e) {
-    return e as McpError;
+    return e as ProtocolError;
   }
   throw new Error(`expected resources/read of ${uri} to fail`);
 }
 
-describe('resources/read not found > -32002', () => {
+describe('resources/read not found > -32602 + data.uri', () => {
   it('unknown artifact', async () => {
     const s = sessions.create(projectRoot);
     const e = await readError(`swipium://session/${s.id}/screenshot/nope.png`);
-    expect(RESOURCE_NOT_FOUND).toBe(-32002);
-    expect(e.code).toBe(-32002);
+    expect(RESOURCE_NOT_FOUND).toBe(-32602);
+    expect(e.code).toBe(-32602);
+    expect((e.data as { uri?: string }).uri).toMatch(/nope\.png$/);
     expect(e.message).toMatch(/Resource not found: swipium:\/\/session\/.*nope\.png: unknown artifact/);
   });
 
   it('unknown project for the app-map templates', async () => {
     const section = await readError('swipium://project/deadbeef/app-map/features/login');
-    expect(section.code).toBe(-32002);
+    expect(section.code).toBe(-32602);
     expect(section.message).toMatch(/unknown project deadbeef/);
     const full = await readError('swipium://project/deadbeef/app-map');
-    expect(full.code).toBe(-32002);
+    expect(full.code).toBe(-32602);
   });
 
   it('a small artifact still reads normally (image as blob, text as text)', async () => {

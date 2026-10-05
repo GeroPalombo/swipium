@@ -5,7 +5,7 @@
 // data and intentional skips stop being mislabeled as failures.
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import type { SessionStore, TestOutcome, TestCategory } from '../session/store.js';
 

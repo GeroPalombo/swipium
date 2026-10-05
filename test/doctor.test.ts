@@ -4,9 +4,8 @@
 // WDA reachability (a fetch, not a spawn) is stubbed to "unreachable" for hermeticity.
 
 import { describe, expect, it, beforeAll, afterAll, vi } from 'vitest';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
+import type { CallToolResult } from '@modelcontextprotocol/client';
 
 const env = vi.hoisted(() => ({ binariesPresent: true }));
 

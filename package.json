@@ -64,7 +64,8 @@
     "inspector": "npm run build && npx @modelcontextprotocol/inspector node dist/index.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@modelcontextprotocol/client": "^2.3.1",
+    "@modelcontextprotocol/server": "^2.3.1",
     "fast-xml-parser": "^5.8.0",
     "yaml": "^2.9.0",
     "zod": "^4.2.0"

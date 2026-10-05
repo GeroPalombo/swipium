@@ -17,8 +17,7 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { isAbsolute, join, parse, resolve } from 'node:path';
 import { homedir } from 'node:os';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { McpServer, CallToolResult } from '@modelcontextprotocol/server';
 import { qaError } from '../lib/result.js';
 
 export type ProjectRootSource = 'arg' | 'mcp-roots' | 'env:SWIPIUM_PROJECT_ROOT' | 'env:CLAUDE_PROJECT_DIR' | 'cwd' | 'none';
