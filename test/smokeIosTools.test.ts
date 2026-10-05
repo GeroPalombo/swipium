@@ -11,9 +11,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
+import type { CallToolResult } from '@modelcontextprotocol/client';
 
 const fakeHome = realpathSync(mkdtempSync(join(tmpdir(), 'swipium-smokeios-tools-')));
 process.env.HOME = fakeHome;
@@ -209,8 +208,12 @@ describe('5: qa_wda build auto-discovers the Appium WebDriverAgent', () => {
     const gate = await call('qa_wda', { sessionId, action: 'build', device: UDID });
     expect(gate.requiresConsent).toBe(true);
     expect(String(gate.exactCommand)).toContain(APPIUM_WDA);
-    const built = await call('qa_wda', { sessionId, action: 'build', device: UDID, consentId: gate.consentId, approve: true });
-    expect(built.ok).toBe(true);
+    // build runs as a background job (2.2.0): the result lands on the job.
+    const started = await call('qa_wda', { sessionId, action: 'build', device: UDID, consentId: gate.consentId, approve: true });
+    expect(started).toMatchObject({ ok: true, status: 'running' });
+    expect((await call('qa_job_status', { sessionId, jobId: started.jobId, waitMs: 5000 })).status).toBe('done');
+    const built = sessions.get(sessionId)!.jobs.get(started.jobId as string)!.result as Record<string, unknown>;
+    expect(built.built).toBe(true);
     expect(built.wdaProjectPath).toBe(APPIUM_WDA);
     expect(built.wdaProjectSource).toBe('appium-discovered');
     expect(built.wdaBuildProduct).toMatchObject({ built: true });

@@ -10,9 +10,8 @@ import { describe, expect, it, beforeAll, afterAll, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
+import type { CallToolResult } from '@modelcontextprotocol/client';
 import { TOOL_NAMES } from '../src/version.js';
 
 const fakeHome = mkdtempSync(join(tmpdir(), 'swipium-contract-home-'));

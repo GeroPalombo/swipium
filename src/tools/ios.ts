@@ -7,8 +7,9 @@
 import { z } from 'zod';
 import { existsSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
+import type { McpServer } from '@modelcontextprotocol/server';
+import { cancelledResult, qaOk, qaError, unknownSessionError } from '../lib/result.js';
+import { isAbortError } from '../lib/abortScope.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { sensitiveRefusal } from '../lib/sensitive.js';
 import { SimctlDriver } from '../drivers/SimctlDriver.js';
@@ -45,18 +46,18 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
     {
       title: 'iOS simulator control',
       description:
-        'Control an iOS Simulator (macOS only). actions: list, boot (binds it to the session), install (.app, consent-gated), launch, ' +
-        'terminate, openurl (deep link), logs, privacy_reset (consent-gated), erase (consent-gated, wipes the simulator). Screenshots: ' +
-        'qa_screenshot; WebDriverAgent (structured tap/type/snapshot): qa_wda.',
+        'Control an iOS Simulator (macOS): list, boot (binds it to the session; a slow cold boot returns status:"booting", poll ' +
+        'qa_wait for:"simulator_booted"), install (.app), launch, terminate, openurl, ' +
+        'logs, privacy_reset, erase (wipes it). install, privacy_reset, and erase are consent-gated. Structured automation: qa_wda.',
       inputSchema: {
         sessionId: z.string(),
         action: z.enum(['list', 'boot', 'install', 'launch', 'terminate', 'openurl', 'logs', 'privacy_reset', 'erase']),
-        device: z.string().optional().describe('Simulator udid or name substring (for boot/erase).'),
-        app: z.string().optional().describe('Path to a .app bundle (for install); absolute or relative to the project root.'),
-        bundleId: z.string().optional().describe('App bundle id (for launch/terminate/privacy_reset).'),
-        url: z.string().optional().describe('Deep link (for openurl).'),
-        last: z.string().optional().describe('Time range for logs, e.g. 5m, 30m, 1h. Defaults to 5m.'),
-        service: z.string().optional().describe('Privacy service for privacy_reset (e.g. location, photos, camera, all).'),
+        device: z.string().optional().describe('boot/erase: simulator udid or name substring.'),
+        app: z.string().optional().describe('install: .app path (absolute or project-relative).'),
+        bundleId: z.string().optional().describe('launch/terminate/privacy_reset: bundle id.'),
+        url: z.string().optional().describe('openurl: deep link.'),
+        last: z.string().optional().describe('logs: time range, e.g. 30m (default 5m).'),
+        service: z.string().optional().describe('privacy_reset: service, e.g. location, photos, all.'),
         consentId: z.string().optional(),
         approve: z.boolean().optional(),
       },
@@ -111,12 +112,17 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
             failureCode: 'SIMULATOR_RUNTIME_MISSING',
             nextSteps: ['qa_ios { action: "list" } to see available simulators, or install an iOS simulator runtime in Xcode.'],
           });
+        let booted: sim.BoundedBootResult;
         try {
           sessions.milestone(session, 'simulator_boot_start');
           invalidateWdaPageSource(pick.udid); // the screen changes outside WDA: drop cached page sources
-          await sim.boot(pick.udid);
-          sessions.milestone(session, 'simulator_boot_end');
+          // Bounded in-call wait (one call stays under client tool timeouts); a slower cold boot keeps
+          // going in the background and the agent polls qa_wait { for:"simulator_booted" }.
+          booted = await sim.bootWithin(pick.udid, sim.SIMULATOR_BOOT_CALL_WAIT_MS);
+          if (booted.booted) sessions.milestone(session, 'simulator_boot_end');
         } catch (e) {
+          if (isAbortError(e))
+            return cancelledResult('qa_ios boot cancelled while waiting; the simulator keeps booting in the background', true);
           const msg = String(e);
           const failureCode = /timed out|timeout/i.test(msg) ? 'SIMULATOR_BOOT_TIMEOUT' : 'SIMULATOR_BOOT_FAILED';
           return qaError({
@@ -129,6 +135,7 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
             ],
           });
         }
+        // Bind even while still booting: the follow-up qa_wait poll and later qa_ios calls use it.
         bind(sessions, session, pick.udid);
         sessions.addEnvChange(session, `ios boot ${pick.name} (${pick.udid})`);
         sessions.recordMutation(session, {
@@ -138,9 +145,26 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
           target: { udid: pick.udid, name: pick.name, runtime: pick.runtime },
           consent: { required: false, approved: true },
           status: 'executed',
+          ...(booted.booted ? {} : { detail: 'boot started; still booting when the call returned' }),
         });
+        if (!booted.booted) {
+          return qaOk(
+            {
+              udid: pick.udid,
+              name: pick.name,
+              runtime: pick.runtime,
+              bound: true,
+              booted: false,
+              status: 'booting',
+              elapsedMs: booted.elapsedMs,
+              next: `qa_wait { sessionId:"${session.id}", for:"simulator_booted" }`,
+            },
+            `booting + bound ${pick.name} [${pick.runtime}]; still booting after ${Math.round(booted.elapsedMs / 1000)} s (cold boot)\n` +
+              `Next: qa_wait { sessionId:"${session.id}", for:"simulator_booted" } (repeat while timedOut), then qa_ios install/launch.`,
+          );
+        }
         return qaOk(
-          { udid: pick.udid, name: pick.name, runtime: pick.runtime, bound: true },
+          { udid: pick.udid, name: pick.name, runtime: pick.runtime, bound: true, booted: true, status: 'booted' },
           `booted + bound ${pick.name} [${pick.runtime}]\nNext: qa_ios install/launch, then qa_screenshot / qa_visual.`,
         );
       }

@@ -9,7 +9,7 @@
 // re-resolves the produced artifact so the next step (qa_prepare_target / qa_test_this) has it.
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, qaAnnotate, unknownSessionError } from '../lib/result.js';
 import { qaFail } from '../oracle/failures.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
@@ -57,11 +57,9 @@ export function registerBuild(server: McpServer, sessions: SessionStore): void {
     {
       title: 'Plan or run a build from source',
       description:
-        'Build the app from source, or just propose how. mode:"plan" (default, side-effect free): exact prerequisite + build commands, ' +
-        'cwd, expected artifact globs, toolchain status per framework (Expo/RN/native/Flutter). mode:"run" (consent-gated job, needs ' +
-        'sessionId): runs them, stores a build log artifact, and re-resolves the produced artifact; failures are typed ' +
-        '(GRADLE_FAILED, XCODEBUILD_FAILED, FLUTTER_BUILD_FAILED, BUILD_TIMED_OUT, DEPENDENCY_INSTALL_REQUIRED, ...). A build failure is ' +
-        'not a test failure.',
+        'Build the app from source. mode:"plan" (default, no side effects): commands, cwd, expected artifacts, toolchain ' +
+        'status. mode:"run" (consent-gated job, needs sessionId): runs them, stores the build log, re-resolves the artifact. ' +
+        'Failures are typed (GRADLE_FAILED, XCODEBUILD_FAILED, ...) and are not test failures.',
       inputSchema: {
         mode: z.enum(['plan', 'run']).optional(),
         sessionId: z.string().optional().describe('Required for run (stores the build log).'),
@@ -95,7 +93,10 @@ export function registerBuild(server: McpServer, sessions: SessionStore): void {
             notes,
           );
         }
-        return qaAnnotate(qaOk({ plan }, `${planSummary(plan)}\nExecute with qa_build { mode:"run" }.`), notes);
+        return qaAnnotate(
+          qaOk({ plan }, `${planSummary(plan)}\nExecute with qa_build { mode:"run" }.`, { structuredSummary: 'full' }),
+          notes,
+        );
       }
 
       // ---- mode:"run": consent-gated build job (formerly the bare qa_build). ----

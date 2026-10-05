@@ -2,8 +2,7 @@
 // the auth question, the unified consent preflight (Milestone A), job creation, and the
 // optional waitForCompletion window. The heavy pipeline itself runs in ./pipeline.js.
 
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { McpServer, CallToolResult } from '@modelcontextprotocol/server';
 import { qaOk } from '../../lib/result.js';
 import { qaNeedsInput, NeedsInput } from '../../lib/needsInput.js';
 import { buildPlan, type BuildPlatform } from '../../build/plan.js';
@@ -17,7 +16,12 @@ import type { Session } from '../../session/store.js';
 import type { ExecuteArgs } from './types.js';
 import { runExecutePipeline } from './pipeline.js';
 import { hasUsableCredentials, credentialsLostOnRestart, isLoginDeclined } from './sessionIntent.js';
-import { runWithSignal } from '../../lib/abortScope.js';
+import { currentSignal, runWithSignal, sleepOrCancel } from '../../lib/abortScope.js';
+
+/** waitForCompletion window: default and cap. Kept under common client tool timeouts (Codex: 60 s);
+ *  a job still running after it comes back as state:"running" + jobId for qa_job_status polling. */
+export const TEST_THIS_WAIT_DEFAULT_MS = 45_000;
+export const TEST_THIS_WAIT_MAX_MS = 50_000;
 
 function realOrResolved(p: string): string {
   try {
@@ -168,14 +172,26 @@ export async function runExecuteMode(server: McpServer, sessions: SessionStore, 
 
   // Optional blocking mode for short paths (Milestone D). Default = return the running job.
   if (a.waitForCompletion) {
-    const deadline = Date.now() + (a.timeoutMs ?? 120_000);
-    await Promise.race([run, new Promise((r) => setTimeout(r, Math.max(0, deadline - Date.now())))]);
+    const windowMs = Math.min(Math.max(0, a.timeoutMs ?? TEST_THIS_WAIT_DEFAULT_MS), TEST_THIS_WAIT_MAX_MS);
+    // The window wakes early when THIS call is cancelled (the job keeps running in its own scope).
+    const windowCtl = new AbortController();
+    const callSignal = currentSignal();
+    const onCallAbort = () => windowCtl.abort();
+    callSignal?.addEventListener('abort', onCallAbort, { once: true });
+    if (callSignal?.aborted) windowCtl.abort();
+    try {
+      await Promise.race([run, sleepOrCancel(windowMs, windowCtl.signal).catch(() => {})]);
+    } finally {
+      windowCtl.abort(); // clears the window timer once the job finished first
+      callSignal?.removeEventListener('abort', onCallAbort);
+    }
     const cur = session.jobs.get(job.jobId);
     if (cur && cur.status !== 'running') {
       const res = (cur.result ?? {}) as Record<string, unknown>;
       return qaOk(
         { sessionId: session.id, mode: a.mode, jobId: job.jobId, appMapUri: a.appMapUri, ...res },
         cur.resultText ?? `test-this ${a.mode} ${res.state ?? cur.status}.`,
+        { structuredSummary: 'full' }, // the job's resultText is not a payload field
       );
     }
     // Timed out: leave the job running and tell the agent to poll.

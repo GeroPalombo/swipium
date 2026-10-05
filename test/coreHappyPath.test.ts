@@ -8,9 +8,9 @@ import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
+import type { CallToolResult } from '@modelcontextprotocol/client';
+import { elementsOf } from './actFixFake.js';
 
 // Hermetic on-disk state: SessionStore persists under ~/.swipium, so point HOME at a temp
 // dir BEFORE the store module is loaded (dynamic imports below).
@@ -217,10 +217,10 @@ describe('core happy path (fake driver)', () => {
     const res = (await client.callTool({ name: 'qa_snapshot', arguments: { sessionId } })) as CallToolResult;
     const s = structured(res);
     expect(s.ok).toBe(true);
-    const elements = s.elements as Array<{ ref: string; text?: string; id?: string }>;
+    const elements = elementsOf(s);
     expect(elements.length).toBeGreaterThan(0);
     for (const el of elements) expect(el.ref).toMatch(/^@e\d+$/);
-    expect(elements.some((el) => el.text === 'Log in')).toBe(true);
+    expect(elements.some((el) => el.name === 'Log in')).toBe(true);
     expect(elements.some((el) => el.id === 'email')).toBe(true);
     expect(s.quality).toBe('good');
   });
@@ -247,8 +247,7 @@ describe('core happy path (fake driver)', () => {
 
   it('qa_act with a ref target taps the element coordinates from the snapshot', async () => {
     const snap = structured((await client.callTool({ name: 'qa_snapshot', arguments: { sessionId } })) as CallToolResult);
-    const elements = snap.elements as Array<{ ref: string; text?: string }>;
-    const button = elements.find((el) => el.text === 'Search flights');
+    const button = elementsOf(snap).find((el) => el.name === 'Search flights');
     expect(button).toBeTruthy();
 
     const res = (await client.callTool({

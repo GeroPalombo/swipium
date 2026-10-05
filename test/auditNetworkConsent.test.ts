@@ -115,9 +115,9 @@ describe('qa_mobile_audit resilience network consent', () => {
 
 describe('qa_mobile_audit tool gates resilience with network_change consent', () => {
   it('asks for consent first, then runs the airplane toggle only after approval', async () => {
-    const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js');
-    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
-    const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.js');
+    const { McpServer } = await import('@modelcontextprotocol/server');
+    const { Client } = await import('@modelcontextprotocol/client');
+    const { InMemoryTransport } = await import('@modelcontextprotocol/server');
     const { registerMobileAudit } = await import('../src/tools/mobileAudit.js');
     const { sessions, s } = session();
     const { d, state } = fakeDriver(false);

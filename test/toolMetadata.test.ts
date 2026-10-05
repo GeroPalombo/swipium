@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { createServer } from '../src/server.js';
 import { SERVER_INSTRUCTIONS } from '../src/tools/agent.js';
 
@@ -63,7 +62,7 @@ describe('tool metadata lint', () => {
     expect(tools.length).toBeGreaterThan(0);
     // Server instructions: present, concise, and pointing at the real first call + polling tool.
     expect(instructions).toBe(SERVER_INSTRUCTIONS);
-    expect(instructions!.length).toBeLessThanOrEqual(2600);
+    expect(instructions!.length).toBeLessThanOrEqual(2000);
     expect(instructions).toContain('qa_test_this');
     expect(instructions).toContain('qa_job_status');
     expect(INTERNAL_LABEL.test(instructions!)).toBe(false);

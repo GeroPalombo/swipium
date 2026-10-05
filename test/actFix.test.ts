@@ -9,8 +9,8 @@
 //  #14 unknown session → typed INVALID_ARGUMENT (qa_act / qa_snapshot / qa_inspect)
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { buttonScreen, dump, FakeDriver, harness, structured, textOf, type NodeSpec } from './actFixFake.js';
+import type { CallToolResult } from '@modelcontextprotocol/server';
+import { elementsOf, buttonScreen, dump, FakeDriver, harness, structured, textOf, type NodeSpec } from './actFixFake.js';
 import { expandInputPlaceholders, recordableTypedText } from '../src/tools/act.js';
 
 let h: Awaited<ReturnType<typeof harness>>;
@@ -69,7 +69,7 @@ describe('#9 toggle detection', () => {
     const fake = new FakeDriver(sw(false));
     const id = await h.start(fake);
     const snap = structured(await h.call('qa_snapshot', { sessionId: id }));
-    const ref = (snap.elements as Array<{ ref: string; text?: string }>).find((e) => e.text === 'Wi-Fi')!.ref;
+    const ref = elementsOf(snap).find((e) => e.name === 'Wi-Fi')!.ref;
     let on = false;
     fake.onTap = () => {
       on = !on;
@@ -190,7 +190,7 @@ describe('#6 keyboard guard uses one imeState() call', () => {
     const fake = new FakeDriver(buttonScreen('Home', 3));
     const id = await h.start(fake);
     const snap = structured(await h.call('qa_snapshot', { sessionId: id }));
-    const ref = (snap.elements as Array<{ ref: string }>)[1].ref;
+    const ref = elementsOf(snap)[1].ref;
     fake.calls = [];
     fake.onTap = () => (fake.xml = buttonScreen('Next', 3));
     await act(id, { action: 'tap', target: { ref } });
@@ -239,9 +239,12 @@ describe('#8 cancellation reaches the driver', () => {
     const id = await h.start(fake);
     fake.hangTap = true;
     const ctl = new AbortController();
-    const p = h.client.callTool({ name: 'qa_act', arguments: { sessionId: id, action: 'tap', target: { x: 5, y: 5 } } }, undefined, {
-      signal: ctl.signal,
-    });
+    const p = h.client.callTool(
+      { name: 'qa_act', arguments: { sessionId: id, action: 'tap', target: { x: 5, y: 5 } } },
+      {
+        signal: ctl.signal,
+      },
+    );
     setTimeout(() => ctl.abort('user cancelled'), 150);
     await expect(p).rejects.toBeTruthy();
     for (let i = 0; i < 50 && !fake.got('pressXY').length; i++) await new Promise((r) => setTimeout(r, 20));

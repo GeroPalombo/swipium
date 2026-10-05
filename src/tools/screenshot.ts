@@ -3,7 +3,7 @@
 // by default (pixels can't be redacted) unless force:true.
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, qaStop, unknownSessionError } from '../lib/result.js';
 import { isSecureNode } from '../lib/redact.js';
 import { sensitiveRefusal } from '../lib/sensitive.js';
@@ -17,8 +17,8 @@ export function registerScreenshot(server: McpServer, sessions: SessionStore): v
     {
       title: 'Capture a screenshot',
       description:
-        'Capture the screen as a session artifact and return its swipium:// URI (not inline bytes). Withheld when a ' +
-        'password/OTP field is on screen unless force:true (pixels cannot be redacted). Counts against the screenshot budget.',
+        'Save a screenshot as a session artifact and return its swipium:// URI. Withheld on password/OTP screens unless ' +
+        'force:true. Counts against the screenshot budget.',
       inputSchema: {
         sessionId: z.string(),
         force: z.boolean().optional(),

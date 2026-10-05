@@ -256,14 +256,86 @@ export function signature(el: SnapshotElement): string {
   return `${el.role}|${el.label ?? ''}|${el.id ?? ''}|${el.text ?? ''}`;
 }
 
-/** Compact, token-cheap render of the element list for the model. */
+/** Longest label / text an element line carries; longer values are cut with "...". Applied after
+ * redaction, so a cut can never split a secret out of the redactor's reach. */
+export const ELEMENT_LINE_MAX_LABEL_CHARS = 80;
+
+/** JSON-quoted (escapes quotes, backslashes, newlines, control chars) and capped by code point. */
+function quoteCapped(s: string): string {
+  if (s.length > ELEMENT_LINE_MAX_LABEL_CHARS) {
+    const cps = [...s];
+    if (cps.length > ELEMENT_LINE_MAX_LABEL_CHARS) s = `${cps.slice(0, ELEMENT_LINE_MAX_LABEL_CHARS).join('')}...`;
+  }
+  return JSON.stringify(s);
+}
+
+/** Ids are emitted bare when they are a plain token, else quoted (iOS accessibility ids can hold spaces). */
+const BARE_ID = /^[\w.:/-]+$/;
+
+/**
+ * One element as a single line, the form both channels carry (structuredContent `elements` outside
+ * verbose mode, and the text block):
+ *
+ *   @e3 [button] "Log in" #login_btn text="Sign in" [40,200][1040,245] (focused,secure,non-clickable)
+ *
+ * ref, [role], the name (label, else text; "" when neither), #id when present, text="..." only when
+ * it differs from the label, bounds as [x1,y1][x2,y2] (left out when unknown), then flags in
+ * parentheses when any apply. Pass the elements through presentElements first: it masks secure
+ * values and scrubs known secrets; this function only formats.
+ */
+export function renderElementLine(e: SnapshotElement): string {
+  const name = e.label ?? e.text ?? '';
+  const parts = [`${e.ref} [${e.role}] ${quoteCapped(name)}`];
+  if (e.id) parts.push(`#${BARE_ID.test(e.id) ? e.id : JSON.stringify(e.id)}`);
+  if (e.label !== undefined && e.text !== undefined && e.text !== e.label) parts.push(`text=${quoteCapped(e.text)}`);
+  const b = e.bounds;
+  if (b && (b[0] || b[1] || b[2] || b[3])) parts.push(`[${b[0]},${b[1]}][${b[2]},${b[3]}]`);
+  const flags = [e.focused ? 'focused' : '', e.secure ? 'secure' : '', e.clickable ? '' : 'non-clickable'].filter(Boolean);
+  if (flags.length) parts.push(`(${flags.join(',')})`);
+  return parts.join(' ');
+}
+
+/** Compact, token-cheap render of the element list for the model (one renderElementLine per element). */
 export function renderElements(elements: SnapshotElement[]): string {
-  return elements
-    .map((e) => {
-      const name = e.label ?? e.text ?? '';
-      const id = e.id ? `  #${e.id}` : '';
-      const flags = [e.focused ? 'focused' : '', e.clickable ? '' : 'non-clickable'].filter(Boolean).join(',');
-      return `${e.ref} [${e.role}] ${JSON.stringify(name)}${id}${flags ? `  (${flags})` : ''}`;
-    })
-    .join('\n');
+  return elements.map(renderElementLine).join('\n');
+}
+
+/** One element line decoded back into fields (the inverse of renderElementLine). */
+export interface DecodedElementLine {
+  ref: string;
+  role: string;
+  /** The rendered name: the label, else the text ("" when neither). */
+  name: string;
+  id?: string;
+  /** Only present when the line carries text="..." (text differing from the label). */
+  text?: string;
+  bounds?: [number, number, number, number];
+  clickable: boolean;
+  focused: boolean;
+  secure: boolean;
+}
+
+const Q = '"(?:[^"\\\\]|\\\\.)*"';
+const ELEMENT_LINE_RE = new RegExp(
+  `^(@e\\d+) \\[([^\\]]*)\\] (${Q})(?: #(${Q}|\\S+))?(?: text=(${Q}))?(?: \\[(-?\\d+),(-?\\d+)\\]\\[(-?\\d+),(-?\\d+)\\])?(?: \\(([^)]*)\\))?$`,
+);
+
+/** Decode a renderElementLine string; undefined when it is not one. For clients and tests that
+ * want fields back without asking for responseMode "verbose". */
+export function parseElementLine(line: string): DecodedElementLine | undefined {
+  const m = ELEMENT_LINE_RE.exec(line);
+  if (!m) return undefined;
+  const flags = new Set((m[10] ?? '').split(',').filter(Boolean));
+  const id = m[4] === undefined ? undefined : m[4].startsWith('"') ? (JSON.parse(m[4]) as string) : m[4];
+  return {
+    ref: m[1],
+    role: m[2],
+    name: JSON.parse(m[3]) as string,
+    ...(id !== undefined ? { id } : {}),
+    ...(m[5] !== undefined ? { text: JSON.parse(m[5]) as string } : {}),
+    ...(m[6] !== undefined ? { bounds: [Number(m[6]), Number(m[7]), Number(m[8]), Number(m[9])] as [number, number, number, number] } : {}),
+    clickable: !flags.has('non-clickable'),
+    focused: flags.has('focused'),
+    secure: flags.has('secure'),
+  };
 }

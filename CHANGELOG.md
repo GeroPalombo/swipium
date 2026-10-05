@@ -2,6 +2,70 @@
 
 All notable public changes to Swipium are documented here.
 
+## 2.2.0 - 2026-10-05
+
+Swipium 2.2.0 moves to the MCP TypeScript SDK v2, adds the MCP 2026-07-28 protocol revision next to the 2025 ones, and changes the shape of element lists in `structuredContent` for every client. It also makes Swipium usable from headless and non-Claude clients (`codex exec`, `claude -p`, Codex in general), keeps waits under common client tool timeouts, and makes cancellation actually stop work. No tools were added or removed (still 55). Work through the upgrade checklist before upgrading.
+
+### Upgrade checklist
+
+Items tagged **You** need an action from you. Items tagged **Automatic** happen on their own and are listed so they don't surprise you.
+
+1. **You:** restart your MCP client so it reloads the server instructions and tool list. The schema hash changed (descriptions were trimmed and `qa_wait` gained `wda_ready` and `simulator_booted`), so update any `qa_doctor { expectedSchemaHash }` check.
+2. **You (scripts reading results):** `structuredContent.elements` from `qa_snapshot` and `qa_act` are now `@eN` strings, not objects. Pass `responseMode: "verbose"` to keep the objects, or parse the lines (see Breaking changes).
+3. **You (Codex):** Codex passes MCP servers only a small whitelist of environment variables. Add the `env_vars = [...]` line that `swipium init codex` prints under `[mcp_servers.swipium]`, or `SWIPIUM_TEST_*`, `ANDROID_HOME` and `JAVA_HOME` exported in your shell never reach Swipium. Keep `tool_timeout_sec = 600`: some synchronous steps can still take longer than Codex's 60 s default (a large `qa_ios install`, `qa_flow_run`, `qa_smoke`, `qa_mobile_audit`, `qa_generate { target:"appium" }`). `qa_doctor` checks the env part when it runs under Codex.
+4. **You (headless runs):** `codex exec` and `claude -p` answer consent prompts automatically, so boots, installs and builds were always refused there. To allow specific actions without a prompt, list them in `SWIPIUM_CONSENT_PREAPPROVE` in the MCP server env (see Added). For Codex, set it literally in the `env = { ... }` table: `init` deliberately doesn't forward it from your shell.
+5. **You (iOS automation):** `qa_wda build` now returns a `jobId` right away (poll `qa_job_status`), `qa_wda start` can return `status:"starting"` after 45 s (poll `qa_wait { for:"wda_ready" }`), `qa_ios boot` can return `status:"booting"` after 40 s (poll `qa_wait { for:"simulator_booted" }`), and `qa_prepare_ios_target` can hand a slow boot to a job (poll `qa_job_status`). Agents that waited on one long call need the extra poll.
+6. **You (resource clients):** reading a missing `swipium://` resource now fails with `-32602` instead of `-32603`, and `qa_get_artifact` returns `INVALID_ARGUMENT` for an unknown URI.
+7. **Automatic:** waits and long-polls end within about 50 s. `qa_job_status` long-polls at most 50 s (was 120 s, recommended `waitMs` is now 45000), and larger `timeoutMs` values on `qa_wait`, `qa_act` and `qa_test_this` are clamped to 50000 with a note instead of being rejected.
+8. **Automatic:** Claude Code 2.1.285 and later connect on MCP 2026-07-28. Consent prompts look the same, but Swipium no longer asks those clients for MCP roots; Claude Code sets `CLAUDE_PROJECT_DIR`, so the project root still resolves to the open project.
+
+### Breaking changes
+
+- **Element lists are compact lines, for every client.** `qa_snapshot` and `qa_act` return `structuredContent.elements` as one-line strings, the same lines as the text block, instead of one JSON object per element. For example: `@e3 [button] "Log in" #login_btn [40,200][1040,245] (focused)`. That's about 40% smaller, and it's what Claude Code and Codex show the model. Lines carry bounds, the text when it differs from the label, and a `secure` flag; names are JSON-escaped and capped at 80 characters after redaction. Programmatic readers that expect objects should pass `responseMode: "verbose"`, which still returns them, or parse the lines ([format](docs/tools.md#element-lines)).
+- **`qa_wda build` is a job, and `qa_wda start` doesn't wait for WebDriverAgent forever.** `build` returns a `jobId` at once (the xcodebuild timeout goes from 3 to 10 minutes). `start` waits at most 45 s, then returns `ok` with `status:"starting"` while WebDriverAgent keeps booting.
+- **Shorter waits.** `qa_job_status` `waitMs` is capped at 50000 (was 120000). `qa_wait` `timeoutMs` defaults to 45000 (was 60000, or 180000 for `device_online`) and `qa_test_this` `waitForCompletion` `timeoutMs` to 45000 (was 120000). Values above 50000 on those two and on `qa_act` are clamped with a note. Negative values, and non-integers on `qa_wait` and `qa_test_this`, return `INVALID_ARGUMENT`.
+- **Missing resources.** Reading a `swipium://` URI that matches a template but names nothing that exists returns JSON-RPC `-32602` with the URI in `error.data.uri`, in every protocol era. 2.0.1 sent `-32603` (internal error). Clients should also accept the older `-32002`.
+
+### Added
+
+- **MCP 2026-07-28 (dual-era stdio).** Swipium answers `server/discover` for 2026-07-28 clients and `initialize` for 2025-06-18 and 2025-11-25 clients; the client's first message picks the era for the whole connection. Claude Code probes 2026-07-28 from 2.1.285 (verified on 2.1.289); Codex 0.146 stays on 2025-06-18. On a 2026-07-28 connection:
+  - Consent prompts travel as an `InputRequiredResult` (the same one-checkbox form) and the answer comes back on the client's retry of the tool call. The `requestState` is a single-use server-side handle bound to the tool, its arguments and the session: a forged, reused or re-targeted one fails with `-32602` and nothing runs.
+  - `tools/list` is sorted by name, and list results carry cache hints: `ttlMs: 3600000`, `cacheScope: "public"` for tools, prompts, resource templates and `server/discover`; `ttlMs: 0`, `cacheScope: "private"` for `resources/list` and `resources/read`.
+  - MCP roots are never requested (roots are deprecated in that revision). The project root comes from `projectRoot`, `SWIPIUM_PROJECT_ROOT`, `CLAUDE_PROJECT_DIR` or the working directory.
+- **Operator consent pre-approval** for headless clients. `SWIPIUM_CONSENT_PREAPPROVE` is a comma-separated list of exact consent action names (for example `prepare_plan,install_app`) approved without a prompt, on any client and in both protocol eras.
+  - It's read only from the server process environment, never from `.swipium/` or any repository file. No wildcards; unknown names are ignored with a startup warning that suggests the closest valid name.
+  - Actions that run repository- or model-chosen code (`build_from_source`, `flow_mutation_run`, `ocr_run`, `seed_state`, `start_metro`, `suite_fresh_state_replay`, `wda_build`, `wda_start`) also need `SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE=1`. Pre-approving `test_this_plan` doesn't cover a plan with a build step unless `build_from_source` is pre-approved that way too.
+  - `wda_non_loopback` can never be pre-approved; use `SWIPIUM_ALLOW_REMOTE_WDA`.
+  - Approvals stay single-use and session-bound, are recorded in the mutation ledger as `operator-policy`, and each one is logged at `warn` with the action and its exact command.
+- `qa_wait { for:"wda_ready" }` polls the session's WebDriverAgent `/status`, and `qa_wait { for:"simulator_booted" }` polls the session's bound iOS Simulator after a boot that returned `status:"booting"`.
+- `SWIPIUM_LOG_LEVEL` (`debug`, `info`, `warn`, `error`; default `info`; unknown values fall back to `info`). At `debug`, one stderr line per tool call with the tool, session, duration, error code and whether it was cancelled, plus the protocol era of each connection. Argument values are never logged.
+- **Codex setup.** `swipium init codex` writes an `env_vars` line covering every variable Swipium and its toolchains read, except the approval grants (`SWIPIUM_CONSENT_PREAPPROVE`, `SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE`, `SWIPIUM_ALLOW_REMOTE_WDA`), plus a commented `enabled_tools` core profile that includes every tool the server instructions point to. It honours `CODEX_HOME`, detects an existing `[mcp_servers.swipium]` or `[mcp_servers."swipium"]` table, and then prints only the missing `env_vars` line.
+- `qa_doctor` adds `codex-env` and `codex-tool-timeout` rows when the client is Codex (or `client:"codex"`). `codex-env` lists the Swipium variables the server can see and warns when no Android SDK or JDK is found.
+- A device-driving tool called while a background job is still driving the same device gets a note that the two may interleave.
+
+### Changed
+
+- **MCP SDK v2.** Swipium moved from `@modelcontextprotocol/sdk` 1.x to `@modelcontextprotocol/server` and `@modelcontextprotocol/client` 2.3.1, and zod is `^4.2.0` (was `^3.25`). A production install goes from 100 packages to 21, and picks up the SDK's UriTemplate ReDoS fix ([GHSA-cqwc-fm46-7fff](https://github.com/advisories/GHSA-cqwc-fm46-7fff), CVE-2026-0621; 2.0.1 allowed SDK versions below the 1.25.2 fix). For 2025-era clients the move itself is invisible: tool results are byte-identical, and so is `tools/list` apart from `qa_act`'s `for.selector`, which is now inlined instead of a `$ref`.
+- Argument validation, unknown-argument rejection and stale-client mapping no longer patch private SDK internals. Swipium answers `tools/list` and `tools/call` through the public request-handler API and validates each call against one strict schema per tool.
+- Successful results carry the summary headline and next steps in `structuredContent` (`summary`, `next`). Claude Code and Codex show the model `structuredContent` instead of the text block, so hints such as "call qa_report" were invisible before. `next` lists only real tool calls and is left out when the payload already has next-step fields.
+- Consent declines and cancels include `action`, `answeredInMs` and `likelyAutomatic` (answered in under 1.5 s). Only when `likelyAutomatic` is true does the error name `SWIPIUM_CONSENT_PREAPPROVE` and tell the agent not to re-call in a loop; a real human decline is never nudged toward pre-approval. A prompt that failed (timeout, transport error, aborted call) reports `likelyAutomatic: false` and an `elicitationFailure` reason.
+- `qa_get_artifact` defaults to metadata for every non-text artifact (recordings included, not only images), never decodes binaries as text, applies the same size caps as `resources/read`, and returns `INVALID_ARGUMENT` for an unknown URI.
+- Missing, wrong-typed or out-of-range arguments return the typed `INVALID_ARGUMENT` envelope with per-field `invalidArguments` instead of a raw validation dump.
+- Server instructions are 1,900 characters (were 2,518), under Claude Code's 2,048-character limit, and their first 512 characters stand alone. They recommend `waitMs: 45000`.
+- `tools/list` is about 9% smaller (63.5 KB, was 69.6 KB): descriptions were trimmed, and no parameters were removed.
+- `swipium init` writes a `node` path that survives a Homebrew upgrade (`/opt/homebrew/opt/<formula>/bin/node` instead of the versioned `Cellar` path).
+- MCP roots requests (2025-era connections) time out after 5 s instead of 60 s.
+
+### Fixed
+
+- **Simulator boots no longer block a call.** `qa_ios { action:"boot" }` waits at most 40 s; a slower cold boot returns ok `status:"booting"` (`udid`, `name`, `elapsedMs`, `next`) with the simulator already bound, and the new `qa_wait { for:"simulator_booted" }` polls until it is up. `qa_prepare_ios_target` waits at most 30 s for a boot, then returns `status:"booting"` with a `jobId`: a `prepare_ios` job finishes boot, install, launch and the WDA check under the consent already given. `qa_test_feature` (execute without `sessionId`) now boots, installs and launches inside its job, so the call returns at once.
+- A Metro bundler started through `npx` is now reaped after a server crash. Under load, Swipium could record it during the brief moment `npx` titles itself a bare `npm`, so the startup sweep could never verify it and left it holding port 8081.
+- Cancelling a call now stops its work. `qa_wait`, the `qa_job_status` long-poll, element waits in `qa_act` and flows, UI settling, emulator boot and appear waits, WebDriverAgent startup and UI dump retries used to keep running until their deadline.
+- Cancelled smoke runs and mobile audits are no longer recorded as failures, findings or issues, and a cancelled mobile audit restores the device network instead of leaving it offline.
+- The server exits when the client closes stdin, even during a long call. Before, it lingered until the call finished. On shutdown, running jobs are cancelled before device network state is restored.
+- `resources/read` caps what it returns: text over 1 MB comes back as the head (the tail for logs) with a marker naming the local file, binaries over 8 MB are not inlined, non-text files are returned as blobs instead of being decoded as text, and a cut never splits a UTF-8 character.
+- Errors no longer echo unbounded caller input. A multi-MB argument (or argument name) used to produce an error larger than a client's read buffer, and the client dropped the connection. Names and paths are cut at 100 characters, and long messages keep both their start and their end, where the deciding line of a command failure usually is.
+
 ## 2.0.1 - 2026-09-30
 
 A small maintenance release. No behavior changes for agents or flows.

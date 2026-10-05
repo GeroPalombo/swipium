@@ -6,8 +6,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { McpServer, CallToolResult } from '@modelcontextprotocol/server';
 import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { qaNeedsInput } from '../lib/needsInput.js';
 import { resolveProjectRoot, unresolvedProjectRootError } from '../context/projectRoot.js';
@@ -109,14 +108,13 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
     {
       title: 'Build / update the app knowledge map',
       description:
-        'Build or update the app knowledge map (.swipium/app-map.json): framework-aware static scan (Expo Router, React ' +
-        'Navigation, Android manifest, SwiftUI/UIKit, Flutter) plus, with sessionId, a merge of the latest exploration screen ' +
-        'graph. Returns a summary + map URI. Does not commit.',
+        'Build or update .swipium/app-map.json: a static scan of routes and screens (Expo Router, React Navigation, Android, ' +
+        'SwiftUI/UIKit, Flutter), plus the latest exploration graph when sessionId is given.',
       inputSchema: {
         projectRoot: z.string().optional().describe('Default: the session or resolved project root.'),
-        sessionId: z.string().optional().describe('Reuse a session (its root + latest exploration graph).'),
+        sessionId: z.string().optional().describe('Adds its latest exploration graph.'),
         mode: z.enum(['static_only', 'runtime_merge', 'full']).optional().describe('static_only | runtime_merge | full (default).'),
-        includeCodeIndex: z.boolean().optional().describe('Persist a code symbol index for queries (default true).'),
+        includeCodeIndex: z.boolean().optional().describe('Persist a code symbol index (default true).'),
         forceRescan: z.boolean().optional().describe('Re-scan even if the map is current.'),
       },
       // NOTE: no outputSchema. A declared (closed) output schema makes strict MCP clients
@@ -306,7 +304,8 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
     {
       title: 'Query the app knowledge map',
       description:
-        'Search the feature index, static topology, runtime graph, and tests for a natural-language query (e.g. "checkout flow"). Returns ranked results with provenance, confidence, source files, screens, and the recommended next Swipium tool call for each. Pass intent to bias the search.',
+        'Search the app map (features, screens, code, tests) with a natural-language query. Returns ranked results with ' +
+        'sources and the suggested next tool call.',
       inputSchema: {
         query: z.string(),
         projectRoot: z.string().optional(),
@@ -346,9 +345,8 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
     {
       title: 'Scope testing to a feature',
       description:
-        'Resolve a feature (featureId, or free-text query such as "checkout") to a focused test scope: code symbols, static + ' +
-        'runtime screens, existing tests, objective, coverage gaps, strategy, and ranked candidates (one disambiguation ' +
-        'question only on a genuine tie). Works without a map (falls back to a code scan). Read-only.',
+        'Resolve a feature (featureId, or a query like "checkout") to a test scope: code, screens, existing tests, coverage ' +
+        'gaps, strategy, ranked candidates. Works without a map (code scan). Read-only.',
       inputSchema: {
         projectRoot: z.string().optional().describe('Project root when no session exists.'),
         sessionId: z.string().optional().describe('Adds runtime screen-graph evidence.'),
@@ -356,7 +354,7 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
         query: z.string().optional().describe('e.g. "checkout flow".'),
         platform: z.enum(['android', 'ios']).optional(),
         includeCode: z.boolean().optional().describe('query: scan source code (default true).'),
-        limit: z.number().optional().describe('Query mode: max items per list in the scope (default 8).'),
+        limit: z.number().optional().describe('Max items per list (default 8).'),
       },
     },
     async ({ projectRoot, sessionId, featureId, query, platform, includeCode, limit }) => {
@@ -525,9 +523,8 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
     {
       title: 'Update the app knowledge map',
       description:
-        'Targeted, provenance-tracked app-map edits without a rebuild: add a note, register test cases, link an automation ' +
-        "suite to features/screens, set the environment, or override a feature's coverage. Existing entries with the same " +
-        'id/path are overwritten.',
+        'Targeted app-map edits without a rebuild: add a note, register test cases, link an automation suite, set the ' +
+        "environment, or override a feature's coverage. A matching id/path is overwritten.",
       inputSchema: {
         projectRoot: z.string().optional(),
         sessionId: z.string().optional(),

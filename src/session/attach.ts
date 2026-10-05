@@ -14,7 +14,7 @@ import { isEmulatorSerial } from '../core/targetPlan.js';
 import type { Session } from './store.js';
 import type { Driver } from '../drivers/Driver.js';
 import type { FailureCode } from '../oracle/failures.js';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { CallToolResult } from '@modelcontextprotocol/server';
 import { qaError } from '../lib/result.js';
 
 /** What `getprop` says about an online adb device (H6). */

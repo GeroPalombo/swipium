@@ -2,8 +2,9 @@ import { z } from 'zod';
 import { spawn } from 'node:child_process';
 import { closeSync, existsSync, openSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaError, qaOk, unknownSessionError } from '../lib/result.js';
+import type { McpServer } from '@modelcontextprotocol/server';
+import { cancelledResult, qaError, qaOk, unknownSessionError } from '../lib/result.js';
+import { isAbortError, runWithSignal } from '../lib/abortScope.js';
 import { consumeConsent, requireConsent } from '../consent/consent.js';
 import { sensitiveRefusal } from '../lib/sensitive.js';
 import { run } from '../lib/spawn.js';
@@ -36,7 +37,20 @@ import {
   unregisterManagedProcess,
   type ManagedWdaSignature,
 } from '../session/processRegistry.js';
-import type { ArtifactRecord, Session, SessionStore } from '../session/store.js';
+import type { ArtifactRecord, JobRecord, Session, SessionStore } from '../session/store.js';
+
+/** qa_wda actions that run xcodebuild and are consent-gated as `wda_<name>` (CONSENT_ACTIONS in consent.ts). */
+export const WDA_XCODEBUILD_ACTIONS = ['build', 'start'] as const;
+function isWdaXcodebuildAction(a: string): a is (typeof WDA_XCODEBUILD_ACTIONS)[number] {
+  return (WDA_XCODEBUILD_ACTIONS as readonly string[]).includes(a);
+}
+
+/** How long `qa_wda start` blocks inside ONE tool call waiting for /status. One call must stay
+ *  under common client tool timeouts (Codex: 60 s), so a slower start returns status:"starting"
+ *  and the agent polls with qa_wait { for:"wda_ready" } (bounded by ios.wda.startupTimeoutMs). */
+export const WDA_START_CALL_WAIT_MS = 45_000;
+/** Kill timer for the background `qa_wda build` job (a cold WDA build-for-testing is slow). */
+export const WDA_BUILD_TIMEOUT_MS = 600_000;
 
 const managedProcesses = new Map<string, { pid: number; logUri: string }>();
 
@@ -86,6 +100,20 @@ export function lastManagedWdaStart(session: Pick<Session, 'mutations'>): Manage
     ...(typeof t.derivedDataPath === 'string' && t.derivedDataPath ? { derivedDataPath: t.derivedDataPath } : {}),
     ...(port ? { port } : {}),
   };
+}
+
+/** The WDA URL to probe for this session: the attached WdaDriver's, else the URL of the latest
+ *  executed `qa_wda start` (both already passed the loopback/consent gate), else the configured
+ *  one (source 'config': the caller must apply the non-loopback gate). Exported for qa_wait. */
+export function wdaUrlForSession(session: Session): { url: string; source: 'driver' | 'wda_start' | 'config' } {
+  if (session.driver instanceof WdaDriver) return { url: session.driver.baseUrl, source: 'driver' };
+  const m = [...(session.mutations ?? [])]
+    .reverse()
+    .find(
+      (r) => r.tool === 'qa_wda' && r.action === 'wda_start' && r.status === 'executed' && typeof r.target?.webDriverAgentUrl === 'string',
+    );
+  if (m) return { url: String(m.target!.webDriverAgentUrl), source: 'wda_start' };
+  return { url: loadWdaConfig(session.root).url, source: 'config' };
 }
 
 interface WdaDiagnosticIssue {
@@ -164,19 +192,20 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
     {
       title: 'WebDriverAgent diagnostics and attach',
       description:
-        'Diagnose, attach, or manage an iOS WebDriverAgent backend for structured iOS tap/type/snapshot. External WDA: ' +
-        'action:"attach" with webDriverAgentUrl (default http://127.0.0.1:8100). Managed WDA: build/start (consent-gated) from ' +
-        'wdaProjectPath or an installed Appium WDA; stop ends it. status/doctor/diagnose/logs/tune inspect a setup.',
+        'Manage the iOS WebDriverAgent backend behind structured iOS tap/type/snapshot: attach an external WDA ' +
+        '(webDriverAgentUrl), build/start a managed one (consent-gated), stop it; status/doctor/diagnose/logs/tune inspect ' +
+        'the setup. build runs as a background job (poll qa_job_status); start waits up to 45 s, then returns status:"starting" ' +
+        '(poll qa_wait { for:"wda_ready" }).',
       inputSchema: {
         sessionId: z.string(),
         action: z.enum(['status', 'doctor', 'build', 'start', 'stop', 'attach', 'diagnose', 'logs', 'tune']),
         webDriverAgentUrl: z.string().optional().describe('Default http://127.0.0.1:8100; non-loopback needs allowNonLoopback + consent.'),
-        device: z.string().optional().describe('Simulator UDID behind this WDA (default: the session device).'),
+        device: z.string().optional().describe('Simulator UDID (default: session device).'),
         udid: z.string().optional().describe('Deprecated alias of device.'),
         bundleId: z.string().optional().describe('Default: the session appId.'),
         wdaProjectPath: z.string().optional().describe('WebDriverAgent.xcodeproj (default: Appium WDA if found).'),
         derivedDataPath: z.string().optional().describe('xcodebuild -derivedDataPath for reuse.'),
-        scheme: z.string().optional().describe('WDA xcodebuild scheme. Defaults to WebDriverAgentRunner.'),
+        scheme: z.string().optional().describe('Default WebDriverAgentRunner.'),
         allowNonLoopback: z.boolean().optional().describe('Required to use a non-loopback external WDA URL.'),
         consentId: z.string().optional(),
         approve: z.boolean().optional(),
@@ -246,8 +275,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
       const explicitProjectPath = resolvePath(wdaProjectPath);
       // Managed build/start without wdaProjectPath: use a user-installed Appium WebDriverAgent
       // (~/.appium/…/appium-webdriveragent, global npm), reported as wdaProjectSource.
-      const discoveredAppiumProject =
-        !explicitProjectPath && (action === 'build' || action === 'start') ? discoverAppiumWdaProjects()[0] : undefined;
+      const discoveredAppiumProject = !explicitProjectPath && isWdaXcodebuildAction(action) ? discoverAppiumWdaProjects()[0] : undefined;
       const projectPath = explicitProjectPath ?? discoveredAppiumProject;
       const wdaProjectSource = explicitProjectPath ? 'argument' : discoveredAppiumProject ? 'appium-discovered' : null;
       const ddPath = resolvePath(derivedDataPath) ?? configured.derivedDataPath;
@@ -359,7 +387,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
         return qaOk({ stopped: true, pid: proc.pid, logUri: proc.logUri }, `stopped managed WDA pid ${proc.pid}`);
       }
 
-      if (action === 'build' || action === 'start') {
+      if (isWdaXcodebuildAction(action)) {
         if (!targetUdid) {
           return qaError({
             what: `qa_wda ${action} requires a simulator/device UDID`,
@@ -475,74 +503,32 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
           status: 'approved',
         });
         if (action === 'build') {
-          sessions.milestone(session, 'wda_build_start');
-          const r = await run('xcodebuild', args, { timeoutMs: 180000 });
-          sessions.milestone(session, 'wda_build_end');
-          const log = `${r.stdout}\n${r.stderr}`;
-          const logUri = sessions.saveArtifact(
-            session,
-            'wda',
-            `wda-build-${Date.now()}.log`,
-            log,
-            'text/plain',
-            `WDA build ${r.code === 0 ? 'success' : 'failed'}`,
-          );
-          sessions.addEnvChange(session, `wda build ${projectPath} ${targetUdid}`);
-          if (r.code !== 0) {
-            const failureCode = classifyWdaBuildFailure(log);
-            sessions.recordMutation(session, {
-              tool: 'qa_wda',
-              action: 'wda_build',
-              risk: 'medium',
-              target: { udid: targetUdid, projectPath, derivedDataPath: ddPath, scheme: scheme ?? null },
-              consent: { required: true, consentId, approved: true },
-              status: 'blocked',
-              ledgerUri: logUri,
-              detail: `${failureCode}: exit ${r.code}`,
-            });
-            return qaError(
-              {
-                what:
-                  failureCode === 'WDA_SIGNING_FAILED'
-                    ? `WDA signing/provisioning failed with exit ${r.code}`
-                    : `WDA build failed with exit ${r.code}`,
-                changedState: true,
-                retrySafe: failureCode !== 'WDA_SIGNING_FAILED',
-                failureCode,
-                artifactUri: logUri,
-                nextSteps:
-                  failureCode === 'WDA_SIGNING_FAILED'
-                    ? [
-                        'Open the WDA build log artifact, configure a valid development team/certificate/provisioning profile for the device, then retry.',
-                      ]
-                    : ['Open the WDA build log artifact, fix the Xcode build error, then retry.'],
-              },
-              { xcode, logUri, timedOut: r.timedOut },
-            );
-          }
-          sessions.recordMutation(session, {
-            tool: 'qa_wda',
-            action: 'wda_build',
-            risk: 'medium',
-            target: { udid: targetUdid, projectPath, derivedDataPath: ddPath, scheme: scheme ?? null },
-            consent: { required: true, consentId, approved: true },
-            status: 'executed',
-            ledgerUri: logUri,
-          });
-          const wdaBuildProduct = managedWdaBuildProductStatus(ddPath);
+          // xcodebuild build-for-testing can take minutes: run it as a background job so this call
+          // returns at once (one tool call stays under client timeouts). Consent was consumed above.
+          const job = sessions.createJob(session, 'wda_build');
+          const buildCtx: WdaBuildContext = {
+            projectPath,
+            udid: targetUdid,
+            derivedDataPath: ddPath,
+            scheme,
+            consentId,
+            args,
+            xcode,
+            wdaProjectSource,
+            wdaConfig: effectiveConfig,
+          };
+          void runWithSignal(sessions.abortSignal(session, job.jobId), () => runWdaBuildJob(sessions, session, job, buildCtx));
           return qaOk(
             {
-              built: true,
-              logUri,
-              xcode,
+              jobId: job.jobId,
+              status: 'running',
+              kind: job.kind,
               command: ['xcodebuild', ...args],
-              wdaConfig: effectiveConfig,
               wdaProjectPath: projectPath,
               wdaProjectSource,
               derivedDataPath: ddPath,
-              wdaBuildProduct,
             },
-            `WDA build completed (${wdaProjectSource === 'appium-discovered' ? 'auto-discovered Appium WDA ' : ''}${projectPath}) > ${logUri}`,
+            `Started WDA build (${wdaProjectSource === 'appium-discovered' ? 'auto-discovered Appium WDA ' : ''}${projectPath}) as job ${job.jobId}.\nNext: qa_job_status { sessionId:"${session.id}", jobId:"${job.jobId}", waitMs:45000 }, then qa_wda start.`,
           );
         }
         const logUri = sessions.saveArtifact(session, 'wda', `wda-start-${Date.now()}.log`, '', 'text/plain', 'WDA start log');
@@ -579,9 +565,44 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
           ledgerUri: logUri,
           detail: 'managed WDA process started',
         });
-        const waited = await waitForWdaReady(url, configured.startupTimeoutMs);
+        // Cancelled while waiting: WDA stays started (managed + registered, so the next attach can
+        // adopt it); report CANCELLED, not a WDA startup failure.
+        // Bounded in-call wait: at most WDA_START_CALL_WAIT_MS here; the rest of the configured
+        // startupTimeoutMs is polled by the agent via qa_wait { for:"wda_ready" }.
+        const callWaitMs = Math.min(configured.startupTimeoutMs, WDA_START_CALL_WAIT_MS);
+        const waited = await waitForWdaReady(url, callWaitMs).catch((e: unknown) => {
+          if (isAbortError(e)) return null;
+          throw e;
+        });
+        if (!waited) return cancelledResult('qa_wda start cancelled while waiting for WDA; the managed WDA process was left running', true);
         sessions.addMilestoneDuration(session, 'wda_startup_wait_ms', waited.durationMs);
+        const remainingMs = configured.startupTimeoutMs - waited.durationMs;
+        if (!waited.ready && remainingMs > 0 && pidIsAlive(child.pid ?? -1)) {
+          return qaOk(
+            {
+              started: true,
+              ready: false,
+              status: 'starting',
+              pid: child.pid ?? null,
+              logUri,
+              webDriverAgentUrl: url,
+              wdaProjectPath: projectPath,
+              wdaProjectSource,
+              command: ['xcodebuild', ...args],
+              wdaConfig: effectiveConfig,
+              wda: waited.status,
+              startupWaitMs: waited.durationMs,
+              startupTimeoutMs: configured.startupTimeoutMs,
+              remainingStartupMs: remainingMs,
+            },
+            `started managed WDA pid ${child.pid ?? 'unknown'}; /status not ready yet after ${Math.round(waited.durationMs / 1000)} s (still starting) > ${logUri}
+` +
+              `Next: qa_wait { sessionId:"${session.id}", for:"wda_ready" } (repeat while timedOut, up to ~${Math.ceil(remainingMs / 1000)} s more), then qa_wda attach.`,
+          );
+        }
         if (!waited.ready) {
+          const exited = remainingMs > 0; // only reached early when the xcodebuild process is gone
+          const why = `WDA not ready after ${waited.durationMs}ms${exited ? ' (the managed xcodebuild process exited)' : ''}`;
           sessions.recordMutation(session, {
             tool: 'qa_wda',
             action: 'wda_start',
@@ -597,11 +618,13 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
             consent: { required: true, consentId, approved: true },
             status: 'blocked',
             ledgerUri: logUri,
-            detail: `WDA not ready after ${configured.startupTimeoutMs}ms`,
+            detail: why,
           });
           return qaError(
             {
-              what: `Managed WDA did not become ready at ${url} within ${configured.startupTimeoutMs}ms`,
+              what: exited
+                ? `Managed WDA exited before becoming ready at ${url} (waited ${waited.durationMs}ms)`
+                : `Managed WDA did not become ready at ${url} within ${configured.startupTimeoutMs}ms`,
               changedState: true,
               retrySafe: true,
               failureCode: 'WDA_START_FAILED',
@@ -954,4 +977,128 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
       }
     },
   );
+}
+
+interface WdaBuildContext {
+  projectPath: string;
+  udid: string;
+  derivedDataPath: string;
+  scheme?: string;
+  consentId?: string;
+  args: string[];
+  xcode: Awaited<ReturnType<typeof xcodeAvailable>>;
+  wdaProjectSource: string | null;
+  wdaConfig: Record<string, unknown>;
+}
+
+/** Background body of `qa_wda build` (runs inside the job's cancellation scope). The job ends
+ *  done (built) or failed (classified build failure); a cancelled job is left cancelled. Exported
+ *  for tests. */
+export async function runWdaBuildJob(sessions: SessionStore, session: Session, job: JobRecord, ctx: WdaBuildContext): Promise<void> {
+  const signal = sessions.abortSignal(session, job.jobId);
+  const upd = (patch: Partial<JobRecord>) => sessions.updateJobIfRunning(session, job, patch);
+  const target = { udid: ctx.udid, projectPath: ctx.projectPath, derivedDataPath: ctx.derivedDataPath, scheme: ctx.scheme ?? null };
+  const consent = { required: true, consentId: ctx.consentId, approved: true };
+  upd({ progress: 'xcodebuild build-for-testing' });
+  sessions.milestone(session, 'wda_build_start');
+  let r: Awaited<ReturnType<typeof run>>;
+  try {
+    r = await run('xcodebuild', ctx.args, { timeoutMs: WDA_BUILD_TIMEOUT_MS, signal });
+  } catch (e) {
+    if (isAbortError(e, signal)) return; // cancelled (qa_job_cancel / shutdown): the job already says so
+    const what = `xcodebuild could not run: ${String((e as Error).message ?? e)}`;
+    sessions.recordMutation(session, {
+      tool: 'qa_wda',
+      action: 'wda_build',
+      risk: 'medium',
+      target,
+      consent,
+      status: 'blocked',
+      detail: what,
+    });
+    upd({
+      status: 'failed',
+      error: `WDA_BUILD_FAILED: ${what}`,
+      result: { failureCode: 'WDA_BUILD_FAILED', nextSteps: ['Check the Xcode installation (qa_wda doctor), then retry qa_wda build.'] },
+      resultText: `WDA build could not start: ${what}`,
+      endedAt: Date.now(),
+    });
+    return;
+  }
+  sessions.milestone(session, 'wda_build_end');
+  if (signal?.aborted) return;
+  const log = `${r.stdout}\n${r.stderr}`;
+  const logUri = sessions.saveArtifact(
+    session,
+    'wda',
+    `wda-build-${Date.now()}.log`,
+    log,
+    'text/plain',
+    `WDA build ${r.code === 0 ? 'success' : 'failed'}`,
+  );
+  sessions.addEnvChange(session, `wda build ${ctx.projectPath} ${ctx.udid}`);
+  if (r.code !== 0) {
+    const failureCode = classifyWdaBuildFailure(log);
+    sessions.recordMutation(session, {
+      tool: 'qa_wda',
+      action: 'wda_build',
+      risk: 'medium',
+      target,
+      consent,
+      status: 'blocked',
+      ledgerUri: logUri,
+      detail: `${failureCode}: exit ${r.code}`,
+    });
+    const signing = failureCode === 'WDA_SIGNING_FAILED';
+    const what = signing
+      ? `WDA signing/provisioning failed with exit ${r.code}`
+      : `WDA build failed with exit ${r.code}${r.timedOut ? ` (timed out after ${WDA_BUILD_TIMEOUT_MS} ms)` : ''}`;
+    upd({
+      status: 'failed',
+      error: `${failureCode}: ${what}`,
+      artifactUris: [logUri],
+      result: {
+        failureCode,
+        logUri,
+        timedOut: r.timedOut,
+        retrySafe: !signing,
+        nextSteps: signing
+          ? [
+              'Open the WDA build log artifact, configure a valid development team/certificate/provisioning profile for the device, then retry.',
+            ]
+          : ['Open the WDA build log artifact, fix the Xcode build error, then retry.'],
+      },
+      resultText: `${what}. Log: ${logUri}`,
+      endedAt: Date.now(),
+    });
+    return;
+  }
+  sessions.recordMutation(session, {
+    tool: 'qa_wda',
+    action: 'wda_build',
+    risk: 'medium',
+    target,
+    consent,
+    status: 'executed',
+    ledgerUri: logUri,
+  });
+  const wdaBuildProduct = managedWdaBuildProductStatus(ctx.derivedDataPath);
+  upd({
+    status: 'done',
+    progress: 'done',
+    artifactUris: [logUri],
+    result: {
+      built: true,
+      logUri,
+      xcode: ctx.xcode,
+      command: ['xcodebuild', ...ctx.args],
+      wdaConfig: ctx.wdaConfig,
+      wdaProjectPath: ctx.projectPath,
+      wdaProjectSource: ctx.wdaProjectSource,
+      derivedDataPath: ctx.derivedDataPath,
+      wdaBuildProduct,
+    },
+    resultText: `WDA build completed (${ctx.wdaProjectSource === 'appium-discovered' ? 'auto-discovered Appium WDA ' : ''}${ctx.projectPath}) > ${logUri}\nNext: qa_wda start.`,
+    endedAt: Date.now(),
+  });
 }

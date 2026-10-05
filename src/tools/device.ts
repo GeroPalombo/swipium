@@ -3,7 +3,7 @@
 // environment change.
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { blockedDeviceResult, getDriver } from '../session/attach.js';
@@ -22,7 +22,8 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
     {
       title: 'Device info',
       description:
-        'Read-only device info (no consent). Android: model/manufacturer/SDK+release, ABIs, locale, timezone, screen size/density, orientation, third-party app count (listPackages:true, optionally packageFilter, adds names). iOS Simulator: name, runtime, state, screen size.',
+        'Read-only device info. Android: model, SDK, ABIs, locale, screen, orientation (listPackages:true adds third-party ' +
+        'packages). iOS Simulator: name, runtime, state, screen.',
       inputSchema: {
         sessionId: z.string(),
         listPackages: z.boolean().optional().describe('Include installed third-party package names.'),
@@ -105,8 +106,7 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
     'qa_orientation',
     {
       title: 'Set orientation',
-      description:
-        'Set screen orientation (Android Emulator only): portrait | landscape | auto (re-enables auto-rotate). Non-destructive; logged as an environment change and surfaced in qa_report.',
+      description: 'Set orientation (Android Emulator only): portrait, landscape, or auto. Logged as an environment change.',
       inputSchema: {
         sessionId: z.string(),
         orientation: z.enum(['portrait', 'landscape', 'auto']),
@@ -173,8 +173,7 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
     'qa_geolocation',
     {
       title: 'Set location',
-      description:
-        'Spoof the GPS location (Android Emulator only). Consent-gated and logged as an environment change. For location-based apps (maps, nearby, geofencing). Pass lat + lng (decimal degrees).',
+      description: 'Spoof the GPS location (Android Emulator only; consent-gated, logged as an environment change).',
       inputSchema: {
         sessionId: z.string(),
         lat: z.number().describe('Latitude in decimal degrees.'),

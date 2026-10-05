@@ -6,11 +6,13 @@
 // WITHOUT a manual `--testTimeout` override. This is a ceiling, not a sleep: a genuinely hung promise
 // still fails (at 30s), so real hangs are NOT hidden. Only host-speed sensitivity is absorbed.
 
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
     testTimeout: 30_000,
     hookTimeout: 30_000,
+    // Agent worktrees (.claude/worktrees) hold other checkouts of this repo; never run their tests.
+    exclude: [...configDefaults.exclude, '.claude/**'],
   },
 });

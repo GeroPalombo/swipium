@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { openSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { run } from '../lib/spawn.js';
@@ -78,9 +78,8 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
     {
       title: 'Metro dev server (debug RN/Expo)',
       description:
-        'Metro bundler for debug React Native / Expo builds (:8081). status: Metro/reverse/serving state; diagnose: + RedBox ' +
-        'detection, logcat evidence, and recovery steps; start (consent-gated): adb reverse + launch Metro with a log artifact; ' +
-        'stop: kill it + remove the reverse. After start, relaunch with qa_prepare_target.',
+        'Metro bundler for debug RN/Expo builds: status, diagnose (adds RedBox/logcat evidence and fixes), start ' +
+        '(consent-gated: adb reverse + Metro), stop. After start, relaunch with qa_prepare_target.',
       inputSchema: {
         sessionId: z.string(),
         action: z.enum(['status', 'diagnose', 'start', 'stop']),
@@ -307,7 +306,7 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
       child.unref();
       closeSync(fd); // child inherited the fd; the parent must not keep it open (review #2)
       session.metroPid = child.pid;
-      registerManagedProcess(child.pid, 'metro', session.id); // reapable if this server crashes
+      registerManagedProcess(child.pid, 'metro', session.id, { spawnCommand: [cmd, ...args].join(' ') }); // reapable if this server crashes
       sessions.persistNow(session); // the pid must hit disk before a crash for reload/reap to see it
 
       sessions.recordMutation(session, {
@@ -323,6 +322,7 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
       return qaOk(
         { framework: fw, started: true, port: METRO_PORT, reverseSet: true, pid: child.pid, logUri, logPath },
         `Started Metro (${fw}) on :${METRO_PORT} + adb reverse set. Log: ${logUri}\nWait ~5-10s for "Metro waiting", then relaunch the app with qa_prepare_target.`,
+        { structuredSummary: 'full' }, // the wait-then-relaunch guidance is not in the payload
       );
     },
   );

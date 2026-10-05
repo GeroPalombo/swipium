@@ -2,7 +2,7 @@
 
 import { z } from 'zod';
 import { loadProjectFixtures } from '../fixtures/load.js';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError } from '../lib/result.js';
 import { resolveProjectRoot, unresolvedProjectRootError } from '../context/projectRoot.js';
 import { loadProjectConfig } from '../cli/scan.js';
@@ -25,6 +25,7 @@ export const FIXTURE_SCHEMA = z.object({
   environment: z.string().optional().describe('Environment label. Use "test" for non-production disposable test state.'),
   fields: z
     .record(
+      z.string(),
       z.object({
         value: z.string().optional(),
         var: z.string().optional().describe('Environment/secure-input variable name to read at runtime.'),
@@ -70,7 +71,7 @@ export const FIXTURE_SCHEMA = z.object({
         .describe('script: argv array preferred (string is deprecated).'),
       method: z.string().optional(),
       body: z.string().optional(),
-      headers: z.record(z.string()).optional(),
+      headers: z.record(z.string(), z.string()).optional(),
       idempotent: z.boolean().optional().describe('True when re-running this seed safely converges to the same state.'),
       cleanup: z
         .object({
@@ -82,7 +83,7 @@ export const FIXTURE_SCHEMA = z.object({
             .describe('script: argv array preferred (string is deprecated).'),
           method: z.string().optional(),
           body: z.string().optional(),
-          headers: z.record(z.string()).optional(),
+          headers: z.record(z.string(), z.string()).optional(),
         })
         .optional()
         .describe('Optional teardown/rollback action used for state-profile transactions.'),
@@ -100,21 +101,17 @@ export function registerStartSession(server: McpServer, sessions: SessionStore):
     {
       title: 'Start a QA session',
       description:
-        'Open a QA session (only needed for low-level tools; qa_test_this creates one). projectRoot: arg, else MCP roots, else ' +
-        'SWIPIUM_PROJECT_ROOT / CLAUDE_PROJECT_DIR, else the server cwd if it is not / or $HOME and contains a project marker (package.json, app.json, pubspec.yaml, Gradle/Xcode files, Podfile, android/, ios/). Budget defaults to 8 min / 20 ' +
-        'actions / 8 screenshots; profile resizes it. fixtures (or .swipium/fixtures.json) declare preconditions so unmet ones ' +
-        'report as blocked, not failed. responseMode compact keeps transcripts small.',
+        'Open a QA session for the low-level tools (qa_test_this makes its own). projectRoot defaults to MCP roots > ' +
+        'SWIPIUM_PROJECT_ROOT > CLAUDE_PROJECT_DIR > a project-like cwd. Default budget: 8 min / 20 actions / 8 screenshots ' +
+        '(profile or budget changes it). fixtures declare preconditions so unmet ones report blocked, not failed.',
       inputSchema: {
-        projectRoot: z.string().optional().describe('Absolute app path (optional with MCP roots).'),
+        projectRoot: z.string().optional().describe('Absolute app path.'),
         responseMode: z
           .enum(['compact', 'normal', 'verbose'])
           .optional()
-          .describe('Text channel for every tool in this session: compact = summary + URIs; normal (default) = + JSON; verbose.'),
-        sensitive: z.boolean().optional().describe('Refuse all screenshots, recordings, and on-screen evidence capture for this session.'),
-        profile: z
-          .enum(['guardrail', 'login_smoke', 'full_smoke', 'install_smoke'])
-          .optional()
-          .describe('Budget class sizing the time budget.'),
+          .describe('Output detail: compact (summary + URIs), normal (default, + JSON), verbose (all JSON, element objects).'),
+        sensitive: z.boolean().optional().describe('Refuse all screenshots, recordings, and on-screen evidence.'),
+        profile: z.enum(['guardrail', 'login_smoke', 'full_smoke', 'install_smoke']).optional().describe('Budget class.'),
         budget: z
           .object({
             maxMinutes: z.number().optional(),
@@ -126,11 +123,9 @@ export function registerStartSession(server: McpServer, sessions: SessionStore):
           .optional()
           .describe('Override default budget caps.'),
         fixtures: z
-          .array(z.object({ name: z.string() }).passthrough())
+          .array(z.looseObject({ name: z.string() }))
           .optional()
-          .describe(
-            'Declared preconditions (merged with .swipium/fixtures.json): {name, requiredState?, recommendedSetup?, value?, disposable?, fields?, seed?, …}. Full shape in docs/tools.md#qa_start_session.',
-          ),
+          .describe('Preconditions, merged with .swipium/fixtures.json: {name, requiredState?, ...} (docs/tools.md#qa_start_session).'),
       },
     },
     async ({ projectRoot, profile, budget, fixtures, responseMode, sensitive }) => {

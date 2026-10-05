@@ -8,7 +8,7 @@
 //     message; `redacted` only for values treated as secret.
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { CallToolResult } from '@modelcontextprotocol/server';
 import { FakeDriver, buttonScreen, harness, structured, textOf } from './actFixFake.js';
 import { missingVarMessage } from '../src/flows/schema.js';
 import { failedFlowNextSteps } from '../src/tools/flow.js';

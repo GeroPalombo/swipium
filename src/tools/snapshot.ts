@@ -2,7 +2,7 @@
 // Snapshot returns compact @eN refs + a snapshotQuality verdict (+ optional diff).
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, unknownSessionError, cancelledResult } from '../lib/result.js';
 import { parseSnapshot, signature, renderElements } from '../snapshot/parse.js';
 import { presentElements } from '../snapshot/present.js';
@@ -25,16 +25,15 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
     {
       title: 'Snapshot the screen',
       description:
-        'Capture the screen as compact addressable elements (@e1, @e2 …) with a snapshotQuality verdict. Interactive-only and ' +
-        'no screenshot by default; busy screens are capped (use filter for the rest). Use @eN refs with qa_act; re-snapshot ' +
-        'after navigation.',
+        'Capture the screen as addressable elements (@e1, @e2...) with a snapshotQuality verdict. Interactive elements only, ' +
+        'capped on busy screens (filter finds the rest). Refs feed qa_act; re-snapshot after navigation.',
       inputSchema: {
         sessionId: z.string(),
         diff: z.boolean().optional().describe('Only what changed since the previous snapshot.'),
         filter: z.string().optional().describe('Substring match on text/label/id/role (finds capped elements).'),
       },
     },
-    async ({ sessionId, diff, filter }, extra) => {
+    async ({ sessionId, diff, filter }, ctx) => {
       const session = sessions.get(sessionId);
       if (!session) {
         return unknownSessionError(sessionId);
@@ -54,7 +53,7 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
       }
       // Cancellation: this call's signal is scoped to the call (abortScope), so aborting it never
       // touches a concurrently running job's adb/WDA calls (and vice versa).
-      return runWithSignal(extra?.signal, async () => {
+      return runWithSignal(ctx?.mcpReq.signal, async () => {
         if (driver.kind === 'simulator') {
           return qaError({
             what: 'A structured UI tree is not available on the iOS simulator backend',
@@ -129,7 +128,7 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
         const pool = f
           ? parsed.elements.filter((e) => [e.text, e.label, e.id, e.role].some((v) => v?.toLowerCase().includes(f)))
           : parsed.elements;
-        const { elements: shown, rendered, omitted } = presentElements(pool, redact);
+        const { payload: shown, rendered, omitted } = presentElements(pool, redact);
 
         let diffText = '';
         let diffPayload: { added: string[]; removed: string[] } | undefined;
@@ -197,8 +196,7 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
     'qa_inspect',
     {
       title: 'Inspect one element',
-      description:
-        'Return the full attributes (class, resource-id, content-desc, text, bounds, all flags) of a single @eN ref from the most recent qa_snapshot. Use this instead of dumping the whole tree.',
+      description: 'Full attributes (class, ids, text, bounds, flags) of one @eN ref from the last qa_snapshot.',
       inputSchema: { sessionId: z.string(), ref: z.string().describe('e.g. "@e3"') },
     },
     async ({ sessionId, ref }) => {

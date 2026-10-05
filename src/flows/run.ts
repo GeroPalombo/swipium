@@ -12,7 +12,7 @@ import { parseSnapshot, signature } from '../snapshot/parse.js';
 import { settle } from '../snapshot/settle.js';
 import { checkHealth } from '../oracle/health.js';
 import { recordHealthFindings } from '../oracle/record.js';
-import { isAbortError } from '../lib/abortScope.js';
+import { isAbortError, sleepOrCancel, throwIfCancelled } from '../lib/abortScope.js';
 import { boundsBucket, resolveTarget, resourceIdMatches, type Target } from '../core/target.js';
 import { imageDiff, findTemplate } from '../lib/image.js';
 import { captureCoordinateSpace, toDevicePoint } from '../lib/coordSpace.js';
@@ -724,7 +724,7 @@ export async function runFlow(
       case 'wait':
         if (step.ms != null) {
           const waitStarted = Date.now();
-          await new Promise((r) => setTimeout(r, step.ms));
+          await sleepOrCancel(step.ms);
           sessions.addMilestoneDuration(session, 'wait_ms', Date.now() - waitStarted);
           return { ok: true };
         }
@@ -736,7 +736,9 @@ export async function runFlow(
         const query = resolved.out;
         const deadline = Date.now() + (step.kind === 'waitForVisible' ? (step.timeoutMs ?? timeoutMs) : timeoutMs);
         const waitStarted = Date.now();
+        // A cancelled call/job stops polling at once (CancelledError > step classified CANCELLED).
         while (Date.now() < deadline) {
+          throwIfCancelled();
           try {
             const native = await nativeVisible(d, query);
             if (native === true) {
@@ -744,11 +746,12 @@ export async function runFlow(
               return { ok: true };
             }
             if (native === false) {
-              await new Promise((r) => setTimeout(r, 400));
+              await sleepOrCancel(400);
               continue;
             }
           } catch (e) {
             sessions.addMilestoneDuration(session, 'wait_ms', Date.now() - waitStarted);
+            if (isAbortError(e)) throw e;
             return { ok: false, detail: String((e as Error).message ?? e), failureCode: 'BACKEND_UNSUPPORTED' };
           }
           const id = resourceIdSelector(query);
@@ -759,11 +762,11 @@ export async function runFlow(
               return { ok: false, detail: visibleById.detail, failureCode: 'AMBIGUOUS_SELECTOR' };
             }
             if (!visibleById.visible) {
-              await new Promise((r) => setTimeout(r, 400));
+              await sleepOrCancel(400);
               continue;
             }
           } else if (!visible(await snapshot(session, d), fallbackVisibleQuery(query))) {
-            await new Promise((r) => setTimeout(r, 400));
+            await sleepOrCancel(400);
             continue;
           }
           {

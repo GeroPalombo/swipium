@@ -16,7 +16,7 @@ Email hi@swipium.com for:
 
 Never post vulnerabilities, credentials, or private project data in a public issue.
 
-Before opening an issue, check [Troubleshooting](README.md#troubleshooting) in the README, the [failure-code catalog](docs/tools.md#failure-codes), and, for client setup, [docs/mcp-server.md](docs/mcp-server.md). After an upgrade, work through [Upgrading from 1.5](README.md#upgrading-from-15). Many setup problems are solved by restarting the MCP client, or by setting `SWIPIUM_PROJECT_ROOT` or `ANDROID_HOME` in the server's `env` block.
+Before opening an issue, check [Troubleshooting](README.md#troubleshooting) in the README, the [failure-code catalog](docs/tools.md#failure-codes), and, for client setup, [docs/mcp-server.md](docs/mcp-server.md). After an upgrade, work through the [Upgrading](README.md#upgrading) checklist for your version. Many setup problems are solved by restarting the MCP client, or by setting `SWIPIUM_PROJECT_ROOT` or `ANDROID_HOME` in the server's `env` block. Codex passes the server only a small set of environment variables, so add the `env_vars` line that `swipium init codex` prints (`qa_doctor` flags this under Codex).
 
 ## What to include
 

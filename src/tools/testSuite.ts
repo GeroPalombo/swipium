@@ -9,7 +9,7 @@
 import { z } from 'zod';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError } from '../lib/result.js';
 import { unresolvedProjectRootError } from '../context/projectRoot.js';
 import { loadProjectConfig } from '../cli/scan.js';
@@ -54,8 +54,8 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
     {
       title: 'Read the persistent QA test suite',
       description:
-        'Read the canonical repo-level suite (.swipium/test-suite.json), filterable by functionality/status. format: summary ' +
-        '(counts + ids), json, or markdown. Returns a resource URI for the full suite.',
+        'Read the repo suite (.swipium/test-suite.json), filtered by functionality/status, as a summary, json, or markdown, ' +
+        'plus a resource URI for the full suite.',
       inputSchema: {
         sessionId: z.string().optional(),
         projectRoot: z.string().optional(),
@@ -106,15 +106,14 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
     {
       title: 'Update the persistent QA test suite',
       description:
-        'Merge cases into the canonical suite. A case matching feature + objective + normalized steps is updated, not ' +
-        'duplicated; new ones get stable ids (TC-<FEATURE>-NNN). mergeMode controls whether generated fields overwrite curated ' +
-        'ones. Returns created/updated/deprecated ids + conflicts.',
+        'Merge cases into the canonical suite: a case matching feature + objective + steps is updated, new ones get stable TC ' +
+        'ids. mergeMode decides whether generated fields overwrite curated ones.',
       inputSchema: {
         sessionId: z.string().optional(),
         projectRoot: z.string().optional(),
         source: z.enum(['report', 'exploration', 'feature', 'ticket', 'manual', 'generate', 'suite']),
         sourceUri: z.string().optional(),
-        cases: z.array(z.record(z.any())).optional().describe('Canonical or partial cases (normalized).'),
+        cases: z.array(z.record(z.string(), z.any())).optional().describe('Canonical or partial cases (normalized).'),
         mergeMode: z.enum(['append', 'update', 'replace_generated']).optional(),
       },
     },
@@ -169,18 +168,14 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
     {
       title: 'Generate persistent suite cases from the app',
       description:
-        "Generate or refresh canonical cases from this session's recorded actions, outcomes, and exploration coverage, and merge them " +
-        'into the durable repo-level suite (.swipium/test-suite.json) that grows across runs (re-running updates cases, no duplicates). ' +
-        'Returns generated cases, skipped/blocked features, and map-coverage gaps. For per-run assets (flow YAML, page objects, POM ' +
-        'suite, Appium code) use qa_generate.',
+        'Generate cases from this session (recorded actions, outcomes, exploration coverage) and merge them into the durable ' +
+        'repo suite .swipium/test-suite.json (re-runs update, no duplicates). Returns cases, skipped features, and coverage ' +
+        'gaps. Per-run assets: qa_generate.',
       inputSchema: {
         sessionId: z.string().optional(),
         projectRoot: z.string().optional(),
-        feature: z.string().optional().describe('Functionality label for the generated flow case (defaults from the recorded flow name).'),
-        creativity: z
-          .enum(CREATIVITY_ENUM)
-          .optional()
-          .describe('How far cases go beyond the happy path (default standard; adversarial = negative/abuse cases).'),
+        feature: z.string().optional().describe('Functionality label (default: the recorded flow name).'),
+        creativity: z.enum(CREATIVITY_ENUM).optional().describe('How far beyond the happy path (default standard).'),
         creativityLevel: z.enum(CREATIVITY_ENUM).optional().describe('Deprecated alias of creativity.'),
         includeManualOnly: z.boolean().optional(),
       },
@@ -261,8 +256,7 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
     'qa_suite_export',
     {
       title: 'Export the persistent QA test suite',
-      description:
-        'Export the persistent suite to markdown (review-ready), yaml (a per-functionality directory), json, or junit (CI-style results). Pass save:true to write the export under .swipium/test-suite-export/.',
+      description: 'Export the suite as markdown, yaml, json, or junit; save:true writes it under .swipium/test-suite-export/.',
       inputSchema: {
         sessionId: z.string().optional(),
         projectRoot: z.string().optional(),
@@ -312,9 +306,8 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
     {
       title: 'Lint the persistent QA test suite',
       description:
-        'Lint the canonical suite (missing expected/actual results, unlinked or stale feature/screen links, duplicate ids, ' +
-        'brittle automation, adversarial cases without safety metadata) and, when present, generated page objects under ' +
-        '.swipium/pages (coordinate-only, locale-fragile, dynamic locators). Returns errors and warnings.',
+        'Lint the canonical suite (missing results, stale links, duplicate ids, brittle automation, unsafe adversarial cases) ' +
+        'and generated page objects (fragile locators). Returns errors and warnings.',
       inputSchema: {
         sessionId: z.string().optional(),
         projectRoot: z.string().optional(),

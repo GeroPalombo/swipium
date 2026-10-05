@@ -7,10 +7,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { Client } from '@modelcontextprotocol/client';
+import { McpServer, InMemoryTransport } from '@modelcontextprotocol/server';
+import type { CallToolResult } from '@modelcontextprotocol/server';
 
 process.env.HOME = mkdtempSync(join(tmpdir(), 'swipium-issue-redact-home-'));
 process.env.SWIPIUM_DISABLE_DEVICE_DISCOVERY = '1';

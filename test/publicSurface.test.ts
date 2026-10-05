@@ -1,8 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { createServer } from '../src/server.js';
 import { CAPABILITY_GROUPS } from '../src/core/capabilityGroups.js';
 import { REMOVED_TOOLS, STALE_CLIENT_HINT, SWIPIUM_VERSION, TOOL_COUNT, TOOL_NAMES } from '../src/version.js';
@@ -50,7 +49,7 @@ describe('public tool surface', () => {
       { inputSchema?: { properties?: Record<string, unknown> } } | undefined;
     await client.close();
 
-    expect(SWIPIUM_VERSION).toBe('2.0.1');
+    expect(SWIPIUM_VERSION).toBe('2.2.0');
     expect(TOOL_COUNT).toBe(TOOL_NAMES.length);
     expect(listed).toEqual([...TOOL_NAMES].sort());
     expect(doctor?.inputSchema?.properties?.platform).toBeTruthy();

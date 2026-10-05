@@ -5,7 +5,7 @@
 // data and intentional skips stop being mislabeled as failures.
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import type { SessionStore, TestOutcome, TestCategory } from '../session/store.js';
 
@@ -24,9 +24,8 @@ export function registerNote(server: McpServer, sessions: SessionStore): void {
     {
       title: 'Record a test outcome',
       description:
-        'Record a structured outcome for one workflow so the report is honest about what was verified. Use outcome:"blocked" ' +
-        'with missingPrecondition instead of a false failure; category (why) is independent of outcome. Attach evidence in ' +
-        'artifactUris; for a screenshot-verified check use qa_visual mode:"assert".',
+        'Record the outcome of one workflow for the report. Use outcome:"blocked" + missingPrecondition rather than a false ' +
+        'failure; category says why. Attach evidence in artifactUris.',
       inputSchema: {
         sessionId: z.string(),
         workflow: z.string().describe('e.g. "Delete saved flight"'),

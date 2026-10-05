@@ -1,15 +1,27 @@
 // qa_wait: non-shell synchronization for setup conditions, so agents don't shell out to
-// `sleep`/poll. Waits for: device_online or metro_ready (serving). Jobs are waited on with
-// qa_job_status waitMs. Returns timeout + current state + next steps.
+// `sleep`/poll. Waits for: device_online (adb), metro_ready (serving), wda_ready (WDA /status
+// ready) or simulator_booted (the session's iOS Simulator finished booting, e.g. after qa_ios boot
+// returned status:"booting").
+// Jobs are waited on with qa_job_status waitMs. Returns timeout + current state + next steps.
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { qaOk, unknownSessionError } from '../lib/result.js';
+import type { McpServer } from '@modelcontextprotocol/server';
+import { cancelledResult, qaAnnotate, qaError, qaOk, unknownSessionError } from '../lib/result.js';
+import { isAbortError, sleepOrCancel, throwIfCancelled } from '../lib/abortScope.js';
 import { resolveDevice } from '../session/attach.js';
 import { metroReadiness } from '../lib/metroState.js';
+import { checkWda, isLoopbackWdaUrl, remoteWdaAllowedByUser, REMOTE_WDA_ENV, type WdaStatus } from '../lib/wda.js';
+import { wdaUrlForSession } from './wda.js';
+import { boundSimulatorUdid } from './ios.js';
+import { simulatorBootState, type SimulatorBootState } from '../lib/simctl.js';
 import type { SessionStore } from '../session/store.js';
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** Default wait. Kept under common client tool timeouts (Codex: 60 s); the model can call again. */
+export const DEFAULT_WAIT_TIMEOUT_MS = 45_000;
+/** Effective upper bound for timeoutMs, same reasoning: one call must not outlive the client's
+ *  timeout. Larger values (older docs said 60000/180000) are accepted and CLAMPED, with a note. */
+export const MAX_WAIT_TIMEOUT_MS = 50_000;
+const POLL_INTERVAL_MS = 1500;
 
 export function registerWait(server: McpServer, sessions: SessionStore): void {
   server.registerTool(
@@ -17,44 +29,162 @@ export function registerWait(server: McpServer, sessions: SessionStore): void {
     {
       title: 'Wait for a setup condition',
       description:
-        'Block (bounded) until a setup condition holds instead of shelling out to sleep: for="device_online" (a device appears) or ' +
-        '"metro_ready" (Metro serving the bundle). Returns satisfied/timedOut + current state. To wait for a job, use qa_job_status waitMs.',
+        'Bounded wait for a setup condition instead of shell sleep: device_online (adb), metro_ready, wda_ready (after qa_wda ' +
+        'start returned status:"starting"), or simulator_booted (the bound iOS Simulator, after qa_ios boot returned ' +
+        'status:"booting"). Returns satisfied, or timedOut:true (call again). For jobs use qa_job_status waitMs.',
       inputSchema: {
         sessionId: z.string(),
-        for: z.enum(['device_online', 'metro_ready']),
-        timeoutMs: z.number().optional().describe('default 60000 (180000 for device_online).'),
+        for: z.enum(['device_online', 'metro_ready', 'wda_ready', 'simulator_booted']),
+        timeoutMs: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe(
+            `default ${DEFAULT_WAIT_TIMEOUT_MS}; values above ${MAX_WAIT_TIMEOUT_MS} are clamped. On timedOut, call again to keep waiting.`,
+          ),
       },
     },
     async ({ sessionId, for: cond, timeoutMs }) => {
       const session = sessions.get(sessionId);
       if (!session) return unknownSessionError(sessionId);
-      const deadline = Date.now() + (timeoutMs ?? (cond === 'device_online' ? 180000 : 60000));
-      const intervalMs = 1500;
+      const requested = timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
+      const effectiveMs = Math.min(requested, MAX_WAIT_TIMEOUT_MS);
+      const notes =
+        requested > MAX_WAIT_TIMEOUT_MS
+          ? [
+              `timeoutMs ${requested} clamped to ${MAX_WAIT_TIMEOUT_MS}: one call stays under client tool timeouts (Codex: 60 s). Call qa_wait again to keep waiting.`,
+            ]
+          : [];
+      const done = (r: Parameters<typeof qaAnnotate>[0]) => qaAnnotate(r, notes);
+      const deadline = Date.now() + effectiveMs;
 
-      while (Date.now() < deadline) {
-        if (cond === 'device_online') {
+      // wda_ready: the URL already used by this session (attached driver / last qa_wda start), else
+      // the configured one, which must pass the same non-loopback gate as qa_wda.
+      let wdaUrl: string | undefined;
+      if (cond === 'wda_ready') {
+        const resolved = wdaUrlForSession(session);
+        if (resolved.source === 'config' && !isLoopbackWdaUrl(resolved.url) && !remoteWdaAllowedByUser(resolved.url))
+          return qaError({
+            what: `Refused to poll non-loopback WDA URL ${resolved.url} from the repository config`,
+            changedState: false,
+            retrySafe: false,
+            failureCode: 'DESTRUCTIVE_REFUSED',
+            nextSteps: [
+              `Attach it first with qa_wda { action:"attach", webDriverAgentUrl, allowNonLoopback:true } (consent-gated), or set ${REMOTE_WDA_ENV}=<exact url> in the MCP server environment.`,
+            ],
+          });
+        wdaUrl = resolved.url;
+      }
+      let lastWda: WdaStatus | undefined;
+
+      // simulator_booted: the iOS Simulator bound to this session (qa_ios boot binds it even when
+      // it returns status:"booting").
+      let simUdid: string | undefined;
+      if (cond === 'simulator_booted') {
+        simUdid = boundSimulatorUdid(session);
+        if (!simUdid)
+          return qaError({
+            what: 'No iOS Simulator bound to this session',
+            changedState: false,
+            retrySafe: true,
+            failureCode: 'NO_DEVICE',
+            nextSteps: ['Call qa_ios { action:"boot" } first; it binds the simulator even while it is still booting.'],
+          });
+      }
+      let lastSim: SimulatorBootState | undefined;
+
+      // Cancellation (notifications/cancelled): the call's signal is scoped by the tool wrapper
+      // (abortScope), so every poll checks it and the pause between polls wakes on abort.
+      try {
+        while (Date.now() < deadline) {
+          throwIfCancelled();
+          if (cond === 'wda_ready') {
+            lastWda = await checkWda(wdaUrl!, Math.max(250, Math.min(1500, deadline - Date.now())));
+            throwIfCancelled();
+            if (lastWda.ready)
+              return done(
+                qaOk(
+                  { satisfied: true, condition: cond, webDriverAgentUrl: wdaUrl, wda: lastWda },
+                  `WDA ready at ${wdaUrl}\nNext: qa_wda attach (if the session is not attached yet).`,
+                ),
+              );
+            await sleepOrCancel(Math.min(POLL_INTERVAL_MS, Math.max(0, deadline - Date.now())));
+            continue;
+          }
+          if (cond === 'simulator_booted') {
+            lastSim = await simulatorBootState(simUdid!, Math.max(250, Math.min(3000, deadline - Date.now())));
+            throwIfCancelled();
+            if (lastSim.state === 'booted') {
+              sessions.milestone(session, 'simulator_boot_end');
+              return done(
+                qaOk(
+                  { satisfied: true, condition: cond, udid: simUdid, simulator: lastSim },
+                  `Simulator ${lastSim.name ?? simUdid} booted\nNext: qa_ios install/launch (or qa_wda start).`,
+                ),
+              );
+            }
+            if (lastSim.state === 'failed' || lastSim.state === 'shutdown' || lastSim.state === 'unknown')
+              return done(
+                qaError({
+                  what:
+                    lastSim.state === 'failed'
+                      ? `Simulator ${simUdid} failed to boot: ${lastSim.error}`
+                      : lastSim.state === 'shutdown'
+                        ? `Simulator ${simUdid} is not booting (simctl state: ${lastSim.simctlState})`
+                        : `Simulator ${simUdid} is not listed by simctl`,
+                  changedState: false,
+                  retrySafe: true,
+                  failureCode:
+                    lastSim.state === 'failed' && /timed out/i.test(lastSim.error) ? 'SIMULATOR_BOOT_TIMEOUT' : 'SIMULATOR_BOOT_FAILED',
+                  nextSteps: ['Boot it again with qa_ios { action:"boot" }, or pick another simulator from qa_ios { action:"list" }.'],
+                }),
+              );
+            await sleepOrCancel(Math.min(POLL_INTERVAL_MS, Math.max(0, deadline - Date.now())));
+            continue;
+          }
           const dev = await resolveDevice(session);
-          if (dev.available.length > 0)
-            return qaOk(
-              { satisfied: true, condition: cond, availableDevices: dev.available },
-              `device online: ${dev.available.join(', ')}`,
-            );
-        } else {
-          const dev = await resolveDevice(session);
-          if (dev.effective) {
+          throwIfCancelled();
+          if (cond === 'device_online') {
+            if (dev.available.length > 0)
+              return done(
+                qaOk({ satisfied: true, condition: cond, availableDevices: dev.available }, `device online: ${dev.available.join(', ')}`),
+              );
+          } else if (dev.effective) {
             const rd = await metroReadiness(dev.effective);
             if (rd.serving)
-              return qaOk(
-                { satisfied: true, condition: cond, metro: rd },
-                `Metro serving=${rd.serving} reverse=${rd.reverseSet} ready=${rd.ready}`,
+              return done(
+                qaOk(
+                  { satisfied: true, condition: cond, metro: rd },
+                  `Metro serving=${rd.serving} reverse=${rd.reverseSet} ready=${rd.ready}`,
+                ),
               );
           }
+          await sleepOrCancel(Math.min(POLL_INTERVAL_MS, Math.max(0, deadline - Date.now())));
         }
-        await sleep(intervalMs);
+      } catch (e) {
+        if (isAbortError(e)) return cancelledResult(`qa_wait ${cond} cancelled: the call was aborted before the condition held`);
+        throw e;
       }
-      return qaOk(
-        { satisfied: false, timedOut: true, condition: cond },
-        `Timed out waiting for ${cond}. ${cond === 'device_online' ? 'Boot one with qa_prepare_target { bindOnly:true }.' : 'Start Metro with qa_metro action="start", or qa_metro diagnose.'}`,
+      const hint =
+        cond === 'device_online'
+          ? 'boot one with qa_prepare_target { bindOnly:true }.'
+          : cond === 'metro_ready'
+            ? 'start Metro with qa_metro action="start", or qa_metro diagnose.'
+            : cond === 'simulator_booted'
+              ? 'check qa_ios { action:"list" } (a cold boot of a fresh runtime can take a few minutes).'
+              : 'check qa_wda { action:"logs" } / { action:"diagnose" } (a managed WDA may have failed to launch).';
+      return done(
+        qaOk(
+          {
+            satisfied: false,
+            timedOut: true,
+            condition: cond,
+            ...(cond === 'wda_ready' ? { webDriverAgentUrl: wdaUrl, wda: lastWda ?? null } : {}),
+            ...(cond === 'simulator_booted' ? { udid: simUdid, simulator: lastSim ?? null } : {}),
+          },
+          `Timed out waiting for ${cond}. Call qa_wait again to keep waiting, or ${hint}`,
+        ),
       );
     },
   );

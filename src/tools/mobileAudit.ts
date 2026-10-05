@@ -5,9 +5,9 @@
 // over src/mobileAudit/* and src/issues/*.
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
+import type { McpServer, CallToolResult } from '@modelcontextprotocol/server';
+import { cancelledResult, qaOk, qaError, unknownSessionError } from '../lib/result.js';
+import { isAbortError } from '../lib/abortScope.js';
 import { resolveProjectRoot, unresolvedProjectRootError } from '../context/projectRoot.js';
 import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import type { SessionStore } from '../session/store.js';
@@ -45,25 +45,23 @@ export function registerMobileAudit(server: McpServer, sessions: SessionStore): 
     {
       title: 'Mobile QA release audit',
       description:
-        'Plan or execute a release audit. profile: smoke, account_cycle (create > logout > login > forgot-password on a ' +
-        'DISPOSABLE generated account), store_compliance (privacy/terms/account deletion/subscription/paywall), resilience ' +
-        '(offline/relaunch/rotation; airplane toggle is consent-gated, original network restored), release_gate (all + locator readiness + issue recurrence). mode:"plan" ' +
-        '(default) returns the checklist + safety contract without the device; "execute" (prepared session) runs every check, ' +
-        'logs fail/blocked checks to the issue ledger with evidence, and returns release impact. No check passes without ' +
-        'evidence.',
+        'Plan (default, no device) or execute a release audit. profile: smoke, account_cycle (create/logout/login/reset on a ' +
+        'disposable account), store_compliance, resilience (offline/relaunch/rotation; airplane mode is consent-gated), ' +
+        'release_gate (all). execute needs a prepared session, logs failed/blocked checks to the issue ledger, and passes ' +
+        'nothing without evidence.',
       inputSchema: {
         projectRoot: z.string().optional(),
         sessionId: z.string().optional(),
         profile: z.enum(ALL_PROFILES as [string, ...string[]]),
         mode: z.enum(['plan', 'execute']).optional(),
-        allowGeneratedData: z.boolean().optional().describe('Permit generated disposable test data (required for account_cycle).'),
+        allowGeneratedData: z.boolean().optional().describe('Required for account_cycle.'),
         allowTestAccountDeletion: z.boolean().optional().describe('Permit deleting disposable test accounts (never a real account).'),
-        offlineMode: z.boolean().optional().describe('Hint that resilience checks should drive offline state.'),
+        offlineMode: z.boolean().optional().describe('resilience: drive offline state.'),
         sourceRevision: z
           .object({ commit: z.string().optional(), buildVersion: z.string().optional(), branch: z.string().optional() })
           .optional(),
         targetApp: z.string().optional(),
-        consentId: z.string().optional().describe('execute: consent for the resilience airplane-mode toggle (network_change).'),
+        consentId: z.string().optional().describe('execute: consent for the airplane-mode toggle.'),
         approve: z.boolean().optional(),
       },
     },
@@ -155,6 +153,8 @@ export function registerMobileAudit(server: McpServer, sessions: SessionStore): 
             `🔍 mobile audit ${prof}: ${run.state}, release=${run.releaseImpact}, ${passed}/${run.checks.length} pass, ${run.issueIds.length} issue(s)${run.recurrenceWarnings.length ? `, ${run.recurrenceWarnings.length} recurrence` : ''}`,
           );
         } catch (e) {
+          if (isAbortError(e))
+            return cancelledResult('qa_mobile_audit cancelled: remaining checks were skipped, nothing was recorded as an issue', true);
           return qaError({
             what: `Mobile audit failed: ${String((e as Error).message ?? e)}`,
             changedState: true,

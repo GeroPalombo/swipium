@@ -10,8 +10,7 @@ import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { McpServer, CallToolResult } from '@modelcontextprotocol/server';
 import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { resolveProjectRoot, unresolvedProjectRootError } from '../context/projectRoot.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
@@ -564,10 +563,8 @@ export function registerSuite(server: McpServer, sessions: SessionStore): void {
     {
       title: 'Compile a POM suite to runnable flows',
       description:
-        'Compile an existing POM suite on disk (.swipium/suites/<suite>.yaml, e.g. committed or hand-edited) into runnable Flow V2 ' +
-        'for qa_flow_run: resolves page-object refs to selectors, carries variables, writes .swipium/flows/<slug>.yaml (+ a copy ' +
-        'under .swipium/compiled/), and validates each flow. Needs no session or recorded actions; qa_generate target:"suite" ' +
-        'already compiles the suite it generates from a run.',
+        'Compile a POM suite on disk (.swipium/suites/<suite>.yaml) into runnable flows under .swipium/flows/ and validate ' +
+        'them. No session needed; qa_generate target:"suite" already compiles what it generates.',
       inputSchema: {
         sessionId: z.string().optional(),
         projectRoot: z.string().optional(),

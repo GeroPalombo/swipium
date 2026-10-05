@@ -11,9 +11,14 @@ import { join, resolve } from 'node:path';
 const verifyMock = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('../src/cli/verify.js', () => ({ runVerify: verifyMock }));
 
+const { codexEnvVarsLine } = await import('../src/lib/codexEnv.js');
 const {
   claudeAddArgs,
   codexBlock,
+  codexBlockHasEnvVars,
+  codexCoreTools,
+  findCodexServerBlock,
+  stableNodePath,
   geminiAddArgs,
   geminiBlock,
   isEphemeralInstall,
@@ -139,6 +144,30 @@ describe('cli init portability + new clients', () => {
     expect(block).toContain('args = ["/x/dist/index.js"]');
   });
 
+  it('codexBlock forwards the env Swipium reads via env_vars (Codex does not inherit the shell env)', () => {
+    const block = codexBlock('/usr/bin/node', '/Users/me/my-app', '/x/dist/index.js');
+    const line = block.split('\n').find((l) => l.startsWith('env_vars = ['));
+    expect(line).toBeDefined();
+    for (const name of [
+      'SWIPIUM_TEST_EMAIL',
+      'SWIPIUM_TEST_PASSWORD',
+      'SWIPIUM_TEST_OTP',
+      'SWIPIUM_REQUIRE_ELICITATION',
+      'ANDROID_HOME',
+      'ANDROID_SDK_ROOT',
+      'JAVA_HOME',
+    ]) {
+      expect(line).toContain(`"${name}"`);
+    }
+    // Approval grants are never forwarded: operators set them literally in env = { ... }.
+    expect(line).not.toContain('SWIPIUM_CONSENT_PREAPPROVE');
+    expect(line).not.toContain('SWIPIUM_ALLOW_REMOTE_WDA');
+    expect(block).toContain('ORG_GRADLE_PROJECT_*');
+    // enabled_tools is documented but never active by default.
+    expect(block).toMatch(/^# enabled_tools = \["qa_test_this"/m);
+    expect(block).not.toMatch(/^enabled_tools/m);
+  });
+
   it('codex preview offers `codex mcp add` and names the Desktop-specific caveat', async () => {
     const out = capture();
     await runInit(['codex', '--cwd', tmpRoot]);
@@ -147,6 +176,7 @@ describe('cli init portability + new clients', () => {
     expect(text).toContain('#19425');
     expect(text).toContain('Desktop');
     expect(text).not.toMatch(/has no .?mcp add/);
+    expect(text).toContain('env_vars is config-only');
   });
 
   it('mergeServerJson adds without clobbering, is idempotent, and refuses JSONC/garbage', () => {
@@ -220,5 +250,100 @@ describe('cli init portability + new clients', () => {
     process.exitCode = prev;
     expect(code).toBe(2);
     expect(out.join('')).toContain('cursor|vscode');
+  });
+});
+
+describe('stableNodePath', () => {
+  const brew = '/opt/homebrew/Cellar/node@20/20.19.6/bin/node';
+
+  it('prefers the Homebrew opt symlink over the versioned Cellar path', () => {
+    const exists = (p: string) => p === '/opt/homebrew/opt/node@20/bin/node';
+    expect(stableNodePath(brew, { exists, realpath: (p) => p, pathEnv: '' })).toBe('/opt/homebrew/opt/node@20/bin/node');
+    expect(
+      stableNodePath('/usr/local/Cellar/node/22.1.0/bin/node', { exists: (p) => p === '/usr/local/opt/node/bin/node', pathEnv: '' }),
+    ).toBe('/usr/local/opt/node/bin/node');
+  });
+
+  it('falls back to the first node on PATH that resolves to the running binary', () => {
+    const links: Record<string, string> = {
+      '/usr/local/bin/node': '/somewhere/else/node',
+      '/opt/homebrew/bin/node': brew,
+      [brew]: brew,
+    };
+    const deps = {
+      exists: (p: string) => p in links,
+      realpath: (p: string) => {
+        if (!(p in links)) throw new Error('ENOENT');
+        return links[p];
+      },
+      pathEnv: '/usr/local/bin:/opt/homebrew/bin:/usr/bin',
+      platform: 'darwin' as const,
+    };
+    expect(stableNodePath(brew, deps)).toBe('/opt/homebrew/bin/node');
+  });
+
+  it('keeps execPath when nothing stable matches', () => {
+    expect(stableNodePath('/usr/bin/node', { exists: () => false, realpath: (p) => p, pathEnv: '/bin' })).toBe('/usr/bin/node');
+    expect(stableNodePath(brew, { exists: () => false, realpath: (p) => p, pathEnv: '' })).toBe(brew);
+  });
+});
+
+describe('codex enabled_tools core list', () => {
+  it('includes every qa_ tool the server instructions and qa_status orientation name', async () => {
+    const { SERVER_INSTRUCTIONS, orientation } = await import('../src/tools/agent.js');
+    const { capabilityGroups: _groups, ...rest } = orientation();
+    const named = new Set(
+      [...SERVER_INSTRUCTIONS.matchAll(/qa_[a-z_]+/g), ...JSON.stringify(rest).matchAll(/qa_[a-z_]+/g)].map((m) => m[0]),
+    );
+    const core = codexCoreTools();
+    for (const t of ['qa_metro', 'qa_app_control', 'qa_app_map_read', 'qa_test_feature', 'qa_flow_run']) named.add(t);
+    const missing = [...named].filter((t) => !core.includes(t as never));
+    expect(missing).toEqual([]);
+    expect(new Set(core).size).toBe(core.length);
+  });
+});
+
+describe('codex existing-block detection', () => {
+  it('init codex --apply leaves an existing block alone and prints only the missing env_vars line', async () => {
+    const codexHome = mkdtempSync(join(tmpdir(), 'swipium-codex-home-'));
+    const app = mkdtempSync(join(tmpdir(), 'swipium-codex-app-'));
+    const original = '[mcp_servers."swipium"]\ncommand = "node"\ntool_timeout_sec = 600\n';
+    writeFileSync(join(codexHome, 'config.toml'), original);
+    const out: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      out.push(String(chunk));
+      return true;
+    });
+    const saved = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = codexHome;
+    try {
+      await runInit(['codex', '--apply', '--cwd', app]);
+    } finally {
+      if (saved === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = saved;
+    }
+    expect(readFileSync(join(codexHome, 'config.toml'), 'utf8')).toBe(original);
+    const text = out.join('');
+    expect(text).toContain('has no env_vars');
+    expect(text).toContain(codexEnvVarsLine());
+    expect(text).not.toContain('[mcp_servers.swipium]\ncommand');
+    expect(text).not.toContain('Appended to');
+  });
+
+  it('matches [mcp_servers.swipium] and the quoted form, not look-alikes', () => {
+    expect(findCodexServerBlock('[mcp_servers.swipium]\ncommand = "x"\n')).not.toBeNull();
+    expect(findCodexServerBlock('[mcp_servers."swipium"]\ncommand = "x"\n')).not.toBeNull();
+    expect(findCodexServerBlock('# [mcp_servers.swipium]\n')).toBeNull();
+    expect(findCodexServerBlock('[mcp_servers.swipium-old]\n')).toBeNull();
+    expect(findCodexServerBlock('[mcp_servers.swipium.env]\nA = "1"\n')).toBeNull();
+    expect(findCodexServerBlock('x = "[mcp_servers.swipium]"\n')).toBeNull();
+  });
+
+  it('reports env_vars only inside the swipium table', () => {
+    const toml = '[mcp_servers.swipium]\ncommand = "x"\n\n[mcp_servers.other]\nenv_vars = ["A"]\n';
+    const block = findCodexServerBlock(toml)!;
+    expect(block).not.toContain('other');
+    expect(codexBlockHasEnvVars(block)).toBe(false);
+    expect(codexBlockHasEnvVars(findCodexServerBlock('[mcp_servers.swipium]\nenv_vars = ["A"]\n')!)).toBe(true);
   });
 });

@@ -30,7 +30,7 @@ Agent > qa_test_this { sessionId: "3f9c2a1b", mode: "execute", goal: "smoke" }
                                    • install_apk: adb install -r -g android/app/.../app-release.apk
 You:    Approve                                               (one prompt covers boot + install)
         state: "running", jobId: "a41c09e2"
-Agent > qa_job_status { sessionId: "3f9c2a1b", jobId: "a41c09e2", waitMs: 60000 }
+Agent > qa_job_status { sessionId: "3f9c2a1b", jobId: "a41c09e2", waitMs: 45000 }
         status: "done", result.state: "completed"
         reportSummary: "PASS app · COVERED coverage · PASS tool. Read swipium://session/3f9c2a1b/report/…"
 Agent:  The app launched and passed the smoke checks with no crashes or error screens.
@@ -48,11 +48,13 @@ The report behind that summary, rendered with `npx swipium report --latest --for
 
 ## Contents
 
-[Requirements](#requirements) · [Quickstart](#quickstart) · [Starter prompts](#starter-prompts) · [How it works](#how-it-works) · [Tools](#tools) · [Where results go](#where-results-go) · [Configuration](#configuration--environment-variables) · [CLI](#cli-reference) · [CI](#ci) · [Upgrading from 1.5](#upgrading-from-15) · [Troubleshooting](#troubleshooting) · [Security](#security)
+[Requirements](#requirements) · [Quickstart](#quickstart) · [Starter prompts](#starter-prompts) · [How it works](#how-it-works) · [Tools](#tools) · [Where results go](#where-results-go) · [Configuration](#configuration--environment-variables) · [CLI](#cli-reference) · [CI](#ci) · [Upgrading](#upgrading) · [Troubleshooting](#troubleshooting) · [Security](#security)
 
 ## Requirements
 
 **Node.js 20 or newer.** Swipium works with emulators and simulators only; physical devices are refused with `PHYSICAL_DEVICE_UNSUPPORTED` ([why](docs/physical-devices.md)).
+
+**MCP:** a stdio server that speaks protocol revisions 2025-06-18, 2025-11-25 and 2026-07-28; the client's first message picks one. Claude Code 2.1.285 and later connect on 2026-07-28, Codex 0.146 on 2025-06-18. Any stdio MCP client should work ([protocol versions](docs/mcp-server.md#protocol-versions)).
 
 | Host | Android Emulator | iOS Simulator |
 | --- | --- | --- |
@@ -81,6 +83,10 @@ npx -y swipium init claude --scope project --apply   # writes .mcp.json, then ru
 
 The same command handles `codex`, `gemini`, `cursor`, and `vscode` (`swipium init <client> --apply`). Claude Desktop, Windsurf, manual configs, and per-client details are in **[docs/mcp-server.md](docs/mcp-server.md)**.
 
+**Codex:** `swipium init codex --apply` appends a `[mcp_servers.swipium]` block to `~/.codex/config.toml` (or `$CODEX_HOME/config.toml`) with longer timeouts and an `env_vars` line. Codex doesn't pass your shell environment to MCP servers, so without that line `SWIPIUM_TEST_*`, `ANDROID_HOME` and `JAVA_HOME` never reach Swipium. If you already have a block, `init` prints the line to add. Keep `tool_timeout_sec = 600` ([Codex setup](docs/mcp-server.md#codex)).
+
+**Headless runs** (`codex exec`, `claude -p`, CI): these clients answer consent prompts automatically, so nothing gated (boot, install, build) runs unless you pre-approve exact actions with `SWIPIUM_CONSENT_PREAPPROVE` in the server env ([Headless runs](docs/mcp-server.md#headless-runs)).
+
 **2. Restart the client** and check that it lists `qa_test_this`, `qa_doctor`, and `qa_report`.
 
 **3. Ask the agent to test the app:**
@@ -98,7 +104,7 @@ If a tool returns `PROJECT_ROOT_UNRESOLVED`, name the absolute project path in y
 ### What you'll see
 
 - **One approval prompt** listing the exact build, boot, and install commands. Clients with MCP elicitation show a real prompt; others return `requiresConsent`, which the agent must relay to you.
-- **The first build can take minutes.** The run is a background job the agent polls with `qa_job_status`.
+- **The first build can take minutes.** The run is a background job the agent polls with `qa_job_status` (each poll waits up to about 45 s).
 - **Two states.** The job `status` is `running`, `done`, `failed`, or `cancelled`. The run's `result.state` is `completed` or `needs_input` (job `done`), or `blocked` or `unsafe` (job `failed`). `needs_input` means one question for you, such as login credentials.
 - **A report** with separate verdicts for the app, coverage, and Swipium itself. Read it with `npx swipium report --latest --format markdown`.
 
@@ -119,7 +125,7 @@ Clients that support MCP prompts can use the built-in ones instead: `swipium_set
 ```text
 qa_test_this {mode:"plan"}  >  qa_test_this {mode:"execute"}  >  consent  >  job
                                                                                │
-                         qa_job_status {waitMs} ◄──────────────────────────────┘
+                         qa_job_status {waitMs} <──────────────────────────────┘
                            ├─ completed / blocked / unsafe  >  report (qa_get_artifact reportUri)
                            └─ needs_input  >  ask you one question  >  qa_continue_from_blocker
 ```
@@ -164,7 +170,9 @@ Every tool carries MCP annotations: read-only tools declare `readOnlyHint:true` 
 
 ## Configuration & environment variables
 
-Set these in the MCP server's `env` block (or your shell, for CLI commands). This is the complete list.
+Set these in the MCP server's `env` block (or your shell, for CLI commands). This is the complete list of variables Swipium reads.
+
+**Codex** forwards only the names listed in `env_vars` (plus a fixed whitelist such as `HOME` and `PATH`); `swipium init codex` writes that line for you. It deliberately leaves out `CLAUDE_PROJECT_DIR`, `SWIPIUM_DISABLE_DEVICE_DISCOVERY` and the approval grants (`SWIPIUM_CONSENT_PREAPPROVE`, `SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE`, `SWIPIUM_ALLOW_REMOTE_WDA`): set those literally in `env = { ... }` so an inherited shell export or a direnv file in a cloned repo can't grant approvals. Add your own custom `SWIPIUM_*` flow variables to the list. Details: [docs/mcp-server.md](docs/mcp-server.md#codex).
 
 | Variable | Purpose |
 | --- | --- |
@@ -176,14 +184,20 @@ Set these in the MCP server's `env` block (or your shell, for CLI commands). Thi
 | `APPIUM_HOME` | Extra location searched for an Appium-installed WDA (besides `~/.appium` and global npm). |
 | `WDA_PROJECT_PATH`, `WEBDRIVERAGENT_PROJECT` | Extra `WebDriverAgent.xcodeproj` candidates reported by `qa_doctor` and `qa_wda` status (to build one, pass `wdaProjectPath`). |
 | `SWIPIUM_ALLOW_REMOTE_WDA` | Comma-separated exact non-loopback WDA base URLs you pre-approve. Set it in your client config, never in the repository. |
-| `SWIPIUM_TEST_*` | Test-account values: `_EMAIL`, `_USERNAME`, `_PASSWORD`, `_OTP`, `_TOKEN`, `_PIN`. Flows and `qa_act` use `${SWIPIUM_TEST_EMAIL}`; `fixtures.json` uses `"var": "SWIPIUM_TEST_EMAIL"`. |
+| `SWIPIUM_TEST_*` | Test-account values: `_EMAIL`, `_USERNAME`, `_PASSWORD`, `_OTP`, `_TOKEN`, `_PIN` (and `_DEEP_LINK` for the starter flows). Flows and `qa_act` use `${SWIPIUM_TEST_EMAIL}`; `fixtures.json` uses `"var": "SWIPIUM_TEST_EMAIL"`. |
 | Other `SWIPIUM_*` | Flows and fixtures read **only** `SWIPIUM_*` names from the environment (never `${HOME}` or `${AWS_SECRET_ACCESS_KEY}`). Names containing `pass`, `secret`, `token`, `otp`, `pin`, `cvv`, `key`, or `code` are secrets and redacted. |
 | `SWIPIUM_OCR_CMD` | OCR command for `qa_visual` `find_text` (none bundled; consent-gated). `{image}` becomes a PNG path; it prints `[{"text","confidence","bbox"}]` JSON. `ocrCommand` in `config.json` wins. |
 | `SWIPIUM_VISUAL_MASK_CMD` | Masks screenshots before OCR and visual providers see them (`visualMaskCommand` in config wins). |
-| `SWIPIUM_REQUIRE_ELICITATION=1` | Refuse every consent-gated action (`CONSENT_REFUSED`) when the client can't show a real consent prompt. |
+| `SWIPIUM_REQUIRE_ELICITATION=1` | Refuse every consent-gated action (`CONSENT_REFUSED`) when the client can't show a real consent prompt. Operator pre-approval still applies. |
+| `SWIPIUM_CONSENT_PREAPPROVE` | Comma-separated exact consent action names approved without a prompt (for example `prepare_plan,test_this_plan`), for headless clients such as `codex exec` or `claude -p` that answer prompts automatically. No wildcards; unknown names are ignored with a warning. Actions that run code also need `SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE=1`, and `wda_non_loopback` is never accepted (use `SWIPIUM_ALLOW_REMOTE_WDA`). Read only from the server process env, never the repository. Each approval is still single-use and is logged at `warn` with the exact command. See [Operator pre-approval](docs/concepts.md#operator-pre-approval). |
+| `SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE` | `1` lets `SWIPIUM_CONSENT_PREAPPROVE` cover actions that run repository- or model-chosen code (`build_from_source`, `flow_mutation_run`, `ocr_run`, `seed_state`, `start_metro`, `suite_fresh_state_replay`, `wda_build`, `wda_start`, and a `test_this_plan` that includes a build). Under `codex exec` that code runs outside the client's sandbox. Trusted repositories only. |
 | `SWIPIUM_RETENTION_DAYS` | Age limit in days for `~/.swipium/runs` session directories (default 30). `0` or `off` disables the automatic prune; `swipium gc` still works. |
 | `SWIPIUM_RETENTION_KEEP` | Number of newest sessions per project always kept (default 20). |
+| `SWIPIUM_LOG_LEVEL` | Minimum stderr log level: `debug`, `info` (default), `warn`, or `error`. `debug` adds one line per tool call (tool, session, duration, error code; never argument values). |
+| `JAVA_HOME` | JDK used by Gradle builds; `qa_doctor` flags a missing JDK under Codex. |
+| `CODEX_HOME` | Where `swipium init codex` finds `config.toml` (default `~/.codex`). |
 | `CI` | When set, reports label the run environment as CI. |
+| `GITHUB_SHA`, `GITHUB_REF_NAME`, `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY`, `GITHUB_RUN_ID`, `CI_COMMIT_SHA`, `CI_COMMIT_REF_NAME`, `CI_PIPELINE_URL`, `BITBUCKET_COMMIT`, `BITBUCKET_BRANCH` | Source revision (commit, branch, run URL) recorded in reports and the issue ledger. |
 | `SWIPIUM_DISABLE_DEVICE_DISCOVERY` | Test-suite isolation only: disables device auto-discovery. Not for normal use. |
 
 Generated flows, suites, and code never contain credential values; they reference `SWIPIUM_TEST_*`, `SWIPIUM_SECRET_N`, or `SWIPIUM_GEN_<FIELD>`, which you set when replaying. Generated Appium projects read their own variables (`SWIPIUM_PLATFORM`, `APPIUM_HOST`, `ANDROID_*`, `IOS_*`, …), documented in their README.
@@ -206,20 +220,14 @@ With no subcommand, `swipium` runs the stdio MCP server (what clients launch). `
 
 ## CI
 
-`swipium report` renders a finished run as JUnit, SARIF, a GitHub job summary, Markdown, or JSON; `--fail-on-gate` fails the job when the `.swipium/policy.json` release gate blocks. The CLI does not drive devices: CI still needs an agent (such as headless Claude Code) calling the MCP tools, including `qa_flow_run` to replay saved flows. Nobody can approve consent in CI, so install the app before the agent step. Recipe: **[docs/ci-reports.md](docs/ci-reports.md)**.
+`swipium report` renders a finished run as JUnit, SARIF, a GitHub job summary, Markdown, or JSON; `--fail-on-gate` fails the job when the `.swipium/policy.json` release gate blocks. The CLI does not drive devices: CI still needs an agent (such as `claude -p`) calling the MCP tools, including `qa_flow_run` to replay saved flows. Nobody answers consent prompts in CI, so either install the app in the workflow before the agent step (safest) or [pre-approve](docs/ci-reports.md#pre-approving-consents-in-ci) the exact actions the agent needs. Recipe: **[docs/ci-reports.md](docs/ci-reports.md)**.
 
-## Upgrading from 1.5
+## Upgrading
 
-2.0.0 removes and renames tools and tightens defaults. Work through this list:
+Restart your MCP client after every upgrade; a client still running the old server gets `STALE_CLIENT` errors.
 
-1. **Restart your MCP client.** A client still running the old server gets `STALE_CLIENT` for removed tools and old call shapes.
-2. **Rename environment variables your flows and fixtures read** so they start with `SWIPIUM_` (for example `${TEST_PASSWORD}` becomes `${SWIPIUM_TEST_PASSWORD}`). Other names are no longer read from the environment.
-3. **CI: every app install now asks for consent**, including an APK inside the project. Install the app yourself before the agent step ([docs/ci-reports.md](docs/ci-reports.md)).
-4. **Saved prompts and scripts:** replace removed tools using the [migration table](CHANGELOG.md#migrating-from-150) (also in [docs/tools.md](docs/tools.md#migrating-from-150)), and drop arguments a tool doesn't declare; they now fail with `INVALID_ARGUMENT` instead of being ignored.
-5. **Remote WDA:** `ios.wda.allowNonLoopbackUrls` in `.swipium/config.json` no longer pre-approves a URL. Pass `allowNonLoopback:true` and approve the consent, or list the URL in `SWIPIUM_ALLOW_REMOTE_WDA` in your client config.
-6. **Scripts calling `swipium <unknown>`** now exit 2 instead of starting the server.
-7. **Metro and WDA processes started by 1.5.x** are not cleaned up automatically. Stop them yourself: the Metro process on port 8081 and any old WebDriverAgent `xcodebuild`.
-8. **Known issue:** the first time an iOS session from before the upgrade is rebound, the app may be relaunched once.
+- **From 2.0.x to 2.2.0:** element lists in `structuredContent` are now `@eN` strings (pass `responseMode:"verbose"` for objects), Codex needs the `env_vars` line, `qa_wda build` returns a job, and waits end within about 50 s. See the [2.2.0 upgrade checklist](CHANGELOG.md#220---2026-10-05).
+- **From 1.5.x:** 2.0 removed and renamed tools, reads only `SWIPIUM_*` variables in flows and fixtures, and asks consent for every install. Work through the [2.0.0 upgrade checklist](CHANGELOG.md#200---2026-09-30) and the [migration table](CHANGELOG.md#migrating-from-150) first, then the 2.2.0 one.
 
 ## Troubleshooting
 
@@ -236,11 +244,15 @@ Every error has a `failureCode`, `nextSteps`, and `retrySafe`. `qa_explain_block
 | `EXPO_PREBUILD_REQUIRED` | The Expo project has no native directories. | Run `npx expo prebuild`, then retry. |
 | `WDA_UNREACHABLE` | WebDriverAgent isn't running or answering. | `qa_wda {action:"status"}`, then `start` or `attach`. For a plain smoke check, use `goal:"smoke"`, which works visual-only. |
 | `BACKEND_UNSUPPORTED` | The action needs WDA (iOS visual-only mode). | Attach WDA with `qa_wda`, or use `qa_visual` and `qa_screenshot`. |
-| `CONSENT_DECLINED` / `CONSENT_CANCELLED` / `CONSENT_REFUSED` | Nothing ran: you declined, the prompt was dismissed or timed out, or `SWIPIUM_REQUIRE_ELICITATION=1` blocked it. | Re-call to get a fresh prompt if you want the action. |
+| `CONSENT_DECLINED` / `CONSENT_CANCELLED` / `CONSENT_REFUSED` | Nothing ran: you declined, the prompt was dismissed, timed out or failed (`elicitationFailure` says why), or `SWIPIUM_REQUIRE_ELICITATION=1` blocked it. | Re-call for a fresh prompt if you want the action. `likelyAutomatic: true` means a headless client answered in under 1.5 s: don't loop, pre-approve the named `action` with `SWIPIUM_CONSENT_PREAPPROVE` ([Headless runs](docs/mcp-server.md#headless-runs)). |
+| `CANCELLED` | The call or job was cancelled. Not a failure, never recorded as a finding. | Re-call if you still want it. Cancelling a call doesn't stop a background job; `qa_job_cancel` does. |
+| `INVALID_ARGUMENT` | An undeclared, missing, or wrong-typed argument, or an unknown `sessionId`, `jobId` or artifact URI. Nothing ran. | Fix the argument; the result lists `acceptedParameters`. Over-large `waitMs` / `timeoutMs` values are clamped to 50000 with a note, not rejected. |
+
+If tool calls time out in the client, raise its tool timeout (Codex `tool_timeout_sec = 600`): waits and job polls end within about 50 s, but a few synchronous steps, such as an iOS Simulator cold boot, can take longer.
 
 ## Security
 
-Swipium is a local stdio process with no network listener. Actions with side effects need your [consent](docs/concepts.md#consent), known secret values are [redacted](docs/concepts.md#secrets-and-redaction) from snapshots, artifacts, and reports, and generated output is checked for leaked secrets. A cloned repository's `.swipium/` is treated as untrusted: repo-supplied commands are shown verbatim in the consent prompt, flows read only `SWIPIUM_*` variables, and Swipium never runs `git`. Screenshots are never redacted, so use `qa_start_session { sensitive: true }` to refuse all screen captures when that matters. Details: [Threat Model](THREAT_MODEL.md). Report vulnerabilities privately per the [Security Policy](SECURITY.md).
+Swipium is a local stdio process with no network listener. Actions with side effects need your [consent](docs/concepts.md#consent); each approval is single-use and bound to its session, and only the server's own environment can pre-approve actions (`SWIPIUM_CONSENT_PREAPPROVE`), never a repository file or the model. Known secret values are [redacted](docs/concepts.md#secrets-and-redaction) from snapshots, artifacts, and reports, and generated output is checked for leaked secrets. A cloned repository's `.swipium/` is treated as untrusted: repo-supplied commands are shown verbatim in the consent prompt, flows read only `SWIPIUM_*` variables, and Swipium never runs `git`. Screenshots are never redacted, so use `qa_start_session { sensitive: true }` to refuse all screen captures when that matters. Details: [Threat Model](THREAT_MODEL.md). Report vulnerabilities privately per the [Security Policy](SECURITY.md).
 
 ## Contributing and license
 

@@ -4,10 +4,10 @@ Public documentation for the Swipium MCP server. Start with the top-level [READM
 
 ## Guides
 
-- [Concepts](concepts.md): sessions and jobs, project root, consent, secrets and redaction, iOS modes (visual-only vs WebDriverAgent), and a glossary of terms such as app map, flow, POM suite, and `@eN` refs.
+- [Concepts](concepts.md): sessions, jobs and cancellation, project root, consent (prompts, the `requiresConsent` re-call, operator pre-approval for headless runs), secrets and redaction, iOS modes (visual-only vs WebDriverAgent), devices, and a glossary of terms such as app map, flow, POM suite, and `@eN` refs.
 - [Flows](flows.md): writing, running, and repairing replayable flows, with an example, variables, and CI policy.
-- [MCP Server](mcp-server.md): the server command and per-client setup (Claude Code, Codex, Gemini CLI, Cursor, VS Code, Claude Desktop, Windsurf), verification, and server behavior.
-- [CI Reports](ci-reports.md): `swipium report` output formats (JUnit, SARIF, GitHub summary, Markdown, JSON), a GitHub Actions recipe, and the release-gate policy.
+- [MCP Server](mcp-server.md): the server command, per-client setup (Claude Code, Codex, Gemini CLI, Cursor, VS Code, Claude Desktop, Windsurf, headless runs), protocol versions (2025-06-18, 2025-11-25 and 2026-07-28), what the model sees, server behavior, verification, debugging, and troubleshooting.
+- [CI Reports](ci-reports.md): `swipium report` output formats (JUnit, SARIF, GitHub summary, Markdown, JSON), a GitHub Actions recipe with a headless agent step, pre-approving consents in CI, and the release-gate policy.
 
 ## Reference
 
@@ -17,7 +17,7 @@ Public documentation for the Swipium MCP server. Start with the top-level [READM
 
 ## Elsewhere in the repository
 
-- Upgrading from 1.5: the [checklist in the README](../README.md#upgrading-from-15) and the [migration table in the CHANGELOG](../CHANGELOG.md#migrating-from-150).
+- Upgrading: the [README section](../README.md#upgrading) links the per-release checklists; from 1.5, also see the [migration table in the CHANGELOG](../CHANGELOG.md#migrating-from-150).
 - Security: [Threat Model](../THREAT_MODEL.md) and [Security Policy](../SECURITY.md).
 - Release history: [CHANGELOG](../CHANGELOG.md).
 - Development: [Contributing](../CONTRIBUTING.md). Getting help: [Support](../SUPPORT.md).

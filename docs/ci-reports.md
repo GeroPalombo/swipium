@@ -53,7 +53,7 @@ swipium report --format <junit|sarif|github-summary|markdown|json>
 
 ## GitHub Actions recipe (Android)
 
-This recipe keeps every Swipium consent out of the agent's hands:
+This recipe keeps every Swipium consent out of the agent's hands, which is the safest setup:
 
 - The runner boots the emulator.
 - The workflow installs the APK with `adb`, so it is your decision, made in the workflow.
@@ -62,6 +62,9 @@ This recipe keeps every Swipium consent out of the agent's hands:
 - `SWIPIUM_REQUIRE_ELICITATION=1` plus `--permission-prompts none` means any unexpected consent
   request is refused instead of approved by the model. The run then reports **blocked** and says
   why.
+
+If you'd rather let the agent install or run `qa_test_this`, pre-approve exactly those actions
+instead (see [Pre-approving consents in CI](#pre-approving-consents-in-ci)).
 
 Prerequisites:
 
@@ -181,8 +184,8 @@ jobs:
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 1. Install the app yourself. Swipium's own install path is consent-gated, and nobody can
-#    approve a consent in CI.
+# 1. Install the app yourself. Swipium's own install path is consent-gated, and nobody is there
+#    to answer a prompt. Installing here keeps that decision in the workflow.
 adb wait-for-device
 adb install -r -g "$APK"
 
@@ -198,7 +201,7 @@ JSON
 claude --bare -p "You are running unattended in CI. An Android emulator is booted and $APP_ID is installed.
 Use only the swipium MCP tools. Always pass projectRoot=\"$GITHUB_WORKSPACE\" where a tool accepts it.
 1. qa_start_session { projectRoot, profile: \"full_smoke\" }.
-2. qa_prepare_target { sessionId, appId: \"$APP_ID\" }. If it returns a jobId, poll qa_job_status { sessionId, jobId, waitMs: 60000 } until it is no longer running.
+2. qa_prepare_target { sessionId, appId: \"$APP_ID\" }. If it returns a jobId, poll qa_job_status { sessionId, jobId, waitMs: 45000 } until it is no longer running.
 3. qa_smoke { sessionId }.
 4. If any result is requiresConsent, CONSENT_*, needs_input or blocked, do not try to work around it: record it with qa_note and go to step 5.
 5. qa_report { sessionId, format: \"summary\" } so the report is saved, then stop." \
@@ -226,14 +229,43 @@ Notes on the agent step:
   [CLI reference](https://code.claude.com/docs/en/cli-reference) and
   [permissions](https://code.claude.com/docs/en/permissions).
 - **Why the recipe avoids `qa_test_this` in CI.** Its execute mode requests one combined consent
-  for the privileged steps it plans, and every app install is among them. With nobody to approve,
-  it would end blocked. The low-level path above attaches to the running emulator, and an app that
-  is already installed skips the install consent.
+  (`test_this_plan`) for the privileged steps it plans, and every app install is among them. With
+  nobody to approve and no pre-approval, it ends blocked. The low-level path above attaches to the
+  running emulator, and an app that is already installed skips the install consent.
 - **Testing more.** `qa_explore { sessionId }` can follow the smoke. By default it skips
   destructive-looking actions without asking. It asks for consent only when a call names one
   explicit `destructiveCandidate` to run, which the settings above would refuse.
 - **Timing** depends on the model and the app. Treat the first runs as calibration, and set
   `timeout-minutes` from them.
+
+### Pre-approving consents in CI
+
+`claude -p` (and `codex exec`) answer every consent prompt automatically, so a gated action never
+runs by default. The operator can pre-approve exact action names in the server `env` with
+`SWIPIUM_CONSENT_PREAPPROVE`. It's read only from the server's environment, never from the
+repository, and each approval is logged on stderr at `warn` with the exact command. The full rules
+are in [concepts.md](concepts.md#operator-pre-approval).
+
+For example, to let the agent install the APK itself (`qa_prepare_target { sessionId, apk }`, whose
+boot and install consent is `prepare_plan`, or `qa_test_this` on the booted emulator, whose plan is
+`test_this_plan`), change the server entry in `swipium-agent.sh` to:
+
+```json
+{ "mcpServers": { "swipium": { "command": "npx", "args": ["-y", "swipium"],
+  "env": { "SWIPIUM_REQUIRE_ELICITATION": "1",
+           "SWIPIUM_CONSENT_PREAPPROVE": "prepare_plan,test_this_plan" } } } }
+```
+
+Keep the list as short as the prompt needs:
+
+- Pre-approval works with `SWIPIUM_REQUIRE_ELICITATION=1`, which still refuses every action you
+  didn't list.
+- Actions that run repository or model-chosen code (`build_from_source`, `start_metro`, seed
+  scripts and others) also need `SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE=1`. A `test_this_plan` that
+  includes a build is only covered when `build_from_source` is pre-approved that way too. Building
+  in the workflow, as the recipe does, avoids that.
+- Installing with `adb` in the workflow is still the safest option: nothing the model chooses gets
+  approved.
 
 ## What each file contains
 

@@ -11,7 +11,7 @@ import { readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { sensitiveRefusal } from '../lib/sensitive.js';
@@ -65,9 +65,8 @@ export function registerScreenRecord(server: McpServer, sessions: SessionStore):
     {
       title: 'Record the screen',
       description:
-        'Record the screen to an mp4 artifact (Android, iOS Simulator). start (consent-gated, captures whatever is on screen; ' +
-        'avoid password/OTP screens), status, stop. save:"on_failure" + stop failed:false discards passing-run videos. Android ' +
-        'auto-stops after ~3 min; one recording per session.',
+        'Record the screen to an mp4 artifact: start (consent-gated; avoid password/OTP screens), status, stop. ' +
+        'save:"on_failure" keeps only failing runs. One recording per session; Android stops after ~3 min.',
       inputSchema: {
         sessionId: z.string(),
         action: z.enum(['start', 'status', 'stop']),

@@ -9,9 +9,8 @@ import { describe, expect, it, afterEach, beforeAll, afterAll, vi } from 'vitest
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { ElicitRequestSchema, type CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
+import type { CallToolResult } from '@modelcontextprotocol/client';
 
 // Hermetic on-disk state (coreHappyPath pattern): SessionStore persists under ~/.swipium,
 // so point HOME at a temp dir BEFORE any src module is loaded (dynamic imports below).
@@ -275,7 +274,7 @@ describe('elicitation-aware consent through the in-memory server (qa_network)', 
     // `elicitation: { form: {} }` — the SDK's server-side elicitInput gate requires the
     // form sub-capability before it will send a form-mode elicitation/create request.
     client = new Client({ name: 'consent-test', version: '0' }, { capabilities: { elicitation: { form: {} } } });
-    client.setRequestHandler(ElicitRequestSchema, async (req) => {
+    client.setRequestHandler('elicitation/create', async (req) => {
       elicited.push(req.params.message);
       return nextAnswer;
     });

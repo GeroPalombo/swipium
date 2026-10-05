@@ -12,9 +12,9 @@ import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
+import type { CallToolResult } from '@modelcontextprotocol/client';
+import { elementsOf } from './actFixFake.js';
 
 const fakeHome = mkdtempSync(join(tmpdir(), 'swipium-device-act-home-'));
 process.env.HOME = fakeHome;
@@ -248,9 +248,9 @@ describe('qa_act smoke-test fixes (fake driver)', () => {
   async function call(name: string, args: Record<string, unknown>) {
     return structured((await client.callTool({ name, arguments: args })) as CallToolResult);
   }
-  async function refOf(sessionId: string, pred: (e: { label?: string; text?: string; id?: string }) => boolean): Promise<string> {
+  async function refOf(sessionId: string, pred: (e: { name: string; text?: string; id?: string }) => boolean): Promise<string> {
     const snap = await call('qa_snapshot', { sessionId });
-    const el = (snap.elements as Array<{ ref: string; label?: string; text?: string; id?: string }>).find(pred);
+    const el = elementsOf(snap).find(pred);
     expect(el, JSON.stringify(snap.elements).slice(0, 600)).toBeTruthy();
     return el!.ref;
   }
@@ -277,7 +277,7 @@ describe('qa_act smoke-test fixes (fake driver)', () => {
     const pw = await refOf(sessionId, (e) => e.id === 'password');
     const SECRET = 'Sup3r-S3cret!';
     expect((await call('qa_act', { sessionId, action: 'type', target: { ref: pw }, text: SECRET })).ok).toBe(true);
-    const email = await refOf(sessionId, (e) => e.label === 'Email');
+    const email = await refOf(sessionId, (e) => e.name === 'Email');
     const r = await call('qa_act', { sessionId, action: 'type', target: { ref: email }, text: SECRET });
     expect(r.ok).toBe(true);
     expect(r.secret).toBe(true);
@@ -344,7 +344,7 @@ describe('qa_act smoke-test fixes (fake driver)', () => {
     const fake = new Fake(formScreen());
     fake.asciiOnly = true;
     const sessionId = await start(fake);
-    const email = await refOf(sessionId, (e) => e.label === 'Email');
+    const email = await refOf(sessionId, (e) => e.name === 'Email');
     const r = await call('qa_act', { sessionId, action: 'type', target: { ref: email }, text: 'héllo' });
     expect(r.ok).toBe(false);
     expect(r.failureCode).toBe('TEXT_INPUT_UNSUPPORTED');
@@ -396,7 +396,7 @@ describe('qa_act smoke-test fixes (fake driver)', () => {
   it('I: a tap that first auto-hid the keyboard reports keyboardHidden:true', async () => {
     const fake = new Fake(formScreen(1700));
     const sessionId = await start(fake);
-    const ref = await refOf(sessionId, (e) => e.text === 'Sign in');
+    const ref = await refOf(sessionId, (e) => e.name === 'Sign in');
     fake.ime = true;
     const r = await call('qa_act', { sessionId, action: 'tap', target: { ref } });
     expect(r.ok).toBe(true);

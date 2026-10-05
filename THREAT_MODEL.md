@@ -1,6 +1,6 @@
 # Swipium Threat Model
 
-Last updated: 2026-09-30 (Swipium 2.0.1)
+Last updated: 2026-10-05 (Swipium 2.2.0)
 
 This document describes what Swipium protects, where its trust boundaries are, who it defends
 against, and which controls enforce each defense. Every control listed here is implemented in the
@@ -12,7 +12,9 @@ Swipium is a local stdio MCP server. An MCP client (Claude Code, Codex, Gemini C
 Claude Desktop, Windsurf, or another host) starts it as a child process and drives Android
 Emulators and iOS Simulators on the developer's own machine. Swipium opens no network listener and
 has no authentication surface and no multi-tenant state. It runs with the privileges of the user
-who started the client.
+who started the client. One binary serves both MCP protocol eras over stdio: `initialize` for
+2025-06-18 and 2025-11-25 clients, `server/discover` for 2026-07-28 clients. The controls below apply
+to both unless a bullet says otherwise.
 
 ## Assets
 
@@ -51,27 +53,83 @@ Swipium.
   is single-use and bound to the exact action and affected target (a consent for one package
   cannot approve another). It is also bound to the session that minted it, expires after
   30 minutes, and at most 200 are pending at once.
-- **Out-of-band elicitation** (`src/server.ts`). When the client advertises MCP form elicitation,
-  Swipium asks the human directly before the model ever sees a challenge. Only an explicit accept
-  runs the action. A decline returns `CONSENT_DECLINED`. A dismissed prompt, 10 minutes without an
-  answer, an aborted call or a transport error returns `CONSENT_CANCELLED`. In both cases the
+- **Out-of-band prompt** (`routePendingConsent` in `src/server.ts`). When the client supports MCP
+  form elicitation, Swipium asks the human directly before the model ever sees a challenge. How the
+  prompt travels depends on the protocol era the client opened with:
+  - **2025-06-18 / 2025-11-25**: an `elicitation/create` request, sent when the client advertised
+    form elicitation at `initialize`.
+  - **2026-07-28**: that revision has no server-to-client requests, so the same form goes back
+    inside an `InputRequiredResult`, sent when that request's `_meta` client capabilities declare
+    form elicitation. The client's retry of the tool call carries the user's answer
+    (`inputResponses`) and the `requestState` Swipium issued (see the next control).
+
+  Outcomes are the same on both eras. Only an explicit accept with `approve: true` runs the action,
+  once. A decline (or `approve: false`) returns `CONSENT_DECLINED`; a dismissed prompt, no answer
+  within 10 minutes, an aborted call or a transport error returns `CONSENT_CANCELLED`. Either way the
   challenge is burned, so a later `approve:true` re-call cannot revive it, and a `refused` row goes
-  into the mutation ledger. If the action changes while the prompt is open, the approval is
-  discarded and nothing runs.
-- **`SWIPIUM_REQUIRE_ELICITATION=1`**. Without elicitation support, the fallback is the portable
-  re-call (`consentId` + `approve:true`). This variable removes that fallback for every consent-gated
-  action, whatever its risk. Such actions then fail with `CONSENT_REFUSED`.
+  into the mutation ledger. While a prompt is open, an `approve:true` re-call cannot approve it, and
+  if the action changes under the prompt the approval is discarded and nothing runs. A decline or
+  cancel answered in under 1.5 s is flagged `likelyAutomatic` and only then points at
+  `SWIPIUM_CONSENT_PREAPPROVE`; a failed prompt (timeout, transport error, aborted call) is never
+  flagged and its refusal reason is tagged `transport/abort`. Without form elicitation, the
+  challenge goes back to the model as the portable envelope (`consentId` + `approve:true` re-call).
+- **Single-use `requestState`** (2026-07-28 only; `issueConsentPrompt` / `redeemConsentPrompt` in
+  `src/consent/consent.ts`, `resumeConsentPrompt` in `src/server.ts`). The spec treats
+  `requestState` as attacker-controlled. Swipium's is an opaque 256-bit random handle to a
+  server-side record (consentId, tool name, SHA-256 of the canonical call arguments, sessionId,
+  issue time); nothing in it is decoded or trusted. It is deleted on first presentation, whatever
+  the outcome, so a replay fails. A handle presented with a different tool, different arguments or
+  another session fails and burns the consent. Unknown, forged, reused or re-targeted handles are
+  rejected with JSON-RPC `-32602` before the tool runs. A retry without an answer gets a fresh
+  prompt. The model never receives the `consentId` on this path. Handles live in the server
+  process, so a restarted server rejects them and the tool has to be called again.
+- **`SWIPIUM_REQUIRE_ELICITATION=1`**. Removes the portable re-call fallback for every
+  consent-gated action, whatever its risk: without form elicitation such actions fail with
+  `CONSENT_REFUSED`.
+- **`SWIPIUM_CONSENT_PREAPPROVE`** (operator pre-approval, `CONSENT_ACTION_TIERS` in
+  `src/consent/consent.ts`). Headless clients (`codex exec`, `claude -p`) advertise elicitation but
+  decline or cancel every prompt themselves. The operator can list exact action names that are
+  approved without asking. Rules:
+  - It is read only from the server process environment (what the MCP client passes, such as the
+    Codex `env` table, plus anything inherited from the launching shell), never from `.swipium/` or
+    other repository files, so a compromised model or a cloned project cannot grant it.
+    `swipium init codex` deliberately leaves it (and `SWIPIUM_ALLOW_REMOTE_WDA`) out of the
+    `env_vars` it forwards, so a shell export or a per-directory env tool such as direnv in a
+    cloned repo can't reach a Codex-launched server that way.
+  - Exact names only: no wildcards or risk thresholds. Unknown names are ignored with a warning.
+  - Actions that run repository- or model-chosen code (`build_from_source`, `flow_mutation_run`,
+    `ocr_run`, `seed_state`, `start_metro`, `suite_fresh_state_replay`, `wda_build`, `wda_start`)
+    are honoured only with `SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE=1` as well.
+  - `test_this_plan` does not cover a bundled sub-step that runs code (such as a
+    `build_from_source` step) unless that action is itself pre-approved; otherwise the user is
+    asked.
+  - `wda_non_loopback` is never pre-approvable by name (see the WebDriverAgent control below).
+  - It is checked before any prompt on both eras and wins over `SWIPIUM_REQUIRE_ELICITATION=1`
+    (an explicit operator decision).
+
+  Pre-approved challenges stay single-use and session-bound, are ledgered as `operator-policy`, and
+  each use is logged to stderr at `warn` with the exact command. The honoured names are logged once
+  at startup.
 - **Prompt sanitising**. The elicitation text quotes every interpolated field. It strips control
   characters, newlines, bidi overrides and zero-width characters, and caps each field and the whole
   message in length. A flow name or URL therefore cannot forge an extra "Will run:" line.
 - **Exact commands shown**. Challenges carry the exact argv or target: the resolved build command,
   `adb install -r -g <path>`, a SHA-256 for APKs from outside the project, and seed and provider
   argv labelled with their origin.
-- **Audit trail**. The mutation ledger records how each consent was decided: `elicitation`,
-  `client-assertion` or `policy`.
-- **Strict arguments**. Top-level arguments a tool does not declare are rejected with
-  `INVALID_ARGUMENT` before the handler runs. For example, `appId` is refused on a tool that would
+- **Audit trail**. The mutation ledger records how each consent was decided: `elicitation` (either
+  era), `client-assertion`, `operator-policy` or `policy`.
+- **Strict arguments**. Each tool's arguments are validated against one strict schema
+  (`src/lib/toolSchema.ts`) before the handler runs. Undeclared top-level arguments are rejected
+  with `INVALID_ARGUMENT`, not stripped: for example, `appId` is refused on a tool that would
   otherwise act on the session's app.
+- **Bounded responses** (`src/lib/result.ts`, `src/lib/toolSchema.ts`, `src/tools/getArtifact.ts`).
+  A caller cannot inflate a response past a client's read buffer, which used to drop the
+  connection. Errors cap every string that echoes caller input (`what` and each next step at 2,000
+  characters, keeping head and tail; strings inside extra fields at 8,000), list at most 20 unknown
+  or invalid arguments with names cut at 100 characters, and drop their extra fields when the
+  envelope still exceeds 64 KB. `resources/read` and `qa_get_artifact` return text over 1 MB as a
+  head (or, for logs, a tail) with a marker and never inline binaries over 8 MB. `resources/list`
+  is capped at 100 entries.
 - **Guardrail speed bumps**. On debug React Native and Expo builds, data wipes also require
   `acknowledgeBundleRisk:true`. This guards against accidents. It is not a boundary, because a
   client can pass the flag.
@@ -97,7 +155,8 @@ A developer clones an untrusted repository and points Swipium at it.
   `src/services/prepareIos.ts`). Only `localhost`, `127.0.0.0/8` and `[::1]` are used without
   asking. A non-loopback URL needs `allowNonLoopback:true` and a per-call consent. The repository's
   `ios.wda.allowNonLoopbackUrls` is ignored as a pre-approval. The only pre-approval is the user's
-  own `SWIPIUM_ALLOW_REMOTE_WDA` exact-URL list in the MCP server environment. iOS preparation
+  own `SWIPIUM_ALLOW_REMOTE_WDA` exact-URL list in the MCP server environment
+  (`SWIPIUM_CONSENT_PREAPPROVE` ignores `wda_non_loopback`). iOS preparation
   never auto-connects to a non-loopback configured URL.
 - **Path confinement**. Image templates, visual baselines and `qa_flow_repair` targets must resolve
   inside the project root after symlinks are followed (`src/flows/paths.ts`, `src/tools/visual.ts`).
@@ -177,26 +236,55 @@ their limits.
   visual capture and device or WDA log for the session (`SENSITIVE_MODE_REFUSED`). Structured
   snapshots and health checks still work.
 - **Resource listing scope** (`src/server.ts`). `resources/list` shows only artifacts and app maps
-  under the current client's project roots (its MCP roots plus the roots of sessions in this server
-  process). It never lists sensitive-mode sessions and is capped at 100 entries. Unlisted
-  artifacts stay readable by exact URI.
+  under the current client's project roots: the roots of sessions in this server process, plus the
+  client's MCP roots on 2025-era connections (requested with a 5 s timeout). On 2026-07-28 MCP
+  roots are never requested, since that revision cannot send `roots/list`. It never lists
+  sensitive-mode sessions and is capped at 100 entries. Unlisted artifacts stay readable by exact
+  URI.
 
 ## Environment hygiene
 
 - Network changes record the original state and are restored when the report is generated, on
   `restore`, and on server shutdown.
-- Screen recorders and Metro are stopped on shutdown. Managed WDA is left running on purpose, so the
-  next server can reuse it. `qa_wda stop` stops it.
+- Shutdown runs on `SIGINT`, `SIGTERM`, and when the client goes away: stdin EOF or a closed
+  transport, even in the middle of a long call. It cancels every running job first, so none can
+  flip device state back afterwards, then restores network state and stops screen recorders and
+  Metro. Managed WDA is left running on purpose, so the next server can reuse it. `qa_wda stop`
+  stops it.
+- Cancelling a call (`notifications/cancelled`) stops its polling loops and spawned commands, and
+  cancelled work is never recorded as a failure or an issue.
 - `qa_resolve_target include:["plan"]` marks `fresh_start` as unsafe with reason
   `bundle_cache_loss` on debug React Native and Expo builds.
 
 ## Residual risks
 
+- **The client answers the prompt**. On both protocol versions the answer to the consent form comes
+  from the MCP client. A client that fabricates `accept` (on 2026-07-28: retries with
+  `inputResponses` saying `approve: true` without showing the user) approves the action; the
+  `requestState` handle only guarantees the answer belongs to that one call, once. The
+  `likelyAutomatic` flag (answer under 1.5 s) and the ledger are the remaining signals. This is the
+  same trust placed in `elicitation/create` on 2025-era clients.
 - **Self-approval without elicitation**. On a client without elicitation, the re-call is made by
   the client. A compromised or prompt-injected agent can approve its own challenge. The remaining
   controls are the human reading the transcript, where both the challenge and the approving call
   are visible, and the mutation ledger (`client-assertion`). Set `SWIPIUM_REQUIRE_ELICITATION=1`
   to close this path.
+- **Operator pre-approval is blanket for its actions**. Every call of a listed action runs without
+  a prompt, whatever the model asks for, including targets the operator never saw. The ledger
+  (`operator-policy`) and a `warn` line on stderr record each use with its exact command; with
+  `SWIPIUM_LOG_LEVEL=error` that stderr line is suppressed and only the ledger remains. List only
+  what the run needs.
+- **`SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE=1` escapes the client sandbox**. With it, listed actions
+  run repository- or model-chosen code (build scripts, seed scripts, OCR commands, `xcodebuild` on a
+  model-chosen project, the project's Metro config) with the user's privileges. Under `codex exec`
+  that code runs in the Swipium server process, outside the client's sandbox. Set it only for
+  trusted repositories.
+- **Inherited environment can grant approvals**. The server reads both variables from its own
+  process environment, which includes whatever the client forwards and, for clients that pass the
+  launching shell's environment through, that shell's exports. A value exported in a shell profile
+  can then silently pre-approve actions in every later session. Codex only forwards what its config
+  names, and `swipium init codex` never names these. Set them per client config (for Codex, the
+  `env` table), not globally, and check the startup log line that lists the honoured names.
 - **Approved commands are not sandboxed**. An approved build, seed script or provider command runs
   with the user's privileges.
 - **On-screen prompt injection**. Swipium cannot stop an agent from believing text the app shows.

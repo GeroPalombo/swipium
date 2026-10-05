@@ -3,7 +3,7 @@
 // clear_data / fresh_start (destructive, needs consent). Reports package, foreground, killed.
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, invalidArgumentError, isInvalidArgumentError, unknownSessionError, cancelledResult } from '../lib/result.js';
 import { isAbortError } from '../lib/abortScope.js';
 import { assertAndroidAppId } from '../drivers/DirectDriver.js';
@@ -15,7 +15,8 @@ import type { SessionStore } from '../session/store.js';
 import type { Driver } from '../drivers/Driver.js';
 
 const ACTIONS = ['launch', 'foreground', 'background', 'force_stop', 'restart', 'clear_data', 'fresh_start'] as const;
-const DESTRUCTIVE = new Set(['clear_data', 'fresh_start']);
+/** Consent-gated app actions; each mints consent action `app_<name>` (CONSENT_ACTIONS in consent.ts). */
+export const DESTRUCTIVE: ReadonlySet<string> = new Set(['clear_data', 'fresh_start']);
 const APP_ID_NEXT_STEP = 'Re-run qa_prepare_target with a valid appId (e.g. com.example.app).';
 
 async function relaunchAndVerify(d: Driver, pkg: string, onLaunched: () => void = () => {}): Promise<string> {
@@ -31,9 +32,8 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
     {
       title: 'App lifecycle control',
       description:
-        'Control the app under test: launch, foreground, background, force_stop, restart (force_stop + launch, for persistence ' +
-        'checks), clear_data and fresh_start (wipe data; destructive, consent-gated; RN/Expo builds also need ' +
-        'acknowledgeBundleRisk).',
+        'App lifecycle: launch, foreground, background, force_stop, restart (force_stop + launch, for persistence checks), ' +
+        'clear_data and fresh_start (wipe data: destructive, consent-gated; RN/Expo also need acknowledgeBundleRisk).',
       inputSchema: {
         sessionId: z.string(),
         action: z.enum(ACTIONS),

@@ -13,9 +13,11 @@
 // src/orchestration/testThis/ (plan resolution, execute gate, pipeline, terminal assembly).
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import type { SessionStore } from '../session/store.js';
 import { handleTestThis } from '../orchestration/testThis/plan.js';
+import { TEST_THIS_WAIT_DEFAULT_MS, TEST_THIS_WAIT_MAX_MS } from '../orchestration/testThis/execute.js';
+import { qaAnnotate } from '../lib/result.js';
 
 export function registerTestThis(server: McpServer, sessions: SessionStore): void {
   server.registerTool(
@@ -23,26 +25,25 @@ export function registerTestThis(server: McpServer, sessions: SessionStore): voi
     {
       title: 'Test this app (autopilot)',
       description:
-        'Autopilot for "test this app": finds or builds an artifact, picks a device/simulator, then plans ' +
-        '(mode:"plan", default, no side effects) or executes prepare > smoke > (explore) > report > (suite). execute returns ' +
-        'state:"running" + jobId; the terminal state (completed/blocked/unsafe/needs_input) and reportUri are in the ' +
-        'qa_job_status result. One combined consent covers boot/install/build. A report in every terminal state. iOS without WDA ' +
-        'falls back to a visual-only smoke.',
+        'Start here for "test this app": finds or builds the app, picks an emulator/simulator, then plans (mode:"plan", ' +
+        'default, no side effects) or runs prepare > smoke > explore > report > suite as a job (mode:"execute"; poll ' +
+        'qa_job_status). One consent covers boot/install/build; every terminal state has a report. iOS without WDA gets a ' +
+        'visual-only smoke.',
       inputSchema: {
-        sessionId: z.string().optional().describe('Reuse a session; otherwise one is created.'),
+        sessionId: z.string().optional().describe('Reuse a session.'),
         projectRoot: z.string().optional(),
         mode: z
           .enum(['plan', 'execute', 'interactive'])
           .optional()
-          .describe('plan (default) | execute (background job) | interactive (run until the first question).'),
+          .describe('plan (default) | execute (job) | interactive (until the first question).'),
         goal: z
           .enum(['smoke', 'explore', 'create_automation_suite', 'release_gate', 'test_login', 'reproduce_bug'])
           .optional()
           .describe(
-            'Intent. Omitted: smoke, then tries a suite; "smoke" is fastest. Sets explore/generateSuite/stopOnNeedsInput; flags win.',
+            'Default: smoke, then a suite ("smoke" is fastest). Presets explore/generateSuite/stopOnNeedsInput; explicit flags win.',
           ),
         goalText: z.string().optional().describe('reproduce_bug: the bug/flow to focus on.'),
-        fastSmoke: z.boolean().optional().describe('Just launch + smoke; skip suite generation (ignored with goal/generateSuite).'),
+        fastSmoke: z.boolean().optional().describe('Launch + smoke only, no suite (ignored with goal/generateSuite).'),
         platform: z.enum(['android', 'ios']).optional().describe('Force a platform (default inferred).'),
         device: z.string().optional(),
         preferRealDevice: z.boolean().optional().describe('Out of scope: returns PHYSICAL_DEVICE_UNSUPPORTED.'),
@@ -51,16 +52,32 @@ export function registerTestThis(server: McpServer, sessions: SessionStore): voi
         generateSuite: z.boolean().optional().describe('execute: also generate a POM suite from the run.'),
         explore: z.boolean().optional().describe('execute: run guided exploration after the smoke.'),
         stopOnNeedsInput: z.boolean().optional().describe('execute: ask for login/test data instead of testing pre-login only.'),
-        waitForCompletion: z.boolean().optional().describe('execute: block until done (or timeoutMs) and return the terminal result.'),
-        timeoutMs: z.number().optional().describe('waitForCompletion cap (default 120000).'),
+        waitForCompletion: z.boolean().optional().describe('execute: block until done (or timeoutMs).'),
+        timeoutMs: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe(
+            `waitForCompletion window (default ${TEST_THIS_WAIT_DEFAULT_MS}, max ${TEST_THIS_WAIT_MAX_MS}; larger values are clamped); still running after it > state:"running" + jobId, poll qa_job_status.`,
+          ),
         consentId: z.string().optional(),
         approve: z.boolean().optional(),
         responseMode: z
           .enum(['compact', 'normal', 'verbose'])
           .optional()
-          .describe('Text channel for this session: compact = summary + URIs (structuredContent stays full).'),
+          .describe('compact = summary + URIs only; kept as the session default for later calls.'),
       },
     },
-    async (input) => handleTestThis(server, sessions, input),
+    async (input) => {
+      // Clamp (not reject) like qa_job_status waitMs: the window is bounded so the call returns
+      // well inside common client request timeouts; a longer job keeps running and is polled.
+      if (input.timeoutMs != null && input.timeoutMs > TEST_THIS_WAIT_MAX_MS) {
+        const asked = input.timeoutMs;
+        const res = await handleTestThis(server, sessions, { ...input, timeoutMs: TEST_THIS_WAIT_MAX_MS });
+        return qaAnnotate(res, [`timeoutMs ${asked} clamped to ${TEST_THIS_WAIT_MAX_MS}; poll qa_job_status for longer runs.`]);
+      }
+      return handleTestThis(server, sessions, input);
+    },
   );
 }

@@ -13,9 +13,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { ListRootsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 
 // Hermetic on-disk state: SessionStore persists under ~/.swipium, so point HOME at a temp
 // dir BEFORE the store module is loaded (dynamic imports below).
@@ -171,7 +169,7 @@ describe('MCP resource listing (OPP-02)', () => {
       const ctx2 = createServer(); // fresh store ≈ server restart: prior sessions are rehydrated, not active
       const [ct, st] = InMemoryTransport.createLinkedPair();
       const c2 = new Client({ name: 'roots-test', version: '0' }, { capabilities: { roots: {} } });
-      c2.setRequestHandler(ListRootsRequestSchema, async () => ({ roots: [{ uri: pathToFileURL(rootDir).href }] }));
+      c2.setRequestHandler('roots/list', async () => ({ roots: [{ uri: pathToFileURL(rootDir).href }] }));
       await Promise.all([ctx2.server.connect(st), c2.connect(ct)]);
       try {
         return (await c2.listResources()).resources.map((r) => r.uri);

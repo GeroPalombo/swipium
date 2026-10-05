@@ -1,7 +1,7 @@
 // qa_check_health: run the Tier-1 deterministic oracle on demand.
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { checkHealth } from '../oracle/health.js';
 import { recordHealthFindings } from '../oracle/record.js';
@@ -14,7 +14,8 @@ export function registerCheckHealth(server: McpServer, sessions: SessionStore): 
     {
       title: 'Check app health',
       description:
-        'Deterministic Tier-1 health check of the current screen: crash / ANR / framework error-boundary / error-surface, plus whether the app is still in the foreground. High-severity findings are real bugs (not flake). Runs automatically after qa_act too.',
+        'Health check of the current screen: crash, ANR, error boundary, error surface, app still in the foreground. ' +
+        'High-severity findings are real bugs. qa_act runs it automatically.',
       inputSchema: { sessionId: z.string() },
     },
     async ({ sessionId }) => {

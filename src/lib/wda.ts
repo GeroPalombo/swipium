@@ -4,7 +4,7 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { run } from './spawn.js';
-import { currentSignal } from './abortScope.js';
+import { currentSignal, sleepOrCancel, throwIfCancelled } from './abortScope.js';
 import type { FailureCode } from '../oracle/failures.js';
 
 /** Is `raw` a loopback WebDriverAgent URL (http/https to 127.0.0.0/8, localhost, or ::1)?
@@ -274,12 +274,15 @@ export async function waitForWdaReady(
 ): Promise<{ ready: boolean; status: WdaStatus; durationMs: number }> {
   const started = Date.now();
   let status: WdaStatus = { reachable: false, ready: false, error: 'not checked yet' };
+  // Cancellation (abortScope): a cancelled call throws CancelledError instead of polling /status
+  // until the startup timeout.
   while (Date.now() - started < timeoutMs) {
+    throwIfCancelled();
     status = await checkWda(baseUrl, Math.min(1500, Math.max(250, intervalMs)));
     if (status.ready) return { ready: true, status, durationMs: Date.now() - started };
     const remaining = timeoutMs - (Date.now() - started);
     if (remaining <= 0) break;
-    await new Promise((r) => setTimeout(r, Math.min(intervalMs, remaining)));
+    await sleepOrCancel(Math.min(intervalMs, remaining));
   }
   return { ready: false, status, durationMs: Date.now() - started };
 }

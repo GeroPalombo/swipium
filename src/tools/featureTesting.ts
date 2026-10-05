@@ -6,7 +6,7 @@
 // which reuses resolveFeatureContext() below.
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { qaNeedsInput } from '../lib/needsInput.js';
 import { getDriver } from '../session/attach.js';
@@ -23,7 +23,7 @@ import { generateFeatureTestCases, type CreativityLevel } from '../featureTestin
 import { mergeFeatureRun, type MergeNote } from '../featureTesting/resultMerge.js';
 import { upsertFeatureCoverage, findFeatureCoverage } from '../featureTesting/featureMap.js';
 import { featureCasesToCanonical } from '../featureTesting/suiteBridge.js';
-import { bootstrapFeatureExecution } from '../featureTesting/executionBootstrap.js';
+import { bootstrapFeatureExecution, type BootstrapResult } from '../featureTesting/executionBootstrap.js';
 import { runtimeScreensFromGraph, loadGraphFromFile, gatherExistingTests } from '../featureTesting/sources.js';
 import { buildAppMap } from '../appMap/build.js';
 import { applyMerge } from '../testSuite/store.js';
@@ -103,13 +103,12 @@ export function registerFeatureTesting(server: McpServer, sessions: SessionStore
     {
       title: 'Test a feature (focused)',
       description:
-        'Focused test of one named feature. mode:"plan" (default, read-only): scope, objective, generated cases, required ' +
-        'fixtures, ordered plan. mode:"execute": a job that explores toward the feature, records pass/fail/blocked per case, ' +
-        'updates the app map, and writes a report (see the qa_job_status result). Without sessionId, execute bootstraps a ' +
-        'device from projectRoot (consent-gated). A feature behind auth/paywall/permission/missing fixture is blocked with ' +
-        'setup guidance, not failed.',
+        'Test one named feature. mode:"plan" (default, read-only): scope, cases, fixtures, ordered plan. mode:"execute": a ' +
+        'job that explores toward the feature, records pass/fail/blocked per case, and writes a report (poll qa_job_status). ' +
+        'Without sessionId it bootstraps from projectRoot (consent-gated). Auth, paywall, or missing-fixture gates report ' +
+        'blocked, not failed.',
       inputSchema: {
-        sessionId: z.string().optional().describe('Prepared session; omitted > bootstrap from projectRoot.'),
+        sessionId: z.string().optional().describe('Prepared session (else bootstrap from projectRoot).'),
         projectRoot: z.string().optional(),
         feature: z.string().describe('The feature to test, in natural language.'),
         mode: z
@@ -194,6 +193,8 @@ export function registerFeatureTesting(server: McpServer, sessions: SessionStore
         return unknownSessionError(sessionId, ['Omit sessionId to bootstrap from projectRoot, or pass a valid session.']);
       }
       let driver = session ? (await getDriver(session)).driver : undefined;
+      // Device boot/install from a bootstrap runs inside the job below (it can take minutes).
+      let pendingPrepare: (() => Promise<BootstrapResult>) | undefined;
       if (!session || !driver) {
         const boot = await bootstrapFeatureExecution({
           server,
@@ -204,10 +205,12 @@ export function registerFeatureTesting(server: McpServer, sessions: SessionStore
           device: args.device as string | undefined,
           consentId: args.consentId as string | undefined,
           approve: args.approve as boolean | undefined,
+          deferPrepare: true,
         });
         if (!boot.ok) return boot.result;
         session = boot.session;
         driver = boot.driver;
+        pendingPrepare = boot.prepare;
       }
       const r = await resolveFeatureContext(server, sessions, { sessionId: session.id, feature, platform, includeCode, limit });
       if (!r.ok) return r.result;
@@ -248,6 +251,7 @@ export function registerFeatureTesting(server: McpServer, sessions: SessionStore
           maxActions,
           generateCases: generateCases !== false,
           stopOnAuth: effectiveMode === 'interactive',
+          prepare: pendingPrepare,
         }),
       );
       return qaOk(
@@ -280,6 +284,8 @@ interface FeatureTestJobArgs {
   maxActions?: number;
   generateCases: boolean;
   stopOnAuth: boolean;
+  /** Deferred device preparation from bootstrapFeatureExecution (boot/install/launch). */
+  prepare?: () => Promise<BootstrapResult>;
 }
 
 /** Focused feature run: targeted exploration > record cases > merge into the feature map > report. */
@@ -293,6 +299,17 @@ async function runFeatureTestJob(sessions: SessionStore, session: Session, job: 
   const scope = a.scopeResult.primary;
   const notesBefore = session.notes.length;
   try {
+    if (a.prepare) {
+      upd({ progress: 'preparing the device (boot/install/launch)' });
+      const prepared = await a.prepare();
+      if (signal?.aborted) return;
+      if (!prepared.ok) {
+        const result = (prepared.result.structuredContent ?? {}) as Record<string, unknown>;
+        const what = String(result.what ?? 'device preparation failed');
+        upd({ status: 'failed', error: what, result, resultText: `❌ ${what}`, endedAt: Date.now() });
+        return;
+      }
+    }
     const { driver } = await getDriver(session);
     if (!driver) {
       upd({ status: 'failed', error: 'no driver', resultText: '❌ no driver bound', endedAt: Date.now() });

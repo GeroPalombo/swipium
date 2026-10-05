@@ -5,7 +5,7 @@
 // seeding fails it is reported as a SETUP failure (environment bucket), never an app bug.
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, unknownSessionError } from '../../lib/result.js';
 import { qaFail } from '../../oracle/failures.js';
 import { requireConsent, consumeConsent } from '../../consent/consent.js';

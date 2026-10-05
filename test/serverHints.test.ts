@@ -6,9 +6,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
+import type { CallToolResult } from '@modelcontextprotocol/client';
 
 const fakeHome = mkdtempSync(join(tmpdir(), 'swipium-serverhints-home-'));
 process.env.HOME = fakeHome;
@@ -52,14 +51,15 @@ describe('stale-client hints + tools/list shape', () => {
     expect(wait.replacement).toMatch(/qa_job_status/);
   });
 
-  it('genuinely unknown tools and ordinary validation errors are left alone', async () => {
+  it('genuinely unknown tools stay the SDK error; ordinary validation errors are INVALID_ARGUMENT, not STALE_CLIENT', async () => {
     const unknown = await call('qa_definitely_not_a_tool', {});
     expect(unknown.isError).toBe(true);
     expect(unknown.structuredContent).toBeUndefined();
     const bad = await call('qa_ios', { sessionId: 'x', action: 'bogus' });
     expect(bad.isError).toBe(true);
-    expect(bad.structuredContent).toBeUndefined();
-    expect(JSON.stringify(bad.content)).toMatch(/validation/i);
+    // validationEnvelope.test.ts covers the envelope itself
+    expect((bad.structuredContent as Record<string, unknown>).failureCode).toBe('INVALID_ARGUMENT');
+    expect(String((bad.structuredContent as Record<string, unknown>).what)).toMatch(/^qa_ios: invalid arguments: action: /);
   });
 
   it('tools/list: no $schema per inputSchema, and the SDK client validates it', async () => {

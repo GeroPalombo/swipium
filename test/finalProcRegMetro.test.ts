@@ -1,14 +1,19 @@
 // Integration fixes (2.0.0 final):
 //  - (HIGH) an orphaned Metro was never reaped: it is spawned via `npx`, and npm retitles the
-//    process (`node …/npx react-native start` → `npm exec react-native start`) right after spawn, so
+//    process (`node …/npx react-native start` to `npm exec react-native start`) right after spawn, so
 //    the exact command-line fingerprint never matched again and the startup sweep / store reload
 //    classified it as "recycled" and dropped it without signalling (Metro kept :8081). Identity is
 //    now the exact START TIME (hard pid-recycling guard) + a per-kind command check that tolerates
-//    the npx → `npm exec` retitle for Metro only.
+//    the npx to `npm exec` retitle for Metro only.
+//  - (2.2.0) npx titles itself a bare `npm` for a few tens of ms before `npm exec …`. When the
+//    host is loaded, the registration `ps` can land in that window and record `npm`, which has no
+//    program to match later, so the orphan was dropped unsignalled (seen once in a full parallel
+//    run). Metro now passes the spawned command line as the fallback for such a title.
 //  - (LOW) `ps -o lstart=` is locale-dependent (`Mo. 28 Sep.` under de_DE): every ps we parse now
 //    runs with LC_ALL=C / LANG=C.
 // Hermetic: HOME points at a temp dir BEFORE the registry module is loaded. Real processes are
-// spawned (detached, in their own group) and always killed in afterAll.
+// spawned (detached, in their own group) and always killed in afterAll. Every wait polls a
+// condition against a generous deadline (a loaded host can make npm start slowly); no fixed sleeps.
 
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -84,35 +89,42 @@ describe.skipIf(process.platform === 'win32')('orphaned Metro spawned via npx is
     chmodSync(bin, 0o755);
 
     const child = spawnDetached('npx', ['sleeper', 'start', '--port', '8081']);
-    reg.registerManagedProcess(child.pid, 'metro', 'sess-npx');
+    // Exactly as qa_metro registers it: whichever title phase `ps` catches (env shebang,
+    // `node …/npx`, the transient bare `npm`, or `npm exec …`) must stay matchable.
+    reg.registerManagedProcess(child.pid, 'metro', 'sess-npx', { spawnCommand: 'npx sleeper start --port 8081' });
     const recorded = registry()[0];
     expect(recorded.procStart).toBeTruthy();
-    expect(await waitFor(() => /npm exec sleeper start/.test(livePs(child.pid!)), 10_000)).toBe(true);
+    expect(reg.commandTail(recorded.command!)).toBe('sleeper start --port 8081');
+    expect(await waitFor(() => /npm exec sleeper start/.test(livePs(child.pid!)), 20_000)).toBe(true);
 
     orphanAll();
     await reg.reapOrphanedProcesses({ wdaHealthy: async () => false });
     expect(registry()).toEqual([]);
-    // SIGTERM delivered to the npx group → the launcher exits.
-    expect(await waitFor(() => child.exitCode != null || child.signalCode != null, 5000)).toBe(true);
-  }, 20_000);
+    // SIGTERM delivered to the npx group: the launcher exits.
+    expect(await waitFor(() => child.exitCode != null || child.signalCode != null, 15_000)).toBe(true);
+  }, 45_000);
 
   it('node launcher named npx that retitles itself after registration is reaped (deterministic rewrite)', async () => {
     const fakeNpx = join(work, 'npx');
+    const go = join(work, 'retitle-now');
+    // Retitles only once the test says so (a trigger file), never on a timer: a fixed delay raced
+    // the registration on a loaded host (the title could flip before `ps` read the original).
     writeFileSync(
       fakeNpx,
-      "setTimeout(() => { process.title = 'npm exec react-native start --port 8081'; }, 400);\nsetTimeout(() => {}, 120000);\n",
+      `const fs = require('node:fs');\nconst t = setInterval(() => { if (fs.existsSync(${JSON.stringify(go)})) { clearInterval(t); process.title = 'npm exec react-native start --port 8081'; } }, 20);\nsetTimeout(() => {}, 120000);\n`,
     );
     const child = spawnDetached(process.execPath, [fakeNpx, 'react-native', 'start', '--port', '8081']);
     // Wait until node is running our script (not mid-exec), then register it.
-    expect(await waitFor(() => livePs(child.pid!).includes(fakeNpx), 5000)).toBe(true);
+    expect(await waitFor(() => livePs(child.pid!).includes(fakeNpx), 20_000)).toBe(true);
     reg.registerManagedProcess(child.pid, 'metro', 'sess-title');
     expect(registry()[0].command).toContain(fakeNpx);
-    expect(await waitFor(() => livePs(child.pid!).startsWith('npm exec react-native start'), 5000)).toBe(true);
+    writeFileSync(go, '');
+    expect(await waitFor(() => livePs(child.pid!).startsWith('npm exec react-native start'), 20_000)).toBe(true);
 
     expect(reg.reclaimPid(child.pid!, 'metro')).toBe('killed');
-    expect(await waitFor(() => child.signalCode != null, 5000)).toBe(true);
+    expect(await waitFor(() => child.signalCode != null, 15_000)).toBe(true);
     expect(child.signalCode).toBe('SIGTERM');
-  }, 15_000);
+  }, 60_000);
 });
 
 describe('fingerprint identity: exact start time + per-kind command', () => {
@@ -145,13 +157,13 @@ describe('fingerprint identity: exact start time + per-kind command', () => {
     expect(reg.commandTail('node /usr/lib/node_modules/npm/bin/npx-cli.js react-native start')).toBe('react-native start');
   });
 
-  it('metro: retitled command + SAME start time → killed', () => {
+  it('metro: retitled command + SAME start time: killed', () => {
     const o = ops({ 7001: { cmd: 'npm exec react-native start --port 8081', start: T1 } });
     expect(reg.reclaimPid(7001, 'metro', o, entry('metro', 'node /usr/local/bin/npx react-native start --port 8081'))).toBe('killed');
     expect(o.killed).toEqual([7001]);
   });
 
-  it('metro: recorded during the `#!/usr/bin/env node` shebang phase (Linux race), then retitled → killed', () => {
+  it('metro: recorded during the `#!/usr/bin/env node` shebang phase (Linux race), then retitled: killed', () => {
     // Registration can catch npx before env execs node; the later `npm exec …` title must still match.
     expect(reg.commandTail('/usr/bin/env node /usr/local/bin/npx sleeper start --port 8081')).toBe('sleeper start --port 8081');
     const o = ops({ 7001: { cmd: 'npm exec sleeper start --port 8081', start: T1 } });
@@ -161,13 +173,46 @@ describe('fingerprint identity: exact start time + per-kind command', () => {
     expect(o.killed).toEqual([7001]);
   });
 
-  it('metro: same retitled command but a DIFFERENT start time (recycled pid) → never signalled', () => {
+  it("metro: registered during npx's transient bare `npm` title, then retitled: killed (spawn command fallback)", () => {
+    let title = 'npm';
+    const o = ops({ 7001: { cmd: 'npm', start: T1 } });
+    const live: Ops & { killed: number[] } = { ...o, psCommand: (pid) => (pid === 7001 ? title : null) };
+    reg.registerManagedProcess(7001, 'metro', 'sess-npm-title', { ops: live, spawnCommand: 'npx sleeper start --port 8081' });
+    const recorded = registry()[0];
+    expect(recorded.command).toBe('npx sleeper start --port 8081');
+    expect(recorded.procStart).toBe(T1);
+    title = 'npm exec sleeper start --port 8081';
+    expect(reg.reclaimPid(7001, 'metro', live, recorded)).toBe('killed');
+    expect(o.killed).toEqual([7001]);
+  });
+
+  it('metro: the bare `npm` title without a spawn command stays unverifiable: never signalled', () => {
+    const o = ops({ 7001: { cmd: 'npm', start: T1 } });
+    reg.registerManagedProcess(7001, 'metro', 'sess-npm-bare', { ops: o });
+    const recorded = registry()[0];
+    expect(recorded.command).toBe('npm');
+    const later = ops({ 7001: { cmd: 'npm exec sleeper start --port 8081', start: T1 } });
+    expect(reg.reclaimPid(7001, 'metro', later, recorded)).toBe('recycled');
+    expect(later.killed).toEqual([]);
+  });
+
+  it('spawn command never overrides an informative live title, nor applies to other kinds', () => {
+    const o = ops({ 7001: { cmd: 'node /usr/local/bin/npx sleeper start --port 8081', start: T1 } });
+    reg.registerManagedProcess(7001, 'metro', 's', { ops: o, spawnCommand: 'npx something-else' });
+    expect(registry()[0].command).toBe('node /usr/local/bin/npx sleeper start --port 8081');
+    rmSync(FILE);
+    const r = ops({ 7001: { cmd: 'node', start: T1 } });
+    reg.registerManagedProcess(7001, 'recording', 's', { ops: r, spawnCommand: 'xcrun simctl io booted recordVideo /tmp/x.mp4' });
+    expect(registry()[0].command).toBe('node');
+  });
+
+  it('metro: same retitled command but a DIFFERENT start time (recycled pid): never signalled', () => {
     const o = ops({ 7001: { cmd: 'npm exec react-native start --port 8081', start: T2 } });
     expect(reg.reclaimPid(7001, 'metro', o, entry('metro', 'node /usr/local/bin/npx react-native start --port 8081'))).toBe('recycled');
     expect(o.killed).toEqual([]);
   });
 
-  it('metro: same start time but a different program → never signalled', () => {
+  it('metro: same start time but a different program: never signalled', () => {
     const o = ops({ 7001: { cmd: 'npm exec some-other-tool serve', start: T1 } });
     expect(reg.reclaimPid(7001, 'metro', o, entry('metro', 'node /usr/local/bin/npx react-native start --port 8081'))).toBe('recycled');
     expect(o.killed).toEqual([]);

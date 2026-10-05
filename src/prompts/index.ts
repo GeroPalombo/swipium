@@ -9,7 +9,7 @@
 //    agent can do directly. Nothing is prompt-only.
 //
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 
 function userText(text: string) {
   return { messages: [{ role: 'user' as const, content: { type: 'text' as const, text } }] };
