@@ -63,7 +63,14 @@ The mode is a session setting, set by `qa_start_session` or `qa_test_this` (`res
 
 ### Result envelope
 
-A success is `{ok:true, …payload}`. A budget stop is also a success: `{ok:true, stopped:true, reason}` (for example `action budget reached (20/20)`). Some results add `notes[]` (non-fatal remarks, such as parameters ignored for the chosen mode) or `warnings[]`.
+A success is `{ok:true, …payload}`. A budget stop is also a success: `{ok:true, stopped:true, reason}` (for example `action budget reached (20/20)`). Some results add `notes[]` (non-fatal remarks, such as parameters ignored for the chosen mode, a clamped timeout, or a job still driving the device) or `warnings[]`.
+
+Because Claude Code and Codex show the model `structuredContent` rather than the text block, a success's `structuredContent` also carries two copies from the text:
+
+- **`summary`** (first key): the summary's first line, capped at 300 characters. `qa_job_status`, `qa_metro`, `qa_build` plans, and a finished `qa_test_this {waitForCompletion:true}` copy the whole summary instead (capped at 4000 characters), because their later lines say things the payload does not. Rendered `@eN` lines are never copied; they are already in `elements`. Left out when the payload has its own `summary`.
+- **`next`** (last key): the next calls the summary suggests, as strings that start with the tool name (for example `qa_report to summarize what was verified`). Left out when there is none, or when the payload already has `next`, `nextSteps`, `nextBestAction`, `nextAction`, or `nextRecommendedAction`.
+
+Errors carry neither; their guidance is `nextSteps`.
 
 An error has `isError:true` and this `structuredContent`:
 
@@ -81,14 +88,21 @@ Triage fields (`bucket`, `owner`, `canSwipiumFix`) are not part of the error con
 
 The text channel renders the same error as `❌ <what>`, then `changedState=… retrySafe=…`, `next: …`, and `hint: …` lines.
 
+Errors are size-capped, because they often echo caller input: `what` and each `nextSteps` entry keep the head and tail of anything over 2000 characters, at most 20 `nextSteps` are kept, and an error still over 64 KB drops its extra fields (listed in `extraDropped`).
+
 ### Unknown arguments and stale clients
 
-- **Unknown arguments**: every tool rejects top-level arguments its input schema does not declare, before anything runs. The call returns `INVALID_ARGUMENT` with `unknownArguments` and `acceptedParameters`. For example, `qa_app_control {action:"force_stop", appId:"…"}` is refused: `appId` is not a parameter, and the action always targets the session's app. Deprecated aliases that are still declared (`qa_wda udid`, `qa_suite_generate creativityLevel`, `qa_issue_log until`) are accepted. Nested objects are not checked this way.
-- **Stale clients**: a client started before an upgrade may still send 1.5-era calls. Removed tool names, `qa_ios` with `action:"screenshot"` or `action:"wda_*"`, and `qa_wait` with `for:"job_done"` return `failureCode:"STALE_CLIENT"` with `removedCall`, `replacement` (the call to use), and `clientHint` (restart the client so it reloads the tool list). See [Migrating from 1.5.0](#migrating-from-150). `qa_doctor` with `expectedVersion`, `expectedToolCount`, or `expectedSchemaHash` detects the same condition.
+Every call is checked against the tool's input schema before anything runs, in this order: stale-client shapes, then unknown arguments, then per-field validation. Each refusal has `changedState:false` and `retrySafe:true`.
+
+- **Unknown arguments**: every tool rejects top-level arguments its input schema does not declare. The call returns `INVALID_ARGUMENT` with `unknownArguments` (up to 20 names; `unknownArgumentCount` gives the total when there are more) and `acceptedParameters`. For example, `qa_app_control {action:"force_stop", appId:"…"}` is refused: `appId` is not a parameter, and the action always targets the session's app. Deprecated aliases that are still declared (`qa_wda udid`, `qa_suite_generate creativityLevel`, `qa_issue_log until`) are accepted. Inside nested objects (such as `qa_act target`), undeclared keys are dropped, not rejected.
+- **Invalid values**: a missing required argument, a wrong type, a value outside an enum, or a number outside its bounds returns `INVALID_ARGUMENT` with `invalidArguments` (up to 20 `{path, message}` entries, such as `{path:"target.text", message:"Expected string, received number"}`) and `acceptedParameters`. `what` joins them: `qa_act: invalid arguments: action: Required. Nothing was run.`
+- **Stale clients**: a client started before an upgrade may still send 1.5-era calls. Removed tool names, `qa_ios` with `action:"screenshot"` or `action:"wda_*"`, and `qa_wait` with `for:"job_done"` return `failureCode:"STALE_CLIENT"` with `removedCall`, `replacement` (the call to use), and `clientHint` (restart the client so it reloads the tool list). See [Migrating from 1.5.0](#migrating-from-150). A tool name that never existed gets the plain MCP `Tool <name> not found` error instead. `qa_doctor` with `expectedVersion`, `expectedToolCount`, or `expectedSchemaHash` detects the same condition.
 
 ### Jobs and cancellation
 
-Long operations return a `jobId` to poll with [qa_job_status](#qa_job_status); cancelled work returns `CANCELLED`. The job lifecycle, status versus `result.state`, long-polling, and cancellation rules are in [Sessions and jobs](concepts.md#sessions-and-jobs).
+Long operations return a `jobId` to poll with [qa_job_status](#qa_job_status); cancelled work returns `CANCELLED`. The job lifecycle, status versus `result.state`, long-polling, and cancellation rules are in [Sessions and jobs](concepts.md#sessions-and-jobs). What each tool does when its call is cancelled is in its section.
+
+A tool that drives the device (taps, installs, launches, boots, toggles device settings, records, or starts a job that does) still runs when the session has a job running, but while that job drives the same device the result gets a note: `job <jobId> is still driving this device; actions may interleave. Poll qa_job_status or qa_job_cancel first.` `qa_build` and `qa_bundletool` jobs run on the host and never trigger it, and neither do observation tools such as `qa_snapshot` or `qa_screenshot`.
 
 ## Tool index
 
@@ -160,7 +174,7 @@ Autopilot, orientation, job polling, blockers, and artifacts.
 
 Autopilot for a low-context request such as "test this app". It resolves the project, finds or builds an artifact, picks a simulator, then plans or executes prepare > smoke > (explore) > report > (suite).
 
-- **`mode`**: `plan` (default) has no side effects and returns the plan, preconditions, and any consent it will need. `execute` returns `state:"running"` and a `jobId` at once. `interactive` asks the credentials question up front (when the project likely has a login and no credentials are available) and then runs as a job like `execute`. `waitForCompletion:true` blocks up to `timeoutMs` (default 45000, max 50000; larger values are clamped to 50000 with a note in `notes`, never rejected) and returns the terminal result directly, or `state:"running"` with the `jobId` to poll.
+- **`mode`**: `plan` (default) has no side effects and returns the plan, preconditions, and any consent it will need. `execute` returns `state:"running"` and a `jobId` at once. `interactive` asks the credentials question up front (when the project likely has a login and no credentials are available) and then runs as a job like `execute`. `waitForCompletion:true` blocks up to `timeoutMs` (default 45000, max 50000; larger values are clamped to 50000 with a note in `notes`, never rejected) and returns the terminal result directly, or `state:"running"` with `timedOutWaiting:true` and the `jobId` to poll. Cancelling that call ends the wait early with the same `state:"running"` result; the job keeps running.
 - **`goal`** sets default flags; explicit `explore`, `generateSuite`, and `stopOnNeedsInput` win.
 
   | goal | Explore | Suite | Stops for input | Notes |
@@ -199,7 +213,7 @@ Autopilot for a low-context request such as "test this app". It resolves the pro
 
 ### qa_job_status
 
-Polls a job. Parameters: `sessionId`, `jobId`, `waitMs` (long-polls until the job leaves `running`; use 45000, values above 50000 are clamped to 50000 so one call ends before a 60 s client tool timeout). Cancelling the call ends the wait with `CANCELLED` and leaves the job running (use `qa_job_cancel` to stop it). Returns `{jobId, kind, status, progress, progressDetail, error, result, artifactUris}`, plus `waited:{waitedMs, timedOut}` when `waitMs` is set. See [Sessions and jobs](concepts.md#jobs).
+Polls a job. Parameters: `sessionId`, `jobId`, `waitMs` (default 0, return at once; otherwise long-polls until the job leaves `running`; use 45000, values above 50000 are clamped to 50000 so one call ends before a 60 s client tool timeout). An unknown `jobId` is `INVALID_ARGUMENT`. Cancelling the call ends the wait with `CANCELLED` and leaves the job running (use `qa_job_cancel` to stop it). Returns `{jobId, kind, status, progress, progressDetail, error, result, artifactUris}`, plus `waited:{waitedMs, timedOut}` when `waitMs` is set. See [Sessions and jobs](concepts.md#jobs).
 
 ### qa_job_cancel
 
@@ -221,7 +235,7 @@ Answers a `needs_input` question. Parameters: `sessionId`, `kind` (for example `
 
 ### qa_get_artifact
 
-Reads a `swipium://session/<id>/<kind>/<name>` artifact, for clients without MCP resources. `mode` defaults to `inline` for text and `metadata` for images and every other binary (screen recordings, archives); `inline` returns an image as image content and any other binary as a base64 blob resource. Text over 1 MB returns the first 1 MB (the last 1 MB for logs, including `*.log` files) with a `[swipium: truncated ...]` marker naming the local file; binaries over 8 MB are not inlined. A text artifact whose redaction was `partial` reports `redaction:"partial"` plus `redactionNote` (see [Secrets and redaction](concepts.md#secrets-and-redaction)).
+Reads a `swipium://session/<id>/<kind>/<name>` artifact, for clients without MCP resources. `mode` defaults to `inline` for text and `metadata` for images and every other binary (screen recordings, archives). `metadata` returns `{uri, mime, kind, bytes, path, redaction, hint}`; `inline` returns an image as image content and any other binary as a base64 blob resource. Text over 1 MB returns the first 1 MB (the last 1 MB for logs, including `*.log` files) with a `[swipium: truncated ...]` marker naming the local file; binaries over 8 MB are not inlined (the result names the local file instead). MCP `resources/read` applies the same caps. A text artifact whose redaction was `partial` reports `redaction:"partial"` plus `redactionNote` in metadata, and a separate warning block when inlined (see [Secrets and redaction](concepts.md#secrets-and-redaction)). An unknown URI returns `INVALID_ARGUMENT`.
 
 ## Setup
 
@@ -232,7 +246,7 @@ Check the toolchain, open a session, and prepare a simulator.
 Checks Node, the Android SDK and emulator, Xcode and `simctl`, WDA, and client freshness. `platform` is `android`, `ios`, or `both` (default `both` on macOS, where it is ready if either platform is; `android` elsewhere). `client` (`claude`, `gemini`, `codex`, `cursor`, or `vscode`) adds a `clientHint` with registration advice. When the connected client is Codex (or `client:"codex"`), the result adds two optional rows and a `codex` field:
 
 - **`codex-env`**: Codex passes MCP servers only a fixed env whitelist plus `env_vars` and the `env` table, so shell exports never arrive otherwise. The row lists which Swipium env names are visible (names only, never values) and warns when no Android SDK is found or `java -version` fails without `JAVA_HOME`: forward `ANDROID_HOME` / `JAVA_HOME` if you installed them in a custom location, or install them first. Approval grants (`SWIPIUM_CONSENT_PREAPPROVE`, `SWIPIUM_ALLOW_REMOTE_WDA`) are never in the default list; set them literally in `env = { ... }`.
-- **`codex-tool-timeout`**: a reminder to keep `tool_timeout_sec` at 600 or more (the server cannot read it).
+- **`codex-tool-timeout`**: a reminder to keep `tool_timeout_sec` at 600 or more and `startup_timeout_sec` at 30 (the server cannot read them; `swipium init codex` writes both).
 - **`codex`**: `{envVarsLine, toolTimeoutSec}`, the exact `env_vars = [...]` line for `[mcp_servers.swipium]`; the text output prints it too.
 
 `expectedVersion`, `expectedToolCount`, and `expectedSchemaHash` add a `client-freshness` check that reports a stale client.
@@ -297,15 +311,15 @@ Direct iOS Simulator control (macOS only). `action` is one of:
 | action | Parameters | Consent |
 | --- | --- | --- |
 | `list` | | |
-| `boot` | `device` (UDID or name substring). Binds the simulator to the session. | none (low-risk, reversible) |
+| `boot` | `device` (UDID or name substring; default: a booted simulator, else the first iPhone). Binds the simulator to the session. | none (low-risk, reversible) |
 | `install` | `app` (a `.app`, absolute or project-relative) | `install_app`, medium |
 | `launch`, `terminate` | `bundleId` | |
 | `openurl` | `url` (deep link) | |
 | `logs` | `last` (default `5m`) | |
-| `privacy_reset` | `bundleId`, `service` (for example `location`, `photos`, `camera`, `all`) | low |
-| `erase` | `device`. Wipes the simulator. | `erase_device`, high |
+| `privacy_reset` | `service` (for example `location`, `photos`, `camera`, `all`), `bundleId` (default: the session's app) | `privacy_reset`, low |
+| `erase` | `device` (default: the bound simulator). Wipes the simulator. | `erase_device`, high |
 
-Screenshots go through `qa_screenshot`, and WebDriverAgent through `qa_wda`. The old `wda_*` and `screenshot` actions return `STALE_CLIENT`.
+Every action except `list` and `boot` needs a simulator bound to the session (by `boot`, `qa_prepare_ios_target`, or `qa_test_this`), else `NO_DEVICE`. Screenshots go through `qa_screenshot`, and WebDriverAgent through `qa_wda`. The old `wda_*` and `screenshot` actions return `STALE_CLIENT`.
 
 ### qa_wda
 
@@ -314,7 +328,7 @@ Diagnoses, attaches, or manages WebDriverAgent for structured iOS automation. Wi
 - **`action`**: `status`, `doctor`, `diagnose`, `logs`, and `tune` inspect an existing setup. `attach` connects to an external WDA at `webDriverAgentUrl` (default `http://127.0.0.1:8100`). `build` and `start` manage one (consent `wda_build` / `wda_start`, medium) from `wdaProjectPath` (default: an installed Appium WebDriverAgent when one is found), with `derivedDataPath` and `scheme` (default `WebDriverAgentRunner`); build and start output is captured as artifacts. `stop` terminates it.
 - **Long-running actions** (one call stays under a 60 s client tool timeout):
   - `build` runs `xcodebuild build-for-testing` as a background job (kill timer 10 min) and returns `{jobId, status:"running"}` at once. Poll `qa_job_status` (with `waitMs`); the job result carries `built`, `logUri`, `wdaBuildProduct`, and on failure `failureCode` (`WDA_BUILD_FAILED` or `WDA_SIGNING_FAILED`) and `nextSteps`. `qa_job_cancel` stops the build.
-  - `start` launches WDA and waits for `/status` for at most 45 s (or `ios.wda.startupTimeoutMs`, default 120000, when smaller). If WDA is still starting, it returns `ok` with `status:"starting"`, `pid`, `logUri`, and `remainingStartupMs`; poll `qa_wait {for:"wda_ready"}` until satisfied, then `attach`. `WDA_START_FAILED` is returned when the xcodebuild process exits early or the startup timeout is already spent.
+  - `start` launches WDA and waits for `/status` for at most 45 s (or `ios.wda.startupTimeoutMs`, default 120000, when smaller). If WDA is still starting, it returns `ok` with `status:"starting"`, `pid`, `logUri`, and `remainingStartupMs`; poll `qa_wait {for:"wda_ready"}` until satisfied, then `attach`. `WDA_START_FAILED` is returned when the xcodebuild process exits early or the startup timeout is already spent. Cancelling the call during that wait returns `CANCELLED` (`changedState:true`) and leaves the managed WDA running, so `attach` can still use it. With `ios.wda.reuse` (default true), a WDA that already answers ready at the URL is reused (`reused:true`, `started:false`) instead of starting a second one.
 - **`device`**: the simulator UDID behind this WDA (default: the session device). `udid` is a deprecated alias. `bundleId` defaults to the session's app. A non-loopback URL needs `allowNonLoopback:true` plus consent (see [iOS modes](concepts.md#ios-modes)).
 - **Failure codes** (for `build`, the build failures arrive in the job result):
   - `attach`: `MULTIPLE_DEVICES` whenever no `device` is given and none is bound to the session (it never guesses), `WDA_UNREACHABLE`, `WDA_SESSION_FAILED`, `STALE_WDA_DEVICE`, `DESTRUCTIVE_REFUSED` (non-loopback URL without approval).
@@ -405,7 +419,7 @@ Observe, act, assert, and collect evidence.
 
 ### qa_snapshot
 
-Captures the screen as compact, addressable elements (`@e1`, `@e2`, …) with a `snapshotQuality` verdict. Interactive elements only, with no screenshot. Busy screens are capped; `filter` (a substring of text, label, id, or role) finds capped elements, and `diff:true` returns only what changed since the previous snapshot. Refs are invalid after navigation.
+Captures the screen as compact, addressable elements (`@e1`, `@e2`, …) with a snapshot-quality verdict (`quality`, plus `qualityReasons`). Interactive elements only, with no screenshot. Busy screens are capped at 60 elements (the most interaction-relevant ones, focused, clickable, fields, and scrollables first, kept in screen order, with `elementsOmitted` counting the rest); `filter` (a substring of text, label, id, or role) finds capped elements, and `diff:true` returns only what changed since the previous snapshot. Refs are invalid after navigation.
 
 - **Element lines**<a id="element-lines"></a>: each entry of `elements` is one line, the same line the text block renders: `@e3 [button] "Log in" #login_btn text="Sign in" [40,200][1040,245] (focused,secure,non-clickable)`. In order: the ref, the role, the name (the label, else the text; `""` when neither), `#id` when there is one (quoted when it is not a plain token), `text="..."` only when it differs from the label, the bounds as `[x1,y1][x2,y2]` (left out when unknown), and flags in parentheses when any apply. Names are JSON-quoted (quotes and newlines escaped) and cut at 80 characters with `...`. Known secrets are redacted and secure values are `«secure»` before the line is built. `responseMode:"verbose"` returns the full objects instead; `qa_inspect` returns every attribute of one ref.
 - **iOS with WDA**: an element's `id` is its accessibility identifier (WDA's `name` when it differs from the label). `TextField`, `SecureTextField`, `SearchField`, and `TextView` are `text-field` elements that show their typed value; secure fields stay masked.
@@ -431,9 +445,9 @@ Performs one action, waits for the screen to settle, and observes: `changed`, `s
 | `scroll` | `direction` | `untilVisible` (a target), `maxScrolls` (default 8) |
 | `press` | `key` (`back`, `home`, `enter`) | |
 | `open_url` | `url` | |
-| `wait` | | `for` (`{settled:true}` by default, or an element), `timeoutMs` (default 8000) |
+| `wait` | | `for` (`{settled:true}` by default, or an element: `ref`, `text`, `id`, or a WDA `selector`), `timeoutMs` (default 8000) |
 
-Every action also takes `observe` and `timeoutMs` (the settle-wait cap). `timeoutMs` is at most 50000: larger values are clamped to 50000 with a note in `notes` (not rejected); negative values are `INVALID_ARGUMENT`.
+Every action also takes `observe` and `timeoutMs` (the settle-wait cap, default 8000). `timeoutMs` is at most 50000: larger values are clamped to 50000 with a note in `notes` (not rejected); negative values are `INVALID_ARGUMENT`. A `wait` for an element that never shows up returns `ELEMENT_NOT_FOUND`; a `selector` wait off WDA is `BACKEND_UNSUPPORTED`. Cancelling a `wait` stops polling at once and returns `CANCELLED`.
 
 - **Targets**: an `@eN` ref, `text`, `id`, a native `selector` on WDA (`accessibility id`, `name`, `predicate string`, or `class chain`), or `x`/`y` coordinates.
 - **Observe**: `elements` use the `qa_snapshot` [element lines](#element-lines) (objects in `verbose`). `diff` (the default once a snapshot exists) returns added and removed elements; `full` returns the capped list; `none` returns verdicts only. When more than half of the post-action elements are new (a navigation), `diff` returns the full capped list with `diffAsFull:true`, `addedCount`, and `removedCount`.
@@ -468,7 +482,7 @@ Records a structured outcome for one workflow, so the report is honest about wha
 - `workflow` and `outcome` (`pass`, `fail`, `blocked`, `skipped`, `not_applicable`) are required.
 - `category` (`app_bug`, `mcp_limitation`, `missing_test_data`, `intentionally_skipped`, `destructive_refused`, `other`) says why and is independent of the outcome. A failing note without a category is recorded as `app_bug`, which also lands in the issue ledger as an app-owned `app_bug` with medium severity. Pass `category:"mcp_limitation"` for tool problems.
 - Use `outcome:"blocked"` with `missingPrecondition`, `requiredState`, and `recommendedSetup` instead of a false failure.
-- Attach evidence in `artifactUris`. For a screenshot-verified check, use `qa_visual mode:"assert"`.
+- `reason` explains the outcome. Attach evidence in `artifactUris`; `verifiedVisually:true` says the pass was confirmed from an attached screenshot. For a screenshot-verified check, `qa_visual mode:"assert"` does both in one call.
 
 ### qa_visual
 
@@ -506,6 +520,8 @@ Smoke checks, exploration, and reports.
 Server-side smoke on a prepared device: optionally launches (`launch`, default true with an app id), runs the baseline (snapshot quality, health, an evidence screenshot, skipped in sensitive sessions), then every saved flow in `.swipium/flows` (`runFlows`, default true) with `variables`. Records a `qa_note` per workflow; call `qa_report` afterwards.
 
 Repository flows are untrusted, so `qa_smoke` never runs a flow with mutating steps or an external OCR or visual provider implicitly. Such a flow is recorded as `blocked` (category `destructive_refused`) with a pointer to `qa_flow_run` and its consent.
+
+Cancelling the call skips the rest of the baseline and flows and returns `CANCELLED` (`changedState:true`). The interrupted workflow is noted as `skipped`, never as a failure or a health finding.
 
 ### qa_explore
 
@@ -562,7 +578,7 @@ Searches the feature index, static topology, runtime graph, and tests for a natu
 
 ### qa_app_map_feature_scope
 
-Resolves a feature (`featureId`, or a free-text `query`) into a focused test scope: code symbols, static and runtime screens, existing tests, objective, coverage gaps, strategy, and ranked candidates. It asks one disambiguation question only on a genuine tie. Works without a map (it falls back to a code scan). `includeCode` (default true) and `limit` (default 8 per list) shape query mode; `sessionId` adds runtime evidence.
+Resolves a feature (`featureId`, or a free-text `query`) into a focused test scope: code symbols, static and runtime screens, existing tests, objective, coverage gaps, strategy, and ranked candidates. It asks one disambiguation question only on a genuine tie. Works without a map (it falls back to a code scan). `includeCode` (default true) and `limit` (default 8 per list) shape query mode; `platform` (`android` or `ios`) only names the platform in the objective; `sessionId` adds runtime evidence.
 
 ### qa_app_map_update
 
@@ -609,7 +625,7 @@ Compiles an existing POM suite on disk (`suite`, relative to `.swipium/`, defaul
 
 ### qa_flow_repair
 
-Given a failed step (`failedStep`, zero-based, from `qa_flow_run`) and the current screen, suggests a stronger locator plus app code changes (such as adding `accessibilityIdentifier` or `testID`). An exact id, label, or text match on the current screen is high confidence. Otherwise candidates are restricted to the failed target's role (a tap stays on a button, an `inputText` stays on a text field) and ranked by text similarity (medium for a contained match, low for a similar one), so a button renamed from "Sign in" to "Log in" is never repaired to the "Email" field. `apply:true` patches simple YAML selector steps in a flow file only at high or medium confidence, and records the patch in the mutation ledger; at low confidence it returns the proposal with `applied:false` and a note, and it never patches inline `flowYaml`. The flow must resolve inside the project root, otherwise `UNSAFE_ACTION_REFUSED`.
+Given a flow (`flow`, a name or path under `.swipium/flows`, or inline `flowYaml`), a failed step (`failedStep`, zero-based, from `qa_flow_run`'s `failedAtStep`), and the current screen, suggests a stronger locator plus app code changes (such as adding `accessibilityIdentifier` or `testID`). An exact id, label, or text match on the current screen is high confidence. Otherwise candidates are restricted to the failed target's role (a tap stays on a button, an `inputText` stays on a text field) and ranked by text similarity (medium for a contained match, low for a similar one), so a button renamed from "Sign in" to "Log in" is never repaired to the "Email" field. `apply:true` patches simple YAML selector steps in a flow file only at high or medium confidence, and records the patch in the mutation ledger; at low confidence it returns the proposal with `applied:false` and a note, and it never patches inline `flowYaml`. The flow must resolve inside the project root, otherwise `UNSAFE_ACTION_REFUSED`.
 
 ## Generate
 
@@ -689,9 +705,9 @@ Plans or executes a named release audit. `profile` (required):
 | `resilience` | Offline, relaunch, and rotation. |
 | `release_gate` | All of the above, plus locator readiness and issue recurrence. |
 
-`mode:"plan"` (default) returns the checklist and safety contract without a device. `mode:"execute"` needs a prepared session, runs every check, logs failed and blocked checks to the issue ledger with evidence, and returns the release impact. It always runs to completion. No check passes without evidence. `allowTestAccountDeletion` permits deleting disposable test accounts (never a real account). `offlineMode` hints that resilience checks should drive offline state; `targetApp` and `sourceRevision` (`{commit, buildVersion, branch}`) identify what was audited.
+`mode:"plan"` (default) returns the checklist and safety contract without a device. `mode:"execute"` needs a prepared session, runs every check, logs failed and blocked checks to the issue ledger with evidence, and returns the release impact. It runs inside the call (no job). No check passes without evidence. Cancelling the call skips the remaining checks and returns `CANCELLED` (`changedState:true`): an interrupted check is not evidence, so nothing is logged to the issue ledger for it. `allowTestAccountDeletion` permits deleting disposable test accounts (never a real account). `offlineMode` hints that resilience checks should drive offline state; `targetApp` and `sourceRevision` (`{commit, buildVersion, branch}`) identify what was audited.
 
-Executing `resilience` or `release_gate` (which runs all four other profiles) needs the `network_change` consent (medium), the same gate as `qa_network`, because it toggles airplane mode. The tool returns the consent request before running anything. With consent, the original airplane state is recorded first and restored afterwards, even if a check fails.
+Executing `resilience` or `release_gate` (which runs all four other profiles) needs the `network_change` consent (medium), the same gate as `qa_network`, because it toggles airplane mode. The tool returns the consent request before running anything. With consent, the original airplane state is recorded first and restored afterwards, even if a check fails or the call is cancelled.
 
 ## First run
 
@@ -742,7 +758,7 @@ These sections used to live on this page:
 
 Every code a tool can return is in the catalog, and `qa_explain_blocker` explains any of them. Each code has a **bucket** (how to triage it: `app_bug`, `environment`, `missing_data`, `mcp_limitation`, or `unsafe_refused`), an **owner** (who fixes it: `app`, `environment`, `swipium`, or `user`), a severity, and a default retry safety. The tables below are grouped by bucket; owner is per code.
 
-Codes marked **reserved** are defined for classifying evidence, reports, and policy rules (so `blockOn`, `warnOn`, `ignoreKnown`, and report consumers can name them stably), but no tool returns them in 2.0.0. A reserved code may start being returned in a minor release. Codes marked **finding** appear as health findings in reports rather than as tool errors.
+Codes marked **reserved** are defined for classifying evidence, reports, and policy rules (so `blockOn`, `warnOn`, `ignoreKnown`, and report consumers can name them stably), but no tool returns them yet. A reserved code may start being returned in a minor release. Codes marked **finding** appear as health findings in reports rather than as tool errors.
 
 ### Bucket: app_bug
 
@@ -849,7 +865,7 @@ Expected guardrails, not bugs.
 | --- | --- | --- |
 | `INVALID_ARGUMENT` | user | A malformed, missing, or undeclared argument, or an unknown `sessionId` or `jobId`. Nothing ran. |
 | `CANCELLED` | user | The call or job was cancelled. Not a failure. |
-| `CONSENT_DECLINED`, `CONSENT_CANCELLED`, `CONSENT_REFUSED` | user | See [Consent](concepts.md#consent). |
+| `CONSENT_DECLINED`, `CONSENT_CANCELLED`, `CONSENT_REFUSED` | user | Nothing ran. When the client's consent prompt was declined or cancelled, the error carries `action`, `answeredInMs`, `likelyAutomatic`, and, when the prompt itself failed, `elicitationFailure`. See [Consent](concepts.md#consent). |
 | `DESTRUCTIVE_REFUSED` | user | A destructive action without approval (including a remote WDA URL). |
 | `UNSAFE_ACTION_REFUSED` | user | An unsafe action or a path outside the project root. |
 | `BUNDLE_LOSS_REFUSED` | user | A wipe that would remove a debug build's JS bundle, without `acknowledgeBundleRisk`. |

@@ -139,6 +139,7 @@ export function registerGetArtifact(server: McpServer, sessions: SessionStore): 
           what: `Unknown artifact ${uri}`,
           changedState: false,
           retrySafe: true,
+          failureCode: 'INVALID_ARGUMENT',
           nextSteps: ['List artifacts via qa_report, or check the URI.'],
         });
       }

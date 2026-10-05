@@ -1,9 +1,9 @@
 # Physical devices
 
-Status: **not supported in Swipium 2.0.** Swipium runs only on Android Emulators and iOS
-Simulators. A physical device is visible to Swipium, but Swipium never installs on it, launches on it
-or drives it. The policy is server-side; a client cannot opt in by passing a flag. This page
-describes the current behavior and what support would need.
+Status: **not supported.** Swipium runs only on Android Emulators and iOS Simulators. A physical
+device is visible to Swipium, but Swipium never installs on it, launches on it or drives it. The
+policy is server-side; a client can't opt in by passing a flag. This page describes the current
+behavior and what support would need.
 
 ## The refusal rule
 

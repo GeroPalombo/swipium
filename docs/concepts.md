@@ -19,7 +19,7 @@ A session holds one run's device, app, budget, recorded actions, findings, notes
 
 ### Jobs
 
-Long operations run as background jobs and return a `jobId` at once: `qa_test_this` and `qa_test_feature` in `execute` or `interactive` mode, `qa_explore`, `qa_build` in `run` mode, `qa_bundletool`, and the boot and install steps of `qa_prepare_target`.
+Long operations run as background jobs and return a `jobId` at once: `qa_test_this` and `qa_test_feature` in `execute` or `interactive` mode, `qa_explore`, `qa_build` in `run` mode, `qa_bundletool`, `qa_wda build`, and the boot and install steps of `qa_prepare_target`. Every call that waits (a long-poll, `qa_wait`, `waitForCompletion`) returns within about 50 s, so it fits common client tool timeouts ([details](mcp-server.md#every-call-returns-within-about-50-s)).
 
 The usual loop:
 
@@ -35,14 +35,14 @@ The usual loop:
 | `result.state` (`qa_test_this` jobs) | `completed`, `blocked`, `unsafe`, `needs_input` | How the run ended. `completed` and `needs_input` end the job `done`; `blocked` and `unsafe` end it `failed`. The envelope is in `result` either way. |
 
 - **needs_input**: there is no `needs_input` job status. A job that stops on a question ends `done` with `result.state:"needs_input"`. `qa_test_this` can also return `state:"needs_input"` **directly, with no `jobId`**: in `interactive` mode, or with `stopOnNeedsInput` or `goal:"test_login"`, the credentials question is asked before any job starts when the project likely has a login and no credentials are available. Either way, relay the one question and make the returned resume call (`qa_continue_from_blocker`).
-- **Polling**: `qa_job_status {sessionId, jobId, waitMs}` returns `{jobId, kind, status, progress, progressDetail, error, result, artifactUris}`. `waitMs` (default 0, use 45000, capped at 50000) long-polls: the call returns as soon as the job leaves `running` and adds `waited:{waitedMs, timedOut}`. An unknown `jobId` is `INVALID_ARGUMENT`.
-- **Blocking instead of polling**: `qa_test_this {waitForCompletion:true}` waits up to `timeoutMs` (default 45000, max 50000) and returns the terminal result directly, or `state:"running"` with `timedOutWaiting:true`.
+- **Polling**: `qa_job_status {sessionId, jobId, waitMs}` returns `{jobId, kind, status, progress, progressDetail, error, result, artifactUris}`. `waitMs` (default 0, use 45000; larger values are clamped to 50000) long-polls: the call returns as soon as the job leaves `running` and adds `waited:{waitedMs, timedOut}`. An unknown `jobId` is `INVALID_ARGUMENT`.
+- **Blocking instead of polling**: `qa_test_this {waitForCompletion:true}` waits up to `timeoutMs` (default 45000; larger values are clamped to 50000) and returns the terminal result directly, or `state:"running"` with `timedOutWaiting:true`.
 - **Cancelling**: `qa_job_cancel {sessionId, jobId}` returns `{jobId, cancelled}`; `cancelled:false` means the job had already finished or is unknown. It aborts child processes (build, boot, install, record). A cancelled job has status `cancelled` and no `result`. Side effects already applied are not rolled back, and a worker never overwrites a cancelled job's status.
 - **Restarts**: jobs are persisted with the session. A job that was `running` when the server stopped is marked `failed` with `server restarted while job was running (child process gone)`.
 
 ### Cancellation
 
-When a tool call is cancelled (MCP `notifications/cancelled`) or its job is cancelled with `qa_job_cancel`, the interrupted work returns `failureCode:"CANCELLED"` with `retrySafe:true`. A call's cancel signal applies to that call only: cancelling an interactive call does not cancel a running job, and the other way round.
+When a tool call is cancelled (MCP `notifications/cancelled`) or its job is cancelled with `qa_job_cancel`, the interrupted work returns `failureCode:"CANCELLED"` with `retrySafe:true`. Cancelling a call stops its waits and child processes right away (element waits, UI settling, boot and WDA startup waits, a `qa_job_status` long-poll), not at their deadline. A call's cancel signal applies to that call only: cancelling an interactive call does not cancel a running job, and the other way round. When the server shuts down (the client closed stdin, or a signal), it cancels every running job first.
 
 `CANCELLED` is not a failure. It is never recorded as a tool error, a snapshot failure, a finding, or a health verdict, and it never switches the session to visual-fallback. Side effects that already happened are not rolled back: a cancelled `qa_act` always reports `changedState:true`, and a cancelled `qa_explore` stops with `stoppedReason:"cancelled"` and records no finding for the screen it was observing.
 
@@ -51,7 +51,7 @@ When a tool call is cancelled (MCP `notifications/cancelled`) or its job is canc
 Tools that need a project resolve it in this order; the first hit wins:
 
 1. The `projectRoot` argument. It must be an absolute, existing directory. An invalid value is an error, never silently replaced.
-2. MCP roots, when the client exposes a workspace. The first root with a project marker wins, else the first root that is not `/` or `$HOME`. Only on 2025-era connections: MCP 2026-07-28 deprecates roots and has no server-to-client `roots/list`, so 2026 clients go straight to the next steps (pass `projectRoot`, or set `SWIPIUM_PROJECT_ROOT`).
+2. MCP roots, when the client exposes a workspace. The first root with a project marker wins, else the first root that is not `/` or `$HOME`. Only on 2025-era connections: MCP 2026-07-28 deprecates roots and has no server-to-client `roots/list`, so 2026 clients go straight to the next steps (pass `projectRoot`, or set `SWIPIUM_PROJECT_ROOT`; Claude Code is covered by `CLAUDE_PROJECT_DIR`).
 3. `SWIPIUM_PROJECT_ROOT` from the server environment.
 4. `CLAUDE_PROJECT_DIR`, which Claude Code sets for stdio servers.
 5. The server's working directory, but never `/` or `$HOME`, and only when it contains a project marker.
@@ -66,22 +66,31 @@ When nothing resolves, tools fail with `PROJECT_ROOT_UNRESOLVED`: pass an absolu
 
 Privileged actions (build, boot, install, Metro start, data wipes, recordings, network changes, location spoofing, OCR, flow mutations, destructive exploration, remote WDA, writing into the project's test directory) are consent-gated. Nothing gated runs without approval.
 
-### Mechanisms
+### How an action gets approved
 
-- **Elicitation**: when the client supports MCP form elicitation, the server asks the user directly and the tool continues on approval. The model never sees a `consentId`. The prompt times out after 10 minutes. How the prompt travels depends on the protocol version the client speaks:
-  - MCP 2025-06-18 / 2025-11-25 (`initialize`): an `elicitation/create` request while the tool call waits.
-  - MCP 2026-07-28 (`server/discover`): the tool call answers with an `InputRequiredResult` carrying the same one-checkbox form, and the client retries the call with the user's answer (multi round-trip request). The `requestState` in that result is an opaque single-use handle: Swipium keeps what it stands for (the consent, the tool, a digest of the arguments, the session) on its side, so an answer cannot be replayed or moved to another call. Swipium uses this only when the request's `_meta` client capabilities declare form elicitation; otherwise the envelope below applies.
-- **Consent envelope** (client assertion): otherwise the tool returns `{requiresConsent:true, consentId, action, risk, explain, exactCommand, affects}`. The agent shows it to the user and, only after they agree, re-calls the same tool with the same arguments plus `consentId` and `approve:true`. Only `qa_test_this`'s envelope also carries `sessionId`, so its approving re-call reuses the session without `projectRoot`; for every other tool, re-call with the `sessionId` you already passed.
-- **Policy**: with `SWIPIUM_REQUIRE_ELICITATION=1` in the server environment, a client that cannot elicit gets `CONSENT_REFUSED` for every gated action, before the model sees a `consentId`, so the envelope path cannot be used. The setting has no effect on clients that support elicitation.
+Swipium checks these in order for every gated call:
 
-- **Operator pre-approval**: `SWIPIUM_CONSENT_PREAPPROVE` lists exact action names that are approved without a prompt, on any client. It exists for headless runs (`codex exec`, `claude -p`), which advertise elicitation but decline or cancel every prompt automatically. It is read only from the server process environment, which includes whatever the MCP client passes to the server (the client config `env`; for Codex, set it explicitly in the `env` table of `[mcp_servers.swipium]`, since it is not forwarded by default) and anything inherited from the shell that launched the client. It is never read from `.swipium/` or any repository file, so neither the model nor a cloned project can grant it. There are no wildcards or risk thresholds: name each action. It also applies under `SWIPIUM_REQUIRE_ELICITATION=1`, since it is an explicit operator decision. A pre-approved challenge is still single-use and session-bound, and each approval is logged on stderr at `warn` (visible with `SWIPIUM_LOG_LEVEL=warn`) with the action and its exact command (or a short hash and the first 200 characters).
-  - Action names: `app_clear_data`, `app_fresh_start`, `automation_project_write`, `build_from_source`, `destructive_ui_candidate`, `erase_device`, `flow_mutation_run`, `geo_set`, `install_app`, `network_change`, `ocr_run`, `permission_grant`, `permission_revoke`, `prepare_plan` (boots and installs planned by `qa_prepare_target`), `privacy_reset`, `screen_record`, `seed_state`, `start_metro`, `suite_fresh_state_replay`, `test_this_plan`, `wda_build`, `wda_start`.
-  - **Actions that run code** need `SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE=1` as well, or they are ignored with a startup warning: `build_from_source` (repository build scripts), `flow_mutation_run` (fixture seed scripts, external OCR providers, `openUrl` with variables), `ocr_run` (the configured OCR and mask commands), `seed_state` (fixture seed scripts), `start_metro` (`npx expo start` / `npx react-native start`, which load the project's Metro and Babel config), `suite_fresh_state_replay` (state-profile seed scripts), `wda_build` and `wda_start` (`xcodebuild` on a model-chosen `wdaProjectPath`). These run repository- or model-chosen code with your privileges; under `codex exec` they run outside the client's sandbox. Set the opt-in only for repositories you trust.
-  - **`test_this_plan`** bundles sub-steps. Pre-approving it does not cover a sub-step that runs code: a plan that includes a `build_from_source` step is approved without a prompt only if `build_from_source` is also listed and `SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE=1` is set. Otherwise the plan is prompted for as usual.
-  - **`wda_non_loopback`** cannot be pre-approved by name. List the exact URL in `SWIPIUM_ALLOW_REMOTE_WDA` instead.
-  - Unknown names are ignored with one warning on stderr at startup, with a suggestion for near misses (`INSTALL-APP`: did you mean `install_app`?).
+1. **Operator pre-approval**: if the action is listed in `SWIPIUM_CONSENT_PREAPPROVE` (and its tier allows it), it runs without a prompt, on any client. See [Operator pre-approval](#operator-pre-approval).
+2. **Elicitation**: when the client supports MCP form elicitation, the server asks the user directly and the tool continues on approval. The model never sees a `consentId`, and the prompt times out after 10 minutes. How the prompt travels depends on the protocol era ([mcp-server.md](mcp-server.md#protocol-versions)):
+   - MCP 2025-06-18 / 2025-11-25 (`initialize`): an `elicitation/create` request while the tool call waits.
+   - MCP 2026-07-28 (`server/discover`): the tool call answers with an `InputRequiredResult` carrying the same one-checkbox form, and the client retries the call with the user's answer. Swipium sends it only when the request's `_meta` client capabilities declare form elicitation. The `requestState` in that result is an opaque single-use handle: Swipium keeps what it stands for (the consent, the tool, a digest of the arguments, the session) on its side, so an answer can't be replayed or moved to another call. A retry without an answer gets the same prompt again.
+3. **Consent envelope** (client assertion): otherwise the tool returns `{requiresConsent:true, consentId, action, risk, explain, exactCommand, affects}`. The agent shows it to the user and, only after they agree, re-calls the same tool with the same arguments plus `consentId` and `approve:true`. Only `qa_test_this`'s envelope also carries `sessionId`, so its approving re-call reuses the session without `projectRoot`; for every other tool, re-call with the `sessionId` you already passed.
 
-How each action was approved (`elicitation`, `client-assertion`, `operator-policy`, or `policy`) is recorded in the report's [mutation ledger](#glossary). `elicitation` covers both protocol versions (the user answered the form either way).
+With `SWIPIUM_REQUIRE_ELICITATION=1` in the server environment, step 3 is closed: a client that can't elicit gets `CONSENT_REFUSED` for every gated action, before the model sees a `consentId`. The setting has no effect on clients that support elicitation, and it doesn't block operator pre-approval.
+
+How each action was approved (`elicitation`, `client-assertion`, `operator-policy`, or `policy` for a refusal) is recorded in the report's [mutation ledger](#glossary). `elicitation` covers both protocol eras.
+
+### Operator pre-approval
+
+Headless clients (`codex exec`, `claude -p`) advertise elicitation but decline or cancel every prompt automatically, so no gated action can run there. `SWIPIUM_CONSENT_PREAPPROVE` is the operator's way out: a comma-separated list of exact action names that are approved without a prompt.
+
+- **Where it's read**: only from the server process environment. That is whatever the MCP client passes to the server (its config `env`) plus anything inherited from the shell that launched the client. For Codex, set it literally in the `env` table of `[mcp_servers.swipium]`; it is never forwarded by default ([setup](mcp-server.md#headless-runs)). It is never read from `.swipium/` or any repository file, so neither the model nor a cloned project can grant it.
+- **Exact names only**: no wildcards or risk thresholds. Unknown names are ignored with one warning on stderr at startup, with a suggestion for near misses (`INSTALL-APP`: did you mean `install_app`?).
+- **Action names**: `app_clear_data`, `app_fresh_start`, `automation_project_write`, `build_from_source`, `destructive_ui_candidate`, `erase_device`, `flow_mutation_run`, `geo_set`, `install_app`, `network_change`, `ocr_run`, `permission_grant`, `permission_revoke`, `prepare_plan` (boots and installs planned by `qa_prepare_target`), `privacy_reset`, `screen_record`, `seed_state`, `start_metro`, `suite_fresh_state_replay`, `test_this_plan`, `wda_build`, `wda_start`.
+- **Actions that run code** need `SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE=1` as well, or they are ignored with a startup warning: `build_from_source` (repository build scripts), `flow_mutation_run` (fixture seed scripts, external OCR providers, `openUrl` with variables), `ocr_run` (the configured OCR and mask commands), `seed_state` (fixture seed scripts), `start_metro` (`npx expo start` / `npx react-native start`, which load the project's Metro and Babel config), `suite_fresh_state_replay` (state-profile seed scripts), `wda_build` and `wda_start` (`xcodebuild` on a model-chosen `wdaProjectPath`). These run repository- or model-chosen code with your privileges; under `codex exec` they run outside the client's sandbox. Set the opt-in only for repositories you trust.
+- **`test_this_plan`** bundles sub-steps. Pre-approving it doesn't cover a sub-step that runs code: a plan that includes a `build_from_source` step is approved without a prompt only if `build_from_source` is also listed and `SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE=1` is set. Otherwise the plan is prompted for as usual.
+- **`wda_non_loopback`** can never be pre-approved by name. List the exact URL in `SWIPIUM_ALLOW_REMOTE_WDA` instead ([Remote WDA rule](#ios-modes)).
+- **Still audited**: a pre-approved challenge is still single-use and session-bound, and each approval is logged on stderr at `warn` (visible with `SWIPIUM_LOG_LEVEL=warn`) with the action and its exact command (or a short hash and the first 200 characters).
 
 ### Outcomes
 
@@ -93,7 +102,7 @@ Nothing runs in any of these, and a `refused` row is written to the mutation led
 | `CONSENT_CANCELLED` | The prompt was dismissed, timed out, failed in transport, or the call was aborted; also when the action changed while the user was deciding. Re-calling shows a fresh prompt. | yes |
 | `CONSENT_REFUSED` | `SWIPIUM_REQUIRE_ELICITATION=1` is set and the client cannot elicit. | no |
 
-Do not retry any of them without asking the user. `CONSENT_DECLINED` and `CONSENT_CANCELLED` carry the `action` name, `answeredInMs`, and `likelyAutomatic` (answered in under 1.5 s, so probably no human saw it). Only when `likelyAutomatic` is true do they add a hint naming the operator setting that can pre-approve the action. When the prompt itself failed (timeout, transport error, aborted call), `likelyAutomatic` is false, `elicitationFailure` says why, and the ledger row's detail starts with `transport/abort`.
+Do not retry any of them without asking the user. `CONSENT_DECLINED` and `CONSENT_CANCELLED` carry the `action` name, `answeredInMs`, and `likelyAutomatic` (answered in under 1.5 s, so probably no human saw it). Only when `likelyAutomatic` is true do they add a hint naming the [operator setting](#operator-pre-approval) that can pre-approve the action, and tell the agent not to re-call in a loop; a real human decline is never nudged toward pre-approval. When the prompt itself failed (timeout, transport error, aborted call), `likelyAutomatic` is false, `elicitationFailure` says why, and the ledger row's detail starts with `transport/abort`.
 
 ### Rules
 
@@ -182,21 +191,15 @@ Swipium drives iOS Simulators in one of two modes.
 
 ## Devices
 
-Swipium drives Android Emulators and iOS Simulators on the local machine. Physical devices are out of scope ([physical-devices.md](physical-devices.md)).
+Swipium drives Android Emulators and iOS Simulators on the local machine. Physical devices are out of scope.
 
 ### Physical devices
 
-A connected phone is refused with `PHYSICAL_DEVICE_UNSUPPORTED` only when:
-
-- it is requested explicitly (its serial or UDID as `device`),
-- it is the only option (no emulator online, no AVD to boot, and it is the only device on the chosen platform), or
-- `preferRealDevice` is set and a phone is visible.
-
-Otherwise target selection (`qa_resolve_target`, `qa_test_this`) picks an emulator or simulator and only mentions the phone in the selection `reason` (for example `Physical device <serial> is visible but out of scope`). Two exceptions: `qa_test_this` refuses `preferRealDevice:true` even when no phone is visible, and refuses an artifact that installs only on a real iOS device; and `qa_prepare_target` acts on the online device rather than planning: a phone that is the only online device is refused, and with more than one device online (a phone included) and no `device` it returns `MULTIPLE_DEVICES`, so pass the emulator's serial. `qa_test_this` is the path that boots an AVD while a phone is connected.
+A connected phone doesn't stop a run by itself: target selection (`qa_resolve_target`, `qa_test_this`) picks an emulator or simulator when one is viable and only mentions the phone in the selection `reason`. The phone is refused with `PHYSICAL_DEVICE_UNSUPPORTED` when it is requested explicitly (its serial or UDID as `device`), when it is the only option, or when `preferRealDevice` is set. `qa_prepare_target` acts on the online devices rather than planning, so with a phone and an emulator online and no `device` it returns `MULTIPLE_DEVICES`; pass the emulator's serial. The per-tool behavior and how emulators are recognized are in [physical-devices.md](physical-devices.md).
 
 ### Android
 
-- **Emulator detection**: an `emulator-NNNN` serial is an emulator. Any other serial, such as an adb-over-TCP `localhost:5555` or `127.0.0.1:<port>`, counts as an emulator only when one `getprop` probe shows an emulator (`ro.kernel.qemu=1`, `ro.boot.qemu=1`, a goldfish or ranchu `ro.hardware`, or Genymotion). When a session binds a device whose properties cannot be read, it is refused as `DEVICE_NOT_READY`; if they show real hardware, `PHYSICAL_DEVICE_UNSUPPORTED`.
+- **Emulator detection**: an `emulator-NNNN` serial is an emulator. Any other serial (an adb-over-TCP `localhost:5555`, Genymotion) counts as one only when a `getprop` probe shows an emulator ([details](physical-devices.md#how-android-emulators-are-recognized)). When a session binds a device whose properties can't be read, it is refused as `DEVICE_NOT_READY`; if they show real hardware, `PHYSICAL_DEVICE_UNSUPPORTED`.
 - **Booting**: when an AVD must be booted (headless by default), Swipium records the serials online before the boot and uses only a new serial that is a verified emulator, then waits for `sys.boot_completed` (up to 180 s). So when a phone is connected and an AVD exists, it boots the AVD and installs only on the new emulator. A boot that never comes up is `EMULATOR_BOOT_FAILED`; an online device that never finishes booting is `DEVICE_NOT_READY`.
 - **Several devices**: with more than one device online (phones count) and no `device` argument, `qa_prepare_target` returns `MULTIPLE_DEVICES` with the online serials.
 - **Binding**: a session is only re-bound to its own device. An offline device is never replaced by a different online one.
@@ -212,7 +215,7 @@ See [iOS modes](#ios-modes). `qa_ios` and `qa_prepare_ios_target` pick a simulat
 | --- | --- |
 | **`@eN` ref** | A handle such as `@e3` for one element of the latest `qa_snapshot`. Results list elements as one line each, starting with the ref (see [Element lines](tools.md#element-lines)). Refs are invalid after navigation; an old one returns `STALE_REF`. |
 | **App map** | Swipium's durable memory of the app in `.swipium/app-map.json`: features, screens, navigation, tests, and a code index, each with provenance. Built by `qa_app_map_build` and updated by runs. |
-| **Approval mechanism** | How a consent was decided: `elicitation` (a real user prompt), `client-assertion` (the client re-called with `consentId` and `approve:true`), `operator-policy` (pre-approved by `SWIPIUM_CONSENT_PREAPPROVE`), or `policy` (refused by `SWIPIUM_REQUIRE_ELICITATION=1`). Recorded in the mutation ledger. |
+| **Approval mechanism** | How a consent was decided: `elicitation` (a real user prompt, in either protocol era), `client-assertion` (the client re-called with `consentId` and `approve:true`), `operator-policy` (pre-approved by `SWIPIUM_CONSENT_PREAPPROVE`), or `policy` (refused by `SWIPIUM_REQUIRE_ELICITATION=1`). Recorded in the mutation ledger. |
 | **Budget** | A session's limits on time, actions, screenshots, consecutive snapshot failures, and no-change actions. A spent budget returns `{ok:true, stopped:true, reason}`. |
 | **Canonical suite** | The durable, curated test-case catalog in `.swipium/test-suite.json`, managed by the `qa_suite_*` tools. Unlike per-run assets, it grows across runs. |
 | **Capability group** | One of the groups the tools are organised into (start, setup, build, device, drive, run, app-map, feature, flows, generate, test-suite, issues, first-run). `qa_status` without a session returns them. |
@@ -227,7 +230,7 @@ See [iOS modes](#ios-modes). `qa_ios` and `qa_prepare_ios_target` pick a simulat
 | **Mutation ledger** | The report's audit trail of every state-changing action: tool, action, risk, target, consent (with its approval mechanism), and status (`requested`, `approved`, `executed`, `refused`, `blocked`, or `restored`). |
 | **Pack** | A YAML list of flows run together, under `.swipium/packs/`. |
 | **POM suite** | A generated page-object-model suite (page objects plus suites under `.swipium/`) that compiles into runnable flows. Produced by `qa_generate target:"suite"`. |
-| **Response mode** | `compact`, `normal`, or `verbose`: how much of a result is repeated in the text channel. See [Response modes](tools.md#response-modes). |
+| **Response mode** | `compact`, `normal`, or `verbose`: how much of a result is repeated in the text channel, and whether element lists are `@eN` lines or full objects (`verbose`). See [Response modes](tools.md#response-modes). |
 | **Sensitive session** | A session started with `sensitive:true`; it refuses all pixel, video, and log capture. |
 | **Stale client** | A client still running a pre-upgrade tool list; removed calls return `STALE_CLIENT`. |
 | **Visual-fallback** | A per-screen switch to screenshot-based work after repeated failed UI-tree dumps (`VISUAL_ONLY_SCREEN`). The next successful structured observation switches back. |
