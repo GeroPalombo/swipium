@@ -1,7 +1,7 @@
-// I4: SDK-level input validation failures (missing required arg, wrong type) used to come back as
-// an isError text "MCP error -32602: Input validation error: ..." with a raw zod dump and no
-// structuredContent. The tools/call shim now rewrites them into the typed INVALID_ARGUMENT
-// envelope. Unknown tool names stay the SDK's own error.
+// I4: input validation failures (missing required arg, wrong type) used to come back as an isError
+// text "MCP error -32602: Input validation error: ..." with a raw zod dump and no structuredContent.
+// Swipium's own tools/call handler validates against each tool's strict schema before the handler
+// runs and returns the typed INVALID_ARGUMENT envelope. Unknown tool names keep the SDK 1.x answer.
 
 import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -15,7 +15,9 @@ const fakeHome = mkdtempSync(join(tmpdir(), 'swipium-validation-home-'));
 process.env.HOME = fakeHome;
 process.env.SWIPIUM_DISABLE_DEVICE_DISCOVERY = '1';
 
-const { createServer, summarizeValidationIssues, validationErrorEnvelope } = await import('../src/server.js');
+const { createServer, invalidArgumentsError } = await import('../src/server.js');
+const { checkToolArgs, strictToolSchema } = await import('../src/lib/toolSchema.js');
+const { z } = await import('zod');
 
 let client: Client;
 beforeAll(async () => {
@@ -32,7 +34,7 @@ afterAll(async () => {
 const call = (name: string, args: Record<string, unknown>) => client.callTool({ name, arguments: args }) as Promise<CallToolResult>;
 const sc = (r: CallToolResult) => r.structuredContent as Record<string, unknown>;
 
-describe('SDK input validation > INVALID_ARGUMENT envelope', () => {
+describe('input validation > INVALID_ARGUMENT envelope', () => {
   it('missing required argument', async () => {
     const res = await call('qa_get_artifact', {});
     expect(res.isError).toBe(true);
@@ -68,19 +70,25 @@ describe('SDK input validation > INVALID_ARGUMENT envelope', () => {
     expect(sc(res).failureCode).toBe('STALE_CLIENT');
   });
 
-  it('summarizeValidationIssues falls back to the raw text when not a zod list', () => {
-    expect(summarizeValidationIssues('MCP error -32602: Input validation error: something odd').what).toBe('something odd');
-    const nested = summarizeValidationIssues(
-      'MCP error -32602: Input validation error: Invalid arguments for tool t: [{"path":["target","text"],"message":"Expected string"}]',
+  it('checkToolArgs reports nested paths with array indexes, and the envelope joins them', () => {
+    const schema = strictToolSchema({ steps: z.array(z.object({ text: z.string() })), n: z.number().optional() });
+    const bad = checkToolArgs(schema, { steps: [{ text: 1 }], n: 'x' });
+    expect(bad.ok).toBe(false);
+    if (bad.ok) return;
+    expect(bad.issues.map((i) => i.path)).toEqual(['steps[0].text', 'n']);
+    const s = invalidArgumentsError('qa_x', bad.issues, bad.total, ['steps', 'n']).structuredContent as Record<string, unknown>;
+    expect(s.what).toBe(
+      'qa_x: invalid arguments: steps[0].text: Expected string, received number; n: Expected number, received string. Nothing was run.',
     );
-    expect(nested.what).toBe('target.text: Expected string');
+    expect(s.acceptedParameters).toEqual(['steps', 'n']);
+    expect(checkToolArgs(schema, { steps: [] })).toEqual({ ok: true, data: { steps: [] } });
   });
 
-  it('passes through results that are not SDK validation errors', () => {
-    const plain: CallToolResult = { isError: true, content: [{ type: 'text', text: 'boom' }] };
-    expect(validationErrorEnvelope('qa_x', plain, [])).toBe(plain);
-    const ok: CallToolResult = { content: [{ type: 'text', text: 'MCP error -32602: Input validation error: x' }] };
-    expect(validationErrorEnvelope('qa_x', ok, [])).toBe(ok);
+  it('strict schemas reject undeclared keys (unknownArguments envelope precedes per-field issues)', async () => {
+    const s = sc(await call('qa_get_artifact', { uri: 5, bogus: 1 }));
+    expect(s.failureCode).toBe('INVALID_ARGUMENT');
+    expect(s.unknownArguments).toEqual(['bogus']);
+    expect(checkToolArgs(strictToolSchema({ a: z.string() }), { a: 'x', b: 1 }).ok).toBe(false);
   });
 });
 

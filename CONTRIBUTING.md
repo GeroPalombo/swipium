@@ -198,6 +198,7 @@ In the same change:
 `createServer()` wraps `server.registerTool`, so every tool gets the following without per-tool code:
 
 - **Unknown-argument rejection.** A top-level argument that `inputSchema` doesn't declare returns `INVALID_ARGUMENT` (with `unknownArguments` and `acceptedParameters`) before the handler runs.
+- **Argument validation.** Arguments are checked against `z.object(inputSchema).strict()` before the handler runs; a missing, wrong-typed, or out-of-enum argument returns `INVALID_ARGUMENT` with `invalidArguments` (one `path` and `message` per issue). The same strict object produces the advertised `tools/list` schema. Swipium answers `tools/list` and `tools/call` itself through the SDK's public `Server.setRequestHandler`, so never reach into SDK private members (`test/sdkInternalsGate.test.ts` fails on any `._name` access in `src/`).
 - **Annotations.** MCP tool annotations come from `toolAnnotations()` in `src/lib/toolAnnotations.ts`.
 - **Cancellation scope.** Each call runs inside `runWithSignal(signal, …)` with that call's MCP signal, so `currentSignal()` and `isAbortError()` work anywhere below the handler.
 - **Stale-client hints.** Calls to removed tools (`REMOVED_TOOLS`) and legacy call shapes return `STALE_CLIENT` with the replacement call and a restart hint.

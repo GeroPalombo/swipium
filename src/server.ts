@@ -3,7 +3,13 @@ import { basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { McpError, type CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  McpError,
+  type CallToolResult,
+  type ListToolsResult,
+} from '@modelcontextprotocol/sdk/types.js';
 import { SessionStore, decodeUriSegment, encodeUriSegment, isWithinRoot, type Session } from './session/store.js';
 import {
   AUTO_ANSWER_MS,
@@ -66,6 +72,16 @@ import { recordToolErrorFromResult } from './report/toolHealth.js';
 import { computeSchemaHash, describeZodField, setSchemaHash, type ToolSurfaceEntry } from './lib/schemaHash.js';
 import { REMOVED_TOOLS, STALE_CLIENT_HINT, SWIPIUM_VERSION, TOOL_COUNT, TOOL_NAMES, TOOL_NAME_SET, type ToolName } from './version.js';
 import { toolAnnotations } from './lib/toolAnnotations.js';
+import {
+  MAX_ECHOED_KEYS,
+  checkToolArgs,
+  echoKey,
+  strictToolSchema,
+  toolInputJsonSchema,
+  type ToolArgIssue,
+  type ToolInputSchema,
+  type ToolInputShape,
+} from './lib/toolSchema.js';
 import { CAPABILITY_GROUPS } from './core/capabilityGroups.js';
 import { ensureAndroidToolsOnPath } from './lib/android.js';
 import { annotateRootSource, withRootResolutionRecording } from './context/projectRoot.js';
@@ -380,12 +396,28 @@ function logToolCall(
   });
 }
 
+/** One tool as Swipium serves it. tools/list and tools/call are answered from this table
+ * (installToolHandlers), so argument validation, the stale-client mapping and the advertised
+ * schemas never depend on SDK internals or SDK-version defaults. */
+export interface ToolEntry {
+  name: string;
+  title?: string;
+  description: string;
+  annotations: Record<string, unknown>;
+  /** z.object(shape).strict(): validates arguments and produces the advertised JSON schema. */
+  schema: ToolInputSchema;
+  /** Declared top-level parameters, in declaration order. */
+  accepted: readonly string[];
+  /** The wrapped handler (response mode, consent routing, cancellation scope); takes VALIDATED args. */
+  handler: (args: Record<string, unknown>, extra: unknown) => Promise<unknown>;
+}
+
 function installResponseModeWrapper(
   server: McpServer,
   sessions: SessionStore,
   surface: ToolSurfaceEntry[],
   attempted: Set<string>,
-  paramNames: Map<string, readonly string[]>,
+  tools: Map<string, ToolEntry>,
 ): void {
   const orig = server.registerTool.bind(server) as (name: string, config: unknown, handler: (...a: unknown[]) => unknown) => unknown;
   const valid = (m: unknown): m is 'compact' | 'normal' | 'verbose' => m === 'compact' || m === 'normal' || m === 'verbose';
@@ -394,13 +426,13 @@ function installResponseModeWrapper(
     if (!TOOL_NAME_SET.has(name)) return undefined; // assertToolSurface() makes this drop loud at startup
     // Capture the tool surface (name + description + per-field type descriptors) for the schema hash
     // (3.3 A/§5). Encoding each field's zod shape catches nested enum/type/optionality changes.
-    const cfg = config as { description?: string; inputSchema?: Record<string, unknown> } | undefined;
+    const cfg = config as { title?: string; description?: string; inputSchema?: ToolInputShape } | undefined;
     const inputKeys = Object.entries(cfg?.inputSchema ?? {}).map(([k, v]) => `${k}:${describeZodField(v)}`);
     surface.push({ name, description: cfg?.description ?? '', inputKeys });
-    paramNames.set(name, Object.keys(cfg?.inputSchema ?? {}));
     // MCP annotations for every tool, from one reviewed table (src/lib/toolAnnotations.ts).
-    const annotated = { ...(config as Record<string, unknown>), annotations: toolAnnotations(name as ToolName) };
-    return orig(name, annotated, async (...a: unknown[]) => {
+    const annotations = toolAnnotations(name as ToolName) as unknown as Record<string, unknown>;
+    const annotated = { ...(config as Record<string, unknown>), annotations };
+    const wrapped = async (...a: unknown[]) => {
       const first = a[0] as { sessionId?: string; responseMode?: unknown } | undefined;
       // Prefer the existing session's mode; fall back to a directly-passed responseMode so the
       // session-CREATING call (qa_start_session, no sessionId yet) also honors compact.
@@ -434,7 +466,20 @@ function installResponseModeWrapper(
       } finally {
         logToolCall(name, first?.sessionId, startedAt, out, callSignal);
       }
+    };
+    const schema = strictToolSchema(cfg?.inputSchema);
+    tools.set(name, {
+      name,
+      ...(cfg?.title !== undefined ? { title: cfg.title } : {}),
+      description: cfg?.description ?? '',
+      annotations,
+      schema,
+      accepted: Object.keys(cfg?.inputSchema ?? {}),
+      handler: (args, extra) => wrapped(args, extra),
     });
+    // Also registered with the SDK so McpServer declares the tools capability; its own
+    // tools/list + tools/call handlers are replaced by installToolHandlers once all tools exist.
+    return orig(name, annotated, wrapped);
   };
 }
 
@@ -466,51 +511,15 @@ function staleClientError(name: string, replacement: string): CallToolResult {
   );
 }
 
-type RawHandler = (request: { params?: Record<string, unknown> }, extra: unknown) => Promise<unknown>;
-
-/** The SDK stores handlers per method; wrapping the stored (already SDK-wrapped) function keeps
- * the SDK's own request/result validation intact. */
-function wrapRequestHandler(server: McpServer, method: string, wrap: (orig: RawHandler) => RawHandler): void {
-  const map = (server.server as unknown as { _requestHandlers?: Map<string, RawHandler> })._requestHandlers;
-  const orig = map?.get(method);
-  if (!map || !orig) {
-    log('warn', 'could not wrap MCP request handler (SDK internals changed?)', { method });
-    return;
-  }
-  map.set(method, wrap(orig));
-}
-
-/** Drop the per-schema `$schema` dialect key (~2.8 KB of repetition across the tool list). */
-export function stripSchemaDialect(result: unknown): unknown {
-  const tools = (result as { tools?: Array<Record<string, unknown>> } | undefined)?.tools;
-  if (!Array.isArray(tools)) return result;
-  for (const t of tools) {
-    for (const k of ['inputSchema', 'outputSchema'] as const) {
-      const sch = t[k] as Record<string, unknown> | undefined;
-      if (sch && typeof sch === 'object' && '$schema' in sch) delete sch.$schema;
-    }
-  }
-  return result;
-}
-
 /** Top-level argument keys a tool's input schema does not declare. The advertised JSON schema
- * says additionalProperties:false, but the SDK's zod object silently STRIPS unknown keys, so a
- * call like qa_app_control { action:"force_stop", appId:"other.app" } used to run against the
- * session's app while the caller believed it targeted another. Deprecated aliases that are still
- * declared in the schema are accepted (they are schema properties). Exported for tests. */
+ * says additionalProperties:false, and the tool's strict zod object rejects them too: a call like
+ * qa_app_control { action:"force_stop", appId:"other.app" } must never run against the session's
+ * app while the caller believes it targeted another. Deprecated aliases that are still declared in
+ * the schema are accepted (they are schema properties). Exported for tests. */
 export function unknownArgumentKeys(args: Record<string, unknown> | undefined, accepted: readonly string[]): string[] {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return [];
   const known = new Set(accepted);
   return Object.keys(args).filter((k) => !known.has(k));
-}
-
-/** Longest argument key name / validation path echoed back in an error (a key name is caller input). */
-export const MAX_ECHOED_KEY_CHARS = 100;
-/** Most unknown keys / validation issues listed individually in an error. */
-const MAX_ECHOED_KEYS = 20;
-
-function echoKey(k: string): string {
-  return k.length > MAX_ECHOED_KEY_CHARS ? `${k.slice(0, MAX_ECHOED_KEY_CHARS)}...[${k.length} chars]` : k;
 }
 
 export function unknownArgumentsError(name: string, unknown: string[], accepted: readonly string[]): CallToolResult {
@@ -532,6 +541,34 @@ export function unknownArgumentsError(name: string, unknown: string[], accepted:
   );
 }
 
+/** Typed INVALID_ARGUMENT envelope for schema-validation failures (missing / wrong-typed / bad enum
+ * arguments), one `path: message` entry per issue ("sessionId: Required; target.text: Expected
+ * string, received number"). `issues` are already capped (checkToolArgs); `total` is the uncapped
+ * count. Exported for tests. */
+export function invalidArgumentsError(
+  name: string,
+  issues: ReadonlyArray<ToolArgIssue>,
+  total: number,
+  accepted: readonly string[],
+): CallToolResult {
+  const more = total > issues.length ? `; (+${total - issues.length} more)` : '';
+  const what = issues.map((i) => `${i.path}: ${i.message}`).join('; ') + more;
+  const list = (keys: readonly string[]) => keys.map((k) => JSON.stringify(k)).join(', ');
+  return qaError(
+    {
+      what: `${name}: invalid arguments: ${what}. Nothing was run.`,
+      changedState: false,
+      retrySafe: true,
+      failureCode: 'INVALID_ARGUMENT',
+      nextSteps: [
+        `Fix the listed argument(s) and re-call. Accepted parameters: ${accepted.length ? list(accepted) : '(none)'}.`,
+        'If the tool list looks outdated, restart the MCP client so it reloads the current schemas.',
+      ],
+    },
+    { invalidArguments: [...issues], acceptedParameters: [...accepted] },
+  );
+}
+
 /** JSON-RPC code for "resource not found" (MCP spec 2025-11-25; the SDK enum has no name for it). */
 export const RESOURCE_NOT_FOUND = -32002;
 
@@ -541,81 +578,40 @@ export function resourceNotFound(uri: string, why: string): McpError {
   return new McpError(RESOURCE_NOT_FOUND, `Resource not found: ${uri}: ${why}`, { uri });
 }
 
-const SDK_VALIDATION_PREFIX = /^MCP error -32602: Input validation error:\s*(?:Invalid arguments for tool \S+:\s*)?/;
-
-/** Per-field summary of the SDK's zod validation message (a JSON array of zod issues in zod 3),
- * e.g. "sessionId: Required; target: Expected string, received number". Falls back to the raw
- * message (trimmed) when it is not an issue list. Exported for tests. */
-/** A zod message can quote caller input (record keys, unrecognized keys). */
-function capIssueMessage(m: string): string {
-  return m.length > 300 ? `${m.slice(0, 300)}...` : m;
+/** tools/call result for a tool name nobody registered: the isError text result SDK 1.x has always
+ * produced (kept verbatim so clients see the same answer whatever SDK serves them). */
+function unknownToolResult(name: string): CallToolResult {
+  return { content: [{ type: 'text', text: `MCP error -32602: Tool ${name} not found` }], isError: true };
 }
 
-function issueWhat(issues: ReadonlyArray<{ path: string; message: string }>, total: number): string {
-  const more = total > issues.length ? `; (+${total - issues.length} more)` : '';
-  return issues.map((i) => `${i.path}: ${i.message}`).join('; ') + more;
-}
-
-export function summarizeValidationIssues(message: string): { what: string; issues: Array<{ path: string; message: string }> } {
-  const body = message.replace(SDK_VALIDATION_PREFIX, '').trim();
-  try {
-    const parsed = JSON.parse(body) as unknown;
-    if (Array.isArray(parsed) && parsed.length) {
-      const issues = parsed.slice(0, MAX_ECHOED_KEYS).map((i: { path?: unknown[]; message?: unknown }) => ({
-        path: Array.isArray(i?.path) && i.path.length ? echoKey(i.path.map(String).join('.')) : '(arguments)',
-        message: capIssueMessage(String(i?.message ?? 'invalid')),
-      }));
-      return { what: issueWhat(issues, parsed.length), issues };
-    }
-  } catch {
-    // not JSON: SDK >= 1.32 prints one "<message> at <path>" line per issue
-  }
-  const lines = body
-    .split('\n')
-    .map((l) => l.trim())
-    .filter(Boolean);
-  const atLines = lines.map((l) => /^(.*\S) at ([\w.[\]-]+)$/.exec(l));
-  if (atLines.length && atLines.every(Boolean)) {
-    const issues = atLines.slice(0, MAX_ECHOED_KEYS).map((m) => ({ path: echoKey(m![2]), message: capIssueMessage(m![1]) }));
-    return { what: issueWhat(issues, atLines.length), issues };
-  }
-  const what = body.length > 300 ? `${body.slice(0, 300)}...` : body;
-  return { what, issues: [] };
-}
-
-/** The SDK reports schema validation failures as an isError result with only a raw text block
- * ("MCP error -32602: Input validation error: ..." + a zod dump). Rewrite that into the typed
- * INVALID_ARGUMENT envelope every other Swipium error uses; anything else passes through. */
-export function validationErrorEnvelope(name: string, result: CallToolResult, accepted: readonly string[] | undefined): CallToolResult {
-  if (!result?.isError || result.structuredContent) return result;
-  const first = result.content?.[0];
-  const text = first && first.type === 'text' ? String(first.text) : '';
-  if (!SDK_VALIDATION_PREFIX.test(text)) return result;
-  const { what, issues } = summarizeValidationIssues(text);
-  const list = (keys: readonly string[]) => keys.map((k) => JSON.stringify(k)).join(', ');
-  return qaError(
-    {
-      what: `${name}: invalid arguments: ${what}. Nothing was run.`,
-      changedState: false,
-      retrySafe: true,
-      failureCode: 'INVALID_ARGUMENT',
-      nextSteps: [
-        `Fix the listed argument(s) and re-call.${accepted ? ` Accepted parameters: ${accepted.length ? list(accepted) : '(none)'}.` : ''}`,
-        'If the tool list looks outdated, restart the MCP client so it reloads the current schemas.',
-      ],
-    },
-    { invalidArguments: issues, ...(accepted ? { acceptedParameters: [...accepted] } : {}) },
-  );
-}
-
-/** tools/call: unknown removed-tool names and legacy call shapes > STALE_CLIENT (with the
- * replacement + stale-client hint); undeclared top-level arguments > INVALID_ARGUMENT (before the
- * handler runs); SDK schema-validation failures > INVALID_ARGUMENT envelope (after); unknown tool
- * names stay the SDK's protocol error; tools/list: strip `$schema`. */
-function installProtocolShims(server: McpServer, paramNames: ReadonlyMap<string, readonly string[]>): void {
-  wrapRequestHandler(server, 'tools/call', (orig) => async (request, extra) => {
-    const name = String(request?.params?.name ?? '');
-    const args = request?.params?.arguments as Record<string, unknown> | undefined;
+/**
+ * tools/list and tools/call, answered from the ToolEntry table through the SDK's public low-level
+ * `Server.setRequestHandler` (replacing the handlers McpServer installed at registration):
+ *  - tools/list: every tool with its strict-object JSON schema (no `$schema` key), in registration
+ *    order, computed once;
+ *  - tools/call, in order: removed tool names and legacy call shapes > STALE_CLIENT (with the
+ *    replacement + stale-client hint); unknown tool names > the SDK 1.x "Tool not found" isError
+ *    result; undeclared top-level arguments > INVALID_ARGUMENT (unknownArguments); schema failures
+ *    > INVALID_ARGUMENT (invalidArguments), or STALE_CLIENT when the call is a legacy shape; then
+ *    the wrapped handler runs with the validated arguments. A handler that throws becomes an
+ *    isError text result, as McpServer does.
+ */
+function installToolHandlers(server: McpServer, tools: ReadonlyMap<string, ToolEntry>): void {
+  let listed: Array<Record<string, unknown>> | undefined;
+  server.server.setRequestHandler(ListToolsRequestSchema, () => {
+    listed ??= [...tools.values()].map((t) => ({
+      name: t.name,
+      ...(t.title !== undefined ? { title: t.title } : {}),
+      description: t.description,
+      inputSchema: toolInputJsonSchema(t.schema),
+      annotations: t.annotations,
+      execution: { taskSupport: 'forbidden' },
+    }));
+    return { tools: listed } as ListToolsResult;
+  });
+  server.server.setRequestHandler(CallToolRequestSchema, async (request, extra): Promise<CallToolResult> => {
+    const name = String(request.params.name);
+    const args = request.params.arguments as Record<string, unknown> | undefined;
     const startedAt = Date.now();
     // Envelopes built here never reach the tool wrapper (the handler did not run): still log the
     // debug tool-call line for them. Session ids are caller input here: only a sane string is logged.
@@ -625,24 +621,24 @@ function installProtocolShims(server: McpServer, paramNames: ReadonlyMap<string,
       return out;
     };
     const replacement = staleClientReplacement(name, args);
-    if (replacement && !TOOL_NAME_SET.has(name)) return rejected(staleClientError(name, replacement));
-    const accepted = paramNames.get(name);
-    if (accepted && !replacement) {
-      const unknown = unknownArgumentKeys(args, accepted);
-      if (unknown.length) return rejected(unknownArgumentsError(name, unknown, accepted));
+    const tool = tools.get(name);
+    if (!tool) return replacement ? rejected(staleClientError(name, replacement)) : unknownToolResult(name);
+    if (!replacement) {
+      const unknown = unknownArgumentKeys(args, tool.accepted);
+      if (unknown.length) return rejected(unknownArgumentsError(name, unknown, tool.accepted));
     }
-    const result = (await orig(request, extra)) as CallToolResult;
-    // Legacy enum values fail the CURRENT schema's validation > rewrite that raw error only.
-    if (replacement && result?.isError && !result.structuredContent)
-      return rejected(staleClientError(`${name} ${JSON.stringify(args?.action ?? args?.for)}`, replacement));
-    // Schema validation failures (missing/wrong-typed args) > typed INVALID_ARGUMENT envelope.
-    if (TOOL_NAME_SET.has(name)) {
-      const envelope = validationErrorEnvelope(name, result, accepted);
-      return envelope === result ? result : rejected(envelope);
+    const checked = checkToolArgs(tool.schema, args);
+    if (!checked.ok) {
+      // Legacy enum values fail the CURRENT schema: say what replaced them instead.
+      if (replacement) return rejected(staleClientError(`${name} ${JSON.stringify(args?.action ?? args?.for)}`, replacement));
+      return rejected(invalidArgumentsError(name, checked.issues, checked.total, tool.accepted));
     }
-    return result;
+    try {
+      return (await tool.handler(checked.data, extra)) as CallToolResult;
+    } catch (error) {
+      return { content: [{ type: 'text', text: error instanceof Error ? error.message : String(error) }], isError: true };
+    }
   });
-  wrapRequestHandler(server, 'tools/list', (orig) => async (request, extra) => stripSchemaDialect(await orig(request, extra)));
 }
 
 /** Startup assertion: every registerTool() call must be
@@ -751,8 +747,8 @@ export function createServer(): ServerContext {
   const sessions = new SessionStore();
   const surface: ToolSurfaceEntry[] = [];
   const attemptedToolNames = new Set<string>();
-  const paramNames = new Map<string, readonly string[]>();
-  installResponseModeWrapper(server, sessions, surface, attemptedToolNames, paramNames);
+  const tools = new Map<string, ToolEntry>();
+  installResponseModeWrapper(server, sessions, surface, attemptedToolNames, tools);
 
   // Setup / context
   registerDoctor(server);
@@ -806,7 +802,7 @@ export function createServer(): ServerContext {
   // freeze the surface's content fingerprint.
   assertToolSurface(attemptedToolNames);
   setSchemaHash(computeSchemaHash(surface));
-  installProtocolShims(server, paramNames);
+  installToolHandlers(server, tools);
 
   // Reusable workflow templates (MCP prompts capability): thin orchestration of the tools above.
   registerPrompts(server);
