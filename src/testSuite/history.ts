@@ -12,20 +12,6 @@ export interface CaseHistorySummary {
   passRate: number; // 0..1 over runs that actually executed (excludes not_run/skipped)
 }
 
-export function summarizeCaseHistory(c: CanonicalTestCase): CaseHistorySummary {
-  const runs = c.history;
-  const executed = runs.filter((r) => r.status === 'pass' || r.status === 'fail');
-  const passes = executed.filter((r) => r.status === 'pass').length;
-  const last = runs[runs.length - 1];
-  return {
-    id: c.id,
-    runs: runs.length,
-    lastStatus: last?.status ?? c.actualResult.status,
-    lastRunAt: last?.at ?? c.actualResult.lastRunAt,
-    passRate: executed.length ? passes / executed.length : 0,
-  };
-}
-
 /** A persisted per-run ledger file (`.swipium/test-runs/<ts>.json`) capturing what one merge observed. */
 export interface RunLedger {
   runId: string;

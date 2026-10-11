@@ -17,11 +17,15 @@ import type { ExecuteArgs } from './types.js';
 import { runExecutePipeline } from './pipeline.js';
 import { hasUsableCredentials, credentialsLostOnRestart, isLoginDeclined } from './sessionIntent.js';
 import { currentSignal, runWithSignal, sleepOrCancel } from '../../lib/abortScope.js';
+import { jobProgressReporter } from '../../lib/progressNotify.js';
+import { defaultWaitMs, maxWaitMs } from '../../tools/jobs.js';
 
-/** waitForCompletion window: default and cap. Kept under common client tool timeouts (Codex: 60 s);
+/** waitForCompletion window: default and cap when SWIPIUM_MAX_WAIT_MS is unset (it raises or
+ *  lowers both, see tools/jobs.ts maxWaitMs). Kept under common client tool timeouts (Codex: 60 s);
  *  a job still running after it comes back as state:"running" + jobId for qa_job_status polling. */
 export const TEST_THIS_WAIT_DEFAULT_MS = 45_000;
 export const TEST_THIS_WAIT_MAX_MS = 50_000;
+const WAIT_POLL_MS = 500;
 
 function realOrResolved(p: string): string {
   try {
@@ -172,15 +176,25 @@ export async function runExecuteMode(server: McpServer, sessions: SessionStore, 
 
   // Optional blocking mode for short paths (Milestone D). Default = return the running job.
   if (a.waitForCompletion) {
-    const windowMs = Math.min(Math.max(0, a.timeoutMs ?? TEST_THIS_WAIT_DEFAULT_MS), TEST_THIS_WAIT_MAX_MS);
+    const windowMs = Math.min(Math.max(0, a.timeoutMs ?? defaultWaitMs()), maxWaitMs());
     // The window wakes early when THIS call is cancelled (the job keeps running in its own scope).
     const windowCtl = new AbortController();
     const callSignal = currentSignal();
     const onCallAbort = () => windowCtl.abort();
     callSignal?.addEventListener('abort', onCallAbort, { once: true });
     if (callSignal?.aborted) windowCtl.abort();
+    // notifications/progress while waiting, when the request sent a progressToken.
+    const report = jobProgressReporter();
+    const deadline = Date.now() + windowMs;
+    let finished = false;
+    void run.finally(() => (finished = true)).catch(() => {});
     try {
-      await Promise.race([run, sleepOrCancel(windowMs, windowCtl.signal).catch(() => {})]);
+      while (!finished && !windowCtl.signal.aborted && Date.now() < deadline) {
+        const cur = session.jobs.get(job.jobId);
+        if (cur) report?.(cur);
+        const step = Math.min(report ? WAIT_POLL_MS : windowMs, deadline - Date.now());
+        await Promise.race([run, sleepOrCancel(step, windowCtl.signal)]).catch(() => {});
+      }
     } finally {
       windowCtl.abort(); // clears the window timer once the job finished first
       callSignal?.removeEventListener('abort', onCallAbort);
@@ -191,7 +205,9 @@ export async function runExecuteMode(server: McpServer, sessions: SessionStore, 
       return qaOk(
         { sessionId: session.id, mode: a.mode, jobId: job.jobId, appMapUri: a.appMapUri, ...res },
         cur.resultText ?? `test-this ${a.mode} ${res.state ?? cur.status}.`,
-        { structuredSummary: 'full' }, // the job's resultText is not a payload field
+        // The job's resultText is not a payload field; when it carries the inline report head, that
+        // head is already a payload field (reportHead), so only the headline is copied.
+        { structuredSummary: res.reportHead ? 'headline' : 'full' },
       );
     }
     // Timed out: leave the job running and tell the agent to poll.

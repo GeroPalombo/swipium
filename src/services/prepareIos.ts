@@ -20,6 +20,7 @@ import { appBuildDestination } from '../ios/signing.js';
 import * as sim from '../lib/simctl.js';
 import { isAbortError } from '../lib/abortScope.js';
 import type { Session, SessionStore } from '../session/store.js';
+import { noteScreenMutation } from '../snapshot/fresh.js';
 
 export type WdaMode = 'auto' | 'required' | 'skip';
 
@@ -214,6 +215,7 @@ export async function prepareIos(
       sessions.milestone(session, 'app_launch_start');
       invalidateWdaPageSource(pick.udid); // screen changes outside WDA
       await sim.launchApp(pick.udid, bundleId);
+      noteScreenMutation(session); // a snapshot from before the launch is no longer fresh
       sessions.milestone(session, 'app_launch_end');
       launched = true;
       session.appId = bundleId;

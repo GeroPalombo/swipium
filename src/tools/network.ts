@@ -9,6 +9,7 @@ import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import type { Session, SessionStore } from '../session/store.js';
 import type { Driver } from '../drivers/Driver.js';
+import { noteScreenMutation } from '../snapshot/fresh.js';
 
 /** Restore network to the recorded original state. Exported for report/session-end use. */
 export async function restoreNetwork(sessions: SessionStore, session: Session, d: Driver): Promise<string | null> {
@@ -62,7 +63,7 @@ export function registerNetwork(server: McpServer, sessions: SessionStore): void
     {
       title: 'Network state control',
       description:
-        'Offline/online testing via airplane mode (Android 11+). action: status, offline/online (consent-gated), restore. The ' +
+        'Test offline/online behavior via airplane mode (Android 11+). action: status, offline/online (consent-gated), restore. The ' +
         'original state is restored on qa_report, on restore, and on server shutdown.',
       inputSchema: {
         sessionId: z.string(),
@@ -108,6 +109,7 @@ export function registerNetwork(server: McpServer, sessions: SessionStore): void
 
       if (action === 'restore') {
         const msg = await restoreNetwork(sessions, session, d);
+        if (msg) noteScreenMutation(session);
         return qaOk(
           { network: (await d.airplaneOn()) ? 'offline' : 'online', restored: !!msg },
           msg ? `network ${msg}` : 'nothing to restore (Swipium did not change the network)',
@@ -149,6 +151,7 @@ export function registerNetwork(server: McpServer, sessions: SessionStore): void
       sessions.persist(session);
       try {
         await d.setAirplane(wantAirplane);
+        noteScreenMutation(session); // offline banners etc.: a < 2 s snapshot is stale
       } catch (e) {
         // Older images / no `cmd connectivity airplane-mode` (pre-Android 11). Nothing changed, so
         // drop the restore record this call just created (an earlier change's record is kept).
@@ -162,8 +165,13 @@ export function registerNetwork(server: McpServer, sessions: SessionStore): void
         });
       }
       sessions.addEnvChange(session, `network > ${action} (airplane=${wantAirplane})`);
-      await new Promise((r) => setTimeout(r, 1200)); // settle
-      const now = await d.airplaneOn();
+      // Poll the flag (same 1.2 s cap as the old fixed settle) instead of always sleeping.
+      const deadline = Date.now() + 1200;
+      let now = await d.airplaneOn();
+      while (now !== wantAirplane && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 150));
+        now = await d.airplaneOn();
+      }
       sessions.recordMutation(session, {
         tool: 'qa_network',
         action: 'network_change',

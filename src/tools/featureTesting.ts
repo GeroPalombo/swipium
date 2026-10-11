@@ -103,10 +103,10 @@ export function registerFeatureTesting(server: McpServer, sessions: SessionStore
     {
       title: 'Test a feature (focused)',
       description:
-        'Test one named feature. mode:"plan" (default, read-only): scope, cases, fixtures, ordered plan. mode:"execute": a ' +
-        'job that explores toward the feature, records pass/fail/blocked per case, and writes a report (poll qa_job_status). ' +
-        'Without sessionId it bootstraps from projectRoot (consent-gated). Auth, paywall, or missing-fixture gates report ' +
-        'blocked, not failed.',
+        'Test one named feature (e.g. login, checkout). mode:"execute" (default): a job that explores toward it, records ' +
+        'pass/fail/blocked per case, and writes a report (poll qa_job_status). mode:"plan" (read-only): scope, cases, fixtures, plan. ' +
+        'Without sessionId it bootstraps from projectRoot (consent-gated). Auth, paywall, or missing-fixture gates report blocked, not ' +
+        'failed.',
       inputSchema: {
         sessionId: z.string().optional().describe('Prepared session (else bootstrap from projectRoot).'),
         projectRoot: z.string().optional(),
@@ -114,7 +114,7 @@ export function registerFeatureTesting(server: McpServer, sessions: SessionStore
         mode: z
           .enum(['plan', 'execute', 'interactive'])
           .optional()
-          .describe('plan (default) | execute (job) | interactive (until the first question).'),
+          .describe('execute (default, job) | plan (read-only) | interactive (until the first question).'),
         platform: z.enum(['android', 'ios']).optional(),
         device: z.string().optional().describe('Device/simulator to bootstrap on.'),
         consentId: z.string().optional().describe('Bootstrap consent (boot/install/launch).'),
@@ -144,7 +144,7 @@ export function registerFeatureTesting(server: McpServer, sessions: SessionStore
         includeCode,
         limit,
       } = args;
-      const effectiveMode = mode ?? 'plan';
+      const effectiveMode = mode ?? 'execute';
 
       // PLAN mode: pure, read-only planning under the action tool name.
       if (effectiveMode === 'plan') {

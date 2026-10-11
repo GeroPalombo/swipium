@@ -7,6 +7,8 @@ import { z } from 'zod';
 import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 import type { McpServer, CallToolResult, ReadResourceResult } from '@modelcontextprotocol/server';
 import { qaError } from '../lib/result.js';
+import { INLINE_IMAGE_META, inlineScaleLine, prepareInlineImage } from '../lib/image.js';
+import { pngSize } from '../lib/png.js';
 import type { ArtifactRecord, SessionStore } from '../session/store.js';
 
 /** resources/read size caps. Binary (images, recordings) over the cap is not inlined at all
@@ -127,9 +129,9 @@ export function registerGetArtifact(server: McpServer, sessions: SessionStore): 
     {
       title: 'Get an artifact',
       description:
-        'Fetch a session artifact by swipium://session/<id>/<kind>/<name> URI (screenshots, reports, dumps, logs) when the ' +
-        'client lacks MCP resources. Text is inline (over 1 MB: the head, or the tail for logs). Images and other ' +
-        'binaries (recordings) return metadata by default; mode:"inline" returns the bytes.',
+        'Fetch a session artifact (screenshot, report, dump, log, recording) by its swipium://session/<id>/<kind>/<name> URI when the ' +
+        'client lacks MCP resources. Text is inline (over 1 MB: the head, or the tail for logs). Binaries return metadata; ' +
+        'mode:"inline" returns the bytes (images as JPEG, long edge 1568 px, scale in the text).',
       inputSchema: { uri: z.string(), mode: z.enum(['metadata', 'inline']).optional() },
     },
     async ({ uri, mode }): Promise<CallToolResult> => {
@@ -175,9 +177,23 @@ export function registerGetArtifact(server: McpServer, sessions: SessionStore): 
             return {
               content: [{ type: 'text', text: binaryOverCapNote(rec.uri, rec, size, RESOURCE_BINARY_MAX_BYTES, 'qa_get_artifact') }],
             };
-          const data = readFileSync(rec.path).toString('base64');
-          if (rec.mime.startsWith('image/')) return { content: [{ type: 'image', data, mimeType: rec.mime }] };
+          if (rec.mime.startsWith('image/')) {
+            // Downscaled (long edge 1568 px JPEG, macOS sips) with the scale in the text so
+            // coordinates map back; never with structuredContent (Codex would drop the image).
+            const original = readFileSync(rec.path);
+            const img = await prepareInlineImage(original, rec.mime);
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `${rec.uri}${partialNote}\n${inlineScaleLine(img, rec.mime === 'image/png' ? pngSize(original) : null)}`,
+                },
+                { type: 'image', data: img.data.toString('base64'), mimeType: img.mime, _meta: INLINE_IMAGE_META },
+              ],
+            };
+          }
           // Not an image (video/mp4, zip...): an embedded blob resource, never a UTF-8 decode of the bytes.
+          const data = readFileSync(rec.path).toString('base64');
           return { content: [{ type: 'resource', resource: { uri: rec.uri, mimeType: rec.mime, blob: data } }] };
         }
         const { text } = readCappedText(rec, RESOURCE_TEXT_MAX_BYTES, 'qa_get_artifact');

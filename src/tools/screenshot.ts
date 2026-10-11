@@ -5,10 +5,11 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, qaStop, unknownSessionError } from '../lib/result.js';
-import { isSecureNode } from '../lib/redact.js';
 import { sensitiveRefusal } from '../lib/sensitive.js';
 import { captureCoordinateSpace } from '../lib/coordSpace.js';
+import { INLINE_IMAGE_META, inlineScaleLine, prepareInlineImage } from '../lib/image.js';
 import { blockedDeviceResult, getDriver } from '../session/attach.js';
+import { refreshSecureState, secureScreenState } from './visual.js';
 import type { SessionStore } from '../session/store.js';
 
 export function registerScreenshot(server: McpServer, sessions: SessionStore): void {
@@ -18,14 +19,16 @@ export function registerScreenshot(server: McpServer, sessions: SessionStore): v
       title: 'Capture a screenshot',
       description:
         'Save a screenshot as a session artifact and return its swipium:// URI. Withheld on password/OTP screens unless ' +
-        'force:true. Counts against the screenshot budget.',
+        'force:true. Counts against the screenshot budget. inline:true also returns the image (JPEG, long edge 1568 px, ' +
+        'scale in the text) for clients that can see images.',
       inputSchema: {
         sessionId: z.string(),
         force: z.boolean().optional(),
         reason: z.string().optional().describe('What it documents (shown in qa_report).'),
+        inline: z.boolean().optional().describe('Also return the image inline (the result then has no structuredContent).'),
       },
     },
-    async ({ sessionId, force, reason }) => {
+    async ({ sessionId, force, reason, inline }) => {
       const session = sessions.get(sessionId);
       if (!session) return unknownSessionError(sessionId);
       const { driver, blocked } = await getDriver(session);
@@ -47,8 +50,12 @@ export function registerScreenshot(server: McpServer, sessions: SessionStore): v
       const stopReason = sessions.budgetStop(session);
       if (stopReason) return qaStop(stopReason, { counters: session.counters, mode: session.mode });
 
-      // Sensitive screen guard (M6): based on the latest snapshot's nodes.
-      const hasSecure = session.lastSnapshot ? [...session.lastSnapshot.fullByRef.values()].some((n) => isSecureNode(n)) : false;
+      // Sensitive screen guard (M6): the latest snapshot's nodes while it still describes the screen;
+      // after an action or screen change (or with none) a structured backend re-dumps first, so a
+      // stale "no password field" snapshot never lets a login screen through (qa_visual's rule).
+      // A visual-fallback session keeps the cached answer (its dumps are known to fail).
+      const hasSecure =
+        (session.mode === 'visual-fallback' ? secureScreenState(session) : await refreshSecureState(session, driver)) === 'secure';
       if (hasSecure && !force) {
         return qaError({
           what: 'Screenshot withheld: a secure field (password/OTP) is on screen',
@@ -73,7 +80,7 @@ export function registerScreenshot(server: McpServer, sessions: SessionStore): v
         const secureWarning = hasSecure
           ? '\n⚠ A secure field (password/OTP) was on screen and screenshot pixels are NOT redacted. Treat this artifact as sensitive.'
           : '';
-        return qaOk(
+        const result = qaOk(
           {
             uri,
             path: rec.path,
@@ -87,6 +94,17 @@ export function registerScreenshot(server: McpServer, sessions: SessionStore): v
           },
           `Saved screenshot #${n} (${png.length} bytes) > ${uri}${secureWarning}\ncoordinate space: ${coordinateSpace.screenshot?.width}x${coordinateSpace.screenshot?.height} screenshot px, scale ${coordinateSpace.scale}, ${coordinateSpace.orientation}${budgetReached ? `\n⏹ budget reached: ${budgetReached}, call qa_report.` : ''}`,
         );
+        if (!inline) return result;
+        // Inline: text + image only. Codex drops image blocks from a result that carries
+        // structuredContent, so the payload travels in the text block (its fence) instead.
+        const img = await prepareInlineImage(png, 'image/png');
+        const text = result.content?.[0]?.type === 'text' ? result.content[0].text : '';
+        return {
+          content: [
+            { type: 'text', text: `${text}\n${inlineScaleLine(img, coordinateSpace.screenshot ?? null)}` },
+            { type: 'image', data: img.data.toString('base64'), mimeType: img.mime, _meta: INLINE_IMAGE_META },
+          ],
+        };
       } catch (e) {
         return qaError({
           what: `Screenshot failed: ${String(e)}`,

@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, invalidArgumentError, isInvalidArgumentError, unknownSessionError, cancelledResult } from '../lib/result.js';
 import { isAbortError } from '../lib/abortScope.js';
+import { waitForForeground } from '../lib/launchWait.js';
 import { assertAndroidAppId } from '../drivers/DirectDriver.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { blockedDeviceResult, getDriver } from '../session/attach.js';
@@ -13,6 +14,7 @@ import { detectFramework } from '../context/detect.js';
 import { metroReadiness } from '../lib/metroState.js';
 import type { SessionStore } from '../session/store.js';
 import type { Driver } from '../drivers/Driver.js';
+import { noteScreenMutation } from '../snapshot/fresh.js';
 
 const ACTIONS = ['launch', 'foreground', 'background', 'force_stop', 'restart', 'clear_data', 'fresh_start'] as const;
 /** Consent-gated app actions; each mints consent action `app_<name>` (CONSENT_ACTIONS in consent.ts). */
@@ -22,8 +24,7 @@ const APP_ID_NEXT_STEP = 'Re-run qa_prepare_target with a valid appId (e.g. com.
 async function relaunchAndVerify(d: Driver, pkg: string, onLaunched: () => void = () => {}): Promise<string> {
   await d.launchApp(pkg);
   onLaunched();
-  await new Promise((r) => setTimeout(r, 2500));
-  return d.foregroundOwner();
+  return waitForForeground(d, pkg);
 }
 
 export function registerAppControl(server: McpServer, sessions: SessionStore): void {
@@ -32,8 +33,8 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
     {
       title: 'App lifecycle control',
       description:
-        'App lifecycle: launch, foreground, background, force_stop, restart (force_stop + launch, for persistence checks), ' +
-        'clear_data and fresh_start (wipe data: destructive, consent-gated; RN/Expo also need acknowledgeBundleRisk).',
+        'Control the app under test: launch, foreground, background, force_stop, restart (force_stop + launch, for persistence ' +
+        'checks), clear_data and fresh_start (wipe data: destructive, consent-gated; RN/Expo also need acknowledgeBundleRisk).',
       inputSchema: {
         sessionId: z.string(),
         action: z.enum(ACTIONS),
@@ -179,6 +180,7 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
       let mutated = false;
       const mark = () => {
         mutated = true;
+        noteScreenMutation(session); // a < 2 s snapshot no longer describes the screen
       };
       try {
         switch (action) {

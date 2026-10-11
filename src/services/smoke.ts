@@ -4,7 +4,8 @@
 // then runs every saved flow, recording a structured qa_note per workflow.
 
 import { readFileSync } from 'node:fs';
-import { parseSnapshot, signature } from '../snapshot/parse.js';
+import { parseSnapshot } from '../snapshot/parse.js';
+import { adoptSnapshot, noteScreenMutation } from '../snapshot/fresh.js';
 import { settle } from '../snapshot/settle.js';
 import { checkHealth } from '../oracle/health.js';
 import { recordHealthFindings } from '../oracle/record.js';
@@ -61,17 +62,13 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
   try {
     if (doLaunch && session.appId) {
       await d.launchApp(session.appId);
+      noteScreenMutation(session); // a snapshot from before the launch is stale (the dump below may fail)
       await settle(d, { timeoutMs: 8000 });
     }
     let quality: string | undefined;
     if (session.mode !== 'visual-fallback') {
       try {
-        const parsed = parseSnapshot(await d.dumpXml());
-        session.lastSnapshot = {
-          fullByRef: parsed.fullByRef,
-          signatures: new Set(parsed.elements.map(signature)),
-          allNodes: parsed.allNodes,
-        };
+        const parsed = adoptSnapshot(session, parseSnapshot(await d.dumpXml()));
         quality = parsed.quality.verdict;
       } catch {
         /* visual-only screen, health + screenshot still run */

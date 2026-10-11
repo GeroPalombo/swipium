@@ -8,7 +8,7 @@ An MCP server that lets coding agents QA mobile apps on Android Emulators and iO
 
 [![npm version](https://img.shields.io/npm/v/swipium.svg)](https://www.npmjs.com/package/swipium)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Node >= 20](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
+[![Node >= 22.12](https://img.shields.io/badge/node-%3E%3D22.12-brightgreen.svg)](https://nodejs.org)
 [![MCP](https://img.shields.io/badge/MCP-server-black.svg)](https://modelcontextprotocol.io)
 [![Platform](https://img.shields.io/badge/platform-Android%20Emulator%20%2B%20iOS%20Simulator-blue.svg)](https://swipium.com)
 
@@ -20,23 +20,19 @@ It is for mobile developers who want their agent to catch the broken login scree
 
 ```text
 You:    Smoke test this app on Android with Swipium.
-Agent > qa_test_this { goal: "smoke" }                       (mode defaults to "plan": nothing runs)
-        plan for ~/code/shop-app (framework=react-native, session 3f9c2a1b)
-        target: android (will boot Pixel_8_API_35)
-        artifact: APK android/app/build/outputs/apk/release/app-release.apk
-          1. [ ] qa_prepare_target: Install + launch   2. [ ] qa_smoke   3. [ ] qa_report
-Agent > qa_test_this { sessionId: "3f9c2a1b", mode: "execute", goal: "smoke" }
+Agent > qa_test_this { goal: "smoke", waitForCompletion: true }      (runs by default)
         🔐 Consent required (low): • boot_emulator: emulator -avd Pixel_8_API_35 -no-window
                                    • install_apk: adb install -r -g android/app/.../app-release.apk
 You:    Approve                                               (one prompt covers boot + install)
-        state: "running", jobId: "a41c09e2"
+        state: "running", sessionId: "3f9c2a1b", jobId: "a41c09e2"
 Agent > qa_job_status { sessionId: "3f9c2a1b", jobId: "a41c09e2", waitMs: 45000 }
         status: "done", result.state: "completed"
-        reportSummary: "PASS app · COVERED coverage · PASS tool. Read swipium://session/3f9c2a1b/report/…"
+        reportHead: "RELEASE RISK: SHIP … app: PASS … coverage: COVERED … tool: PASS …"
+        nextRecommendedAction: qa_get_artifact { uri: "swipium://session/3f9c2a1b/report/…-summary.md" }
 Agent:  The app launched and passed the smoke checks with no crashes or error screens.
 ```
 
-The report behind that summary, rendered with `npx swipium report --latest --format markdown`, includes:
+Three calls: start the run, wait for it, and (only when the inlined head isn't enough) read `report.md`. The report behind that summary, rendered with `npx swipium report --latest --format markdown`, includes:
 
 ```markdown
 **Release risk: 🟢 SHIP**
@@ -52,7 +48,7 @@ The report behind that summary, rendered with `npx swipium report --latest --for
 
 ## Requirements
 
-**Node.js 20 or newer.** Swipium works with emulators and simulators only; physical devices are refused with `PHYSICAL_DEVICE_UNSUPPORTED` ([why](docs/physical-devices.md)).
+**Node.js 22.12 or newer.** Swipium works with emulators and simulators only; physical devices are refused with `PHYSICAL_DEVICE_UNSUPPORTED` ([why](docs/physical-devices.md)).
 
 **MCP:** a stdio server that speaks protocol revisions 2025-06-18, 2025-11-25 and 2026-07-28; the client's first message picks one. Claude Code 2.1.285 and later connect on 2026-07-28, Codex 0.146 on 2025-06-18. Any stdio MCP client should work ([protocol versions](docs/mcp-server.md#protocol-versions)).
 
@@ -78,12 +74,14 @@ The report behind that summary, rendered with `npx swipium report --latest --for
 
 ```bash
 npx -y swipium init claude --scope project           # preview; changes nothing
-npx -y swipium init claude --scope project --apply   # writes .mcp.json, then runs `swipium verify`
+npx -y swipium init claude --scope project --apply   # writes .mcp.json and the skill, then runs `swipium verify`
 ```
+
+For Claude Code, `init` also sets `SWIPIUM_MAX_WAIT_MS=110000` (one call can wait up to 110 s, so most runs finish in one call) and installs the **swipium-qa agent skill** under `.claude/skills/` (`~/.claude/skills/` for `--scope user`; `--no-skill` skips it). `--trust-local` (local or user scope only) also pre-approves the consent actions that run no project code, so boots and installs stop prompting while builds, Metro and WebDriverAgent still ask. A Claude Code plugin with the same server and skill is in [`plugin/`](plugin/README.md).
 
 The same command handles `codex`, `gemini`, `cursor`, and `vscode` (`swipium init <client> --apply`). Claude Desktop, Windsurf, manual configs, and per-client details are in **[docs/mcp-server.md](docs/mcp-server.md)**.
 
-**Codex:** `swipium init codex --apply` appends a `[mcp_servers.swipium]` block to `~/.codex/config.toml` (or `$CODEX_HOME/config.toml`) with longer timeouts and an `env_vars` line. Codex doesn't pass your shell environment to MCP servers, so without that line `SWIPIUM_TEST_*`, `ANDROID_HOME` and `JAVA_HOME` never reach Swipium. If you already have a block, `init` prints the line to add. Keep `tool_timeout_sec = 600` ([Codex setup](docs/mcp-server.md#codex)).
+**Codex:** `swipium init codex --apply` appends a `[mcp_servers.swipium]` block to `~/.codex/config.toml` (or `$CODEX_HOME/config.toml`) with longer timeouts and an `env_vars` line, and installs the skill under `.agents/skills/`. Codex doesn't pass your shell environment to MCP servers, so without that line `SWIPIUM_TEST_*`, `ANDROID_HOME` and `JAVA_HOME` never reach Swipium. If you already have a block, `init` prints the line to add. Keep `tool_timeout_sec = 600` ([Codex setup](docs/mcp-server.md#codex)).
 
 **Headless runs** (`codex exec`, `claude -p`, CI): these clients answer consent prompts automatically, so nothing gated (boot, install, build) runs unless you pre-approve exact actions with `SWIPIUM_CONSENT_PREAPPROVE` in the server env ([Headless runs](docs/mcp-server.md#headless-runs)).
 
@@ -92,45 +90,46 @@ The same command handles `codex`, `gemini`, `cursor`, and `vscode` (`swipium ini
 **3. Ask the agent to test the app:**
 
 ```text
-Use Swipium to smoke test this app. Run qa_doctor, then qa_test_this with
-mode "execute" and goal "smoke", poll qa_job_status until the job finishes,
-and summarize the report.
+Use Swipium to smoke test this app: qa_test_this with goal "smoke" and
+waitForCompletion true, poll qa_job_status while it is running, and
+summarize the report.
 ```
 
-`mode:"execute"` matters: the default `mode:"plan"` has no side effects and only returns what would happen. `goal:"smoke"` is the fastest path. With no `goal`, `qa_test_this` runs the smoke check and then tries to generate a test suite.
+`qa_test_this` runs by default (`mode:"execute"`, since 2.3.0); pass `mode:"plan"` for a side-effect-free preview. `goal:"smoke"` is the fastest path. With no `goal`, `qa_test_this` runs the smoke check and then tries to generate a test suite. With the skill installed, "test this app with Swipium" is enough.
 
 If a tool returns `PROJECT_ROOT_UNRESOLVED`, name the absolute project path in your prompt or set `SWIPIUM_PROJECT_ROOT` in the server config ([Project root](docs/concepts.md#project-root)).
 
 ### What you'll see
 
 - **One approval prompt** listing the exact build, boot, and install commands. Clients with MCP elicitation show a real prompt; others return `requiresConsent`, which the agent must relay to you.
-- **The first build can take minutes.** The run is a background job the agent polls with `qa_job_status` (each poll waits up to about 45 s).
+- **The first build can take minutes.** The run is a background job; `waitForCompletion` and each `qa_job_status` poll wait up to about 45 s by default (110 s with the `SWIPIUM_MAX_WAIT_MS` that `init claude` sets).
 - **Two states.** The job `status` is `running`, `done`, `failed`, or `cancelled`. The run's `result.state` is `completed` or `needs_input` (job `done`), or `blocked` or `unsafe` (job `failed`). `needs_input` means one question for you, such as login credentials.
-- **A report** with separate verdicts for the app, coverage, and Swipium itself. Read it with `npx swipium report --latest --format markdown`.
+- **A report** with separate verdicts for the app, coverage, and Swipium itself. A completed run inlines a short head (verdicts, top findings with evidence URIs) and saves `report.md` for the agent; a blocked run names the fix. Read it yourself with `npx swipium report --latest --format markdown`.
 
 ## Starter prompts
 
 | Goal | Prompt |
 | --- | --- |
-| Smoke test | "Use Swipium to smoke test this app: qa_test_this mode execute, goal smoke, then summarize the report." |
+| Smoke test | "Use Swipium to smoke test this app: qa_test_this with goal smoke and waitForCompletion, then summarize the report." |
 | Test login | "Use Swipium to test login with goal test_login. Don't ask me for the password: type `${SWIPIUM_TEST_EMAIL}` and `${SWIPIUM_TEST_PASSWORD}` with qa_act." (set both in the server `env`; placeholders expand server-side and secret values are redacted) |
 | Reproduce a bug | "Use Swipium to reproduce this bug with goal reproduce_bug and goalText: 'checkout button does nothing after adding a coupon'. Attach the evidence." |
 | Save a flow | "Turn the last Swipium run into a flow named login-smoke with qa_generate and save it." |
 | Release gate | "Run Swipium with goal release_gate and tell me whether the release gate passes." |
 
-Clients that support MCP prompts can use the built-in ones instead: `swipium_setup_check`, `swipium_guardrail_validation`, `swipium_full_smoke`, `swipium_bug_repro`, and `swipium_convert_run_to_flow`.
+Clients that support MCP prompts can use the built-in ones instead: `swipium_setup_check`, `swipium_guardrail_validation`, `swipium_full_smoke`, `swipium_bug_repro`, `swipium_test_feature`, `swipium_generate_suite`, and `swipium_convert_run_to_flow`.
 
 ## How it works
 
 ```text
-qa_test_this {mode:"plan"}  >  qa_test_this {mode:"execute"}  >  consent  >  job
-                                                                               │
-                         qa_job_status {waitMs} <──────────────────────────────┘
-                           ├─ completed / blocked / unsafe  >  report (qa_get_artifact reportUri)
-                           └─ needs_input  >  ask you one question  >  qa_continue_from_blocker
+qa_test_this {waitForCompletion:true}  >  consent  >  job
+                                                       │
+         qa_job_status {waitMs}  <─── still running ───┘
+           ├─ completed          >  reportHead inline; more in report.md (qa_get_artifact)
+           ├─ blocked / unsafe   >  the fix in nextRecommendedAction
+           └─ needs_input        >  ask you one question  >  qa_continue_from_blocker (resumes the run)
 ```
 
-`qa_test_this` finds or builds the app, boots a simulator, installs and launches the app, runs a smoke check (plus exploration or suite generation, per `goal`), and always writes a report. Failures carry a `failureCode` that `qa_explain_blocker` explains. For hands-on work the agent opens a session (`qa_start_session`), reads the screen with `qa_snapshot`, and acts on element refs such as `@e3`.
+`qa_test_this` finds or builds the app, boots a simulator, installs and launches the app, runs a smoke check (plus exploration or suite generation, per `goal`), and always writes a report. Failures carry a `failureCode` that `qa_explain_blocker` explains. For hands-on work the agent opens a session (`qa_start_session`), reads the screen with `qa_snapshot`, acts on element refs such as `@e3` (stable while the element stays on screen), and batches 3 or more known steps in one `qa_flow_run {flowYaml}`.
 
 Concepts, explained in **[docs/concepts.md](docs/concepts.md)**:
 
@@ -190,12 +189,18 @@ Set these in the MCP server's `env` block (or your shell, for CLI commands). Thi
 | `SWIPIUM_VISUAL_MASK_CMD` | Masks screenshots before OCR and visual providers see them (`visualMaskCommand` in config wins). |
 | `SWIPIUM_REQUIRE_ELICITATION=1` | Refuse every consent-gated action (`CONSENT_REFUSED`) when the client can't show a real consent prompt. Operator pre-approval still applies. |
 | `SWIPIUM_CONSENT_PREAPPROVE` | Comma-separated exact consent action names approved without a prompt (for example `prepare_plan,test_this_plan`), for headless clients such as `codex exec` or `claude -p` that answer prompts automatically. No wildcards; unknown names are ignored with a warning. Actions that run code also need `SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE=1`, and `wda_non_loopback` is never accepted (use `SWIPIUM_ALLOW_REMOTE_WDA`). Read only from the server process env, never the repository. Each approval is still single-use and is logged at `warn` with the exact command. See [Operator pre-approval](docs/concepts.md#operator-pre-approval). |
-| `SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE` | `1` lets `SWIPIUM_CONSENT_PREAPPROVE` cover actions that run repository- or model-chosen code (`build_from_source`, `flow_mutation_run`, `ocr_run`, `seed_state`, `start_metro`, `suite_fresh_state_replay`, `wda_build`, `wda_start`, and a `test_this_plan` that includes a build). Under `codex exec` that code runs outside the client's sandbox. Trusted repositories only. |
+| `SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE` | `1` lets `SWIPIUM_CONSENT_PREAPPROVE` cover actions that run repository- or model-chosen code (`build_from_source`, `flow_mutation_run`, `ocr_run`, `start_metro`, `suite_fresh_state_replay`, `wda_build`, `wda_start`, and a `test_this_plan` that includes a build). Under `codex exec` that code runs outside the client's sandbox. Trusted repositories only. |
 | `SWIPIUM_RETENTION_DAYS` | Age limit in days for `~/.swipium/runs` session directories (default 30). `0` or `off` disables the automatic prune; `swipium gc` still works. |
 | `SWIPIUM_RETENTION_KEEP` | Number of newest sessions per project always kept (default 20). |
+| `SWIPIUM_MAX_WAIT_MS` | How long one `qa_job_status` long-poll or `qa_test_this {waitForCompletion:true}` may block, in ms (default 50000, clamped to 1000 to 230000). Set it just under your client's tool timeout; `swipium init claude` writes 110000. See [Server settings](docs/mcp-server.md#server-settings). |
+| `SWIPIUM_TOOLS` | `core` lists only the core tools (the `swipium init codex` set); `all` (default) lists every tool. |
+| `SWIPIUM_ANDROID_DUMPER` | `agent` turns on the opt-in persistent Android UI dumper (about 7x faster snapshots; pushes a small jar to the emulator; blocks other UiAutomation clients while it runs). See [android-agent/README.md](android-agent/README.md). |
+| `SWIPIUM_EMULATOR_GPU` | `-gpu` mode for emulators Swipium boots (default `auto`). Use `swiftshader_indirect` on hosts without a usable GPU. |
+| `SWIPIUM_EMULATOR_COLD_BOOT` | `1` boots emulators cold (`-no-snapshot-load`) instead of quick-booting from the AVD snapshot. |
 | `SWIPIUM_LOG_LEVEL` | Minimum stderr log level: `debug`, `info` (default), `warn`, or `error`. `debug` adds one line per tool call (tool, session, duration, error code; never argument values). |
 | `JAVA_HOME` | JDK used by Gradle builds; `qa_doctor` flags a missing JDK under Codex. |
 | `CODEX_HOME` | Where `swipium init codex` finds `config.toml` (default `~/.codex`). |
+| `CLAUDE_CONFIG_DIR` | Where `swipium init claude --scope user` installs the skill (`<dir>/skills/`, default `~/.claude`). |
 | `CI` | When set, reports label the run environment as CI. |
 | `GITHUB_SHA`, `GITHUB_REF_NAME`, `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY`, `GITHUB_RUN_ID`, `CI_COMMIT_SHA`, `CI_COMMIT_REF_NAME`, `CI_PIPELINE_URL`, `BITBUCKET_COMMIT`, `BITBUCKET_BRANCH` | Source revision (commit, branch, run URL) recorded in reports and the issue ledger. |
 | `SWIPIUM_DISABLE_DEVICE_DISCOVERY` | Test-suite isolation only: disables device auto-discovery. Not for normal use. |
@@ -209,7 +214,7 @@ With no subcommand, `swipium` runs the stdio MCP server (what clients launch). `
 | Command | What it does |
 | --- | --- |
 | `swipium` (alias `swipium serve`) | Start the stdio MCP server. Unrecognized flags alone (such as `--stdio`) are ignored with a warning; an unknown subcommand prints usage and exits 2. |
-| `swipium init <client> [--apply] [--scope local\|user\|project] [--cwd <dir>]` | Preview (default) or apply the registration for `claude`, `codex`, `gemini`, `cursor`, or `vscode`. See [docs/mcp-server.md](docs/mcp-server.md). |
+| `swipium init <client> [--apply] [--scope local\|user\|project] [--cwd <dir>] [--no-skill] [--trust-local]` | Preview (default) or apply the registration for `claude`, `codex`, `gemini`, `cursor`, or `vscode`. `claude` and `codex` also install the swipium-qa skill (`--no-skill` skips it); `--trust-local` (claude, local or user scope) pre-approves the consent actions that run no code. See [docs/mcp-server.md](docs/mcp-server.md). |
 | `swipium init flows [--root <dir>] [--force]` | Write starter flow templates into `.swipium/flows/` (existing files kept unless `--force`). |
 | `swipium verify` | Start the server over stdio, check that every tool is listed, and run `qa_doctor`. |
 | `swipium scan [path] [--check \| --dry-run \| --no-write]` | Print a readiness report. Creates `.swipium/` unless the result is `BLOCKED` or a no-write flag is set. |
@@ -226,6 +231,7 @@ With no subcommand, `swipium` runs the stdio MCP server (what clients launch). `
 
 Restart your MCP client after every upgrade; a client still running the old server gets `STALE_CLIENT` errors.
 
+- **From 2.2.x to 2.3.0:** Node.js 22.12 or newer; `qa_test_this` and `qa_test_feature` run by default (`mode:"plan"` previews); element lines drop empty names and mark non-clickable elements with a trailing ` -`; `qa_report` returns a lean view (`format:"json"` for the full report); Swipium-booted emulators quick-boot from their snapshot with `-gpu auto`. See the [2.3.0 upgrade checklist](CHANGELOG.md#230---2026-10-10).
 - **From 2.0.x to 2.2.0:** element lists in `structuredContent` are now `@eN` strings (pass `responseMode:"verbose"` for objects), Codex needs the `env_vars` line, `qa_wda build` returns a job, and waits end within about 50 s. See the [2.2.0 upgrade checklist](CHANGELOG.md#220---2026-10-05).
 - **From 1.5.x:** 2.0 removed and renamed tools, reads only `SWIPIUM_*` variables in flows and fixtures, and asks consent for every install. Work through the [2.0.0 upgrade checklist](CHANGELOG.md#200---2026-09-30) and the [migration table](CHANGELOG.md#migrating-from-150) first, then the 2.2.0 one.
 
@@ -246,7 +252,8 @@ Every error has a `failureCode`, `nextSteps`, and `retrySafe`. `qa_explain_block
 | `BACKEND_UNSUPPORTED` | The action needs WDA (iOS visual-only mode). | Attach WDA with `qa_wda`, or use `qa_visual` and `qa_screenshot`. |
 | `CONSENT_DECLINED` / `CONSENT_CANCELLED` / `CONSENT_REFUSED` | Nothing ran: you declined, the prompt was dismissed, timed out or failed (`elicitationFailure` says why), or `SWIPIUM_REQUIRE_ELICITATION=1` blocked it. | Re-call for a fresh prompt if you want the action. `likelyAutomatic: true` means a headless client answered in under 1.5 s: don't loop, pre-approve the named `action` with `SWIPIUM_CONSENT_PREAPPROVE` ([Headless runs](docs/mcp-server.md#headless-runs)). |
 | `CANCELLED` | The call or job was cancelled. Not a failure, never recorded as a finding. | Re-call if you still want it. Cancelling a call doesn't stop a background job; `qa_job_cancel` does. |
-| `INVALID_ARGUMENT` | An undeclared, missing, or wrong-typed argument, or an unknown `sessionId`, `jobId` or artifact URI. Nothing ran. | Fix the argument; the result lists `acceptedParameters`. Over-large `waitMs` / `timeoutMs` values are clamped to 50000 with a note, not rejected. |
+| `INVALID_ARGUMENT` | An undeclared, missing, or wrong-typed argument, an unknown `sessionId`, `jobId` or artifact URI, or a tool hidden by `SWIPIUM_TOOLS=core`. Nothing ran. | Fix the argument; the result lists `acceptedParameters`. Over-large `waitMs` / `timeoutMs` values are clamped to the cap (50000 by default) with a note, not rejected. |
+| `STALE_REF` | The `@eN` ref's element is no longer on screen. | Take a new `qa_snapshot`, or use one of the `candidates` in the error. |
 
 If tool calls time out in the client, raise its tool timeout (Codex `tool_timeout_sec = 600`): waits and job polls end within about 50 s, but a few synchronous steps, such as an iOS Simulator cold boot, can take longer.
 

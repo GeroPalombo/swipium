@@ -3,7 +3,7 @@
 //      autopilot with the answer), not qa_continue_from_blocker again.
 //  (b) completed job whose report failed → qa_report → after a successful qa_report, qa_status
 //      moves on (read the report), not qa_report again.
-//  (c) blocked → qa_explain_blocker {sessionId} → the ladder moves past the blocker.
+//  (c) blocked → qa_status relays the blocker's fix once (or qa_explain_blocker {sessionId}) → the ladder moves past it.
 // Plus a simulation: following nextBestAction and applying each tool's effect never recommends the
 // same call twice in a row (except the terminal qa_get_artifact read).
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -230,7 +230,7 @@ describe('qa_status over MCP after qa_continue_from_blocker / qa_explain_blocker
     expect(next.args).toMatchObject({ mode: 'execute', sessionId: id, stopOnNeedsInput: false });
   }, 20_000);
 
-  it('(c) qa_explain_blocker {sessionId} moves qa_status past the blocker', async () => {
+  it('(c) a blocked job: qa_status relays its fix once, then moves past the blocker', async () => {
     const id = await h.start(new FakeDriver(buttonScreen('Home', 2)));
     const s = h.sessions.get(id)!;
     s.jobs.set('j1', {
@@ -239,13 +239,37 @@ describe('qa_status over MCP after qa_continue_from_blocker / qa_explain_blocker
       status: 'failed',
       startedAt: Date.now() - 10,
       endedAt: Date.now(),
-      result: { state: 'blocked', failureCode: 'EMULATOR_BOOT_FAILED' },
+      result: {
+        state: 'blocked',
+        failureCode: 'SNAPSHOT_FAILED',
+        blockers: [{ howToFix: 'Retry qa_snapshot.' }],
+        nextRecommendedAction: { tool: 'qa_snapshot', args: { sessionId: id }, why: 'Fix SNAPSHOT_FAILED' },
+      },
       artifactUris: [],
     });
-    const first = await status(id);
-    expect(first.tool).toBe('qa_explain_blocker');
     await new Promise((r) => setTimeout(r, 5));
-    await h.call('qa_explain_blocker', first.args);
-    expect((await status(id)).tool).not.toBe('qa_explain_blocker');
+    const first = await status(id);
+    expect(first.tool).toBe('qa_snapshot');
+    await new Promise((r) => setTimeout(r, 5));
+    expect((await status(id)).tool).not.toBe('qa_snapshot');
+  }, 20_000);
+
+  it('(d) a blocker without a fix call: its code leads the why until qa_explain_blocker {sessionId}', async () => {
+    const id = await h.start(new FakeDriver(buttonScreen('Home', 2)));
+    const s = h.sessions.get(id)!;
+    s.jobs.set('j1', {
+      jobId: 'j1',
+      kind: 'test_this:execute',
+      status: 'failed',
+      startedAt: Date.now() - 10,
+      endedAt: Date.now(),
+      result: { state: 'blocked', failureCode: 'EMULATOR_BOOT_FAILED', nextRecommendedAction: null },
+      artifactUris: [],
+    });
+    const why = async () => ((await status(id)) as { why: string }).why;
+    expect(await why()).toContain('EMULATOR_BOOT_FAILED');
+    await new Promise((r) => setTimeout(r, 5));
+    await h.call('qa_explain_blocker', { failureCode: 'EMULATOR_BOOT_FAILED', sessionId: id });
+    expect(await why()).not.toContain('EMULATOR_BOOT_FAILED');
   }, 20_000);
 });

@@ -31,6 +31,7 @@ import { activeRecording } from '../tools/screenRecord.js';
 import { phaseTimingsForSession } from '../report/timing.js';
 import { automationBackendForSession, coverageForSession } from '../report/coverage.js';
 import { buildSessionArtifactManifest } from '../report/artifactManifest.js';
+import { buildReportHead } from '../report/head.js';
 import { buildPrSummary } from '../report/history.js';
 import { WdaDriver } from '../drivers/WdaDriver.js';
 import { checkWda } from '../lib/wda.js';
@@ -91,6 +92,10 @@ export interface ReportOptions {
 export interface ReportResult {
   report: Record<string, unknown>;
   reportUri: string;
+  /** report.md: the agent-readable summary (summaryText). Read this; report.json is for CI. */
+  reportMdUri: string;
+  /** 2-4 KB head (verdicts, top findings/failures with evidence URIs, report.md pointer). */
+  reportHead: string;
   manifestUri: string;
   manifest: unknown;
   dumpUri?: string;
@@ -872,16 +877,30 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     exportUri && exportUri !== reportUri ? `${format} export: ${exportUri}` : '',
   ].filter(Boolean);
 
+  // report.md: the agent-readable report (this summary), what terminal results and the server
+  // instructions point at. report.json stays the machine/CI copy.
+  const summaryText = redact(lines.join('\n')) ?? '';
+  const reportMdUri = sessions.saveArtifact(
+    session,
+    'report',
+    `report-${Date.now()}-summary.md`,
+    `# Swipium report ${session.id}\n\n${summaryText}\n`,
+    'text/markdown',
+    'report.md (agent-readable summary)',
+  );
+
   return {
     report,
     reportUri,
+    reportMdUri,
+    reportHead: buildReportHead(report as Record<string, unknown>, { reportMdUri, reportUri }),
     manifestUri,
     manifest,
     dumpUri,
     reportLinks,
     exportUri,
     exportFormat: exportUri ? format : undefined,
-    summaryText: redact(lines.join('\n')) ?? '',
+    summaryText: `${summaryText}\nreport.md: ${reportMdUri}`,
     flowExportSkipped,
   };
 }

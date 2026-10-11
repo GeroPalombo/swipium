@@ -185,11 +185,14 @@ export function registerManagedProcess(
 }
 
 /** A managed WDA this server adopted at startup (or started itself) for `sessionId`, per the
- *  registry. Lets `qa_wda stop` stop a WDA started by a previous server run. */
-export function registeredWdaForSession(sessionId: string): ManagedProcessEntry | undefined {
-  return readEntries()
-    .filter((e) => e.kind === 'wda' && e.sessionId === sessionId && e.serverPid === process.pid)
-    .pop();
+ *  registry. Lets `qa_wda stop` stop a WDA started by a previous server run. With `endpoint`, a
+ *  WDA this server owns at that URL also matches when its session is gone (sessions expire, an
+ *  adopted WDA outlives them; only one WDA can listen on a URL). */
+export function registeredWdaForSession(sessionId: string, endpoint?: string): ManagedProcessEntry | undefined {
+  const owned = readEntries().filter((e) => e.kind === 'wda' && e.serverPid === process.pid);
+  return (
+    owned.filter((e) => e.sessionId === sessionId).pop() ?? (endpoint ? owned.filter((e) => e.endpoint === endpoint).pop() : undefined)
+  );
 }
 
 /** Remove a child we stopped (or that finished) from the registry. */
@@ -405,8 +408,10 @@ export async function reapOrphanedProcesses(options: ReapOptions = {}): Promise<
         continue;
       }
       if (e.kind === 'wda' && adoptable.has(e.pid)) {
-        // Re-own it (startedAt kept, so the 12 h cap counts from the WDA's real start).
-        keep.push({ ...e, serverPid: process.pid });
+        // Re-own it (startedAt kept, so the 12 h cap counts from the WDA's real start). serverStart
+        // is ours too: with the old owner's, the next server would see this live owner as dead.
+        const serverStart = norm(opts.ops.psStartTime(process.pid));
+        keep.push({ ...e, serverPid: process.pid, serverStart: serverStart ?? undefined });
         log('info', 'adopted managed WDA from a previous server run (healthy, < 12 h old)', {
           pid: e.pid,
           endpoint: e.endpoint,

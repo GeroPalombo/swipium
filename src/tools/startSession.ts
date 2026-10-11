@@ -101,9 +101,9 @@ export function registerStartSession(server: McpServer, sessions: SessionStore):
     {
       title: 'Start a QA session',
       description:
-        'Open a QA session for the low-level tools (qa_test_this makes its own). projectRoot defaults to MCP roots > ' +
-        'SWIPIUM_PROJECT_ROOT > CLAUDE_PROJECT_DIR > a project-like cwd. Default budget: 8 min / 20 actions / 8 screenshots ' +
-        '(profile or budget changes it). fixtures declare preconditions so unmet ones report blocked, not failed.',
+        'Open a QA session for the low-level tools (qa_snapshot, qa_act, flows); qa_test_this opens its own. projectRoot defaults to ' +
+        'MCP roots > SWIPIUM_PROJECT_ROOT > CLAUDE_PROJECT_DIR > a project-like cwd. Default budget: 8 min / 20 actions / 8 ' +
+        'screenshots. fixtures declare preconditions; unmet ones report blocked, not failed.',
       inputSchema: {
         projectRoot: z.string().optional().describe('Absolute app path.'),
         responseMode: z

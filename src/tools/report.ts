@@ -4,7 +4,7 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
-import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
+import { currentResponseMode, qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { generateSessionReport } from '../services/report.js';
 import type { SessionStore } from '../session/store.js';
 
@@ -15,7 +15,7 @@ export function registerReport(server: McpServer, sessions: SessionStore): void 
       title: 'Build a session report',
       description:
         'Build the session report (release risk, health, outcomes, findings, evidence, env changes) as an artifact; returns a ' +
-        'summary + URIs. format adds an export: markdown, json, junit, sarif, github-summary, playwright, or flow. ' +
+        'summary + URIs (read reportMdUri, report.md; the full JSON is reportUri, inline with format:"json"). format adds an export: markdown, json, junit, sarif, github-summary, playwright, or flow. ' +
         'qa_test_this execute calls it for you. CI: docs/ci-reports.md.',
       inputSchema: {
         sessionId: z.string(),
@@ -45,17 +45,45 @@ export function registerReport(server: McpServer, sessions: SessionStore): void 
         baseline,
         trendRoot,
       });
+      // structuredContent is what Claude Code / Codex hand the model: the lean view (verdicts,
+      // executive + PR summary, counts, URIs) plus the full summary text. The whole report is
+      // the report.json artifact, or inline with format:"json" / verbose response mode.
+      const rep = r.report as Record<string, unknown>;
+      const full = format === 'json' || currentResponseMode() === 'verbose';
+      const links = r.reportLinks ? { ...r.reportLinks, prSummary: undefined } : undefined;
+      const uris = {
+        reportMdUri: r.reportMdUri,
+        reportUri: r.reportUri,
+        manifestUri: r.manifestUri,
+        ...(r.dumpUri ? { dumpUri: r.dumpUri } : {}),
+        ...(r.exportUri ? { exportUri: r.exportUri, exportFormat: r.exportFormat } : {}),
+      };
+      if (full)
+        return qaOk({ ...rep, ...uris, manifest: r.manifest, ...(r.reportLinks ? { reportLinks: r.reportLinks } : {}) }, r.summaryText);
+      const findings = (rep.findings as unknown[] | undefined) ?? [];
       return qaOk(
         {
-          ...r.report,
-          reportUri: r.reportUri,
-          manifestUri: r.manifestUri,
-          manifest: r.manifest,
-          dumpUri: r.dumpUri,
-          ...(r.reportLinks ? { reportLinks: r.reportLinks } : {}),
-          ...(r.exportUri ? { exportUri: r.exportUri, exportFormat: r.exportFormat } : {}),
+          sessionId: rep.sessionId,
+          appId: rep.appId,
+          device: rep.device,
+          executiveSummary: rep.executiveSummary,
+          appVerdict: rep.appVerdict,
+          coverageVerdict: rep.coverageVerdict,
+          toolVerdict: rep.toolVerdict,
+          prSummary: rep.prSummary,
+          counts: {
+            findings: findings.length,
+            findingOccurrences: rep.findingOccurrences,
+            highSeverity: rep.highSeverityCount,
+            toolErrors: ((rep.toolErrors as unknown[] | undefined) ?? []).length,
+            outcomes: rep.outcomeTally,
+            artifacts: ((rep.artifacts as unknown[] | undefined) ?? []).length,
+          },
+          ...uris,
+          ...(links ? { reportLinks: links } : {}),
         },
         r.summaryText,
+        { structuredSummary: 'full' },
       );
     },
   );

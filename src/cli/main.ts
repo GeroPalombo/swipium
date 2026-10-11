@@ -26,6 +26,8 @@ Usage:
   swipium init <client>       Preview (default) or --apply the MCP client registration
                               clients: claude | codex | gemini | cursor | vscode   (also: init flows)
                               options: [--apply] [--scope local|user|project] [--cwd <app dir>]
+                                       [--no-skill] (claude/codex also install the swipium-qa skill)
+                                       [--trust-local] (claude, local/user scope: pre-approve consents that run no code)
   swipium verify              Start the server over stdio, list its tools, run qa_doctor
   swipium scan [path]         Inspect a project; scaffold .swipium/ unless BLOCKED
                               options: [--check | --dry-run | --no-write]

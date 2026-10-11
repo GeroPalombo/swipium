@@ -160,6 +160,36 @@ export function annotateRootSource(result: unknown, resolved: { root: string; so
   return { ...r, content, structuredContent };
 }
 
+/** The client's MCP roots per server instance (keyed on the low-level Server, which test fakes
+ *  provide too). Cleared by notifications/roots/list_changed (src/server.ts). */
+const clientRootsCache = new WeakMap<object, string[]>();
+
+export function clearClientRootsCache(server: McpServer): void {
+  clientRootsCache.delete(server.server);
+}
+
+/**
+ * The root URIs the connected client exposes (MCP roots), asked once per server instance and
+ * cached until the client sends notifications/roots/list_changed. [] when the client does not
+ * advertise roots, on a 2026-07-28 instance (listRoots() throws there: no server-to-client
+ * requests, and roots are deprecated in that revision), or when the call fails (not cached).
+ */
+export async function clientRootUris(server: McpServer): Promise<string[]> {
+  const hit = clientRootsCache.get(server.server);
+  if (hit) return hit;
+  try {
+    const caps = servesModernEra(server) ? undefined : server.server.getClientCapabilities?.();
+    if (!caps?.roots) return [];
+    // 5 s cap; the SDK default is 60 s.
+    const res = await server.server.listRoots(undefined, { timeout: 5_000 });
+    const uris = (res.roots ?? []).map((r) => r.uri).filter((u): u is string => typeof u === 'string');
+    clientRootsCache.set(server.server, uris);
+    return uris;
+  } catch {
+    return []; // client doesn't support roots, or the call failed
+  }
+}
+
 export async function resolveProjectRoot(server: McpServer, explicit?: string, opts: RootEnv = {}): Promise<ResolvedRoot> {
   const resolved = await resolveProjectRootUnrecorded(server, explicit, opts);
   const slot = rootResolutionStore.getStore();
@@ -180,22 +210,9 @@ async function resolveProjectRootUnrecorded(server: McpServer, explicit?: string
     return { source: 'none', hint: `Path not found or not a directory: ${p}` };
   }
 
-  // 2) MCP roots (workspace the client exposed). Never on a 2026-07-28 instance: listRoots()
-  // throws there (no server-to-client requests), and roots are deprecated in that revision.
-  try {
-    const caps = servesModernEra(server) ? undefined : server.server.getClientCapabilities?.();
-    if (caps?.roots) {
-      // Same 5 s cap as currentProjectRoots (src/server.ts); the SDK default is 60 s.
-      const res = await server.server.listRoots(undefined, { timeout: 5_000 });
-      const picked = pickMcpRoot(
-        (res.roots ?? []).map((r) => r.uri),
-        opts.home ?? homedir(),
-      );
-      if (picked) return { root: picked, source: 'mcp-roots' };
-    }
-  } catch {
-    // client doesn't support roots, or the call failed; fall through
-  }
+  // 2) MCP roots (workspace the client exposed; never on a 2026-07-28 instance), cached per instance.
+  const picked = pickMcpRoot(await clientRootUris(server), opts.home ?? homedir());
+  if (picked) return { root: picked, source: 'mcp-roots' };
 
   // 3-5) env vars, then a meaningful cwd
   const fallback = resolveFallbackRoot(opts);

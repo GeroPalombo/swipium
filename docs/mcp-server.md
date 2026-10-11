@@ -9,13 +9,13 @@ environment variables are in the
 [README](../README.md#configuration--environment-variables).
 
 **Contents**: [Requirements](#requirements) · [Server command](#server-command) ·
-[Client setup](#client-setup) · [Protocol versions](#protocol-versions) ·
+[Client setup](#client-setup) · [Server settings](#server-settings) · [Protocol versions](#protocol-versions) ·
 [What the server exposes](#what-the-server-exposes) · [Server behavior](#server-behavior) ·
 [Verification](#verification) · [Debugging](#debugging) · [Troubleshooting](#troubleshooting)
 
 ## Requirements
 
-- Node.js 20 or newer.
+- Node.js 22.12 or newer.
 - Host OS: macOS for the iOS Simulator and Android; Linux for Android. Android on Windows is
   experimental and untested.
 - Android: platform-tools (`adb`), the Android Emulator package, and at least one AVD, usually
@@ -68,8 +68,8 @@ perform it. After a successful apply it runs `swipium verify`. Options: `--scope
 
 | Client | `swipium init` does | Where it lands |
 | --- | --- | --- |
-| Claude Code | Runs `claude mcp add swipium [--scope …] -- <command>` | `local` / `user`: `~/.claude.json`; `project`: `.mcp.json` |
-| Codex | Appends a `[mcp_servers.swipium]` block with `cwd`, timeouts and `env_vars` (see [Codex](#codex)) | `~/.codex/config.toml` (`$CODEX_HOME/config.toml` when set) |
+| Claude Code | Runs `claude mcp add swipium [--scope …] -e SWIPIUM_MAX_WAIT_MS=110000 -- <command>` and installs the swipium-qa skill | `local` / `user`: `~/.claude.json`; `project`: `.mcp.json`. Skill: `~/.claude/skills/swipium-qa/SKILL.md` (user scope, or `$CLAUDE_CONFIG_DIR/skills/…`), `.claude/skills/swipium-qa/SKILL.md` (local and project scope) |
+| Codex | Appends a `[mcp_servers.swipium]` block with `cwd`, timeouts and `env_vars` (see [Codex](#codex)) and installs the skill | `~/.codex/config.toml` (`$CODEX_HOME/config.toml` when set). Skill: `.agents/skills/swipium-qa/SKILL.md` in `--cwd` |
 | Gemini CLI | Runs `gemini mcp add --scope project\|user swipium …`; prints a manual block if that fails | `.gemini/settings.json` (project, the default), `~/.gemini/settings.json` (`--scope user`) |
 | Cursor | Merges a `swipium` entry under `mcpServers` | `.cursor/mcp.json` (for all projects, add the same entry to `~/.cursor/mcp.json` yourself) |
 | VS Code | Merges a `swipium` entry under `servers`; prints a `code --add-mcp …` line for the user profile | `.vscode/mcp.json` |
@@ -83,10 +83,22 @@ Which command gets written:
 - **Machine-local registrations** get this machine's `node` and the absolute path of the installed
   `dist/index.js`. That covers Claude local and user scope, Gemini user scope, and Codex. The node
   path is one that survives upgrades: a Homebrew `node` is written as its `opt` path (for example
-  `/opt/homebrew/opt/node@20/bin/node`), not the versioned `Cellar` path that `brew upgrade`
+  `/opt/homebrew/opt/node@22/bin/node`), not the versioned `Cellar` path that `brew upgrade`
   removes; otherwise `init` prefers the `node` on your `PATH` that resolves to the running binary.
   If Swipium itself runs from the npx cache, that path would disappear, so these get
   `npx -y swipium` too.
+
+**The swipium-qa skill.** For `claude` and `codex`, `--apply` also writes the agent skill (the
+canonical loop, batching with `qa_flow_run {flowYaml}`, credentials via env, app-control shortcuts
+and the CI CLI) and reports it as `created`, `updated` or `unchanged`; the preview prints the path.
+`--no-skill` skips it. The same file is served as the MCP resource `skill://swipium-qa/SKILL.md`.
+
+**`--trust-local`** (Claude Code, `--scope local` or `user` only) adds
+`-e SWIPIUM_CONSENT_PREAPPROVE=<list>` with every consent action that runs no repository- or
+model-chosen code (except `destructive_ui_candidate`), and prints the list. Boots, installs, data wipes, network and location changes
+and screen recordings then run without a prompt; builds, Metro, WebDriverAgent, seed scripts, OCR
+commands and destructive UI taps still ask. It is refused (exit 2) with `--scope project`, which writes the team-shared
+`.mcp.json`, and for other clients. Rules: [Operator pre-approval](concepts.md#operator-pre-approval).
 
 For Cursor and VS Code, `init` refuses to edit a file that isn't plain JSON (for example JSONC with
 comments), prints the entry to add by hand, and exits with status 2. An existing `swipium` entry
@@ -105,8 +117,17 @@ the server `env`. Clients on MCP 2026-07-28 never send roots (see
 #### Claude Code
 
 ```bash
-claude mcp add swipium --scope project -- npx -y swipium
+claude mcp add swipium --scope project -e SWIPIUM_MAX_WAIT_MS=110000 -- npx -y swipium
 ```
+
+`SWIPIUM_MAX_WAIT_MS=110000` lets one `qa_test_this {waitForCompletion:true}` or `qa_job_status`
+call wait up to 110 s, which fits Claude Code's longer tool timeout, so most runs finish in one call
+(see [Server settings](#server-settings)). Without it every wait ends within about 50 s.
+
+**Plugin.** `plugin/` in the repository is a Claude Code plugin with the same registration
+(`npx -y swipium`, `SWIPIUM_MAX_WAIT_MS=110000`) and the skill, listed in the repository's plugin
+marketplace: `/plugin marketplace add GeroPalombo/swipium`, then `/plugin install swipium@swipium`.
+It never pre-approves consent. See [plugin/README.md](../plugin/README.md).
 
 Claude Code sets `CLAUDE_PROJECT_DIR` for the servers it launches, so Swipium picks up the open
 project without extra config. Claude Code 2.1.285 and later (verified on 2.1.289) connect on MCP 2026-07-28, so consent
@@ -125,7 +146,7 @@ args = ["-y", "swipium"]
 cwd = "/absolute/path/to/your/mobile-app"
 startup_timeout_sec = 30
 tool_timeout_sec = 600
-env_vars = ["SWIPIUM_TEST_EMAIL", "SWIPIUM_TEST_USERNAME", "SWIPIUM_TEST_PASSWORD", "SWIPIUM_TEST_OTP", "SWIPIUM_TEST_PIN", "SWIPIUM_TEST_TOKEN", "SWIPIUM_TEST_DEEP_LINK", "SWIPIUM_VERIFICATION_CODE", "SWIPIUM_PROJECT_ROOT", "SWIPIUM_REQUIRE_ELICITATION", "SWIPIUM_LOG_LEVEL", "SWIPIUM_OCR_CMD", "SWIPIUM_VISUAL_MASK_CMD", "SWIPIUM_RETENTION_DAYS", "SWIPIUM_RETENTION_KEEP", "ANDROID_HOME", "ANDROID_SDK_ROOT", "ANDROID_SDK_HOME", "ANDROID_USER_HOME", "ANDROID_AVD_HOME", "ANDROID_EMULATOR_HOME", "JAVA_HOME", "JAVA_TOOL_OPTIONS", "GRADLE_USER_HOME", "GRADLE_OPTS", "BUNDLETOOL_JAR", "APPIUM_HOME", "DEVELOPER_DIR", "DEVELOPMENT_TEAM", "XCODE_DEVELOPMENT_TEAM", "WDA_PROJECT_PATH", "WEBDRIVERAGENT_PROJECT", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "CI", "GITHUB_SHA", "GITHUB_REF_NAME", "GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID", "CI_COMMIT_SHA", "CI_COMMIT_REF_NAME", "CI_PIPELINE_URL", "BITBUCKET_COMMIT", "BITBUCKET_BRANCH"]
+env_vars = ["SWIPIUM_TEST_EMAIL", "SWIPIUM_TEST_USERNAME", "SWIPIUM_TEST_PASSWORD", "SWIPIUM_TEST_OTP", "SWIPIUM_TEST_PIN", "SWIPIUM_TEST_TOKEN", "SWIPIUM_TEST_DEEP_LINK", "SWIPIUM_VERIFICATION_CODE", "SWIPIUM_PROJECT_ROOT", "SWIPIUM_REQUIRE_ELICITATION", "SWIPIUM_LOG_LEVEL", "SWIPIUM_OCR_CMD", "SWIPIUM_VISUAL_MASK_CMD", "SWIPIUM_RETENTION_DAYS", "SWIPIUM_RETENTION_KEEP", "SWIPIUM_MAX_WAIT_MS", "SWIPIUM_TOOLS", "SWIPIUM_ANDROID_DUMPER", "SWIPIUM_EMULATOR_GPU", "SWIPIUM_EMULATOR_COLD_BOOT", "ANDROID_HOME", "ANDROID_SDK_ROOT", "ANDROID_SDK_HOME", "ANDROID_USER_HOME", "ANDROID_AVD_HOME", "ANDROID_EMULATOR_HOME", "JAVA_HOME", "JAVA_TOOL_OPTIONS", "GRADLE_USER_HOME", "GRADLE_OPTS", "BUNDLETOOL_JAR", "APPIUM_HOME", "DEVELOPER_DIR", "DEVELOPMENT_TEAM", "XCODE_DEVELOPMENT_TEAM", "WDA_PROJECT_PATH", "WEBDRIVERAGENT_PROJECT", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "CI", "GITHUB_SHA", "GITHUB_REF_NAME", "GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID", "CI_COMMIT_SHA", "CI_COMMIT_REF_NAME", "CI_PIPELINE_URL", "BITBUCKET_COMMIT", "BITBUCKET_BRANCH"]
 # Optional: a smaller tool list (off by default). `swipium init codex` prints the core list here
 # as a comment; it includes every tool the server instructions and qa_status point to.
 # enabled_tools = ["qa_test_this", "qa_status", ...]
@@ -163,6 +184,13 @@ otherwise it prints the expected block so you can compare.
   SDK or JDK in a custom location, forward `ANDROID_HOME` / `JAVA_HOME`; if not, install it first.
 - `codex-tool-timeout` is a reminder only: the server can't read `tool_timeout_sec`, so keep it at
   600 or more.
+
+Codex keeps its own 60 s default per tool call unless `tool_timeout_sec` is raised, so `init codex`
+leaves `SWIPIUM_MAX_WAIT_MS` at its 50000 default. Codex shows the model `structuredContent` and
+drops images from results that also carry it, so inline images (`qa_screenshot inline:true`,
+`qa_get_artifact mode:"inline"`) come without `structuredContent` and with
+`_meta["codex/imageDetail"]: "auto"`. To list fewer tools, set `SWIPIUM_TOOLS = "core"` in the
+`env` table instead of `enabled_tools` (see [Server settings](#server-settings)).
 
 Codex 0.146 connects on MCP 2025-06-18. Known caveat: in the Codex Desktop app, custom stdio MCP
 tools can show up in `/mcp` without being available in threads
@@ -230,6 +258,19 @@ never be pre-approved) are in [concepts.md](concepts.md#consent). Where to set i
 - **`claude -p`**: in the `env` of the server entry you pass with `--mcp-config`. The
   [CI recipe](ci-reports.md#pre-approving-consents-in-ci) shows a complete config.
 
+## Server settings
+
+Set these in the server's `env` (the complete list of variables is in the
+[README](../README.md#configuration--environment-variables)):
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `SWIPIUM_MAX_WAIT_MS` | `50000` | The longest one `qa_job_status` long-poll or `qa_test_this {waitForCompletion:true}` may block, in ms, clamped to 1000 to 230000. The default `waitForCompletion` window is this minus 5000. Set it just under the client's tool timeout: `swipium init claude` and the plugin write `110000`; keep the default for Codex (60 s). `qa_wait` and `qa_act` keep their 50000 cap. Read on every call. |
+| `SWIPIUM_TOOLS` | `all` | `core` lists only the core tools (the set `swipium init codex` suggests for `enabled_tools`); a call to a hidden tool returns `INVALID_ARGUMENT` naming it and `SWIPIUM_TOOLS=all`. Read once per connection; no `list_changed` is sent, so restart the client after changing it. |
+| `SWIPIUM_ANDROID_DUMPER` | unset | `agent` reads Android UI trees through a persistent on-device agent instead of `uiautomator dump` (about 7x faster on a static screen). It pushes a 6 KB jar to `/data/local/tmp`, needs no APK, and falls back to `uiautomator dump` for 60 s on any failure (with a `warn` log line naming the error). Swipium removes the jar and its `adb forward` when it stops the agent and when the server shuts down. While it runs (up to 120 s after its last dump) other UiAutomation clients such as Appium UiAutomator2 and Maestro can't connect. See [android-agent/README.md](../android-agent/README.md). |
+| `SWIPIUM_EMULATOR_GPU` | `auto` | The `-gpu` mode for emulators Swipium boots. `swiftshader_indirect` (the pre-2.3.0 default) for hosts without a usable GPU, such as Linux CI runners without `/dev/dri`. |
+| `SWIPIUM_EMULATOR_COLD_BOOT` | unset | `1` adds `-no-snapshot-load`: a full cold boot that ignores the AVD's snapshot. By default Swipium quick-boots from the AVD's `default_boot` snapshot and never saves over it (`-no-snapshot-save`). When the AVD has no snapshot (or it no longer loads), that boot is cold and Swipium saves one right after `boot_completed` (about 3.5 s, roughly the AVD's RAM size on disk). Measured headless on an Apple Silicon Mac (API 36 AVD, 2 GB RAM): cold boot about 21 to 25 s, quick boot about 3.5 s to the launcher. |
+
 ## Protocol versions
 
 Swipium is a dual-era stdio server. The client's first message picks the era for the whole
@@ -268,19 +309,27 @@ is inlined instead of a `$ref`.
 - **Tools**: listed in [tools.md](tools.md). Run `swipium verify` to see the exact list, count and
   schema hash your installed version serves. Every tool carries MCP annotations: read-only tools set
   `readOnlyHint: true` and `openWorldHint: false`, and the others also set `destructiveHint` and
-  `idempotentHint`.
-- **Server instructions**: sent on `initialize` (2025) or `server/discover` (2026-07-28). They give
-  the first call (`qa_test_this { mode: "execute" }`), the polling loop
-  (`qa_job_status … waitMs: 45000`), how to relay `needs_input`, blockers and consent, and the
+  `idempotentHint`. `qa_test_this`, `qa_status`, `qa_act` and `qa_snapshot` carry
+  `_meta["anthropic/alwaysLoad"]: true`, so clients with tool search keep them loaded, and `qa_act`,
+  `qa_snapshot`, `qa_job_status` and `qa_test_this` declare a permissive `outputSchema`. The tools
+  capability doesn't advertise `listChanged`.
+- **Server instructions**: sent on `initialize` (2025) or `server/discover` (2026-07-28), under
+  2,000 characters. They give the first call (`qa_test_this { waitForCompletion: true }`, which runs
+  by default), the polling loop (`qa_job_status … waitMs: 45000` while the state is `running`),
+  reading `report.md` on completion, how to relay `needs_input`, blockers (with the fix the result
+  carries) and consent, batching 3 or more known steps in one `qa_flow_run { flowYaml }`, the
+  app-control shortcuts, credentials via `SWIPIUM_TEST_EMAIL` / `SWIPIUM_TEST_PASSWORD`, and the
   project-root order. `qa_status` without a `sessionId` returns the same orientation plus the tool
   groups.
-- **Prompts** (5): `swipium_setup_check`, `swipium_guardrail_validation`, `swipium_full_smoke`,
-  `swipium_bug_repro`, `swipium_convert_run_to_flow`.
+- **Prompts** (7): `swipium_setup_check`, `swipium_guardrail_validation`, `swipium_full_smoke`,
+  `swipium_bug_repro`, `swipium_test_feature`, `swipium_generate_suite`,
+  `swipium_convert_run_to_flow` ([details](tools.md#mcp-resources-and-prompts)).
 - **Resources**:
   - `swipium://session/{sessionId}/{kind}/{name}`: session artifacts (screenshots, dumps, reports,
     logs).
   - `swipium://project/{projectId}/app-map`: the full app map.
   - `swipium://project/{projectId}/app-map/{kind}/{id}`: one feature, screen or test-suite section.
+  - `skill://swipium-qa/SKILL.md` (`text/markdown`): the swipium-qa agent skill, always listed.
 
   `resources/list` shows only the current client's projects: the client's MCP roots (2025-era
   connections only) plus the roots of sessions used in this server process. It never lists
@@ -303,25 +352,36 @@ carry:
   with the tool to call. It's left out when the payload already has `nextBestAction`, `nextAction`,
   `nextRecommendedAction` or `nextSteps`. Budget stops always carry `next: ["qa_report ..."]`.
 
-Errors carry `what` and `nextSteps`. The text block stays as a plain-text copy for clients that
-read it.
+Errors carry `what` and `nextSteps`. Their text block is complete in every response mode, because
+Claude Code shows the model only the text of an error: it starts with `❌ <failureCode>: <what>`,
+lists the next steps, and adds a compact JSON block only for fields the head doesn't show (capped
+at 10,000 characters). For successful results the text block stays as a plain-text copy for
+clients that read it.
 
 `responseMode` (`compact`, `normal`, `verbose`, set per session) mostly changes the text block, so
 on Claude Code and Codex it makes little difference, with one exception: element lists. Outside
 `verbose`, the `elements` of `qa_snapshot` and `qa_act` are compact one-line strings such as
-`@e3 [button] "Log in" #login_btn [40,200][1040,245]`, about 40% smaller than one JSON object per
-element; `verbose` returns the objects. Details: [Response modes](tools.md#response-modes) and
+`@e3 [button] "Log in" #login_btn [40,200][1040,245]` (a trailing ` -` marks a non-clickable
+element), about 40% smaller than one JSON object per element; `verbose` returns the objects. Refs
+stay stable while an element stays on screen ([refs and settling](concepts.md#screens-refs-and-settling)). Details: [Response modes](tools.md#response-modes) and
 [Element lines](tools.md#element-lines).
 
 ### Every call returns within about 50 s
 
-Client tool timeouts are short (Codex defaults to 60 s), so calls that wait are capped below that,
-and long work runs as a background job:
+Client tool timeouts are short (Codex defaults to 60 s), so calls that wait are capped below that
+by default, and long work runs as a background job:
 
 - `qa_job_status` long-polls at most 50 s (`waitMs`, recommended 45000). Larger values are clamped,
   not rejected.
 - `qa_wait`, `qa_act` and `qa_test_this { waitForCompletion: true }` clamp `timeoutMs` to 50000
   with a note (`qa_wait` and `qa_test_this` default to 45000).
+- `SWIPIUM_MAX_WAIT_MS` moves the cap for `qa_job_status` and `qa_test_this` (1000 to 230000; the
+  `qa_test_this` default becomes the cap minus 5 s). Set it only when the client's tool timeout is
+  longer; `swipium init claude` writes 110000.
+- While `qa_job_status` or `qa_test_this { waitForCompletion: true }` waits, a request that carries
+  a `progressToken` gets `notifications/progress` (at most one per second, only when the job's
+  progress line changes, with a strictly increasing `progress`). Clients that show progress or reset
+  their timeout on progress benefit; nothing is sent without a token.
 - `qa_wda build` runs as a job. `qa_wda start` waits at most 45 s, then returns
   `status: "starting"`; poll `qa_wait { for: "wda_ready" }` until WebDriverAgent is up.
 - `qa_ios { action: "boot" }` waits at most 40 s for an iOS Simulator. A slower cold boot returns
@@ -438,7 +498,11 @@ secrets.
 | The client lists fewer or different tools than `swipium verify`, or calls return `STALE_CLIENT` | The client is still running a server it started before the upgrade. Restart the client, or reload its MCP server list. |
 | `PROJECT_ROOT_UNRESOLVED` | Pass an absolute `projectRoot`, or set `SWIPIUM_PROJECT_ROOT` in the server `env` (needed on Claude Desktop and Windsurf). |
 | The server times out on first start (Codex, Gemini) | The first `npx` run downloads the package. Raise the startup timeout (Codex `startup_timeout_sec = 30`), or install globally and point the client at `swipium`. |
-| Long tool calls time out | Raise the client's tool timeout (Codex `tool_timeout_sec = 600`, Gemini `timeout: 600000`). For builds and runs, use `qa_test_this { mode: "execute" }` and poll `qa_job_status`. |
+| Long tool calls time out | Raise the client's tool timeout (Codex `tool_timeout_sec = 600`, Gemini `timeout: 600000`). For builds and runs, use `qa_test_this` and poll `qa_job_status`. If you set `SWIPIUM_MAX_WAIT_MS`, keep it below the client's tool timeout. |
+| Emulator won't start headless, or screenshots are black | The host has no usable GPU for `-gpu auto`. Set `SWIPIUM_EMULATOR_GPU=swiftshader_indirect` in the server `env`. |
+| An emulator boots with an old app or state | Swipium quick-boots from the AVD's snapshot, which restores its RAM and disk: the screen, apps and settings are those of the snapshot, and changes made in earlier Swipium runs are gone (Swipium reinstalls the app). Set `SWIPIUM_EMULATOR_COLD_BOOT=1` for a cold boot, or delete the AVD's snapshot in Android Studio so Swipium saves a fresh one. |
+| Screenshots are black and the emulator ignores `adb emu kill` | `SWIPIUM_EMULATOR_GPU=host` with a headless emulator (seen on macOS). Leave it unset (`auto` picks a software renderer when headless). |
+| Appium or Maestro report "UiAutomationService already registered" | `SWIPIUM_ANDROID_DUMPER=agent` holds the UiAutomation connection for up to 120 s after its last dump. Wait two minutes or unset the variable. |
 | `CONSENT_DECLINED` or `CONSENT_CANCELLED` with `likelyAutomatic: true` | A headless client (`codex exec`, `claude -p`) answered the prompt. See [Headless runs](#headless-runs). |
 | `adb` or `emulator` not found from a GUI client | Set `ANDROID_HOME` in the server `env`, or install the SDK in its default location. See [How Android tools are found](#how-android-tools-are-found). |
 | `INVALID_ARGUMENT` listing accepted parameters | Remove the undeclared argument. If the tool list looks outdated, restart the client. |

@@ -19,7 +19,7 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
 
 async function startFakeWda(
   opts: {
-    pointTap?: 'modern' | 'legacy' | 'modern-500';
+    pointTap?: 'modern' | 'missing' | 'modern-500';
     elementLookup?: 'ok' | 'not-found';
     focusPredicate?: 'modern' | 'none';
     clear?: 'ok' | 'error';
@@ -46,8 +46,9 @@ async function startFakeWda(
   }
   const server = createHttpServer(async (req, res) => {
     const method = req.method ?? 'GET';
-    const url = req.url ?? '/';
-    calls.push(`${method} ${url}`);
+    const rawUrl = req.url ?? '/';
+    calls.push(`${method} ${rawUrl}`);
+    const url = rawUrl.split('?')[0]; // routes ignore the query (/source?excluded_attributes=...)
     res.setHeader('content-type', 'application/json');
     if (url.startsWith('/session/stale-session/')) {
       await record(req, method, url);
@@ -114,13 +115,8 @@ async function startFakeWda(
       return;
     }
     if (method === 'POST' && url === '/session/wda-session-1/wda/tap') {
-      if (opts.pointTap === 'legacy') return fail(req, res, method, url, 404, 'unhandled endpoint');
+      if (opts.pointTap === 'missing') return fail(req, res, method, url, 404, 'unhandled endpoint');
       if (opts.pointTap === 'modern-500') return fail(req, res, method, url, 500, 'tap failed');
-      await record(req, method, url);
-      res.end(JSON.stringify({ value: null }));
-      return;
-    }
-    if (method === 'POST' && url === '/session/wda-session-1/wda/tap/0') {
       await record(req, method, url);
       res.end(JSON.stringify({ value: null }));
       return;
@@ -173,25 +169,21 @@ async function startFakeWda(
 }
 
 describe('WDA v1 compatibility fixes', () => {
-  it('uses modern point tap and falls back to legacy only for missing-route responses', async () => {
+  it('uses /wda/tap only (the pre-6.0 /wda/tap/0 fallback is gone)', async () => {
     const modern = await startFakeWda();
     try {
       await new WdaDriver(modern.url, { udid: 'SIM-1' }).tapXY(10, 20);
       expect(modern.calls).toContain('POST /session/wda-session-1/wda/tap');
-      expect(modern.calls).not.toContain('POST /session/wda-session-1/wda/tap/0');
     } finally {
       await modern.close();
     }
 
-    const legacy = await startFakeWda({ pointTap: 'legacy' });
+    const missing = await startFakeWda({ pointTap: 'missing' });
     try {
-      const driver = new WdaDriver(legacy.url, { udid: 'SIM-1' });
-      await driver.tapXY(10, 20);
-      await driver.tapXY(30, 40);
-      expect(legacy.calls.filter((c) => c === 'POST /session/wda-session-1/wda/tap')).toHaveLength(1);
-      expect(legacy.calls.filter((c) => c === 'POST /session/wda-session-1/wda/tap/0')).toHaveLength(2);
+      await expect(new WdaDriver(missing.url, { udid: 'SIM-1' }).tapXY(10, 20)).rejects.toThrow(/404/);
+      expect(missing.calls.filter((c) => c.includes('/wda/tap/0'))).toHaveLength(0);
     } finally {
-      await legacy.close();
+      await missing.close();
     }
   });
 
@@ -271,7 +263,7 @@ describe('WDA screen size via /window/size (SWIP-17)', () => {
     const fake = await startFakeWda({ windowSize: 'missing' });
     try {
       expect(await new WdaDriver(fake.url, { udid: 'SIM-1' }).screenSize()).toEqual({ width: 393, height: 852 });
-      expect(fake.calls).toContain('GET /session/wda-session-1/source');
+      expect(fake.calls).toContain('GET /session/wda-session-1/source?excluded_attributes=visible,accessible');
     } finally {
       await fake.close();
     }

@@ -21,8 +21,8 @@ export function registerSmoke(server: McpServer, sessions: SessionStore): void {
     {
       title: 'Run a smoke test',
       description:
-        'Server-side smoke: optionally launch, run the baseline (snapshot quality + health + evidence screenshot), then every ' +
-        'saved flow in .swipium/flows. Records a qa_note per workflow; call qa_report after. Needs a prepared device.',
+        'Run a smoke test server-side: optionally launch, run the baseline (snapshot quality + health + evidence screenshot), then ' +
+        'every saved flow in .swipium/flows. Records a qa_note per workflow; call qa_report after. Needs a prepared device.',
       inputSchema: {
         sessionId: z.string(),
         launch: z.boolean().optional().describe('Launch first (default true with an appId).'),

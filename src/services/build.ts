@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { run } from '../lib/spawn.js';
 import { log } from '../lib/logger.js';
 import { resolveArtifact, type ArtifactCandidate } from '../artifacts/resolve.js';
-import type { BuildPlan, BuildStep } from '../build/plan.js';
+import type { BuildPlan } from '../build/plan.js';
 import { analyzeBuildFailure } from '../build/parseBuildLog.js';
 import type { FailureCode, FailureOwner } from '../oracle/failures.js';
 import type { Session, SessionStore } from '../session/store.js';
@@ -30,11 +30,6 @@ export interface BuildExecResult {
   fix?: string;
   /** Which log signature matched (null when only the tool default applied). */
   signal?: string | null;
-}
-
-/** Most specific build-failure code for a failed step (log-aware classification). */
-export function failureForStep(step: BuildStep, timedOut: boolean, log = ''): FailureCode {
-  return analyzeBuildFailure({ step, log, timedOut }).failureCode;
 }
 
 export interface BuildExecCtx {

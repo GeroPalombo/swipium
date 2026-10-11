@@ -29,9 +29,9 @@ export function registerWait(server: McpServer, sessions: SessionStore): void {
     {
       title: 'Wait for a setup condition',
       description:
-        'Bounded wait for a setup condition instead of shell sleep: device_online (adb), metro_ready, wda_ready (after qa_wda ' +
-        'start returned status:"starting"), or simulator_booted (the bound iOS Simulator, after qa_ios boot returned ' +
-        'status:"booting"). Returns satisfied, or timedOut:true (call again). For jobs use qa_job_status waitMs.',
+        'Wait for a setup condition instead of shell sleep: device_online (adb), metro_ready, wda_ready (after qa_wda start returned ' +
+        'status:"starting"), or simulator_booted (the bound iOS Simulator, after qa_ios boot returned status:"booting"). Returns ' +
+        'satisfied, or timedOut:true (call again). Jobs: qa_job_status waitMs.',
       inputSchema: {
         sessionId: z.string(),
         for: z.enum(['device_online', 'metro_ready', 'wda_ready', 'simulator_booted']),

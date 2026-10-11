@@ -32,6 +32,9 @@ swipium report --format <junit|sarif|github-summary|markdown|json>
   `qa_test_this` run) saved for a session. Session state lives under
   `~/.swipium/runs/<project-hash>/<session>/`, so run the CLI on the same runner, as the same user,
   after the agent step, and from the same project root the agent used (or pass `--root`).
+- **`report.md`.** Since 2.3.0 every report also saves `report-<timestamp>-summary.md` next to
+  the JSON: the same summary text an agent reads (`reportMdUri`). The CLI renders from the JSON,
+  which is unchanged, so CI scripts need no change.
 - **`--latest`** is the default. It picks the newest session for `--root` (default: the current
   directory) that has a saved report, and skips sessions that never produced one.
 - **`--session <id>`** picks one session. **`--report <file>`** renders a report JSON you copied
@@ -107,7 +110,7 @@ jobs:
         with: { distribution: temurin, java-version: '17' }
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with: { node-version: '20' }
+        with: { node-version: '24' } # Swipium needs Node.js 22.12 or newer
 
       - name: Build debug APK
         run: ./gradlew assembleDebug

@@ -78,7 +78,7 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
     {
       title: 'Metro dev server (debug RN/Expo)',
       description:
-        'Metro bundler for debug RN/Expo builds: status, diagnose (adds RedBox/logcat evidence and fixes), start ' +
+        'Manage the Metro bundler for debug RN/Expo builds: status, diagnose (adds RedBox/logcat evidence and fixes), start ' +
         '(consent-gated: adb reverse + Metro), stop. After start, relaunch with qa_prepare_target.',
       inputSchema: {
         sessionId: z.string(),

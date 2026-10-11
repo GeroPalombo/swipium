@@ -5,7 +5,8 @@
 // `mcp add`), writing Codex's ~/.codex/config.toml (so the block carries cwd, timeouts and env_vars, which
 // `codex mcp add` cannot set), or merging a project file for Cursor (.cursor/mcp.json) and
 // VS Code (.vscode/mcp.json). After a successful apply it runs `verify` (the server starts +
-// tools inject).
+// tools inject). `claude` and `codex` also install the swipium-qa agent skill (src/skills/content.ts)
+// unless --no-skill; `claude --trust-local` pre-approves the consent actions that run no repo code.
 //
 // Portability: anything that lands in a TEAM-SHARED project file (`claude --scope project`,
 // gemini project scope, .cursor/.vscode) uses `npx -y swipium`, never this machine's absolute
@@ -23,7 +24,9 @@ import { dirname, resolve, join, delimiter } from 'node:path';
 import { runVerify } from './verify.js';
 import { initFlowTemplates } from '../flows/templates.js';
 import { codexEnvVarsLine } from '../lib/codexEnv.js';
-import { CAPABILITY_GROUPS } from '../core/capabilityGroups.js';
+import { codexCoreTools } from '../core/capabilityGroups.js';
+import { CONSENT_ACTIONS, CONSENT_ACTION_TIERS, PREAPPROVE_ENV } from '../consent/consent.js';
+import { SKILL_MD, SKILL_NAME } from '../skills/content.js';
 
 const SELF = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'index.js'); // dist/index.js
 
@@ -96,27 +99,9 @@ export function geminiBlock(node: string, cwd: string, self: string = SELF): str
   return `  "swipium": { "command": ${JSON.stringify(c.command)}, "args": ${JSON.stringify(c.args)}, "cwd": ${JSON.stringify(cwd)}, "timeout": 600000 }`;
 }
 
-/** Capability groups a lean Codex profile keeps (shown commented out; no filter by default). */
-export const CODEX_CORE_GROUPS = ['start', 'setup', 'build', 'drive', 'run'] as const;
-
-/** Tools outside the core groups that the server instructions, qa_status orientation or
- *  nextBestAction point to: a lean profile must still expose them (test/cliInit.test.ts). */
-export const CODEX_CORE_EXTRA_TOOLS = [
-  'qa_metro',
-  'qa_app_control',
-  'qa_app_map_read',
-  'qa_app_map_query',
-  'qa_app_map_feature_scope',
-  'qa_test_feature',
-  'qa_flow_run',
-  'qa_generate',
-] as const;
-
-/** Tool names in the core groups (+ the extras above), for the optional `enabled_tools` comment line. */
-export function codexCoreTools(): string[] {
-  const core = CAPABILITY_GROUPS.filter((g) => (CODEX_CORE_GROUPS as readonly string[]).includes(g.group)).flatMap((g) => g.tools);
-  return [...core, ...CODEX_CORE_EXTRA_TOOLS.filter((t) => !core.includes(t))];
-}
+// The core tool set (also SWIPIUM_TOOLS=core in src/server.ts) lives with the capability groups,
+// so the server does not load this CLI module (and the MCP client SDK it pulls in) at startup.
+export { CODEX_CORE_GROUPS, CODEX_CORE_EXTRA_TOOLS, codexCoreTools } from '../core/capabilityGroups.js';
 
 const CODEX_BLOCK_HEADER = /^[ \t]*\[mcp_servers\.(?:"swipium"|swipium)\][ \t]*(?:#.*)?$/m;
 
@@ -159,10 +144,62 @@ export function codexBlock(node: string, cwd: string, self: string = SELF): stri
   ].join('\n');
 }
 
-/** `claude mcp add` argv. Project scope writes the team-shared .mcp.json, so the command is portable. */
-export function claudeAddArgs(scope: string, node: string = process.execPath, self: string = SELF): string[] {
+/** `claude mcp add` argv. Project scope writes the team-shared .mcp.json, so the command is portable.
+ *  `env` becomes `-e NAME=value` flags (before `--`, so they are claude's, not the server's). */
+export function claudeAddArgs(
+  scope: string,
+  node: string = process.execPath,
+  self: string = SELF,
+  env: Record<string, string> = {},
+): string[] {
   const c = serverCommand(scope === 'project', node, self);
-  return ['mcp', 'add', 'swipium', ...(scope !== 'local' ? ['--scope', scope] : []), '--', c.command, ...c.args];
+  const envFlags = Object.entries(env).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
+  return ['mcp', 'add', 'swipium', ...(scope !== 'local' ? ['--scope', scope] : []), ...envFlags, '--', c.command, ...c.args];
+}
+
+/** Claude Code waits far longer than 60 s on a tool call, so qa_test_this waitForCompletion and
+ *  qa_job_status waitMs may block up to 110 s there (the server default stays 50 s for clients
+ *  with a 60 s tool timeout, e.g. Codex). */
+export const CLAUDE_MAX_WAIT_MS = '110000';
+
+/** Not pre-approved by --trust-local although it runs no code: it taps a destructive control the
+ *  agent picked in the app (delete, pay, send), which acts on the app's backend, not just this machine. */
+const TRUST_LOCAL_EXCLUDED: ReadonlySet<string> = new Set(['destructive_ui_candidate']);
+
+/** Consent actions `--trust-local` pre-approves: every action that runs no repo- or model-chosen
+ *  code and is pre-approvable by name (src/consent/consent.ts tiers), except destructive UI taps.
+ *  Builds, Metro, WDA, seed scripts, OCR commands and destructive UI candidates keep prompting. */
+export function trustLocalActions(): string[] {
+  return CONSENT_ACTIONS.filter(
+    (a) => !CONSENT_ACTION_TIERS[a].runsCode && !CONSENT_ACTION_TIERS[a].notPreapprovable && !TRUST_LOCAL_EXCLUDED.has(a),
+  );
+}
+
+/** Env for the Claude Code registration. The pre-approval only ever goes to a machine-local scope
+ *  (runInit refuses --trust-local with --scope project, which writes the team-shared .mcp.json). */
+export function claudeEnv(trustLocal: boolean): Record<string, string> {
+  return { SWIPIUM_MAX_WAIT_MS: CLAUDE_MAX_WAIT_MS, ...(trustLocal ? { [PREAPPROVE_ENV]: trustLocalActions().join(',') } : {}) };
+}
+
+/** Where `init claude|codex` installs the skill: Claude user scope > ~/.claude/skills (or
+ *  $CLAUDE_CONFIG_DIR/skills), other Claude scopes > <cwd>/.claude/skills, Codex > <cwd>/.agents/skills. */
+export function skillPath(client: 'claude' | 'codex', scope: string, cwd: string): string {
+  const base =
+    client === 'codex'
+      ? join(cwd, '.agents', 'skills')
+      : scope === 'user'
+        ? join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'skills')
+        : join(cwd, '.claude', 'skills');
+  return join(base, SKILL_NAME, 'SKILL.md');
+}
+
+/** Write SKILL.md (ours: replaced when it differs). */
+export function installSkill(file: string): 'created' | 'updated' | 'unchanged' {
+  const cur = existsSync(file) ? readFileSync(file, 'utf8') : null;
+  if (cur === SKILL_MD) return 'unchanged';
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, SKILL_MD);
+  return cur === null ? 'created' : 'updated';
 }
 
 /** `gemini mcp add` argv. Gemini's default scope is project (.gemini/settings.json), so it's portable. */
@@ -245,6 +282,7 @@ const CWD_NOTE = '(cwd should be your mobile app repo: run init from it, or pass
 
 export const INIT_USAGE =
   'Usage: swipium init <claude|codex|gemini|cursor|vscode> [--apply] [--scope local|user|project] [--cwd <dir>]\n' +
+  '       swipium init claude [--trust-local] [--no-skill]   (claude/codex install the swipium-qa skill unless --no-skill)\n' +
   '       swipium init flows [--root <dir>] [--force]\n' +
   'Without --apply, prints the exact registration and changes nothing.\n';
 
@@ -290,6 +328,8 @@ export async function runInit(args: string[]): Promise<void> {
   const scopeIdx = args.indexOf('--scope');
   const scope = scopeIdx >= 0 ? (args[scopeIdx + 1] ?? 'local') : 'local';
   const node = stableNodePath();
+  const trustLocal = args.includes('--trust-local');
+  const withSkill = !args.includes('--no-skill');
 
   if (client === 'flows') {
     const rootIdx = args.indexOf('--root');
@@ -322,7 +362,35 @@ export async function runInit(args: string[]): Promise<void> {
     return;
   }
 
+  if (trustLocal && (client !== 'claude' || scope === 'project')) {
+    process.stdout.write(
+      client !== 'claude'
+        ? `--trust-local is only supported for init claude. For ${client}, set ${PREAPPROVE_ENV} in the server env yourself.\n`
+        : `Refusing --trust-local with --scope project: that writes the team-shared .mcp.json. Use --scope local or user.\n`,
+    );
+    process.exitCode = 2;
+    return;
+  }
+
   const cwd = resolveTargetCwd(args);
+  /** Preview line, or (apply) the install result for the swipium-qa skill. */
+  const skillStep = (target: 'claude' | 'codex'): void => {
+    if (!withSkill) return;
+    const file = skillPath(target, scope, cwd);
+    if (!apply) {
+      process.stdout.write(`Skill: --apply also installs the ${SKILL_NAME} agent skill to ${file} (skip with --no-skill).\n`);
+      return;
+    }
+    if ((target === 'codex' || scope !== 'user') && !isDir(cwd)) {
+      process.stdout.write(`Skill not installed: ${cwd} does not exist.\n`);
+      return;
+    }
+    try {
+      process.stdout.write(`Skill ${SKILL_NAME}: ${installSkill(file)} ${file}\n`);
+    } catch (e) {
+      process.stdout.write(`Skill not installed (${(e as Error).message}).\n`);
+    }
+  };
   const refuseMissingCwd = (): boolean => {
     if (isDir(cwd)) return false;
     process.stdout.write(`Refusing to apply: cwd ${cwd} does not exist. Run init from your mobile app repo or pass --cwd <dir>.\n`);
@@ -331,8 +399,14 @@ export async function runInit(args: string[]): Promise<void> {
   };
 
   if (client === 'claude') {
-    const cmd = claudeAddArgs(scope, node);
-    const shared = scope === 'project' ? '\n(project scope writes .mcp.json for your team, so it uses the portable `npx -y swipium`.)' : '';
+    const cmd = claudeAddArgs(scope, node, SELF, claudeEnv(trustLocal));
+    const shared =
+      (scope === 'project' ? '\n(project scope writes .mcp.json for your team, so it uses the portable `npx -y swipium`.)' : '') +
+      `\nSWIPIUM_MAX_WAIT_MS=${CLAUDE_MAX_WAIT_MS} lets one qa_test_this {waitForCompletion:true} / qa_job_status call block up to 110 s.` +
+      (trustLocal
+        ? `\n--trust-local pre-approves (machine-local ${scope} scope only): ${trustLocalActions().join(', ')}.\n` +
+          'Builds, Metro, WebDriverAgent, seed scripts, OCR commands and destructive UI taps still ask.'
+        : '');
     if (apply) {
       const r = spawnSync('claude', cmd, { stdio: 'inherit', cwd: isDir(cwd) ? cwd : undefined });
       if (!applyOk(r)) {
@@ -344,6 +418,7 @@ export async function runInit(args: string[]): Promise<void> {
     } else {
       process.stdout.write(`Preview (run with --apply to execute):\n  claude ${cmd.join(' ')}${shared}\n`);
     }
+    skillStep('claude');
   } else if (client === 'gemini') {
     const cmd = geminiAddArgs(scope, node);
     const manual =
@@ -390,12 +465,14 @@ export async function runInit(args: string[]): Promise<void> {
         appendFileSync(cfg, `\n${block}\n`);
         process.stdout.write(`Appended to ${cfg}\n`);
       }
+      skillStep('codex');
       process.stdout.write(caveat + 'Server-side self-check:\n');
       await runVerify();
     } else {
       process.stdout.write(
         `Preview (run with --apply to append to ${cfg}):\n${block}\n${CWD_NOTE}\nor register with the Codex CLI:\n${alt}\n${caveat}`,
       );
+      skillStep('codex');
     }
   } else if (client === 'cursor' || client === 'vscode') {
     const isCursor = client === 'cursor';

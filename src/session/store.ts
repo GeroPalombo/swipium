@@ -13,6 +13,7 @@ import { extname, join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import type { Driver } from '../drivers/Driver.js';
 import type { RawNode } from '../snapshot/parse.js';
+import type { FailureCode } from '../oracle/failures.js'; // type-only: no runtime cycle
 import type { ResponseMode } from '../lib/result.js';
 import { DEFAULT_RESPONSE_MODE } from '../lib/result.js';
 import { makeRedactor, redactDeep, redactStructuredText, structuredKindOf, type Redactor } from '../lib/redact.js';
@@ -106,7 +107,7 @@ export interface FindingRecord {
   evidence?: string; // the visible on-screen text that matched
   screen?: string; // source screen (foreground owner) when the finding fired
   screenshotUri?: string; // evidence screenshot, when captured
-  failureCode?: string; // typed failure class; else derived from kind in qa_report
+  failureCode?: FailureCode; // typed failure class; else derived from kind in qa_report
 }
 
 // Phase 2.2: a structured test outcome the agent records via qa_note. It distinguishes a real
@@ -187,7 +188,7 @@ export interface RecordedAction {
 export interface ToolErrorRecord {
   at: number;
   tool: string;
-  failureCode: string;
+  failureCode: string; // as the result carried it (may be UNKNOWN / uncoded), not narrowed to FailureCode
   message: string;
 }
 
@@ -337,6 +338,8 @@ export interface LastSnapshot {
   fullByRef: Map<string, RawNode>;
   signatures: Set<string>;
   allNodes: RawNode[]; // full tree for overlay/obstruction checks (not persisted)
+  at?: number; // capture time (ms)
+  actionSeq?: number; // action counter at capture (snapshot/fresh.ts)
 }
 
 export type SessionMode = 'structured' | 'visual-fallback';
@@ -446,6 +449,8 @@ export interface CreateSessionOptions {
 
 const REGISTRY_DIR = join(homedir(), '.swipium');
 const REGISTRY = join(REGISTRY_DIR, 'registry.json');
+/** state.json keeps at most this many artifacts / findings / notes (the newest). */
+export const STATE_LIST_CAP = 500;
 
 const TEXT_MIME_RE = /^(text\/[^;]+|application\/(json|xml|yaml|x-yaml|javascript|x-ndjson)|[^;]+\+(json|xml|yaml))(?:$|;)/i;
 
@@ -691,9 +696,11 @@ export class SessionStore {
         budget: s.budget,
         counters: s.counters,
         jobs: safe.jobs,
-        artifacts: s.artifacts,
-        findings: safe.findings,
-        notes: safe.notes,
+        // Long runs: only the newest STATE_LIST_CAP of each list is written; `counts` keeps the totals.
+        artifacts: s.artifacts.slice(-STATE_LIST_CAP),
+        findings: safe.findings.slice(-STATE_LIST_CAP),
+        notes: safe.notes.slice(-STATE_LIST_CAP),
+        counts: { artifacts: s.artifacts.length, findings: safe.findings.length, notes: safe.notes.length },
         mutations: safe.mutations,
         recordedActions: safe.recordedActions,
         toolErrors: safe.toolErrors,
@@ -707,7 +714,7 @@ export class SessionStore {
       };
       // Atomic write (tmp + rename) so a crash mid-write never leaves a truncated state.json.
       const target = join(s.dir, 'state.json');
-      writeFileAtomicSync(target, JSON.stringify(state, null, 2));
+      writeFileAtomicSync(target, JSON.stringify(state)); // compact: rewritten on every persist
       restrictFile(target); // owner-only: state.json carries run history / paths
     } catch (e) {
       // A silent failure here means session state (jobs/artifacts/findings) is lost on restart.
@@ -1083,7 +1090,7 @@ export class SessionStore {
           }
         }
         reg.push({ id, dir });
-        writeFileAtomicSync(REGISTRY, JSON.stringify(reg.slice(-200), null, 2)); // atomic on the same filesystem
+        writeFileAtomicSync(REGISTRY, JSON.stringify(reg.slice(-200))); // atomic on the same filesystem
       });
     } catch (e) {
       log('error', 'failed to append session to registry; it will not be reloadable after a restart', { id, dir, err: String(e) });

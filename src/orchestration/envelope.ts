@@ -86,7 +86,7 @@ export function typedBlockerFromCode(code: string, override?: Partial<TypedBlock
       retrySafe: true,
       canSwipiumFix: false,
       whatItMeans: 'Unrecognized failure code.',
-      howToFix: 'Inspect the run report; call qa_explain_blocker for guidance.',
+      howToFix: 'Read the run report (report.md) for the surfaced reason and fix it, then re-run.',
       ...override,
     };
   }

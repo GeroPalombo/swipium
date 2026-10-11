@@ -1,6 +1,8 @@
 // Shared automation contract. Android adb, iOS simctl, and WDA-backed drivers plug in behind
 // this interface so tool code can stay backend-neutral.
 
+import type { PixelFingerprint } from '../lib/screenFingerprint.js';
+
 export interface SnapshotElement {
   ref: string; // @e1, @e2 …
   role: string; // class / inferred role
@@ -67,6 +69,9 @@ export interface Driver {
   foregroundOwner(): Promise<string>;
 
   screenshot(): Promise<Buffer>;
+  /** Cheap sampled pixel fingerprint of the current screen (X1 liveness check, lib/screenFingerprint.ts).
+   *  Optional: backends without it (iOS, whose /source is already fast) always re-dump. */
+  pixelFingerprint?(): Promise<PixelFingerprint | undefined>;
   /** Raw uiautomator XML (parsing into @eN refs happens in the snapshot module, M3). */
   dumpXml(opts?: DumpOptions): Promise<string>;
 
@@ -95,8 +100,9 @@ export interface Driver {
   swipe(x1: number, y1: number, x2: number, y2: number, ms?: number): Promise<void>;
   /** `adb reverse tcp:8081 tcp:8081` so a debug RN/Expo build can reach Metro. */
   adbReverseMetro(port?: number): Promise<void>;
-  /** Physical screen size in px (from `wm size`). */
-  screenSize(): Promise<{ width: number; height: number } | null>;
+  /** Physical screen size in px (from `wm size`). knownPx: pixel dims of a screenshot just taken,
+   *  so a driver that sizes from a screenshot (SimctlDriver) need not take another; others ignore it. */
+  screenSize(knownPx?: { width: number; height: number } | null): Promise<{ width: number; height: number } | null>;
   /** Screen density in dpi (from `wm density`). */
   screenDensity(): Promise<number | null>;
   openUrl(url: string): Promise<void>;

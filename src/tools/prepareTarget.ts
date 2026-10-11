@@ -22,6 +22,8 @@ import { prepareAndroid } from '../services/prepareAndroid.js';
 import { planTarget } from '../core/targetPlan.js';
 import type { Session, SessionStore, JobRecord } from '../session/store.js';
 import { runWithSignal } from '../lib/abortScope.js';
+import { waitForLaunch } from '../lib/launchWait.js';
+import { noteScreenMutation } from '../snapshot/fresh.js';
 
 /** RN/Expo debug builds load JS from Metro; launching before Metro is SERVING > RedBox. */
 function needsMetro(root: string): boolean {
@@ -35,8 +37,8 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
     {
       title: 'Prepare a target device + app',
       description:
-        'Prepare an Android Emulator: bind or boot the device, Metro + adb reverse for RN/Expo, install, launch, verify. One ' +
-        'combined consent covers boot/install; long steps return a jobId. bindOnly stops after bind/boot.',
+        'Prepare an Android Emulator and the app under test: bind or boot the device, Metro + adb reverse for RN/Expo, install, ' +
+        'launch, verify. One combined consent covers boot/install; long steps return a jobId. bindOnly stops after bind/boot.',
       inputSchema: {
         sessionId: z.string(),
         apk: z.string().optional(),
@@ -274,8 +276,8 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
             sessions.addEnvChange(session, 'OVERRIDE allowLaunchWithoutMetro: launched without confirmed Metro readiness');
           sessions.milestone(session, 'app_launch_start');
           await driver.launchApp(resolvedAppId!);
-          await new Promise((r) => setTimeout(r, 2500));
-          const foreground = await driver.foregroundOwner();
+          noteScreenMutation(session); // a snapshot taken before the launch is stale
+          const foreground = await waitForLaunch(driver, resolvedAppId!);
           sessions.milestone(session, 'app_launch_end');
           session.appId = resolvedAppId;
           sessions.persist(session);

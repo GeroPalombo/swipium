@@ -70,10 +70,9 @@ export function registerExplore(server: McpServer, sessions: SessionStore): void
     {
       title: 'Guided exploration',
       description:
-        'Bounded, safe exploration of the prepared app as a job (poll qa_job_status): taps ranked safe actions, checks ' +
-        'health, builds a screen graph, updates the app map, and records taps for qa_generate. Destructive actions ' +
-        '(delete/pay/send/logout) are skipped unless one candidate is approved; an auth wall without credentials returns ' +
-        'needs_input.',
+        'Explore the prepared app automatically as a job (poll qa_job_status): taps ranked safe actions, checks health, builds a ' +
+        'screen graph, updates the app map, and records taps for qa_generate. Destructive actions (delete/pay/send/logout) are skipped ' +
+        'unless one candidate is approved; an auth wall without credentials returns needs_input.',
       inputSchema: {
         sessionId: z.string(),
         goal: z.string().optional().describe('Focus, e.g. "exercise the main tabs".'),

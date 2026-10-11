@@ -11,6 +11,7 @@ import { detectTreeOverlays, classifyForeground, obstructionAt } from '../snapsh
 import type { Driver } from '../drivers/Driver.js';
 import { classifyFlowDriverError } from '../flows/run.js';
 import type { SessionStore } from '../session/store.js';
+import { noteScreenMutation } from '../snapshot/fresh.js';
 
 const STRATEGIES = [
   'auto',
@@ -207,6 +208,7 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
             break;
         }
       } catch (e) {
+        noteScreenMutation(session); // the strategy may have partly run (changedState:true)
         const msg = String((e as Error)?.message ?? e);
         return qaError({
           what: `clear_overlay "${strategy}" failed: ${msg}`,
@@ -235,6 +237,7 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
         );
       }
 
+      if (cleared.length) noteScreenMutation(session); // a < 2 s snapshot no longer describes the screen
       await new Promise((r) => setTimeout(r, 500));
       const after = (await obstructionFor()).obstructed;
       let parsedAfter: ReturnType<typeof parseSnapshot> | undefined;

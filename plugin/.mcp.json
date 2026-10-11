@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "swipium": {
+      "command": "npx",
+      "args": ["-y", "swipium"],
+      "env": {
+        "SWIPIUM_MAX_WAIT_MS": "110000"
+      }
+    }
+  }
+}

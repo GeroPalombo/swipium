@@ -24,6 +24,7 @@ import type { McpServer, CallToolResult } from '@modelcontextprotocol/server';
 import { qaOk, qaError, qaStop, unknownSessionError } from '../lib/result.js';
 import { isSecureNode, makeRedactor, type Redactor } from '../lib/redact.js';
 import { parseSnapshot } from '../snapshot/parse.js';
+import { freshSnapshot } from '../snapshot/fresh.js';
 import { displayArgv } from '../lib/commandTemplate.js';
 import { GitScopeForbiddenError, run } from '../lib/spawn.js';
 import { which } from '../lib/android.js';
@@ -52,7 +53,7 @@ import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import { recordableTap } from '../flows/generate.js';
 import type { Driver } from '../drivers/Driver.js';
-import type { LastSnapshot, Session, SessionStore } from '../session/store.js';
+import type { Session, SessionStore } from '../session/store.js';
 
 export const VISUAL_MODES = ['assert', 'baseline', 'diff', 'find_text', 'find_image'] as const;
 export type VisualMode = (typeof VISUAL_MODES)[number];
@@ -123,16 +124,14 @@ export function resolveTemplatePath(
 // ---------------------------------------------------------------------------------------------
 // B8: secure-screen detection.
 
-/** Snapshots taken BEFORE a qa_visual tap describe a screen that may no longer be showing. */
-const staleSnapshots = new WeakSet<LastSnapshot>();
-
 export type SecureScreenState = 'secure' | 'clear' | 'unknown';
 
 /** secure/clear from a FRESH UI tree; unknown when there is none (WDA-less simulator, no
- * qa_snapshot yet) or it predates a visual tap. */
+ * qa_snapshot yet) or it predates any action or screen change since (a visual tap, qa_app_control,
+ * qa_clear_overlay, ...: the shared freshness rule in snapshot/fresh.ts, without an age limit). */
 export function secureScreenState(session: Session): SecureScreenState {
-  const snap = session.lastSnapshot;
-  if (!snap || staleSnapshots.has(snap)) return 'unknown';
+  const snap = freshSnapshot(session, Number.POSITIVE_INFINITY);
+  if (!snap) return 'unknown';
   return [...snap.fullByRef.values()].some((n) => isSecureNode(n)) ? 'secure' : 'clear';
 }
 
@@ -141,7 +140,7 @@ export function secureScreenState(session: Session): SecureScreenState {
  * qa_visual call into an "unverified" one there. The fresh dump only informs the secure gate:
  * session.lastSnapshot (the agent's @ref numbering) is left untouched. WDA-less simulators
  * cannot dump a tree, so they stay 'unknown'. */
-async function refreshSecureState(session: Session, driver: Driver): Promise<SecureScreenState> {
+export async function refreshSecureState(session: Session, driver: Driver): Promise<SecureScreenState> {
   const cached = secureScreenState(session);
   if (cached !== 'unknown' || driver.kind === 'simulator') return cached;
   try {
@@ -287,8 +286,7 @@ async function tapAndRecord(
   const { sessions, session, driver } = ctx;
   const tapped = await tapFoundPoint(driver, devicePoint, payload);
   if ('error' in tapped) return tapped.error;
-  sessions.bump(session, 'actions');
-  if (session.lastSnapshot) staleSnapshots.add(session.lastSnapshot);
+  sessions.bump(session, 'actions'); // also makes the stored snapshot stale (secureScreenState)
   const point = { x: devicePoint.x, y: devicePoint.y, via: 'coords' };
   const rec = recordableTap(session, { x: devicePoint.x, y: devicePoint.y }, point);
   sessions.addRecordedAction(session, {

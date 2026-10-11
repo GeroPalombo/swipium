@@ -24,7 +24,10 @@ describe('SERVER_INSTRUCTIONS budget', () => {
       'qa_continue_from_blocker',
       'requiresConsent',
       'approve:true',
-      'qa_explain_blocker',
+      'waitForCompletion:true',
+      'report.md',
+      'flowYaml',
+      'SWIPIUM_TEST_EMAIL',
       'SWIPIUM_PROJECT_ROOT',
       'PROJECT_ROOT_UNRESOLVED',
       'INVALID_ARGUMENT',
@@ -40,5 +43,11 @@ describe('SERVER_INSTRUCTIONS budget', () => {
     expect(MAX_JOB_WAIT_MS).toBeLessThan(60_000);
     expect(orientation().polling.args.waitMs).toBe(RECOMMENDED_JOB_WAIT_MS);
     expect(SERVER_INSTRUCTIONS).not.toMatch(/waitMs:\s*60000/);
+  });
+
+  it('2.3.0 guidance: execute is the default, blockers carry their fix, no app-map-first detour', () => {
+    expect(SERVER_INSTRUCTIONS).not.toContain('qa_explain_blocker');
+    expect(SERVER_INSTRUCTIONS).not.toContain('qa_app_map_read, then qa_test_feature');
+    expect(SERVER_INSTRUCTIONS.slice(0, 512)).toContain('qa_test_this {waitForCompletion:true}');
   });
 });

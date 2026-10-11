@@ -26,9 +26,7 @@ describe('renderElementLine', () => {
     expect(renderElementLine(el({ role: 'text-field', label: 'Email', focused: true }))).toBe(
       '@e1 [text-field] "Email" [40,200][1040,245] (focused)',
     );
-    expect(renderElementLine(el({ role: 'text', text: 'Hi', clickable: false, bounds: [0, 0, 0, 0] }))).toBe(
-      '@e1 [text] "Hi" (non-clickable)',
-    );
+    expect(renderElementLine(el({ role: 'text', text: 'Hi', clickable: false, bounds: [0, 0, 0, 0] }))).toBe('@e1 [text] "Hi" -');
     expect(renderElementLine(el({ role: 'text-field', label: '«secure»', text: '«secure»', secure: true }))).toBe(
       '@e1 [text-field] "«secure»" [40,200][1040,245] (secure)',
     );
@@ -39,7 +37,7 @@ describe('renderElementLine', () => {
       '@e1 [button] "Cart" #"Cart Button" text="3 items" [40,200][1040,245]',
     );
     expect(renderElementLine(el({ label: 'Same', text: 'Same' }))).not.toContain('text=');
-    expect(renderElementLine(el({}))).toBe('@e1 [button] "" [40,200][1040,245]');
+    expect(renderElementLine(el({}))).toBe('@e1 [button] [40,200][1040,245]');
   });
 
   it('escapes quotes, backslashes and newlines, and caps long labels', () => {
@@ -68,6 +66,10 @@ describe('renderElementLine', () => {
       secure: false,
     });
     expect(parseElementLine('not a line')).toBeUndefined();
+    // K4: no name, focused + not clickable (trailing " -")
+    const bare = el({ ref: '@e2', id: 'x', focused: true, clickable: false });
+    expect(renderElementLine(bare)).toBe('@e2 [button] #x [40,200][1040,245] (focused) -');
+    expect(parseElementLine(renderElementLine(bare))).toMatchObject({ ref: '@e2', name: '', id: 'x', clickable: false, focused: true });
   });
 });
 

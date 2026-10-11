@@ -9,6 +9,7 @@ import { run, runBinary } from '../lib/spawn.js';
 import { currentSignal, isAbortError, sleepOrCancel } from '../lib/abortScope.js';
 import { adbDevices } from '../lib/android.js';
 import type { DumpOptions, Driver, ImeState, TextDeliverability } from './Driver.js';
+import { fingerprintRawScreencap, type PixelFingerprint } from '../lib/screenFingerprint.js';
 
 /** Characters the device-side /system/bin/sh (mksh) treats specially; each gets a backslash.
  * Includes brace/glob expansion (`{a,b}` > `a b`, `[s]dcard` > `sdcard`). Backslash itself is
@@ -201,6 +202,7 @@ export class DirectDriver implements Driver {
     this.serial = serial;
     this.sizeCache = undefined;
     this.dumpScreen = undefined;
+    this.densityCache = undefined;
   }
 
   currentDevice(): string | undefined {
@@ -289,19 +291,56 @@ export class DirectDriver implements Driver {
     await this.adb(['shell', 'cmd', 'connectivity', 'airplane-mode', on ? 'enable' : 'disable']);
   }
 
-  async launchApp(pkg: string): Promise<void> {
-    // monkey is the simplest reliable launcher when we don't know the main activity.
-    await this.adb(['shell', 'monkey', '-p', shellAppId(pkg), '-c', 'android.intent.category.LAUNCHER', '1']);
-  }
-
-  async launchAppWithArgs(pkg: string, args: Record<string, unknown>): Promise<void> {
+  /** The package's launcher activity (`pkg/.Main`) via `cmd package resolve-activity`, or null. */
+  private async resolveLaunchComponent(pkg: string): Promise<string | null> {
     const resolved = await this.adb(['shell', 'cmd', 'package', 'resolve-activity', '--brief', shellAppId(pkg)], { timeoutMs: 8000 });
     const component = resolved.stdout
       .split(/\r?\n/)
       .map((l) => l.trim())
       .filter(Boolean)
       .at(-1);
-    if (!component || !component.includes('/')) throw new Error(`Could not resolve launch activity for ${pkg}`);
+    return component && component.includes('/') ? component : null;
+  }
+
+  async launchApp(pkg: string): Promise<void> {
+    // `am start -W` with the resolved launcher activity returns once the activity is drawn, so
+    // callers poll the foreground briefly instead of sleeping. Same intent shape as a launcher tap
+    // (MAIN/LAUNCHER, NEW_TASK|RESET_TASK_IF_NEEDED): a running app's task is brought forward,
+    // not restarted. monkey stays the fallback when resolution or `am start` fails.
+    const component = await this.resolveLaunchComponent(pkg).catch((e) => {
+      if (isAbortError(e)) throw e;
+      return null;
+    });
+    if (component) {
+      try {
+        const r = await this.adb(
+          [
+            'shell',
+            'am',
+            'start',
+            '-W',
+            '-a',
+            'android.intent.action.MAIN',
+            '-c',
+            'android.intent.category.LAUNCHER',
+            '-f',
+            '0x10200000',
+            '-n',
+            deviceShellQuote(component),
+          ],
+          { timeoutMs: 30000 },
+        );
+        if (!/^Error/m.test(r.stdout)) return;
+      } catch (e) {
+        if (isAbortError(e)) throw e;
+      }
+    }
+    await this.adb(['shell', 'monkey', '-p', shellAppId(pkg), '-c', 'android.intent.category.LAUNCHER', '1']);
+  }
+
+  async launchAppWithArgs(pkg: string, args: Record<string, unknown>): Promise<void> {
+    const component = await this.resolveLaunchComponent(pkg);
+    if (!component) throw new Error(`Could not resolve launch activity for ${pkg}`);
     const extras: string[] = [];
     for (const [key, value] of Object.entries(args)) {
       // `adb shell` space-joins argv into ONE string the device sh re-parses: every
@@ -320,7 +359,12 @@ export class DirectDriver implements Driver {
 
   async foregroundOwner(): Promise<string> {
     // Parse the currently focused window/activity. Works across recent Android versions.
-    const r = await this.adb(['shell', 'dumpsys', 'activity', 'activities']);
+    // Filtered on the device: the full dump is tens of KB and only these lines are parsed.
+    // `|| true`: grep exits 1 on no match, which must read as 'unknown', not an adb failure.
+    const r = await this.adb([
+      'shell',
+      "dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity|mCurrentFocus' || true",
+    ]);
     const m = r.stdout.match(/mResumedActivity:.*\{[^}]*\s([^\s/]+\/[^\s}]+)/) || r.stdout.match(/mCurrentFocus=.*\s([^\s/]+\/[^\s}]+)/);
     return m?.[1] ?? 'unknown';
   }
@@ -335,6 +379,16 @@ export class DirectDriver implements Driver {
     return r.stdout;
   }
 
+  /** Raw `screencap` (no PNG encode, ~120 ms on an emulator) sampled into a small fingerprint. */
+  async pixelFingerprint(): Promise<PixelFingerprint | undefined> {
+    const r = await runBinary('adb', [...this.base(), 'exec-out', 'screencap'], {
+      timeoutMs: 5000,
+      signal: currentSignal(),
+      rejectOnNonZero: true,
+    });
+    return fingerprintRawScreencap(r.stdout);
+  }
+
   async dumpXml(opts: DumpOptions = {}): Promise<string> {
     // mobile-mcp's proven recipe: exec-out to stdout, retry on the transient
     // "could not get hierarchy" / null-root, strip warning lines before <?xml.
@@ -343,6 +397,22 @@ export class DirectDriver implements Driver {
     // deadline (settle) pass opts.timeoutMs (TOTAL budget, retries included) + fewer attempts.
     const ATTEMPTS = Math.max(1, opts.attempts ?? 5);
     const deadline = opts.timeoutMs ? Date.now() + opts.timeoutMs : undefined;
+    // Opt-in (SWIPIUM_ANDROID_DUMPER=agent): persistent on-device dumper, ~7x faster. Any
+    // failure stops it (it holds the UiAutomation slot exec-out needs) and falls through.
+    if (process.env.SWIPIUM_ANDROID_DUMPER) {
+      const agent = await import('./androidDumper.js');
+      if (agent.androidDumperUsable(this.serial)) {
+        try {
+          const xml = await agent.agentDump(this.serial, opts.timeoutMs ? Math.min(opts.timeoutMs, 10000) : 10000);
+          currentSignal()?.throwIfAborted();
+          this.noteDump(xml);
+          return xml;
+        } catch (e) {
+          if (isAbortError(e)) throw e;
+          await agent.noteAndroidDumperFailure(this.serial, e);
+        }
+      }
+    }
     let lastErr = '';
     let attempt = 0;
     for (; attempt < ATTEMPTS; attempt++) {
@@ -505,11 +575,18 @@ export class DirectDriver implements Driver {
     return true;
   }
 
+  /** Density cached per bound device (dropped on useDevice); failures are never cached. */
+  private densityCache?: { serial?: string; density: number };
+
   async screenDensity(): Promise<number | null> {
+    const c = this.densityCache;
+    if (c && c.serial === this.serial) return c.density;
     try {
       const r = await this.adb(['shell', 'wm', 'density']);
       const m = r.stdout.match(/Override density:\s*(\d+)/) ?? r.stdout.match(/Physical density:\s*(\d+)/);
-      return m ? Number(m[1]) : null;
+      if (!m) return null;
+      this.densityCache = { serial: this.serial, density: Number(m[1]) };
+      return this.densityCache.density;
     } catch {
       return null;
     }

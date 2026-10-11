@@ -96,3 +96,26 @@ export const CAPABILITY_GROUPS: CapabilityGroup[] = [
     tools: ['qa_first_run'],
   },
 ];
+
+/** Capability groups a lean Codex profile keeps (`swipium init codex` shows it commented out;
+ *  SWIPIUM_TOOLS=core lists only these). */
+export const CODEX_CORE_GROUPS = ['start', 'setup', 'build', 'drive', 'run'] as const;
+
+/** Tools outside the core groups that the server instructions, qa_status orientation or
+ *  nextBestAction point to: a lean profile must still expose them (test/cliInit.test.ts). */
+export const CODEX_CORE_EXTRA_TOOLS = [
+  'qa_metro',
+  'qa_app_control',
+  'qa_app_map_read',
+  'qa_app_map_query',
+  'qa_app_map_feature_scope',
+  'qa_test_feature',
+  'qa_flow_run',
+  'qa_generate',
+] as const;
+
+/** Tool names in the core groups (+ the extras above), for the optional `enabled_tools` comment line. */
+export function codexCoreTools(): string[] {
+  const core = CAPABILITY_GROUPS.filter((g) => (CODEX_CORE_GROUPS as readonly string[]).includes(g.group)).flatMap((g) => g.tools);
+  return [...core, ...CODEX_CORE_EXTRA_TOOLS.filter((t) => !core.includes(t))];
+}

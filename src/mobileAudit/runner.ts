@@ -12,7 +12,7 @@ import { runWithSignal, throwIfCancelled } from '../lib/abortScope.js';
 import { runFirstRun } from '../firstRun/firstRunRunner.js';
 import type { Driver } from '../drivers/Driver.js';
 import type { Session, SessionStore } from '../session/store.js';
-import { checksForProfile, type AuditProfile } from './profiles.js';
+import type { AuditProfile } from './profiles.js';
 import * as C from './checks.js';
 import type { RawCheckResult } from './checks.js';
 import { snapshotText, foreground, type AuditEvidenceCtx } from './evidence.js';
@@ -444,9 +444,4 @@ async function runAccountCycle(
     }
   }
   return runState;
-}
-
-/** Plan-only: the profile checklist + account-cycle safety, without driving the device. */
-export function planMobileAudit(profile: AuditProfile): { checks: ReturnType<typeof checksForProfile> } {
-  return { checks: checksForProfile(profile) };
 }

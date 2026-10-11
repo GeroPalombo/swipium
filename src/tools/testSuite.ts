@@ -106,7 +106,7 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
     {
       title: 'Update the persistent QA test suite',
       description:
-        'Merge cases into the canonical suite: a case matching feature + objective + steps is updated, new ones get stable TC ' +
+        'Add or update cases in the repo test suite: a case matching feature + objective + steps is updated, new ones get stable TC ' +
         'ids. mergeMode decides whether generated fields overwrite curated ones.',
       inputSchema: {
         sessionId: z.string().optional(),
@@ -256,7 +256,7 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
     'qa_suite_export',
     {
       title: 'Export the persistent QA test suite',
-      description: 'Export the suite as markdown, yaml, json, or junit; save:true writes it under .swipium/test-suite-export/.',
+      description: 'Export the repo test suite as markdown, yaml, json, or junit; save:true writes it under .swipium/test-suite-export/.',
       inputSchema: {
         sessionId: z.string().optional(),
         projectRoot: z.string().optional(),
@@ -306,8 +306,8 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
     {
       title: 'Lint the persistent QA test suite',
       description:
-        'Lint the canonical suite (missing results, stale links, duplicate ids, brittle automation, unsafe adversarial cases) ' +
-        'and generated page objects (fragile locators). Returns errors and warnings.',
+        'Lint the repo test suite (missing results, stale links, duplicate ids, brittle automation, unsafe adversarial cases) and ' +
+        'generated page objects (fragile locators). Returns errors and warnings.',
       inputSchema: {
         sessionId: z.string().optional(),
         projectRoot: z.string().optional(),

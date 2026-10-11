@@ -1,7 +1,11 @@
 // Local, deterministic visual ops: baseline diff + template matching on
 // decoded pixels. No AI, no network, no third-party code: just arithmetic over PNG bytes.
 
-import { decodePng, toGray } from './png.js';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { decodePng, pngSize, toGray } from './png.js';
+import { run } from './spawn.js';
 
 export interface DiffResult {
   comparable: boolean;
@@ -119,4 +123,84 @@ export function findTemplate(screenBuf: Buffer, templateBuf: Buffer, minScore = 
   const cx = Math.round((bx + tg.w / 2) * factor);
   const cy = Math.round((by + tg.h / 2) * factor);
   return { found: score >= minScore, score: Math.round(score * 1000) / 1000, x: cx, y: cy };
+}
+
+// ---- Inline images (qa_screenshot inline:true, qa_get_artifact mode:"inline") ----
+
+/** Long edge an inline image is downscaled to: what Claude resizes larger images to anyway, so
+ * bigger pixels only cost bytes and tokens. */
+export const INLINE_IMAGE_MAX_EDGE = 1568;
+
+/** `_meta` for inline image content blocks: Codex reads codex/imageDetail (default "high"). */
+export const INLINE_IMAGE_META = { 'codex/imageDetail': 'auto' } as const;
+
+export interface InlineImage {
+  data: Buffer;
+  mime: string;
+  width: number | null;
+  height: number | null;
+  /** inline px per original px (1 when not resized). Divide inline coordinates by it to get
+   * original (screenshot) pixels. */
+  scale: number;
+  resized: boolean;
+}
+
+function jpegSize(buf: Buffer): { width: number; height: number } | null {
+  let i = 2;
+  while (i + 9 < buf.length) {
+    if (buf[i] !== 0xff) return null;
+    const marker = buf[i + 1];
+    const len = buf.readUInt16BE(i + 2);
+    // SOF0..SOF15 except DHT (C4), JPG (C8), DAC (CC) carry the frame size.
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+      return { height: buf.readUInt16BE(i + 5), width: buf.readUInt16BE(i + 7) };
+    }
+    i += 2 + len;
+  }
+  return null;
+}
+
+/**
+ * Prepare image bytes for an inline content block: a PNG whose long edge exceeds
+ * INLINE_IMAGE_MAX_EDGE is downscaled to it as JPEG with macOS `sips` when available; anything
+ * else (other hosts, other formats, sips failing) is returned unchanged with scale 1.
+ */
+export async function prepareInlineImage(buf: Buffer, mime: string, maxEdge = INLINE_IMAGE_MAX_EDGE): Promise<InlineImage> {
+  const size = mime === 'image/png' ? pngSize(buf) : null;
+  const same: InlineImage = { data: buf, mime, width: size?.width ?? null, height: size?.height ?? null, scale: 1, resized: false };
+  if (!size || Math.max(size.width, size.height) <= maxEdge || process.platform !== 'darwin') return same;
+  const dir = mkdtempSync(join(tmpdir(), 'swipium-inline-'));
+  try {
+    const src = join(dir, 'in.png');
+    const out = join(dir, 'out.jpg');
+    writeFileSync(src, buf);
+    const r = await run('sips', ['-Z', String(maxEdge), '-s', 'format', 'jpeg', '-s', 'formatOptions', '80', src, '--out', out], {
+      timeoutMs: 10_000,
+    });
+    if (r.code !== 0) return same;
+    const data = readFileSync(out);
+    const dims = jpegSize(data);
+    if (!dims) return same;
+    return {
+      data,
+      mime: 'image/jpeg',
+      width: dims.width,
+      height: dims.height,
+      scale: Math.round((dims.width / size.width) * 10000) / 10000,
+      resized: true,
+    };
+  } catch {
+    return same;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** One text line describing an inline image's pixel mapping back to the original. */
+export function inlineScaleLine(img: InlineImage, original: { width: number; height: number } | null): string {
+  if (!img.resized) return `inline image: original size${img.width ? ` ${img.width}x${img.height}` : ''} (scale 1)`;
+  return (
+    `inline image: ${img.width}x${img.height} JPEG, downscaled from ${original?.width}x${original?.height} (scale ${img.scale}); ` +
+    `divide inline image coordinates by ${img.scale} to get screenshot pixels`
+  );
 }

@@ -36,6 +36,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { CallToolResult } from '@modelcontextprotocol/server';
 import { log } from '../lib/logger.js';
+import { currentResponseMode } from '../lib/result.js';
 
 export type Risk = 'low' | 'medium' | 'high';
 
@@ -111,12 +112,9 @@ export const CONSENT_ACTIONS = [
   'install_app',
   'network_change',
   'ocr_run',
-  'permission_grant',
-  'permission_revoke',
   'prepare_plan',
   'privacy_reset',
   'screen_record',
-  'seed_state',
   'start_metro',
   'suite_fresh_state_replay',
   'test_this_plan',
@@ -149,12 +147,9 @@ export const CONSENT_ACTION_TIERS: Readonly<Record<ConsentAction, ConsentActionT
   install_app: { runsCode: false },
   network_change: { runsCode: false },
   ocr_run: { runsCode: true }, // repo-configured OCR / visual mask command
-  permission_grant: { runsCode: false },
-  permission_revoke: { runsCode: false },
   prepare_plan: { runsCode: false },
   privacy_reset: { runsCode: false },
   screen_record: { runsCode: false },
-  seed_state: { runsCode: true }, // fixture seed scripts from the repo
   start_metro: { runsCode: true }, // npx expo/react-native start loads the project's Metro/Babel config
   suite_fresh_state_replay: { runsCode: true }, // state-profile prepare/teardown can run seed scripts
   test_this_plan: { runsCode: false }, // bundled sub-steps are checked separately (planRunsCodeSteps)
@@ -436,21 +431,32 @@ export function requireConsent(req: ConsentRequest): CallToolResult {
   const sessionId = currentConsentSession();
   pending.set(consentId, { req, createdAt: Date.now(), ...(sessionId ? { sessionId } : {}) });
   // `next` repeats the approval instruction in structuredContent: Claude Code / Codex show the
-  // model that JSON, not the text block, for non-error results.
+  // model that JSON, not the text block, for non-error results. An explain that embeds the
+  // exactCommand (test_this preflight) drops that copy: exactCommand already carries it.
+  const explain = req.exactCommand && req.explain.includes(req.exactCommand) ? stripCommand(req.explain, req.exactCommand) : req.explain;
   const payload = {
     requiresConsent: true,
     consentId,
     ...req,
+    explain,
     next: [`To approve, re-call this tool with consentId="${consentId}" and approve=true`],
   };
-  const text =
-    `🔐 Consent required (${req.risk}): ${req.explain}\n` +
+  const head =
+    `🔐 Consent required (${req.risk}): ${explain}\n` +
     (req.exactCommand ? `Will run: ${req.exactCommand}\n` : '') +
-    `To approve, re-call this tool with consentId="${consentId}" and approve=true.\n\n` +
-    '```json\n' +
-    JSON.stringify(payload, null, 2) +
-    '\n```';
+    `To approve, re-call this tool with consentId="${consentId}" and approve=true.`;
+  // The fence carries only what the head does not (action, affects); compact mode drops it.
+  const rest = { action: req.action, ...(req.affects ? { affects: req.affects } : {}) };
+  const text = currentResponseMode() === 'compact' ? head : `${head}\n\`\`\`json\n${JSON.stringify(rest)}\n\`\`\``;
   return { content: [{ type: 'text', text }], structuredContent: payload };
+}
+
+/** `explain` without its embedded copy of `cmd` (blank lines left behind are collapsed). */
+function stripCommand(explain: string, cmd: string): string {
+  return explain
+    .replace(cmd, '')
+    .replace(/\n{2,}/g, '\n')
+    .trim();
 }
 
 export type ConsentDecision =

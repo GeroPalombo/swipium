@@ -3,8 +3,9 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
-import { qaOk, qaError, unknownSessionError, cancelledResult } from '../lib/result.js';
-import { parseSnapshot, signature, renderElements } from '../snapshot/parse.js';
+import { qaOk, qaError, unknownSessionError, cancelledResult, currentResponseMode } from '../lib/result.js';
+import { parseSnapshot, signature, toElement, weakTreeHint } from '../snapshot/parse.js';
+import { adoptSnapshot } from '../snapshot/fresh.js';
 import { presentElements } from '../snapshot/present.js';
 import { makeRedactor, isSecureNode } from '../lib/redact.js';
 import { detectTreeOverlays, classifyForeground } from '../snapshot/overlays.js';
@@ -17,7 +18,25 @@ import type { DumpOptions } from '../drivers/Driver.js';
 
 /** The bounded structured-dump probe a visual-fallback session still attempts on each qa_snapshot /
  *  qa_act observation: one short try, so a still-busy screen costs seconds, not the full retry ladder. */
+/** qa_snapshot diff:true: share of new elements above which the screen counts as changed (full snapshot). */
+export const SNAPSHOT_DIFF_BIG_RATIO = 0.5;
+
 export const VISUAL_FALLBACK_PROBE: DumpOptions = { timeoutMs: 6000, attempts: 2 };
+
+/** Raw attrs qa_inspect already returns as top-level fields (K5). */
+const INSPECT_TOP_LEVEL_ATTRS = new Set([
+  'class',
+  'resource-id',
+  'content-desc',
+  'text',
+  'bounds',
+  'clickable',
+  'long-clickable',
+  'scrollable',
+  'focusable',
+  'focused',
+  'enabled',
+]);
 
 export function registerSnapshot(server: McpServer, sessions: SessionStore): void {
   server.registerTool(
@@ -25,11 +44,15 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
     {
       title: 'Snapshot the screen',
       description:
-        'Capture the screen as addressable elements (@e1, @e2...) with a snapshotQuality verdict. Interactive elements only, ' +
-        'capped on busy screens (filter finds the rest). Refs feed qa_act; re-snapshot after navigation.',
+        'Read the current screen as addressable elements (@e1, @e2...) for qa_act, with a snapshotQuality verdict; call it before ' +
+        'acting and after navigation. Interactive elements only, capped on busy screens (filter finds the rest). A trailing " -" marks ' +
+        'a non-clickable element. Refs stay stable while the element stays.',
       inputSchema: {
         sessionId: z.string(),
-        diff: z.boolean().optional().describe('Only what changed since the previous snapshot.'),
+        diff: z
+          .boolean()
+          .optional()
+          .describe('Same screen: only added/removed/changed refs since the previous snapshot; a new screen returns the full list.'),
         filter: z.string().optional().describe('Substring match on text/label/id/role (finds capped elements).'),
       },
     },
@@ -120,9 +143,10 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
         }
         const modeRecovered = sessions.noteStructuredDump(session);
 
-        const parsed = parseSnapshot(xml, { interactiveOnly: true });
         const prev = session.lastSnapshot;
-        const newSigs = new Set(parsed.elements.map(signature));
+        // persist for inspect + next diff (fullByRef keeps raw nodes; masking happens on emit). Refs
+        // are stable across snapshots (X3), so the diff below compares refs.
+        const parsed = adoptSnapshot(session, parseSnapshot(xml, { interactiveOnly: true }));
         const redact = makeRedactor(session.secrets);
         const f = filter?.trim().toLowerCase();
         const pool = f
@@ -130,18 +154,23 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
           : parsed.elements;
         const { payload: shown, rendered, omitted } = presentElements(pool, redact);
 
-        let diffText = '';
-        let diffPayload: { added: string[]; removed: string[] } | undefined;
+        // K4: diff:true on the SAME screen returns only what changed (added / removed / changed refs);
+        // a mostly-new screen (navigation) falls through to the full snapshot with bigChange:true.
+        let diffResult: { added: string[]; removed: string[]; changed: string[]; bigChange: boolean } | undefined;
         if (diff && prev) {
-          const added = parsed.elements.filter((e) => !prev.signatures.has(signature(e)));
-          const removed = [...prev.signatures].filter((s) => !newSigs.has(s));
-          const addedShown = presentElements(added, redact).elements;
-          diffPayload = { added: addedShown.map((e) => e.ref + ' ' + (e.label ?? e.text ?? e.role)), removed };
-          diffText = `\nDIFF vs previous: +${added.length} / -${removed.length}\n` + renderElements(addedShown);
+          const added = parsed.elements.filter((e) => !prev.fullByRef.has(e.ref));
+          const removed = [...prev.fullByRef].filter(([ref]) => !parsed.fullByRef.has(ref)).map(([ref, n]) => toElement(ref, n));
+          const changed = parsed.elements.filter((e) => {
+            const old = prev.fullByRef.get(e.ref);
+            return old !== undefined && signature(toElement(e.ref, old)) !== signature(e);
+          });
+          diffResult = {
+            added: presentElements(added, redact).lines,
+            removed: presentElements(removed, redact).lines,
+            changed: presentElements(changed, redact).lines,
+            bigChange: parsed.elements.length > 0 && added.length > parsed.elements.length * SNAPSHOT_DIFF_BIG_RATIO,
+          };
         }
-
-        // persist for inspect + next diff (fullByRef keeps raw nodes; masking happens on emit)
-        session.lastSnapshot = { fullByRef: parsed.fullByRef, signatures: newSigs, allNodes: parsed.allNodes };
 
         // Auth-state awareness (P1.5): note login screens; the FIRST screen seen sets authedAtStart.
         const auth = detectAuthScreen(parsed.allNodes);
@@ -163,12 +192,40 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
         if (fgOverlay) overlays.push(fgOverlay);
 
         const q = parsed.quality;
+        const treeHint = weakTreeHint(parsed);
         const header =
           (rehydrated ? rehydrateNote(session) + '\n' : '') +
           (modeRecovered ? 'mode: structured again (a UI tree dump succeeded; visual-fallback cleared)\n' : '') +
           `quality=${q.verdict} (${q.reasons.join('; ')})\n` +
           `screen=${parsed.screen[0]}x${parsed.screen[1]} elements=${parsed.elements.length}${f ? ` (filter "${filter}" matched ${pool.length})` : ''} totalNodes=${parsed.total}` +
-          (overlays.length ? `\noverlays: ${overlays.map((o) => o.type).join(', ')} (clear with qa_clear_overlay)` : '');
+          (overlays.length ? `\noverlays: ${overlays.map((o) => o.type).join(', ')} (clear with qa_clear_overlay)` : '') +
+          (treeHint ? `\n${treeHint}` : '');
+
+        if (diffResult && !diffResult.bigChange) {
+          const { added, removed, changed } = diffResult;
+          return qaOk(
+            {
+              ...(modeRecovered ? { modeRecovered: true, mode: 'structured' } : {}),
+              quality: q.verdict,
+              screen: parsed.screen,
+              elementCount: parsed.elements.length,
+              overlays,
+              ...(treeHint ? { treeHint } : {}),
+              diff: {
+                added,
+                removed,
+                changed,
+                counts: { added: added.length, removed: removed.length, changed: changed.length },
+                bigChange: false,
+              },
+            },
+            `${header}\n\nDIFF vs previous snapshot: +${added.length} / -${removed.length} / ~${changed.length}` +
+              (added.length ? `\nadded:\n${added.join('\n')}` : '') +
+              (removed.length ? `\nremoved:\n${removed.join('\n')}` : '') +
+              (changed.length ? `\nchanged:\n${changed.join('\n')}` : ''),
+            { textOmit: ['diff', 'treeHint'] },
+          );
+        }
 
         return qaOk(
           {
@@ -183,10 +240,13 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
             totalNodes: parsed.total,
             overlays,
             elements: shown,
-            ...(diffPayload ? { diff: diffPayload } : {}),
+            ...(treeHint ? { treeHint } : {}),
+            ...(diffResult
+              ? { diff: { bigChange: true, counts: { added: diffResult.added.length, removed: diffResult.removed.length } } }
+              : {}),
           },
-          `${header}\n\n${rendered}${diffText}`,
-          { textOmit: ['elements', 'diff'] },
+          `${header}${diffResult ? '\nscreen changed (bigChange): full snapshot below' : ''}\n\n${rendered}`,
+          { textOmit: ['elements', 'treeHint'] },
         );
       });
     },
@@ -196,7 +256,7 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
     'qa_inspect',
     {
       title: 'Inspect one element',
-      description: 'Full attributes (class, ids, text, bounds, flags) of one @eN ref from the last qa_snapshot.',
+      description: 'Inspect one element: full attributes (class, ids, text, bounds, flags) of an @eN ref from the last qa_snapshot.',
       inputSchema: { sessionId: z.string(), ref: z.string().describe('e.g. "@e3"') },
     },
     async ({ sessionId, ref }) => {
@@ -218,8 +278,11 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
       const secure = isSecureNode(node);
       const redact = makeRedactor(session.secrets);
       const m = (v: string) => (secure && v ? '«secure»' : (redact(v) ?? ''));
+      // K5: outside verbose mode, attrs carries only what the top-level fields do not already say.
+      const verbose = currentResponseMode() === 'verbose';
       const maskedAttrs: Record<string, string> = {};
       for (const [k, v] of Object.entries(node.attrs)) {
+        if (!verbose && INSPECT_TOP_LEVEL_ATTRS.has(k)) continue;
         maskedAttrs[k] = k === 'text' || k === 'content-desc' ? m(v) : v;
       }
       return qaOk(

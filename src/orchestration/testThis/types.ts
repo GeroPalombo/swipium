@@ -32,10 +32,6 @@ export const selToPlatform: Record<TargetSelection, BuildPlatform> = {
   'ios-real': 'ios',
 };
 
-export function isAndroidEmulatorSerial(serial: string): boolean {
-  return /^emulator-\d+/.test(serial);
-}
-
 /** The qa_test_this input arguments (mirrors the tool's zod input schema). */
 export interface TestThisInput {
   sessionId?: string;

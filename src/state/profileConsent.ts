@@ -3,28 +3,10 @@
 // .swipium/state/*.yaml profile. Used by the qa_suite_* replay path (src/tools/suite.ts) to
 // gate state-profile mutations exactly like the original tools did.
 
-import { createHash } from 'node:crypto';
+import { stableHash as hash } from '../lib/stableHash.js';
 import { normalizeCommand } from '../flows/seedExec.js';
 import type { StateProfile } from './profile.js';
 import type { FixtureSeed, FixtureSeedAction, Session } from '../session/store.js';
-
-function stable(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stable);
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([k, v]) => [k, stable(v)]),
-    );
-  }
-  return value;
-}
-
-function hash(value: unknown): string {
-  return createHash('sha256')
-    .update(JSON.stringify(stable(value)))
-    .digest('hex');
-}
 
 function seedActionPreview(seed: FixtureSeedAction | undefined): Record<string, unknown> | null {
   if (!seed) return null;

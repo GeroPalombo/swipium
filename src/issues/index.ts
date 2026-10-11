@@ -253,20 +253,6 @@ export interface LinkRunOptions {
   sourceRevision?: SourceRevision;
 }
 
-/**
- * Append a `linked_run` event tying a run (test case / audit check) to an issue with a relationship
- * (observed / verified_fixed / regressed / suppressed) and optional evidence. The issue ledger stays
- * the source of truth; this records HOW a run related to the issue.
- */
-export function linkRun(
-  root: string,
-  key: { issueId?: string; fingerprint?: string },
-  opts: LinkRunOptions,
-  now: string,
-): LedgerMutationResult {
-  return withLedgerLock(root, () => linkRunLocked(root, key, opts, now));
-}
-
 function linkRunLocked(
   root: string,
   key: { issueId?: string; fingerprint?: string },

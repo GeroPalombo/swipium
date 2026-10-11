@@ -118,7 +118,7 @@ describe('plan mode never loops (P0 #4)', () => {
   it('an Expo project without an APK → next action is qa_test_this with mode:"execute" and the original goal', async () => {
     env.avds = ['Pixel_7'];
     const root = project('expo-nobuild', { 'package.json': expoPkg, 'app.json': '{"expo":{"name":"demo"}}' });
-    const r = await call('qa_test_this', { projectRoot: root, platform: 'android', goal: 'release_gate' });
+    const r = await call('qa_test_this', { projectRoot: root, mode: 'plan', platform: 'android', goal: 'release_gate' });
     expect(r.isError).toBeFalsy();
     const next = sc(r).nextAction as { tool: string; args: Record<string, unknown> };
     expect(next.tool).toBe('qa_test_this');
@@ -136,7 +136,7 @@ describe('plan mode never loops (P0 #4)', () => {
       'build.gradle': '',
       'app/build/outputs/bundle/release/app-release.aab': 'PK-fake-aab',
     });
-    const r = await call('qa_test_this', { projectRoot: root, fastSmoke: true });
+    const r = await call('qa_test_this', { projectRoot: root, mode: 'plan', fastSmoke: true });
     const steps = sc(r).plan as Array<{ tool: string; args?: Record<string, unknown> }>;
     const convert = steps.find((s) => s.tool === 'qa_test_this');
     expect(convert?.args).toMatchObject({ mode: 'execute', fastSmoke: true });
@@ -147,7 +147,7 @@ describe('physical devices and missing adb (P0 #1 plan side, P1 #5)', () => {
   it('phone online + AVD available → plans a boot of the AVD, never the phone', async () => {
     env.online = ['R58M123ABC'];
     env.avds = ['Pixel_7'];
-    const r = await call('qa_test_this', { projectRoot: androidApp(), goal: 'smoke' });
+    const r = await call('qa_test_this', { projectRoot: androidApp(), mode: 'plan', goal: 'smoke' });
     expect(r.isError).toBeFalsy();
     const target = sc(r).target as { willBoot: boolean; bootTarget?: string; device?: string };
     expect(target).toMatchObject({ willBoot: true, bootTarget: 'Pixel_7' });

@@ -16,6 +16,7 @@ import { SimctlDriver } from '../drivers/SimctlDriver.js';
 import * as sim from '../lib/simctl.js';
 import { WdaDriver, invalidateWdaPageSource } from '../drivers/WdaDriver.js';
 import { isSimulatorUdid } from '../session/attach.js';
+import { noteScreenMutation } from '../snapshot/fresh.js';
 import type { Session, SessionStore } from '../session/store.js';
 
 /** The simulator UDID this session drives, whatever the iOS backend (SimctlDriver, or WdaDriver
@@ -46,9 +47,9 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
     {
       title: 'iOS simulator control',
       description:
-        'Control an iOS Simulator (macOS): list, boot (binds it to the session; a slow cold boot returns status:"booting", poll ' +
-        'qa_wait for:"simulator_booted"), install (.app), launch, terminate, openurl, ' +
-        'logs, privacy_reset, erase (wipes it). install, privacy_reset, and erase are consent-gated. Structured automation: qa_wda.',
+        'Control an iOS Simulator (macOS): list, boot (binds it to the session), install (.app), launch, terminate, openurl, logs, ' +
+        'privacy_reset, erase (wipes it). install, privacy_reset and erase are consent-gated. A slow cold boot returns ' +
+        'status:"booting" (poll qa_wait for:"simulator_booted"). Structured iOS automation: qa_wda.',
       inputSchema: {
         sessionId: z.string(),
         action: z.enum(['list', 'boot', 'install', 'launch', 'terminate', 'openurl', 'logs', 'privacy_reset', 'erase']),
@@ -274,6 +275,7 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
           invalidateWdaPageSource(udid); // the screen changes outside WDA: drop cached page sources
           await sim.launchApp(udid, bundleId!);
           invalidateWdaPageSource(udid); // …and anything a concurrent read cached mid-launch
+          noteScreenMutation(session); // a snapshot from before the launch is no longer fresh
           sessions.milestone(session, 'app_launch_end');
         } catch (err) {
           return qaError({
@@ -304,6 +306,7 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
         invalidateWdaPageSource(udid); // the screen changes outside WDA: drop cached page sources
         await sim.terminateApp(udid, bundleId!);
         invalidateWdaPageSource(udid);
+        noteScreenMutation(session);
         sessions.recordMutation(session, {
           tool: 'qa_ios',
           action: 'ios_terminate',
@@ -321,6 +324,7 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
         try {
           invalidateWdaPageSource(udid); // the screen changes outside WDA: drop cached page sources
           await sim.openUrl(udid, args.url!);
+          noteScreenMutation(session);
         } catch (err) {
           return qaError({
             what: `openurl failed: ${String(err)}`,

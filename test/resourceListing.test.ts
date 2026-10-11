@@ -46,9 +46,9 @@ describe('MCP resource listing (OPP-02)', () => {
     rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  it('lists nothing (not an error) with zero sessions and no app map', async () => {
+  it('lists only the static skill resource (not an error) with zero sessions and no app map', async () => {
     const res = await client.listResources();
-    expect(res.resources).toEqual([]);
+    expect(res.resources.map((r) => r.uri)).toEqual(['skill://swipium-qa/SKILL.md']);
   });
 
   it('lists saved artifacts with URI, name, mime type, and kind/label description', async () => {

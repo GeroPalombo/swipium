@@ -77,7 +77,10 @@ export const NeedsInput = {
       needsInput: true,
       kind: 'credentials',
       question:
-        (context ? `${context} ` : '') + 'This app appears to require login. Provide test credentials, or ask Swipium to stay pre-login.',
+        (context ? `${context} ` : '') +
+        'This app appears to require login. Recommended: set SWIPIUM_TEST_EMAIL and SWIPIUM_TEST_PASSWORD in the Swipium server env ' +
+        '(MCP config) and restart it, so the password never enters this chat. Otherwise provide test credentials here, or ask ' +
+        'Swipium to stay pre-login.',
       fields: [
         { name: 'email', secret: false, description: 'Test account email/username' },
         { name: 'password', secret: true, description: 'Test account password' },
@@ -255,6 +258,10 @@ export function qaNeedsInput(p: NeedsInputPayload, extra?: Record<string, unknow
   const enriched: NeedsInputPayload = { ...p, attempted, resume };
   const payload = { ok: true, ...enriched, ...(extra ?? {}) };
   const head = renderQuestion(enriched);
-  const text = currentResponseMode() === 'compact' ? head : `${head}\n\`\`\`json\n${JSON.stringify(payload, null, 2)}\n\`\`\``;
+  // Compact fence of what the head does not render (the question, field names, fallback options
+  // and ifDeclined are above it); compact mode drops it.
+  const rest: Record<string, unknown> = { ...payload };
+  for (const k of ['ok', 'question', 'fallbackOptions', 'ifDeclined']) delete rest[k];
+  const text = currentResponseMode() === 'compact' ? head : `${head}\n\`\`\`json\n${JSON.stringify(rest)}\n\`\`\``;
   return { content: [{ type: 'text', text }], structuredContent: payload };
 }

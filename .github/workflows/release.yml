@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 20
+          node-version: 24
           registry-url: https://registry.npmjs.org
       - run: npm ci
       - name: Validate release tag
@@ -29,9 +29,10 @@ jobs:
       - name: Check npm version
         id: npm_version
         run: |
+          set -euo pipefail
           PACKAGE_NAME="$(node -p "require('./package.json').name")"
           PACKAGE_VERSION="$(node -p "require('./package.json').version")"
-          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version >/dev/null 2>&1; then
+          if [ "$(npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version 2>/dev/null || true)" = "${PACKAGE_VERSION}" ]; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "${PACKAGE_NAME}@${PACKAGE_VERSION} already exists on npm. Skipping publish."
           else
@@ -45,3 +46,68 @@ jobs:
         if: steps.npm_version.outputs.exists == 'false'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # MCP Registry listing (server.json). Safe to re-run: it is skipped only when the registry
+      # already lists this version, so a run whose npm publish succeeded but whose registry step
+      # failed can simply be re-run. The registry checks that the npm package's mcpName matches
+      # server.json's name, so the step first waits for npm to serve the version. Auth is GitHub
+      # OIDC (id-token: write above) for the io.github.GeroPalombo/* namespace.
+      - name: Check MCP Registry version
+        id: registry_version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          SERVER_NAME="$(node -p "require('./package.json').mcpName")"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          # 200 = this version is listed, 404 = not listed; anything else (outage) means unknown, so publish.
+          STATUS="$(curl -s -o /dev/null -w '%{http_code}' --retry 3 --retry-delay 5 "https://registry.modelcontextprotocol.io/v0/servers/${SERVER_NAME/\//%2F}/versions/${PACKAGE_VERSION}" || true)"
+          if [ "${STATUS}" = "200" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "${SERVER_NAME}@${PACKAGE_VERSION} already exists in the MCP Registry. Skipping publish."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "MCP Registry lookup returned HTTP ${STATUS}; publishing."
+          fi
+      - name: Publish to MCP Registry
+        if: startsWith(github.ref, 'refs/tags/v') && steps.registry_version.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          SERVER_NAME="$(node -p "require('./package.json').mcpName")"
+          REGISTRY_URL="https://registry.modelcontextprotocol.io/v0/servers/${SERVER_NAME/\//%2F}/versions/${PACKAGE_VERSION}"
+          node -e "const fs=require('fs');const s=JSON.parse(fs.readFileSync('server.json','utf8'));s.version=process.argv[1];for(const p of s.packages)p.version=process.argv[1];fs.writeFileSync('server.json',JSON.stringify(s,null,2)+'\n')" "${PACKAGE_VERSION}"
+          # Pinned mcp-publisher release; the SHA-256 is from that release's registry_1.8.1_checksums.txt.
+          MCP_PUBLISHER_VERSION=v1.8.1
+          MCP_PUBLISHER_SHA256=a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc
+          curl -fsSL --retry 3 -o mcp-publisher.tar.gz "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz"
+          echo "${MCP_PUBLISHER_SHA256}  mcp-publisher.tar.gz" | sha256sum -c -
+          tar xzf mcp-publisher.tar.gz mcp-publisher
+          # Wait (up to 10 min) until npm serves the version, since the registry reads it from npm.
+          for i in $(seq 1 40); do
+            if [ "$(npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version 2>/dev/null || true)" = "${PACKAGE_VERSION}" ]; then
+              break
+            fi
+            if [ "${i}" = 40 ]; then
+              echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is still not on npm after 10 minutes."
+              exit 1
+            fi
+            echo "Waiting for ${PACKAGE_NAME}@${PACKAGE_VERSION} on npm (${i}/40)..."
+            sleep 15
+          done
+          # Up to 4 attempts. A failed attempt counts as done when the registry now lists the
+          # version (for example "duplicate version" after an earlier attempt went through).
+          for attempt in 1 2 3 4; do
+            if ./mcp-publisher login github-oidc && ./mcp-publisher publish; then
+              exit 0
+            fi
+            if [ "$(curl -s -o /dev/null -w '%{http_code}' "${REGISTRY_URL}" || true)" = "200" ]; then
+              echo "${SERVER_NAME}@${PACKAGE_VERSION} is listed in the MCP Registry."
+              exit 0
+            fi
+            if [ "${attempt}" = 4 ]; then
+              echo "MCP Registry publish failed after ${attempt} attempts."
+              exit 1
+            fi
+            echo "MCP Registry publish attempt ${attempt} failed; retrying in $((attempt * 30)) s."
+            sleep $((attempt * 30))
+          done

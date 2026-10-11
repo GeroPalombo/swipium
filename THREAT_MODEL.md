@@ -1,6 +1,6 @@
 # Swipium Threat Model
 
-Last updated: 2026-10-05 (Swipium 2.2.0)
+Last updated: 2026-10-10 (Swipium 2.3.0)
 
 This document describes what Swipium protects, where its trust boundaries are, who it defends
 against, and which controls enforce each defense. Every control listed here is implemented in the
@@ -98,7 +98,7 @@ Swipium.
     cloned repo can't reach a Codex-launched server that way.
   - Exact names only: no wildcards or risk thresholds. Unknown names are ignored with a warning.
   - Actions that run repository- or model-chosen code (`build_from_source`, `flow_mutation_run`,
-    `ocr_run`, `seed_state`, `start_metro`, `suite_fresh_state_replay`, `wda_build`, `wda_start`)
+    `ocr_run`, `start_metro`, `suite_fresh_state_replay`, `wda_build`, `wda_start`)
     are honoured only with `SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE=1` as well.
   - `test_this_plan` does not cover a bundled sub-step that runs code (such as a
     `build_from_source` step) unless that action is itself pre-approved; otherwise the user is
@@ -110,6 +110,13 @@ Swipium.
   Pre-approved challenges stay single-use and session-bound, are ledgered as `operator-policy`, and
   each use is logged to stderr at `warn` with the exact command. The honoured names are logged once
   at startup.
+
+  `swipium init claude --trust-local` writes this variable for the user: it lists only actions that
+  run no repository- or model-chosen code (no build, Metro, WebDriverAgent, seed or OCR action) and are
+  local to the machine (no `destructive_ui_candidate`, which taps a destructive control on the app's
+  backend), and only into a machine-local registration (`--scope local` or `user`). It refuses `--scope project`,
+  which would write the team-shared `.mcp.json` that a cloned repository controls. The Claude Code
+  plugin in `plugin/` never sets it.
 - **Prompt sanitising**. The elicitation text quotes every interpolated field. It strips control
   characters, newlines, bidi overrides and zero-width characters, and caps each field and the whole
   message in length. A flow name or URL therefore cannot forge an extra "Will run:" line.
@@ -296,6 +303,17 @@ their limits.
 - **Secrets after a restart**. Secret values never persist, so a session resumed after a server
   restart cannot redact values registered before the restart. It is flagged as degraded and asks
   for credentials again.
+- **Opt-in Android dumper writes to the device**. With `SWIPIUM_ANDROID_DUMPER=agent`, Swipium
+  pushes a small dex jar to `/data/local/tmp/swipium-dumper.jar`, runs it through `app_process` as
+  the shell user and talks to it over an `adb forward` socket. The opt-in variable is the only gate
+  (there is no consent prompt yet). The agent holds the device's single UiAutomation connection
+  until it exits (120 s after its last dump, or with Swipium). The jar and the `adb forward` entries
+  are removed when Swipium stops the agent and when the server shuts down (best effort, about 1 s).
+  The socket is an abstract Unix socket (`localabstract:swipium-dumper`) with no file permissions,
+  so the agent checks each connection's peer uid and serves only the shell user (adb) and root:
+  apps on the emulator are refused and cannot request UI dumps, and a client that connects but
+  sends nothing is dropped after 5 s. Other shell-user processes can still connect. It is off by
+  default.
 - **Shared temp directory**. iOS simulator screenshots and recordings pass briefly through
   predictably named files in the system temp directory before they are read and deleted.
 - **Weak permissions on Windows**. File-permission hardening is POSIX-only. On Windows, session data

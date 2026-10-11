@@ -1,8 +1,8 @@
 # Flows
 
-A flow is a replayable YAML script of steps under `.swipium/flows/`. Flows are the Flow V2 format: selector-bound input, visual steps, device-relative gestures, waits, setup and teardown, and a `structured`, `visual`, or `auto` mode. This page covers the file format, variables, starter templates, compiling and repairing, and the CI policy. The tools themselves (`qa_flow_check`, `qa_flow_run`, `qa_flow_compile`, `qa_flow_repair`, `qa_smoke`) are in the [Tool Reference](tools.md#flows).
+A flow is a replayable YAML script of steps under `.swipium/flows/`. Flows are the Flow V2 format: selector-bound input, visual steps, device-relative gestures, waits, setup and teardown, and a `structured`, `visual`, or `auto` mode. This page covers the file format, waiting, batching steps with an inline flow, variables, starter templates, compiling and repairing, and the CI policy. The tools themselves (`qa_flow_check`, `qa_flow_run`, `qa_flow_compile`, `qa_flow_repair`, `qa_smoke`) are in the [Tool Reference](tools.md#flows).
 
-**Contents**: [Example](#example) · [File format](#file-format) · [Step reference](#step-reference) · [Variables](#variables) · [Starter templates](#starter-templates) · [Compile and repair](#compile-and-repair) · [CI policy](#ci-policy)
+**Contents**: [Example](#example) · [File format](#file-format) · [Step reference](#step-reference) · [Waiting for targets](#waiting-for-targets) · [Batching steps](#batching-steps) · [Variables](#variables) · [Starter templates](#starter-templates) · [Compile and repair](#compile-and-repair) · [CI policy](#ci-policy)
 
 ## Example
 
@@ -63,13 +63,13 @@ Prefer durable ids (`testID`, `accessibilityIdentifier`, resource ids) over visi
 | --- | --- | --- |
 | `prepareTarget` | bare | Launches the flow's app and waits for the screen to settle. |
 | `restartApp` | bare | Force-stops and relaunches the app. Mutating. |
-| `tap` | `tap: "<selector>"` | Taps an element. |
+| `tap` | `tap: "<selector>"` | Taps an element, waiting up to 5 s for it. |
 | `tapAt` | `tapAt: [x, y]` | Taps a coordinate. Coordinate-only flows are flagged as brittle. |
 | `tapImage` | `tapImage: <png>` or `{template, minScore}` | Template-matches a PNG and taps it. |
 | `tapOcrText` | `tapOcrText: "<text>"` or `{text, minConfidence}` | Finds text by OCR and taps it. Needs an OCR provider. |
-| `inputText` | `inputText: "<text>"` or `{into, text, secret}` | Types text; `into` focuses a field first. `secret` defaults to true when the text references a credential-like variable. |
-| `assertVisible` | `assertVisible: "<selector>"` | Fails with `ASSERTION_FAILED` when not visible. |
-| `assertNotVisible` | `assertNotVisible: "<selector>"` | Fails when visible. |
+| `inputText` | `inputText: "<text>"` or `{into, text, secret}` | Types text; `into` waits up to 5 s for the field, focuses it, and types as soon as the keyboard is up (at most 600 ms). `secret` defaults to true when the text references a credential-like variable. |
+| `assertVisible` | `assertVisible: "<selector>"` | Waits up to 5 s for the element; fails with `ASSERTION_FAILED` when it doesn't appear. |
+| `assertNotVisible` | `assertNotVisible: "<selector>"` | Fails when visible. Checked once, with no wait. |
 | `assertImage` | `assertImage: <png>` or `{template, minScore}` | Asserts a PNG template is on screen. |
 | `assertOcrText` | `assertOcrText: "<text>"` or `{text, minConfidence}` | Asserts text by OCR. |
 | `assertVisual` | `assertVisual: "<description>"` | Captures screenshot evidence and records a visual checkpoint for a human. It does not fail. |
@@ -95,6 +95,30 @@ Prefer durable ids (`testID`, `accessibilityIdentifier`, resource ids) over visi
 
 **Sensitive sessions**: `screenshot`, `assertVisual`, and failure evidence are not captured; the step detail says so, and an `assertVisual` checkpoint is recorded as `skipped`.
 
+## Waiting for targets
+
+Flows wait for their targets, so most flows need no explicit waits:
+
+- `tap` and `inputText into` poll for the target (every 300 ms) for up to 5 s before failing, and `assertVisible` polls for up to 5 s.
+- `inputText into` types as soon as the soft keyboard is up after focusing the field, capped at 600 ms (before 2.3.0 it always slept 600 ms).
+- After every step the screen settles (see [Screens, refs, and settling](concepts.md#screens-refs-and-settling)), and the first lookup of the next step reuses that settled dump instead of taking a new one.
+- `assertNotVisible` checks once. Use `waitForVisible {text, timeoutMs}` for anything slower than 5 s, such as a login round trip.
+
+## Batching steps
+
+When an agent already knows 3 or more steps, one `qa_flow_run {sessionId, flowYaml}` call runs them server-side, with the same waits and settling, instead of one `qa_act` call per step. That saves a round trip and a full result per step. `flowYaml` is a flow inline, so nothing is written to `.swipium/flows/`:
+
+```yaml
+name: add_item
+steps:
+  - tap: "Add"
+  - inputText: { into: "Title", text: "Milk" }
+  - tap: "Save"
+  - assertVisible: "Milk"
+```
+
+A failure returns the failed step, a screenshot, and the `failureCode`, like any flow run. Keep `qa_snapshot` and `qa_act` for exploring a screen you don't know yet. To keep a batch, save it under `.swipium/flows/` and validate it with `qa_flow_check`.
+
 ## Variables
 
 `${NAME}` resolves in this order:
@@ -111,7 +135,7 @@ Set `SWIPIUM_*` test data in the MCP server's `env` ([environment variables](../
 
 ## Starter templates
 
-`swipium init flows [--root <dir>] [--force]` writes starter flows under `.swipium/flows/` (launch smoke, login smoke, iOS WDA smoke, offline, permission prompt, deep link, saved-item persistence, and a visual map or canvas smoke) plus a `smoke` pack in `.swipium/packs/smoke.yaml`. Existing files are kept unless you pass `--force`. Edit the selectors and variables, then validate each flow with `qa_flow_check` before running it.
+`swipium init flows [--root <dir>] [--force]` writes starter flows under `.swipium/flows/` (launch smoke, login smoke, iOS WDA smoke, offline, permission prompt, deep link, saved-item persistence, and a visual map or canvas smoke) plus a `smoke` pack in `.swipium/packs/smoke.yaml` (a list of flow names; no tool runs packs, so use it from your own scripts). Existing files are kept unless you pass `--force`. Edit the selectors and variables, then validate each flow with `qa_flow_check` before running it.
 
 ## Compile and repair
 

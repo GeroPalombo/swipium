@@ -9,6 +9,8 @@ import {
   adbDevices,
   bootEmulator,
   waitForBoot,
+  BOOT_POLL_MS,
+  ensureQuickbootSnapshot,
   resolveApk,
   deviceFreeDataBytes,
   deviceAbis,
@@ -26,6 +28,8 @@ import type { DirectDriver } from '../drivers/DirectDriver.js';
 import { isInvalidArgumentError } from '../lib/result.js';
 import type { Session, SessionStore } from '../session/store.js';
 import { isAbortError, sleepOrCancel } from '../lib/abortScope.js';
+import { waitForLaunch } from '../lib/launchWait.js';
+import { noteScreenMutation } from '../snapshot/fresh.js';
 
 export interface PrepareAndroidArgs {
   needBoot: boolean;
@@ -94,6 +98,7 @@ export async function prepareAndroid(
       serial = undefined;
       progress(`booting ${a.bootTarget}`);
       session.headless = a.headless ?? true;
+      const spawnedAt = Date.now();
       emu = bootEmulator(a.bootTarget, a.headless ?? true);
       signal?.addEventListener('abort', () => {
         try {
@@ -103,14 +108,15 @@ export async function prepareAndroid(
         }
       });
       sessions.milestone(session, 'simulator_boot_start');
-      for (let i = 0; i < 60 && !serial; i++) {
+      // Same ~120 s budget as before, polled every BOOT_POLL_MS instead of 2 s.
+      for (const deadline = Date.now() + 120_000; !serial && Date.now() < deadline;) {
         if (aborted()) return { ok: false, aborted: true };
         const fresh = (await adbDevices()).filter((s) => !before.has(s));
         if (fresh.length) {
           const { emulators } = await classifyAndroidSerials(fresh);
           serial = fresh.find((s) => emulators.includes(s));
         }
-        if (!serial) await sleepOrCancel(2000, signal); // wakes on cancel (CancelledError > aborted below)
+        if (!serial) await sleepOrCancel(BOOT_POLL_MS, signal); // wakes on cancel (CancelledError > aborted below)
       }
       if (!serial)
         return {
@@ -121,11 +127,14 @@ export async function prepareAndroid(
       const booted = await waitForBoot(serial, 180000);
       if (!booted) return { ok: false, failureCode: 'EMULATOR_BOOT_FAILED', error: `emulator "${a.bootTarget}" did not finish booting` };
       sessions.milestone(session, 'simulator_boot_end');
+      noteScreenMutation(session); // a new device: any stored snapshot is from another screen
+      progress('checking quick-boot snapshot');
+      const quickboot = await ensureQuickbootSnapshot(serial, spawnedAt);
       sessions.recordMutation(session, {
         tool: 'qa_prepare_target',
         action: 'boot_emulator',
         risk: 'low',
-        target: { avd: a.bootTarget, headless: a.headless ?? true, device: serial },
+        target: { avd: a.bootTarget, headless: a.headless ?? true, device: serial, quickboot },
         consent: a.mutationConsent ?? { required: false, approved: true },
         status: 'executed',
       });
@@ -257,8 +266,8 @@ export async function prepareAndroid(
     progress('launching');
     sessions.milestone(session, 'app_launch_start');
     await driver.launchApp(a.resolvedAppId);
-    await new Promise((r) => setTimeout(r, 2500));
-    const foreground = await driver.foregroundOwner();
+    noteScreenMutation(session); // a snapshot taken before the launch is stale
+    const foreground = await waitForLaunch(driver, a.resolvedAppId);
     sessions.milestone(session, 'app_launch_end');
     sessions.recordMutation(session, {
       tool: 'qa_prepare_target',

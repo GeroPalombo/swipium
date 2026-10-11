@@ -5,7 +5,6 @@
 // compile the flow against backend capabilities without touching a device.
 
 import { z } from 'zod';
-import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/server';
@@ -31,6 +30,7 @@ import { classifyFlakeResults } from '../report/flake.js';
 import { validateCiMutationPolicy, validateCiVariables } from '../ci/preflight.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { displayArgv } from '../lib/commandTemplate.js';
+import { stableHash } from '../lib/stableHash.js';
 import { GitScopeForbiddenError } from '../lib/spawn.js';
 import { configuredOcrCommand } from '../visual/ocr.js';
 import { resolveMaskProvider, resolveVisualProvider } from '../visual/provider.js';
@@ -105,25 +105,8 @@ function flowSourceError(src: { error?: string; errorCode?: FlowSourceErrorCode 
   });
 }
 
-function stable(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stable);
-  if (value && typeof value === 'object')
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([k, v]) => [k, stable(v)]),
-    );
-  return value;
-}
-
-function fullHash(value: unknown): string {
-  return createHash('sha256')
-    .update(JSON.stringify(stable(value)))
-    .digest('hex');
-}
-
 function hash(value: unknown): string {
-  return fullHash(value).slice(0, 16);
+  return stableHash(value).slice(0, 16);
 }
 
 function allFlowSteps(flow: Flow): FlowStep[] {
@@ -380,9 +363,9 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
     {
       title: 'Run a flow (or preview its execution plan)',
       description:
-        'Run a flow on the prepared app (mode:"run", default) or preview per-backend support without a device (mode:"plan"). ' +
-        'run is server-side and fail-fast with setup/teardown; mutating and OCR steps are consent-gated; a failure returns ' +
-        'the step, screenshot, failureCode, and health. Pass flow (name/path) or flowYaml, plus variables. Steps: ' +
+        'Run a YAML flow (saved, or inline flowYaml to batch known steps) on the prepared app; mode:"plan" previews per-backend ' +
+        'support without a device. Server-side, fail-fast, with setup/teardown; mutating and OCR steps are consent-gated; a failure ' +
+        'returns the step, screenshot, failureCode, and health. Pass flow (name/path) or flowYaml, plus variables. Steps: ' +
         'docs/tools.md#flow-steps.',
       inputSchema: {
         mode: z.enum(['plan', 'run']).optional(),
@@ -635,7 +618,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
       };
       const privileged = affects.mutations.length > 0 || affects.externalProviders.length > 0;
       if (privileged) {
-        const payloadHash = fullHash(affects);
+        const payloadHash = stableHash(affects);
         const gate = consumeConsent(consentId, approve, { action: 'flow_mutation_run', affects });
         if (!gate.approved) {
           sessions.recordMutation(session, {

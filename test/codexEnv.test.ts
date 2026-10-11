@@ -134,6 +134,7 @@ describe('CODEX_ENV_VARS completeness', () => {
     CLAUDE_PROJECT_DIR: 'Claude Code sets it; Codex never does',
     SWIPIUM_DISABLE_DEVICE_DISCOVERY: 'test-only switch',
     CODEX_HOME: 'read by the `swipium init codex` CLI, not the server',
+    CLAUDE_CONFIG_DIR: 'read by the `swipium init claude` CLI (skill install path), not the server',
     // Already in Codex's own whitelist, or Windows-only defaults.
     HOME: 'Codex whitelist',
     PATH: 'Codex whitelist',

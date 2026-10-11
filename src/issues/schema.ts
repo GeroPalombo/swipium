@@ -211,9 +211,6 @@ export interface IssueIndex {
 export function emptyIndex(now: string, appId?: string): IssueIndex {
   return { schemaVersion: ISSUE_SCHEMA_VERSION, updatedAt: now, appId, records: [] };
 }
-
-/** A user-visible issue is one a release reviewer should still see (not silently hidden). */
-export const NOISE_STATES: IssueState[] = ['expected_environment_noise', 'suppressed'];
 export const OPEN_STATES: IssueState[] = ['open', 'observed_again', 'reopened', 'needs_triage'];
 
 export const ALL_ISSUE_STATES: IssueState[] = [
@@ -279,13 +276,6 @@ export function validateEvent(e: unknown): ValidationIssue[] {
   }
   return out;
 }
-
-export function isIssueState(v: unknown): v is IssueState {
-  return typeof v === 'string' && (ALL_ISSUE_STATES as string[]).includes(v);
-}
 export function isIssueCategory(v: unknown): v is IssueCategory {
   return typeof v === 'string' && (ALL_ISSUE_CATEGORIES as string[]).includes(v);
-}
-export function isIssueSeverity(v: unknown): v is IssueSeverity {
-  return typeof v === 'string' && (ALL_ISSUE_SEVERITIES as string[]).includes(v);
 }

@@ -67,9 +67,9 @@ export function registerResolveTarget(server: McpServer, sessions: SessionStore)
     {
       title: 'Resolve the best test target',
       description:
-        'Pick the best emulator/simulator deterministically (honors platform, device, and artifact; prefers an online one, ' +
-        'else plans a boot). Returns selected, reason, alternatives, willBoot. include: context (framework, artifacts, ' +
-        'devices, toolchain) and/or plan (READY/BLOCKED/UNSAFE workflows). Boots nothing; physical phones are unsupported.',
+        'Pick the emulator/simulator to test on, deterministically (honors platform, device, artifact; prefers an online one, else ' +
+        'plans a boot). Returns selected, reason, alternatives, willBoot. include: context (framework, artifacts, devices, toolchain) ' +
+        'and/or plan (READY/BLOCKED/UNSAFE workflows). Boots nothing; physical phones are unsupported.',
       inputSchema: {
         sessionId: z.string().optional(),
         projectRoot: z.string().optional(),

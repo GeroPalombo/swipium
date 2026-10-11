@@ -1,6 +1,5 @@
 import { ciMutationAllowed, type Policy } from '../report/policy.js';
 import { flowEnvAllowed, isMutatingFlowStep, type Flow, type FlowStep } from '../flows/schema.js';
-import type { Pack } from '../flows/pack.js';
 
 export interface CiPreflightViolation {
   flow: string;
@@ -25,11 +24,6 @@ export interface CiMissingVariable {
 export interface CiVariablePreflight {
   ok: boolean;
   missing: CiMissingVariable[];
-}
-
-export interface CiParallelPreflight {
-  ok: boolean;
-  violations: string[];
 }
 
 const VAR_REF = /\$\{([^}]+)\}/g;
@@ -119,14 +113,4 @@ export function validateCiVariables(
       return env[v.variable] == null || env[v.variable] === '';
     });
   return { ok: missing.length === 0, missing };
-}
-
-export function validateCiParallelPack(pack: Pack): CiParallelPreflight {
-  if (!pack.parallel) return { ok: true, violations: [] };
-  return {
-    ok: false,
-    violations: [
-      `pack "${pack.name}" sets parallel:true, but CI pack execution currently uses one shared device/session/artifacts directory. Use parallel:false or run a device matrix with isolated simulator UDID, WDA port, artifacts dir, session id, and logs.`,
-    ],
-  };
 }

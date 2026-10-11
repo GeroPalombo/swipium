@@ -61,7 +61,6 @@ const RUNS_CODE = [
   'build_from_source',
   'flow_mutation_run',
   'ocr_run',
-  'seed_state',
   'start_metro',
   'suite_fresh_state_replay',
   'wda_build',
@@ -227,10 +226,10 @@ describe('requestConsentDecision with operator pre-approval', () => {
   });
 
   it('a listed runsCode action without the opt-in falls through to the prompt', async () => {
-    process.env.SWIPIUM_CONSENT_PREAPPROVE = 'seed_state';
+    process.env.SWIPIUM_CONSENT_PREAPPROVE = 'ocr_run';
     const provider = vi.fn(async () => 'declined' as const);
     setElicitationProvider(provider);
-    const id = mint({ action: 'seed_state', affects: { fixture: 'f', type: 'script' } });
+    const id = mint({ action: 'ocr_run', affects: { command: 'ocr' } });
     expect(await requestConsentDecision(id)).toMatchObject({ mechanism: 'elicitation', approved: false });
     expect(provider).toHaveBeenCalledOnce();
   });

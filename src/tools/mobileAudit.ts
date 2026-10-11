@@ -45,10 +45,9 @@ export function registerMobileAudit(server: McpServer, sessions: SessionStore): 
     {
       title: 'Mobile QA release audit',
       description:
-        'Plan (default, no device) or execute a release audit. profile: smoke, account_cycle (create/logout/login/reset on a ' +
-        'disposable account), store_compliance, resilience (offline/relaunch/rotation; airplane mode is consent-gated), ' +
-        'release_gate (all). execute needs a prepared session, logs failed/blocked checks to the issue ledger, and passes ' +
-        'nothing without evidence.',
+        'Release-readiness audit: plan (default, no device) or execute. profile: smoke, account_cycle (create/logout/login/reset on a ' +
+        'disposable account), store_compliance, resilience (offline/relaunch/rotation; airplane mode is consent-gated), release_gate ' +
+        '(all). execute needs a prepared session, logs failed/blocked checks to the issue ledger, passes nothing without evidence.',
       inputSchema: {
         projectRoot: z.string().optional(),
         sessionId: z.string().optional(),

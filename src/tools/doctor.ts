@@ -6,12 +6,14 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { qaOk } from '../lib/result.js';
 import { getSchemaHash } from '../lib/schemaHash.js';
+import { run } from '../lib/spawn.js';
 import { which, firstLine, adbDevices, listAvds, deviceFreeDataBytes, fmtBytes, androidSdkCandidates } from '../lib/android.js';
 import { simctlAvailable, listSimulators } from '../lib/simctl.js';
 import { checkWda, discoverWdaProjects, xcodeAvailable } from '../lib/wda.js';
 import { loadWdaConfig } from '../lib/wdaConfig.js';
 import { resolveProjectRoot } from '../context/projectRoot.js';
 import { SWIPIUM_VERSION, TOOL_NAMES, TOOL_COUNT, STALE_CLIENT_HINT } from '../version.js';
+import { clientInfoOf } from '../lib/clientInfo.js';
 import { codexEnvChecks, codexEnvVarsLine, isCodexClient } from '../lib/codexEnv.js';
 
 export interface Check {
@@ -20,6 +22,24 @@ export interface Check {
   optional?: boolean;
   detail: string;
   fix?: string;
+  /** Which platform group the row belongs to (absent: general rows like node / client-freshness). */
+  platform?: 'android' | 'ios';
+}
+
+/** SDK tool versions below this get an update hint (36 brought faster, more reliable adb/emulator). */
+export const RECOMMENDED_SDK_TOOL_MAJOR = 36;
+
+/** Major version from `adb version` ("Version 35.0.2-...") or `emulator -version` ("emulator version
+ *  35.4.9.0"); null when the output carries none. Exported for tests. */
+export function sdkToolMajor(output: string | null | undefined): number | null {
+  const m = /(?:^|\n)\s*Version (\d+)\.|emulator version (\d+)\./i.exec(output ?? '');
+  return m ? Number(m[1] ?? m[2]) : null;
+}
+
+function sdkVersionHint(tool: 'platform-tools' | 'emulator', major: number | null): string {
+  return major != null && major < RECOMMENDED_SDK_TOOL_MAJOR
+    ? ` (${tool} ${major}; ${RECOMMENDED_SDK_TOOL_MAJOR}+ recommended: sdkmanager "${tool}")`
+    : '';
 }
 
 const CLIENT_HINTS: Record<string, string> = {
@@ -41,19 +61,24 @@ export function defaultDoctorPlatform(hostPlatform: NodeJS.Platform = process.pl
   return hostPlatform === 'darwin' ? 'both' : 'android';
 }
 
-/** Minimum Node major version, mirrored from package.json "engines.node" (>=20). */
-export const MIN_NODE_MAJOR = 20;
+/** Minimum Node version, mirrored from package.json "engines.node" (>=22.12). */
+export const MIN_NODE_VERSION = '22.12';
 
-export function nodeVersionCheck(version: string = process.version, minMajor: number = MIN_NODE_MAJOR): Check {
-  const major = Number(/^v?(\d+)/.exec(version)?.[1] ?? NaN);
-  const ok = Number.isFinite(major) && major >= minMajor;
+export function nodeVersionCheck(version: string = process.version, minVersion: string = MIN_NODE_VERSION): Check {
+  const parse = (v: string): [number, number] | undefined => {
+    const m = /^v?(\d+)(?:\.(\d+))?/.exec(v);
+    return m ? [Number(m[1]), Number(m[2] ?? 0)] : undefined;
+  };
+  const have = parse(version);
+  const need = parse(minVersion) ?? [0, 0];
+  const ok = !!have && (have[0] > need[0] || (have[0] === need[0] && have[1] >= need[1]));
   return {
     name: 'node',
     ok,
-    detail: ok ? `${version} (>= ${minMajor})` : `${version} is below the supported minimum (>= ${minMajor})`,
+    detail: ok ? `${version} (>= ${minVersion})` : `${version} is below the supported minimum (>= ${minVersion})`,
     fix: ok
       ? undefined
-      : `Install Node.js ${minMajor} or newer (the client launches the server with the node on its PATH or the absolute path in its config).`,
+      : `Install Node.js ${minVersion} or newer (the client launches the server with the node on its PATH or the absolute path in its config).`,
   };
 }
 
@@ -96,8 +121,8 @@ export function registerDoctor(server: McpServer): void {
     {
       title: 'QA environment doctor',
       description:
-        'Check the local toolchain (Node, Android SDK/emulator, Xcode/simctl, WDA) and stale-client symptoms. Run it first ' +
-        'when setup fails.',
+        'Diagnose the local QA toolchain (Node, Android SDK/emulator, Xcode/simctl, WDA) and stale-client symptoms; run it first when ' +
+        'setup fails.',
       inputSchema: {
         platform: z.enum(['android', 'ios', 'both']).optional().describe('Default both on macOS (ready if either is), else android.'),
         client: z.enum(['claude', 'gemini', 'codex', 'cursor', 'vscode']).optional().describe('Tailor setup hints to this MCP client.'),
@@ -146,13 +171,17 @@ export function registerDoctor(server: McpServer): void {
         // PATH lookup: at startup src/index.ts prepends the SDK's platform-tools/ and emulator/
         // ($ANDROID_HOME, $ANDROID_SDK_ROOT, OS default) to PATH, so this sees SDK copies too.
         const hasAdb = await which('adb');
+        const adbVersionOut = hasAdb ? await run('adb', ['version'], { timeoutMs: 8000 }).catch(() => null) : null;
+        const adbOut = adbVersionOut?.code === 0 ? adbVersionOut.stdout || adbVersionOut.stderr : '';
         const sdkCandidates = androidSdkCandidates();
         const sdkDirs = sdkCandidates.join(', ');
         androidSdkFound = hasAdb || sdkCandidates.some((d) => existsSync(d));
         androidChecks.push({
           name: 'adb',
           ok: hasAdb,
-          detail: hasAdb ? ((await firstLine('adb', ['version'])) ?? 'present') : `not on PATH (SDK dirs checked: ${sdkDirs})`,
+          detail: hasAdb
+            ? `${adbOut.split('\n')[0]?.trim() || 'present'}${sdkVersionHint('platform-tools', sdkToolMajor(adbOut))}`
+            : `not on PATH (SDK dirs checked: ${sdkDirs})`,
           fix: hasAdb
             ? undefined
             : 'Install Android platform-tools (Android Studio > SDK Manager) and set ANDROID_HOME to the SDK dir (or put platform-tools on PATH).',
@@ -181,14 +210,16 @@ export function registerDoctor(server: McpServer): void {
 
         const hasEmulator = await which('emulator');
         avds = hasEmulator ? await listAvds() : [];
+        const emuVersionOut = hasEmulator ? await run('emulator', ['-version'], { timeoutMs: 8000 }).catch(() => null) : null;
+        const emuHint = sdkVersionHint('emulator', sdkToolMajor(emuVersionOut ? `${emuVersionOut.stdout}\n${emuVersionOut.stderr}` : ''));
         androidChecks.push({
           name: 'emulator+avd',
           ok: hasEmulator && avds.length > 0,
           optional: devices.length > 0,
           detail: hasEmulator
             ? avds.length
-              ? `AVDs: ${avds.join(', ')}`
-              : 'emulator present, no AVDs'
+              ? `AVDs: ${avds.join(', ')}${emuHint}`
+              : `emulator present, no AVDs${emuHint}`
             : `emulator not on PATH (SDK dirs checked: ${sdkDirs})`,
           fix:
             hasEmulator && avds.length === 0
@@ -222,6 +253,7 @@ export function registerDoctor(server: McpServer): void {
           detail: java ?? 'not found (only needed for build-from-source / native Android builds)',
         });
 
+        for (const c of androidChecks) c.platform = 'android';
         checks.push(...androidChecks);
         androidReady = androidChecks.filter((c) => !c.optional).every((c) => c.ok);
       }
@@ -286,6 +318,7 @@ export function registerDoctor(server: McpServer): void {
               ? undefined
               : 'Install appium-webdriveragent or configure ios.wda.derivedDataPath / wdaProjectPath.',
         });
+        for (const c of iosChecks) c.platform = 'ios';
         checks.push(...iosChecks);
         iosReady = iosChecks.filter((c) => !c.optional).every((c) => c.ok);
         wdaSummary = {
@@ -299,7 +332,7 @@ export function registerDoctor(server: McpServer): void {
 
       // Codex hands stdio servers a fixed env whitelist (see lib/codexEnv.ts): explain it, flag a
       // missing ANDROID_HOME/JAVA_HOME, and remind about tool_timeout_sec (not readable from here).
-      const codex = isCodexClient(server.server.getClientVersion()?.name) || client === 'codex';
+      const codex = isCodexClient(clientInfoOf(server)?.name) || client === 'codex';
       if (codex) checks.push(...codexEnvChecks({ env: process.env, androidSdkFound, javaFound }));
 
       // An explicit platform:"both" means "both must work"; the macOS default only needs one of them
@@ -319,7 +352,7 @@ export function registerDoctor(server: McpServer): void {
       const readyLabel = requested === 'both' && defaulted && !(androidReady && iosReady) ? (androidReady ? 'android' : 'ios') : requested;
 
       const summary =
-        `Swipium v${SWIPIUM_VERSION} · ${TOOL_COUNT} tools · schema ${schemaHash}\n${STALE_CLIENT_HINT}\n\n` +
+        `Swipium v${SWIPIUM_VERSION} · ${TOOL_COUNT} tools · schema ${schemaHash}\n${schemaHashMismatch ? `${STALE_CLIENT_HINT}\n` : ''}\n` +
         `${requiredOk ? `Environment ready for ${readyLabel} simulator QA.` : `Environment NOT ready for ${requested} simulator QA. See [fail] rows.`}\n${table}` +
         (codex ? `\n\nCodex: forward shell env with this line under [mcp_servers.swipium]:\n${codexEnvVarsLine()}` : '');
 
@@ -344,10 +377,11 @@ export function registerDoctor(server: McpServer): void {
                 }
               : undefined,
           checks,
-          checksByPlatform: { android: androidChecks, ios: iosChecks },
           devicesOnline: devices,
           avds,
-          simulators: wantsIos ? simulators : undefined,
+          // Booted simulators only (the full list can be dozens of rows); simulatorCount is the total.
+          simulators: wantsIos ? simulators.filter((s) => s.state === 'Booted') : undefined,
+          simulatorCount: wantsIos ? simulators.length : undefined,
           wda: wdaSummary,
           ...(clientHint ? { clientHint } : {}),
           ...(codex

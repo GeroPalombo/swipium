@@ -25,26 +25,9 @@ import { assertNoSecretLeaks, findSecretLeaks, inputBindings, secretSafeNotes, s
 import { getDriver } from '../session/attach.js';
 import { readinessForSession } from '../report/readiness.js';
 import { loadStateProfile, prepareStateProfile, teardownStateProfile, verifyStateProfile } from '../state/profile.js';
-import { hasStateProfileMutation, stateProfileAffects, stateRisk } from '../state/consent.js';
+import { hasStateProfileMutation, stateProfileAffects, stateRisk } from '../state/profileConsent.js';
+import { stableHash } from '../lib/stableHash.js';
 import type { Session, SessionStore } from '../session/store.js';
-
-function stable(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stable);
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([k, v]) => [k, stable(v)]),
-    );
-  }
-  return value;
-}
-
-function hash(value: unknown): string {
-  return createHash('sha256')
-    .update(JSON.stringify(stable(value)))
-    .digest('hex');
-}
 
 function hashFile(path: string | undefined | null): string | null {
   if (!path) return null;
@@ -302,7 +285,7 @@ export async function runSuiteGenerate(
             statePrepare: prepareAffects,
             stateTeardown: teardownAffects,
           };
-          mutationPayloadHash = hash(affects);
+          mutationPayloadHash = stableHash(affects);
           const risk =
             stateRisk('prepare', loaded.profile, session) === 'high' || stateRisk('teardown', loaded.profile, session) === 'high'
               ? 'high'

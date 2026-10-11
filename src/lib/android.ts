@@ -147,6 +147,19 @@ export function resolveApk(projectRoot: string, explicit?: string): ApkResolutio
   return best ? { apk: best.p } : { error: `No usable APK (>1MB) under ${projectRoot} or apps/android. Pass apk explicitly.` };
 }
 
+/** PURE: `emulator` argv for bootEmulator. Quick-boots from the AVD's snapshot when it has one
+ * but never saves one back on exit (`-no-snapshot-save`), so runs stay reproducible.
+ * SWIPIUM_EMULATOR_COLD_BOOT=1 adds `-no-snapshot-load` (full cold boot). `-gpu auto` uses the
+ * host GPU when there is one; SWIPIUM_EMULATOR_GPU overrides it (e.g. `swiftshader_indirect` on
+ * GPU-less headless CI, where `auto` with `-no-window` can fail to start or render black). */
+export function emulatorBootArgs(avd: string, headless = true, env: NodeJS.ProcessEnv = process.env): string[] {
+  const gpu = env.SWIPIUM_EMULATOR_GPU?.trim() || 'auto';
+  const args = ['-avd', avd, '-no-audio', '-no-snapshot-save', '-no-boot-anim', '-gpu', gpu];
+  if (env.SWIPIUM_EMULATOR_COLD_BOOT === '1') args.push('-no-snapshot-load');
+  if (headless) args.push('-no-window'); // omit for a visible window (local supervised QA)
+  return args;
+}
+
 /**
  * Boot an AVD headless. Returns the ChildProcess so the caller can `kill()` it on cancel.
  * We `unref()` it so a running emulator does NOT keep the MCP process alive after the
@@ -156,14 +169,48 @@ export function resolveApk(projectRoot: string, explicit?: string): ApkResolutio
  * (track + kill booted emulators on session-close) is a follow-up lifecycle pass.
  */
 export function bootEmulator(avd: string, headless = true): ChildProcess {
-  const args = ['-avd', avd, '-no-audio', '-no-snapshot', '-no-boot-anim', '-gpu', 'swiftshader_indirect'];
-  if (headless) args.push('-no-window'); // omit for a visible window (local supervised QA)
-  const child = spawn(resolveAndroidTool('emulator'), args, { detached: true, stdio: 'ignore' });
+  const child = spawn(resolveAndroidTool('emulator'), emulatorBootArgs(avd, headless), { detached: true, stdio: 'ignore' });
   child.unref();
   // Tracked for crash visibility only: the orphan reaper ADOPTS emulators (never kills them),
   // since an orphaned emulator stays booted and remains usable via adb for the next run.
   registerManagedProcess(child.pid, 'emulator');
   return child;
+}
+
+/** PURE: was this a cold boot? A snapshot restore keeps the guest uptime of the saved session, so
+ *  it exceeds the wall time since the emulator was spawned; a cold boot's uptime cannot. */
+export function bootWasCold(uptimeSec: number, sinceSpawnMs: number): boolean {
+  return uptimeSec * 1000 <= sinceSpawnMs + 2000;
+}
+
+export type QuickbootOutcome = 'snapshot_loaded' | 'snapshot_saved' | 'save_failed' | 'skipped';
+
+/**
+ * `-no-snapshot-save` never creates the AVD's quick-boot snapshot, so an AVD without one (fresh,
+ * or one whose snapshot no longer matches the emulator/GPU config) would cold boot every time.
+ * After a boot Swipium started (`spawnedAt`), if the guest cold booted, save `default_boot` once
+ * (`adb emu avd snapshot save`, a few seconds; about the AVD's RAM size on disk) so later boots
+ * restore this clean just-booted state. Skipped with SWIPIUM_EMULATOR_COLD_BOOT=1. Best effort.
+ */
+export async function ensureQuickbootSnapshot(
+  serial: string,
+  spawnedAt: number,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<QuickbootOutcome> {
+  if (env.SWIPIUM_EMULATOR_COLD_BOOT === '1') return 'skipped';
+  const signal = currentSignal();
+  try {
+    const up = await run('adb', ['-s', serial, 'shell', 'cat', '/proc/uptime'], { timeoutMs: 5000, signal });
+    const sec = parseFloat(up.stdout);
+    if (!Number.isFinite(sec)) return 'skipped';
+    if (!bootWasCold(sec, Date.now() - spawnedAt)) return 'snapshot_loaded';
+    const r = await run('adb', ['-s', serial, 'emu', 'avd', 'snapshot', 'save', 'default_boot'], { timeoutMs: 120000, signal });
+    // Success prints nothing (adb strips the console's OK); failures print `KO: ...` or `error: ...`.
+    return r.code === 0 && !/\bKO\b|error/i.test(r.stdout + r.stderr) ? 'snapshot_saved' : 'save_failed';
+  } catch (e) {
+    if (isAbortError(e, signal)) throw new CancelledError();
+    return 'save_failed';
+  }
 }
 
 /** Free bytes on the device /data partition (parsed from `df`), or null. */
@@ -312,6 +359,9 @@ export function fmtBytes(n: number | null): string {
   return `${v.toFixed(1)} ${u[i]}`;
 }
 
+/** Poll interval while waiting for an emulator to appear / finish booting. */
+export const BOOT_POLL_MS = 500;
+
 /** Wait until sys.boot_completed === 1 (or timeout). Honors the current call's cancellation
  *  (abortScope): the adb children are killed and CancelledError is thrown instead of polling on
  *  until the deadline. */
@@ -333,7 +383,7 @@ export async function waitForBoot(serial: string, timeoutMs = 180000): Promise<b
       if (isAbortError(e, signal)) throw new CancelledError();
       /* not up yet */
     }
-    await sleepOrCancel(Math.min(2000, Math.max(0, deadline - Date.now())), signal);
+    await sleepOrCancel(Math.min(BOOT_POLL_MS, Math.max(0, deadline - Date.now())), signal);
   }
   return false;
 }

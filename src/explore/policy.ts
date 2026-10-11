@@ -110,13 +110,3 @@ export function allowsControlledLogout(i: RiskInput, ctx: AccountCycleContext): 
   const impact = classifyHighImpact(i);
   return impact?.riskClass === 'logout';
 }
-
-/**
- * Resolve whether an action runs, honoring the controlled account-cycle logout exception. Falls
- * back to the standard allowedUnder() decision for everything else.
- */
-export function allowedUnderWithAccountCycle(i: RiskInput, mode: SafeMode, ctx?: AccountCycleContext): boolean {
-  const { risk } = classifyRisk(i);
-  if (risk === 'destructive' && ctx && allowsControlledLogout(i, ctx)) return true;
-  return allowedUnder(risk, mode);
-}

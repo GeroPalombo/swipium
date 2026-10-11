@@ -1,0 +1,13 @@
+{
+  "name": "swipium",
+  "version": "2.3.0",
+  "description": "Mobile QA on local Android Emulators and iOS Simulators: the Swipium MCP server plus the swipium-qa skill.",
+  "author": {
+    "name": "Swipium",
+    "url": "https://swipium.com"
+  },
+  "homepage": "https://swipium.com",
+  "repository": "https://github.com/GeroPalombo/swipium",
+  "license": "MIT",
+  "keywords": ["mcp", "mobile-testing", "qa", "android-emulator", "ios-simulator", "react-native", "flutter"]
+}

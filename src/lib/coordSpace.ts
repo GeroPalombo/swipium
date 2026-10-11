@@ -20,9 +20,14 @@ export interface CoordinateSpace {
 /** Assemble the coordinate space for a screenshot buffer using the driver's device metrics. */
 export async function captureCoordinateSpace(driver: Driver, screenshotBuf: Buffer): Promise<CoordinateSpace> {
   const shot = pngSize(screenshotBuf);
-  const [device, density] = await Promise.all([driver.screenSize().catch(() => null), driver.screenDensity().catch(() => null)]);
   const serial = driver.currentDevice();
-  const o = serial ? await getOrientation(serial).catch(() => null) : null;
+  // The PNG dims go along so a driver that derives its size from a screenshot (SimctlDriver)
+  // doesn't take a second one; other drivers ignore the argument.
+  const [device, density, o] = await Promise.all([
+    driver.screenSize(shot).catch(() => null),
+    driver.screenDensity().catch(() => null),
+    serial ? getOrientation(serial).catch(() => null) : null,
+  ]);
   const orientation: CoordinateSpace['orientation'] = o ? (o.rotation === 1 || o.rotation === 3 ? 'landscape' : 'portrait') : 'unknown';
   const scale = shot && device && device.width ? Math.round((shot.width / device.width) * 1000) / 1000 : null;
   return { origin: 'top-left', screenshot: shot, device, density, scale, orientation };

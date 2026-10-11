@@ -1,0 +1,13 @@
+{
+  "name": "swipium",
+  "owner": {
+    "name": "Swipium"
+  },
+  "plugins": [
+    {
+      "name": "swipium",
+      "source": "./plugin",
+      "description": "Mobile QA on local Android Emulators and iOS Simulators"
+    }
+  ]
+}

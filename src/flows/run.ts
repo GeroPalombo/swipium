@@ -8,12 +8,22 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { parseSnapshot, signature } from '../snapshot/parse.js';
+import { signature } from '../snapshot/parse.js';
 import { settle } from '../snapshot/settle.js';
+import {
+  adoptSnapshot,
+  freshSnapshot,
+  noteScreenMutation,
+  preActionFingerprint,
+  SNAPSHOT_REUSE_MS,
+  snapshotNow,
+  snapshotView,
+} from '../snapshot/fresh.js';
+import { awaitIme, IME_HOP_FLOOR_MS } from '../core/ime.js';
 import { checkHealth } from '../oracle/health.js';
 import { recordHealthFindings } from '../oracle/record.js';
 import { isAbortError, sleepOrCancel, throwIfCancelled } from '../lib/abortScope.js';
-import { boundsBucket, resolveTarget, resourceIdMatches, type Target } from '../core/target.js';
+import { boundsBucket, FLOW_TARGET_WAIT_MS, RESOLVE_POLL_MS, resolveTarget, resourceIdMatches, type Target } from '../core/target.js';
 import { imageDiff, findTemplate } from '../lib/image.js';
 import { captureCoordinateSpace, toDevicePoint } from '../lib/coordSpace.js';
 import { executeSeed } from './seedExec.js';
@@ -125,10 +135,16 @@ function describe(step: FlowStep): string {
   }
 }
 
-async function snapshot(session: Session, d: Driver) {
-  const parsed = parseSnapshot(await d.dumpXml());
-  session.lastSnapshot = { fullByRef: parsed.fullByRef, signatures: new Set(parsed.elements.map(signature)), allNodes: parsed.allNodes };
-  return parsed;
+/** A fresh dump adopted as the session snapshot; `reuse` returns a just-settled one instead (P2,
+ *  single-shot checks only: a polling loop must see new dumps). */
+async function snapshot(session: Session, d: Driver, reuse = false) {
+  const cached = reuse ? freshSnapshot(session, SNAPSHOT_REUSE_MS) : undefined;
+  if (cached)
+    return {
+      ...snapshotView(cached),
+      screen: [cached.allNodes[0]?.bounds[2] ?? 0, cached.allNodes[0]?.bounds[3] ?? 0] as [number, number],
+    };
+  return snapshotNow(session, d);
 }
 function visible(parsed: { allNodes: { text: string; desc: string; id: string }[] }, query: string): boolean {
   const q = query.toLowerCase();
@@ -243,8 +259,9 @@ async function resourceIdVisibility(
   d: Driver,
   id: string,
   provenance?: FlowProvenanceEntry,
+  reuse = false,
 ): Promise<{ visible: boolean; ambiguous?: boolean; detail?: string }> {
-  const parsed = await snapshot(session, d);
+  const parsed = await snapshot(session, d, reuse);
   const matches = parsed.allNodes.filter((node) => resourceIdMatches(undefined, node.id, id));
   const screenMismatch = provenance?.originalScreenSignature && flowScreenSignature(parsed) !== provenance.originalScreenSignature;
   if (!matches.length)
@@ -359,6 +376,15 @@ export async function runFlow(
   const initialScreenSize = await d.screenSize().catch(() => null);
   const currentScreenSize = async () => (await d.screenSize().catch(() => null)) ?? initialScreenSize;
   const mutationConsent = opts.mutationConsent ?? { required: false, approved: true };
+  // P1/P2: settle with the pre-action fingerprint (Android fast accept) and keep the settled dump as
+  // the session snapshot, so the next step's target / assertion reuses it instead of dumping again.
+  // `afterAction:false` (waitForIdle): no action ran, so a dump that differs from the last snapshot
+  // means the screen is still changing, never that it settled; keep the 2-dump confirm.
+  const settleStep = async (ms = timeoutMs, afterAction = true) => {
+    const s = await settle(d, { timeoutMs: ms, preFingerprint: afterAction ? preActionFingerprint(session) : undefined });
+    if (s.parsed && s.xml) adoptSnapshot(session, s.parsed);
+    return s;
+  };
 
   const resolveFlowText = (value: string): { out: string; missing: string[] } => {
     const resolved = resolveVars(value, vars);
@@ -420,14 +446,16 @@ export async function runFlow(
       case 'prepareTarget':
         if (!appId) return { ok: false, detail: 'no appId (set flow.appId or run qa_prepare_target first)', failureCode: 'NO_ARTIFACT' };
         await d.launchApp(appId);
-        await settle(d, { timeoutMs });
+        noteScreenMutation(session);
+        await settleStep();
         return { ok: true };
       case 'restartApp':
         if (!appId) return { ok: false, detail: 'no appId', failureCode: 'NO_ARTIFACT' };
         try {
           await d.terminateApp(appId);
           await d.launchApp(appId);
-          await settle(d, { timeoutMs });
+          noteScreenMutation(session);
+          await settleStep();
           sessions.addEnvChange(session, 'restartApp');
           recordFlowMutation('flow_restart_app', 'low', { stepKind: step.kind }, 'executed');
           return { ok: true };
@@ -447,7 +475,7 @@ export async function runFlow(
             return { ok: false, detail: String(e), failureCode: classifyFlowDriverError(e, 'ELEMENT_NOT_FOUND') };
           }
           sessions.bump(session, 'actions');
-          await settle(d, { timeoutMs });
+          await settleStep();
           return { ok: true };
         }
         if (native && native.using !== 'accessibility id' && native.using !== 'name') {
@@ -457,17 +485,17 @@ export async function runFlow(
             failureCode: 'BACKEND_UNSUPPORTED',
           };
         }
-        const t = await resolveTarget(session, targetForTapSelector(selector, provenance));
+        const t = await resolveTarget(session, targetForTapSelector(selector, provenance), { waitMs: FLOW_TARGET_WAIT_MS });
         if ('error' in t) return { ok: false, detail: t.error, failureCode: classifyFlowDriverError(t.error, 'ELEMENT_NOT_FOUND') };
         await d.pressXY(t.x, t.y, 100);
         sessions.bump(session, 'actions');
-        await settle(d, { timeoutMs });
+        await settleStep();
         return { ok: true };
       }
       case 'tapAt':
         await d.pressXY(step.x, step.y, 100);
         sessions.bump(session, 'actions');
-        await settle(d, { timeoutMs });
+        await settleStep();
         return { ok: true };
       case 'tapImage': {
         if (!withinRootOrNull(session.root, step.template)) return outsideRoot(step.template);
@@ -475,7 +503,7 @@ export async function runFlow(
         if (!pt) return { ok: false, detail: `image "${step.template}" not found on screen`, failureCode: 'ELEMENT_NOT_FOUND' };
         await d.pressXY(pt.x, pt.y, 100);
         sessions.bump(session, 'actions');
-        await settle(d, { timeoutMs });
+        await settleStep();
         return { ok: true };
       }
       case 'tapOcrText': {
@@ -494,7 +522,7 @@ export async function runFlow(
         if (!hit) return { ok: false, detail: `OCR text "${shown(query)}" not found`, failureCode: 'ELEMENT_NOT_FOUND' };
         await d.pressXY(hit.devicePoint.x, hit.devicePoint.y, 100);
         sessions.bump(session, 'actions');
-        await settle(d, { timeoutMs });
+        await settleStep();
         return { ok: true };
       }
       case 'inputText': {
@@ -533,15 +561,18 @@ export async function runFlow(
             };
           }
           // selector-bound: focus the named field first (no reliance on existing focus)
-          const t = await resolveTarget(session, targetForTapSelector(into.out, provenance));
+          const t = await resolveTarget(session, targetForTapSelector(into.out, provenance), { waitMs: FLOW_TARGET_WAIT_MS });
           if ('error' in t)
             return {
               ok: false,
               detail: `field "${shown(into.out)}": ${t.error}`,
               failureCode: classifyFlowDriverError(t.error, 'ELEMENT_NOT_FOUND'),
             };
+          // Field hop: with the keyboard already up, "shown" says nothing about the new field having
+          // focus yet, so keep the same floor qa_act uses before typing.
+          const imeWasUp = await d.imeShown().catch(() => false);
           await d.tapXY(t.x, t.y);
-          await new Promise((r) => setTimeout(r, 600));
+          await awaitIme(d, 600, imeWasUp ? IME_HOP_FLOOR_MS : 0); // P3: proceed once the keyboard is up (600 ms cap)
           await d.clearFocusedText(t.textLen);
         }
         if (step.secret && out) session.secrets.add(out);
@@ -553,23 +584,33 @@ export async function runFlow(
         const resolved = resolveFlowText(step.query);
         if (resolved.missing.length) return unresolved(resolved.missing);
         const query = resolved.out;
-        try {
-          const native = await nativeVisible(d, query);
-          if (native != null)
-            return native ? { ok: true } : { ok: false, detail: `"${shown(query)}" not visible`, failureCode: 'ASSERTION_FAILED' };
-        } catch (e) {
-          return { ok: false, detail: String((e as Error).message ?? e), failureCode: 'BACKEND_UNSUPPORTED' };
+        // X2: poll up to FLOW_TARGET_WAIT_MS for the element to appear; the first check may reuse
+        // the just-settled snapshot (P2).
+        const deadline = Date.now() + FLOW_TARGET_WAIT_MS;
+        for (let first = true; ; first = false) {
+          if (!first) await sleepOrCancel(Math.min(RESOLVE_POLL_MS, Math.max(1, deadline - Date.now())));
+          let detail = `"${shown(query)}" not visible`;
+          let native: boolean | null;
+          try {
+            native = await nativeVisible(d, query);
+          } catch (e) {
+            if (isAbortError(e)) throw e;
+            return { ok: false, detail: String((e as Error).message ?? e), failureCode: 'BACKEND_UNSUPPORTED' };
+          }
+          if (native === true) return { ok: true };
+          if (native === null) {
+            const id = resourceIdSelector(query);
+            if (id) {
+              const visibleById = await resourceIdVisibility(session, d, id, provenance, first);
+              if (visibleById.ambiguous) return { ok: false, detail: visibleById.detail, failureCode: 'AMBIGUOUS_SELECTOR' };
+              if (visibleById.visible) return { ok: true };
+              detail = visibleById.detail ?? detail;
+            } else if (visible(await snapshot(session, d, first), fallbackVisibleQuery(query))) {
+              return { ok: true };
+            }
+          }
+          if (Date.now() >= deadline) return { ok: false, detail, failureCode: 'ASSERTION_FAILED' };
         }
-        const id = resourceIdSelector(query);
-        if (id) {
-          const visibleById = await resourceIdVisibility(session, d, id, provenance);
-          if (visibleById.ambiguous) return { ok: false, detail: visibleById.detail, failureCode: 'AMBIGUOUS_SELECTOR' };
-          return visibleById.visible
-            ? { ok: true }
-            : { ok: false, detail: visibleById.detail ?? `"${shown(query)}" not visible`, failureCode: 'ASSERTION_FAILED' };
-        }
-        const ok = visible(await snapshot(session, d), fallbackVisibleQuery(query));
-        return ok ? { ok } : { ok, detail: `"${shown(query)}" not visible`, failureCode: 'ASSERTION_FAILED' };
       }
       case 'assertNotVisible': {
         const resolved = resolveFlowText(step.query);
@@ -592,7 +633,7 @@ export async function runFlow(
             ? { ok: true }
             : { ok: false, detail: `"${shown(query)}" unexpectedly visible`, failureCode: 'ASSERTION_FAILED' };
         }
-        const ok = !visible(await snapshot(session, d), fallbackVisibleQuery(query));
+        const ok = !visible(await snapshot(session, d, true), fallbackVisibleQuery(query));
         return ok ? { ok } : { ok, detail: `"${shown(query)}" unexpectedly visible`, failureCode: 'ASSERTION_FAILED' };
       }
       case 'assertImage': {
@@ -674,7 +715,7 @@ export async function runFlow(
         const v = swipeVector(await currentScreenSize(), step.direction, step.area, step.distance);
         await d.swipe(v[0], v[1], v[2], v[3], 300);
         sessions.bump(session, 'actions');
-        await settle(d, { timeoutMs });
+        await settleStep();
         return { ok: true };
       }
       case 'scrollTo': {
@@ -689,6 +730,7 @@ export async function runFlow(
             if (native === false) {
               const v = swipeVector(screenSize, 'up');
               await d.swipe(v[0], v[1], v[2], v[3], 300);
+              noteScreenMutation(session);
               await new Promise((r) => setTimeout(r, 400));
               continue;
             }
@@ -705,6 +747,7 @@ export async function runFlow(
           }
           const v = swipeVector(screenSize, 'up');
           await d.swipe(v[0], v[1], v[2], v[3], 300);
+          noteScreenMutation(session);
           await new Promise((r) => setTimeout(r, 400));
         }
         return { ok: false, detail: `"${shown(query)}" not found after scrolling`, failureCode: 'ELEMENT_NOT_FOUND' };
@@ -712,13 +755,14 @@ export async function runFlow(
       case 'press':
         await d.pressKey(step.key);
         sessions.bump(session, 'actions');
-        await settle(d, { timeoutMs });
+        await settleStep();
         return { ok: true };
       case 'openUrl': {
         const { out, missing } = resolveFlowText(step.url);
         if (missing.length) return unresolved(missing);
         await d.openUrl(out);
-        await settle(d, { timeoutMs });
+        noteScreenMutation(session);
+        await settleStep();
         return { ok: true };
       }
       case 'wait':
@@ -779,7 +823,7 @@ export async function runFlow(
       }
       case 'waitForIdle': {
         const waitStarted = Date.now();
-        await settle(d, { timeoutMs: step.timeoutMs ?? timeoutMs });
+        await settleStep(step.timeoutMs ?? timeoutMs, false);
         sessions.addMilestoneDuration(session, 'wait_ms', Date.now() - waitStarted);
         return { ok: true };
       }
@@ -789,7 +833,8 @@ export async function runFlow(
         if (await d.imeShown().catch(() => false)) {
           if (d.hideKeyboard) await d.hideKeyboard().catch(() => false);
           else await d.pressKey('back');
-          await settle(d, { timeoutMs });
+          noteScreenMutation(session);
+          await settleStep();
           return { ok: true, detail: 'keyboard hidden' };
         }
         const parsed = await snapshot(session, d).catch(() => null);
@@ -815,6 +860,7 @@ export async function runFlow(
           }
           try {
             await d.dismissAlert();
+            noteScreenMutation(session);
           } catch (e) {
             return {
               ok: true,
@@ -822,7 +868,7 @@ export async function runFlow(
               detail: `${dismissible} detected but NOT dismissed: native alert dismiss failed: ${String((e as Error)?.message ?? e)}`,
             };
           }
-          await settle(d, { timeoutMs });
+          await settleStep();
           const after = await snapshot(session, d).catch(() => null);
           const fgAfter = await d.foregroundOwner().catch(() => 'unknown');
           const still = after ? detectBackDismissibleOverlay(after.allNodes, after.screen, session.appId, fgAfter) : undefined;
@@ -835,7 +881,8 @@ export async function runFlow(
           return { ok: true, detail: `dismissed ${dismissible} with the native alert API` };
         }
         await d.pressKey('back');
-        await settle(d, { timeoutMs });
+        noteScreenMutation(session);
+        await settleStep();
         return { ok: true, detail: `dismissed ${dismissible} with BACK` };
       }
       case 'networkOffline':
@@ -845,6 +892,7 @@ export async function runFlow(
         try {
           if (offline && !session.network) session.network = { changed: true, originalAirplane: await d.airplaneOn().catch(() => false) };
           await d.setAirplane(offline);
+          noteScreenMutation(session);
           if (session.network) session.network.changed = true;
           sessions.addEnvChange(session, `network ${offline ? 'offline' : 'online'}`);
           sessions.persist(session);
@@ -859,6 +907,7 @@ export async function runFlow(
         const fixture = session.fixtures.find((f) => f.name === step.fixture);
         if (!fixture?.seed) return { ok: false, detail: `fixture "${step.fixture}" has no seed spec`, failureCode: 'SEED_FAILED' };
         const r = await executeSeed(sessions, session, d, step.fixture, fixture.seed);
+        noteScreenMutation(session);
         const risk: MutationRecord['risk'] = fixture.seed.type === 'script' ? 'high' : fixture.seed.type === 'api' ? 'medium' : 'low';
         if (!r.ok) {
           sessions.addNote(session, {

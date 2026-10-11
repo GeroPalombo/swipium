@@ -225,8 +225,3 @@ export function classifyCurrentScreen(obs: ScreenObservation): ScreenClassificat
     mapLinks,
   };
 }
-
-/** Convenience: the set of field kinds a classification needs filled (deduped, required first). */
-export function neededFieldKinds(c: ScreenClassification): FieldKind[] {
-  return [...new Set(c.requiredInputs.map((i) => i.field))];
-}

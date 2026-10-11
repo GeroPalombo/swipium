@@ -6,6 +6,7 @@
 
 import { parseSnapshot } from '../snapshot/parse.js';
 import { settle } from '../snapshot/settle.js';
+import { noteScreenMutation } from '../snapshot/fresh.js';
 import { checkHealth } from '../oracle/health.js';
 import { recordHealthFindings } from '../oracle/record.js';
 import { CancelledError, isAbortError } from '../lib/abortScope.js';
@@ -286,6 +287,12 @@ export async function runExplore(
   const note = (n: Parameters<SessionStore['addNote']>[1] extends infer T ? Omit<NonNullable<T>, 'at'> : never) =>
     sessions.addNote(session, { at: Date.now(), ...(n as object) } as Parameters<SessionStore['addNote']>[1]);
 
+  // The last settle's final dump, consumed by the next observe() instead of dumping again (P5).
+  let settledXml: string | undefined;
+  const settleAndKeep = async (timeoutMs: number) => {
+    settledXml = (await settle(driver, { timeoutMs }).catch(() => undefined))?.xml || undefined;
+  };
+
   /** Observe the current screen as a graph node (structured or visual-only). */
   const observe = async (): Promise<{
     node: ScreenNode;
@@ -295,22 +302,39 @@ export async function runExplore(
     authWall: boolean;
     actionLikeSkipped: SkippedActionLike[];
   }> => {
-    const foreground = await driver.foregroundOwner().catch(() => 'unknown');
     let xml = '';
     let elements: ReturnType<typeof parseSnapshot>['elements'] = [];
     let webviewDominance = 0;
-    try {
-      xml = await driver.dumpXml();
-      const parsed = parseSnapshot(xml);
-      elements = parsed.elements;
-      webviewDominance = parsed.quality.signals.webviewDominance;
-    } catch (e) {
+    const seeded = settledXml;
+    settledXml = undefined;
+    // Respect the SESSION screenshot budget (not a separate fixed counter) so two observes per
+    // action can't overshoot the cap (P2 fix). The screenshot runs alongside the dump (P5).
+    const wantShot = !session.sensitive && session.counters.screenshots < session.budget.maxScreenshots;
+    const [dumped, shot] = await Promise.all([
+      seeded !== undefined
+        ? Promise.resolve<string | Error>(seeded)
+        : driver.dumpXml().catch((e: unknown) => (e instanceof Error ? e : new Error(String(e)))),
+      wantShot ? driver.screenshot().catch(() => undefined) : Promise.resolve(undefined),
+    ]);
+    if (dumped instanceof Error) {
       // Cancelled job: an aborted dump is not a visual-only screen, a finding or a blocker.
-      if (isAbortError(e, signal)) throw new CancelledError('exploration cancelled');
+      if (isAbortError(dumped, signal)) throw new CancelledError('exploration cancelled');
       /* snapshot failed, so treated as visual-only below */
+    } else {
+      try {
+        xml = dumped;
+        const parsed = parseSnapshot(xml);
+        elements = parsed.elements;
+        webviewDominance = parsed.quality.signals.webviewDominance;
+      } catch {
+        /* unparsable dump, so treated as visual-only below */
+      }
     }
     if (signal?.aborted) throw new CancelledError('exploration cancelled');
     const health = await checkHealth(driver, session.appId, xml || undefined);
+    // P5: the health check already resolved the foreground (from the dump's root package when it is
+    // the app under test, else dumpsys), so no separate up-front foregroundOwner call.
+    const foreground = health.foreground;
     if (health.cancelled || signal?.aborted) throw new CancelledError('exploration cancelled');
     await recordHealthFindings(sessions, session, health.findings, driver, health.foreground);
     if (!health.nativeHealthy) summary.appErrors += 0; // native handled separately below
@@ -320,12 +344,9 @@ export async function runExplore(
     };
 
     let screenshotUri: string | undefined;
-    let png: Buffer | undefined;
-    // Respect the SESSION screenshot budget (not a separate fixed counter) so two observes per
-    // action can't overshoot the cap (P2 fix).
-    if (!session.sensitive && session.counters.screenshots < session.budget.maxScreenshots) {
+    const png: Buffer | undefined = shot;
+    if (png) {
       try {
-        png = await driver.screenshot();
         screenshotUri = sessions.saveArtifact(session, 'screenshot', `explore-${Date.now()}.png`, png, 'image/png', 'exploration evidence');
         sessions.bump(session, 'screenshots');
       } catch {
@@ -584,13 +605,14 @@ export async function runExplore(
         // Nothing safe+new here. Go back to keep exploring; if we're at the root with nothing, stop.
         if (lastNodeId && obs.node.id !== graph.rootId && depth > 1) {
           await driver.pressKey('back').catch(() => {});
+          noteScreenMutation(session); // uncounted screen change: a stored snapshot is stale now
           graph.addEdge({
             from: obs.node.id,
             action: { type: 'back', targetDescription: 'back' },
             outcome: 'changed_screen',
             evidenceUris: [],
           });
-          await settle(driver, { timeoutMs: 4000 }).catch(() => {});
+          await settleAndKeep(4000);
           lastNodeId = obs.node.id;
           continue;
         }
@@ -673,7 +695,7 @@ export async function runExplore(
             provenance: provenanceForCandidate(obs.node, pick),
           });
         }
-        await settle(driver, { timeoutMs: 5000 }).catch(() => {});
+        await settleAndKeep(5000);
         const afterType = await observe();
         graph.addEdge({
           from: fromId,
@@ -733,7 +755,7 @@ export async function runExplore(
           provenance: provenanceForCandidate(obs.node, pick),
         });
       }
-      await settle(driver, { timeoutMs: 5000 }).catch(() => {});
+      await settleAndKeep(5000);
 
       // ---- observe outcome to classify the transition ----
       const after = await observe();
