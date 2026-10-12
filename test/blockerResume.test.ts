@@ -1,4 +1,4 @@
-// H1 — qa_continue_from_blocker must resume a monorepo_target answer as a PROJECT ROOT (not a
+// qa_continue_from_blocker must resume a monorepo_target answer as a PROJECT ROOT (not a
 // device), resolve relative candidates against the session root, validate the directory exists,
 // only emit args qa_test_this's schema accepts, and report everything else as `ignored` instead
 // of silently dropping it. Hermetic: HOME points at a temp dir before the store loads.
@@ -34,7 +34,7 @@ function captureTools(register: (server: never) => void): Map<string, { schema: 
   return tools;
 }
 
-describe('mapBlockerChoices (H1)', () => {
+describe('mapBlockerChoices', () => {
   it('maps a monorepo target to projectRoot (resolved against the session root), never to device', () => {
     const m = mapBlockerChoices('monorepo_target', { target: 'apps/mobile' }, projectRoot);
     expect(m.error).toBeUndefined();
@@ -80,7 +80,7 @@ describe('mapBlockerChoices (H1)', () => {
   });
 });
 
-describe('qa_continue_from_blocker end-to-end (H1)', () => {
+describe('qa_continue_from_blocker end-to-end', () => {
   const store = new SessionStore();
   const tools = captureTools((s) => registerAgentTools(s, store));
   const cont = tools.get('qa_continue_from_blocker')!.handler;
@@ -142,7 +142,7 @@ describe('qa_continue_from_blocker end-to-end (H1)', () => {
   });
 });
 
-describe('monorepo root chosen as the target does not re-ask forever (H1)', () => {
+describe('monorepo root chosen as the target does not re-ask forever', () => {
   it('qa_test_this plan asks once, then honors the monorepo_target answer for the root app itself', async () => {
     const { writeFileSync } = await import('node:fs');
     const { handleTestThis } = await import('../src/orchestration/testThis/plan.js');

@@ -1,5 +1,5 @@
 import type { RankedCandidate } from './candidates.js';
-import type { CoverageClaim, ExploreTask, FeatureKey, FeatureStatus, ReflectionResult, ScreenNode } from './graph.js';
+import type { CoverageClaim, ExploreEdge, ExploreTask, FeatureKey, FeatureStatus, ReflectionResult, ScreenNode } from './graph.js';
 
 const FEATURE_RULES: Array<{ feature: FeatureKey; re: RegExp; task: string; risk: ExploreTask['risk'] }> = [
   {
@@ -102,14 +102,30 @@ export function proposeTasks(input: {
   return tasks;
 }
 
-export function estimateFeatureCoverage(nodes: ScreenNode[], tasks: ExploreTask[]): Record<FeatureKey, FeatureStatus> {
+export function estimateFeatureCoverage(
+  nodes: ScreenNode[],
+  tasks: ExploreTask[],
+  edges?: ExploreEdge[],
+): Record<FeatureKey, FeatureStatus> {
   const text = nodes
     .flatMap((n) => [n.title, ...n.elements.flatMap((e) => [e.label, e.locator?.value, e.reason])])
     .filter(Boolean)
     .join(' ');
+  // "Covered" needs a feature-specific screen (its title) or an action that ran on it (a
+  // tap/type that changed the screen), not a label anywhere on a visited screen; a label alone is
+  // "observed". Callers without edges keep the old lexical estimate.
+  const acted = edges
+    ? [
+        ...nodes.map((n) => n.title ?? ''),
+        ...edges.filter((e) => e.outcome === 'changed_screen' && e.action.type !== 'back').map((e) => e.action.targetDescription),
+      ].join(' ')
+    : text;
   const out = Object.fromEntries(FEATURE_KEYS.map((k) => [k, 'not_found'])) as Record<FeatureKey, FeatureStatus>;
   for (const rule of FEATURE_RULES) {
-    if (rule.re.test(text)) out[rule.feature] = rule.risk === 'destructive' ? 'unsafe' : 'covered';
+    if (rule.risk === 'destructive') {
+      if (rule.re.test(text)) out[rule.feature] = 'unsafe';
+    } else if (rule.re.test(acted)) out[rule.feature] = 'covered';
+    else if (rule.re.test(text)) out[rule.feature] = 'observed';
   }
   for (const task of tasks) {
     if (task.status === 'blocked')
@@ -134,12 +150,14 @@ export function coverageClaimsFrom(features: Record<FeatureKey, FeatureStatus>, 
       evidence,
       reason:
         status === 'covered'
-          ? 'reachable UI evidence was observed'
-          : status === 'unsafe'
-            ? 'only high-impact controls were found'
-            : status === 'needs_fixture'
-              ? 'requires declared test data or disposable state'
-              : 'no strong feature signal observed',
+          ? 'a feature screen was reached or a feature action ran'
+          : status === 'observed'
+            ? 'feature wording seen on a visited screen; not exercised'
+            : status === 'unsafe'
+              ? 'only high-impact controls were found'
+              : status === 'needs_fixture'
+                ? 'requires declared test data or disposable state'
+                : 'no strong feature signal observed',
     };
   });
 }

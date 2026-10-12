@@ -1,4 +1,4 @@
-// Screen graph (Phase 3.3 Milestone B): model exploration as nodes (screens) + edges (actions),
+// Screen graph: model exploration as nodes (screens) + edges (actions),
 // not free-form notes. Nodes dedupe by signature so revisiting Home collapses to one node while a
 // modal/sheet becomes a distinct node. PURE: serialization only; the runner drives it.
 
@@ -74,7 +74,7 @@ export type FeatureKey =
   | 'profile'
   | 'notifications';
 
-export type FeatureStatus = 'covered' | 'blocked' | 'unsafe' | 'not_found' | 'needs_fixture';
+export type FeatureStatus = 'covered' | 'observed' | 'blocked' | 'unsafe' | 'not_found' | 'needs_fixture';
 
 export interface ExploreTask {
   id: string;
@@ -125,6 +125,8 @@ export class ExploreGraph {
   private coverageClaims: CoverageClaim[] = [];
   private blockedPreconditions: string[] = [];
   private reflection?: ReflectionResult;
+  /** Monotonic node-id counter (ids stay unique after removeNode). */
+  private nextId = 1;
   rootId?: string;
 
   constructor(private platform: Platform) {}
@@ -139,12 +141,23 @@ export class ExploreGraph {
       existing.health = node.health;
       return { node: existing, isNew: false };
     }
-    const id = `s${this.order.length + 1}`;
+    const id = `s${this.nextId++}`;
     const full: ScreenNode = { ...node, id, visits: 1 };
     this.nodes.set(node.signature, full);
     this.order.push(node.signature);
     if (!this.rootId) this.rootId = id;
     return { node: full, isNew: true };
+  }
+
+  /** Drop a node and its edges (a screen of another app reached by an external link is not
+   *  an app screen). */
+  removeNode(id: string): void {
+    const sig = this.order.find((s) => this.nodes.get(s)?.id === id);
+    if (!sig) return;
+    this.nodes.delete(sig);
+    this.order = this.order.filter((s) => s !== sig);
+    this.edges = this.edges.filter((e) => e.from !== id && e.to !== id);
+    if (this.rootId === id) this.rootId = this.order.length ? this.nodes.get(this.order[0])!.id : undefined;
   }
 
   /** Look up a node by its current signature (for "did the screen change?"). */

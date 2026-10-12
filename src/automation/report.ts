@@ -1,11 +1,11 @@
-// Automation Kernel V2, Workstream 9: Automation Readiness Output. Turns an AutomationPlan into one
+// Automation Kernel V2: Automation Readiness Output. Turns an AutomationPlan into one
 // consistent response shape with natural-language messages a coding agent can repeat verbatim to the
-// user. The canonical phrases below match the plan's required wording for each backend/fallback case.
+// user. The canonical phrases below match the required wording for each backend/fallback case.
 
 import type { ActionKind, AutomationBackend, AutomationPlan, AutomationReadinessResponse, AutomationStatus, PlanStep } from './types.js';
 import { isVisualStrategy } from './types.js';
 
-// Canonical phrases (plan Workstream 9, "Required phrases").
+// Canonical phrases.
 const PHRASE = {
   iosRawSimulator:
     'I can launch and inspect the app in the iOS simulator, but this backend cannot run structured taps. Attach WDA or Appium for selector-based automation.',

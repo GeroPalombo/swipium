@@ -6,7 +6,7 @@
 // `pid:token`, created exclusively) so release can verify the lock is still ours. A holder that
 // stalled past the stale threshold and was taken over must NOT delete the new owner's lock.
 //
-// Stale takeover (holder crashed mid-write) is CLAIM-then-MOVE (H8, review round 2):
+// Stale takeover (holder crashed mid-write) is CLAIM-then-MOVE:
 //  1. claim: the taker creates `<lockPath>/.takeover` EXCLUSIVELY ('wx', with its own token).
 //     Only one taker can claim a given lock-directory instance, and the lock path never
 //     disappears during a failed claim, so a newcomer can't slip in;
@@ -33,7 +33,7 @@
 //    refreshes the lock's mtime every staleMs/3 so a long holder is never judged stale.
 // On timeout both variants fail rather than proceed unlocked (that would reintroduce clobbers).
 
-import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, join } from 'node:path';
 import { log } from './logger.js';
@@ -368,15 +368,40 @@ export function renameWithRetry(
   }
 }
 
-/** Atomic file write: unique tmp sibling + rename (with Windows retry). Removes the tmp on failure. */
-export function writeFileAtomicSync(path: string, data: string | Buffer): void {
+/** Atomic file write: unique tmp sibling + rename (with Windows retry). Removes the tmp on failure.
+ *  `opts.mode` (e.g. 0o600 for ~/.swipium state files) is applied to the tmp file before the rename,
+ *  so the target ends up with that mode even when an older, wider-permission file is replaced. */
+export function writeFileAtomicSync(path: string, data: string | Buffer, opts: { mode?: number } = {}): void {
   const tmp = `${path}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
-  writeFileSync(tmp, data);
+  writeFileSync(tmp, data, opts.mode != null ? { mode: opts.mode } : undefined);
+  if (opts.mode != null && process.platform !== 'win32') {
+    try {
+      chmodSync(tmp, opts.mode);
+    } catch {
+      /* best-effort */
+    }
+  }
   try {
     renameWithRetry(tmp, path);
   } catch (e) {
     rmSync(tmp, { force: true });
     throw e;
+  }
+}
+
+/** Owner-only modes for ~/.swipium state (registry/projects/processes files 0600, dirs 0700). */
+export const PRIVATE_STATE_FILE_MODE = 0o600;
+export const PRIVATE_STATE_DIR_MODE = 0o700;
+
+/** mkdir -p with mode 0700, then chmod 0700 (the mode only applies to newly created dirs). POSIX
+ *  only; a chmod failure is ignored (never breaks a write). */
+export function mkdirPrivateSync(dir: string): void {
+  mkdirSync(dir, { recursive: true, mode: PRIVATE_STATE_DIR_MODE });
+  if (process.platform === 'win32') return;
+  try {
+    chmodSync(dir, PRIVATE_STATE_DIR_MODE);
+  } catch {
+    /* best-effort */
   }
 }
 

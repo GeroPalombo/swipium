@@ -50,12 +50,14 @@ export function registerFirstRun(server: McpServer, sessions: SessionStore): voi
 
       const session = sessions.get(sessionId);
       if (!session) return unknownSessionError(sessionId);
-      const { driver, blocked } = await getDriver(session);
+      // Needs a prepared device: never adopt an online device this session was not prepared on.
+      const { driver, blocked } = await getDriver(session, { autoBind: false });
       if (!driver)
         return (
           blockedDeviceResult(blocked) ??
           qaError({
             what: 'No device attached to this session',
+            failureCode: 'NO_DEVICE',
             changedState: false,
             retrySafe: true,
             nextSteps: [

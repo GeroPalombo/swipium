@@ -40,7 +40,7 @@ export interface DetectedContext {
   framework: Framework;
   monorepo: boolean;
   artifacts: { apks: string[]; ipas: string[]; appBundles: string[] };
-  /** Android serials/AVDs plus iOS simulators (H9: macOS only; empty elsewhere or without Xcode). */
+  /** Android serials/AVDs plus iOS simulators (macOS only; empty elsewhere or without Xcode). */
   devices: {
     androidOnline: string[];
     avds: string[];
@@ -174,6 +174,9 @@ export async function detectContext(projectRoot: string): Promise<DetectedContex
   const iosUsable = ios.iosBooted.length > 0 || ios.iosAvailable.length > 0;
 
   const blockers: string[] = [];
+  // An empty directory gets its own blocker: qa_test_this maps it to PROJECT_ROOT_EMPTY.
+  if (location === 'empty')
+    blockers.push('Project directory is empty (no files other than dotfiles). Pass the app directory as projectRoot.');
   if (framework === 'unknown')
     blockers.push('Could not identify a mobile project here. Pass an explicit projectRoot, or this is not a supported framework.');
   if (monorepo) blockers.push('Monorepo detected. Specify which app target to use (avoids guessing).');

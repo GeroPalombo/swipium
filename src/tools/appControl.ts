@@ -1,4 +1,4 @@
-// qa_app_control: app lifecycle so agents don't shell out to `adb` (Phase 2 CR1/CR3).
+// qa_app_control: app lifecycle so agents don't shell out to `adb`.
 // force_stop / restart / background / foreground / launch (non-destructive) and
 // clear_data / fresh_start (destructive, needs consent). Reports package, foreground, killed.
 
@@ -6,13 +6,15 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, invalidArgumentError, isInvalidArgumentError, unknownSessionError, cancelledResult } from '../lib/result.js';
 import { isAbortError } from '../lib/abortScope.js';
+import { waitForForeground } from '../lib/launchWait.js';
 import { assertAndroidAppId } from '../drivers/DirectDriver.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
-import { blockedDeviceResult, getDriver } from '../session/attach.js';
+import { blockedDeviceResult, getDriver, prepareFirstStep } from '../session/attach.js';
 import { detectFramework } from '../context/detect.js';
 import { metroReadiness } from '../lib/metroState.js';
 import type { SessionStore } from '../session/store.js';
 import type { Driver } from '../drivers/Driver.js';
+import { noteScreenMutation } from '../snapshot/fresh.js';
 
 const ACTIONS = ['launch', 'foreground', 'background', 'force_stop', 'restart', 'clear_data', 'fresh_start'] as const;
 /** Consent-gated app actions; each mints consent action `app_<name>` (CONSENT_ACTIONS in consent.ts). */
@@ -22,8 +24,7 @@ const APP_ID_NEXT_STEP = 'Re-run qa_prepare_target with a valid appId (e.g. com.
 async function relaunchAndVerify(d: Driver, pkg: string, onLaunched: () => void = () => {}): Promise<string> {
   await d.launchApp(pkg);
   onLaunched();
-  await new Promise((r) => setTimeout(r, 2500));
-  return d.foregroundOwner();
+  return waitForForeground(d, pkg);
 }
 
 export function registerAppControl(server: McpServer, sessions: SessionStore): void {
@@ -32,8 +33,8 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
     {
       title: 'App lifecycle control',
       description:
-        'App lifecycle: launch, foreground, background, force_stop, restart (force_stop + launch, for persistence checks), ' +
-        'clear_data and fresh_start (wipe data: destructive, consent-gated; RN/Expo also need acknowledgeBundleRisk).',
+        'Control the app under test: launch, foreground, background, force_stop, restart (force_stop + launch, for persistence ' +
+        'checks), clear_data and fresh_start (wipe data: destructive, consent-gated; RN/Expo also need acknowledgeBundleRisk).',
       inputSchema: {
         sessionId: z.string(),
         action: z.enum(ACTIONS),
@@ -57,7 +58,7 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
             changedState: false,
             retrySafe: true,
             failureCode: 'NO_DEVICE',
-            nextSteps: ['Call qa_prepare_target first.'],
+            nextSteps: [prepareFirstStep(session)],
           })
         );
       }
@@ -68,7 +69,11 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
           changedState: false,
           retrySafe: true,
           failureCode: 'INVALID_ARGUMENT',
-          nextSteps: ['Call qa_prepare_target (it sets the appId).'],
+          nextSteps: [
+            d.kind === 'wda' || d.kind === 'simulator'
+              ? 'Call qa_prepare_ios_target (it installs/launches the app and sets the appId).'
+              : 'Call qa_prepare_target (it sets the appId).',
+          ],
         });
       }
       // Reject a malformed Android app id up front (typed, before any consent/device work).
@@ -81,7 +86,7 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
         }
       }
 
-      // Destructive-wipe BUNDLE-RISK PREFLIGHT (Phase 2.1 follow-up): a `pm clear` on an RN/Expo
+      // Destructive-wipe BUNDLE-RISK PREFLIGHT: a `pm clear` on an RN/Expo
       // *debug* build wipes the cached JS bundle. Even with Metro serving, a bundle-less /
       // asset-only debug APK won't refetch and comes back on an "Unable to load script" RedBox,
       // i.e. a data wipe can BRICK the build. This is a DISTINCT risk from generic data loss:
@@ -108,15 +113,21 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
               status: 'refused',
               detail: 'acknowledgeBundleRisk required before destructive wipe on RN/Expo',
             });
+            // iOS wording (GOAL R3 note): no pm clear / APK there; the wipe reinstalls the .app.
+            const ios = d.kind === 'wda' || d.kind === 'simulator';
             return qaError(
               {
-                what: `Refusing ${action}: ${fw} is an RN/Expo build, so a data wipe carries a bundle-cache-loss risk SEPARATE from the generic data loss. pm clear removes the cached JS bundle / dev-client state; a bundle-less or asset-only debug APK then comes back on an "Unable to load script" RedBox and cannot recover (Metro serving=${rd.serving} lowers but does not eliminate this; asset-only debug builds brick even with Metro up).`,
+                what: ios
+                  ? `Refusing ${action}: ${fw} is an RN/Expo build, so a data wipe carries a bundle-cache-loss risk SEPARATE from the generic data loss. Wiping the app's data removes the cached JS bundle / dev-client state; a debug .app without an embedded bundle then comes back on a "No script URL provided" RedBox or the dev-client launcher (Metro serving=${rd.serving} lowers but does not eliminate this).`
+                  : `Refusing ${action}: ${fw} is an RN/Expo build, so a data wipe carries a bundle-cache-loss risk SEPARATE from the generic data loss. pm clear removes the cached JS bundle / dev-client state; a bundle-less or asset-only debug APK then comes back on an "Unable to load script" RedBox and cannot recover (Metro serving=${rd.serving} lowers but does not eliminate this; asset-only debug builds brick even with Metro up).`,
                 changedState: false,
                 retrySafe: true,
                 failureCode: 'BUNDLE_LOSS_REFUSED', // deliberate guardrail (unsafe_refused), not a tool error
                 nextSteps: [
                   'Run NON-DESTRUCTIVE workflows first; sequence destructive ones LAST for debug builds.',
-                  'Use a RELEASE/staging APK with an embedded JS bundle for clean-state tests.',
+                  ios
+                    ? 'Use a release/staging .app with an embedded JS bundle for clean-state tests.'
+                    : 'Use a RELEASE/staging APK with an embedded JS bundle for clean-state tests.',
                   'Confirm Metro is serving (qa_metro action="diagnose") and rebuild/reinstall if the bundle is stale.',
                   'If you understand the risk and want to proceed anyway, pass acknowledgeBundleRisk:true (required IN ADDITION to the destructive consent).',
                 ],
@@ -179,6 +190,7 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
       let mutated = false;
       const mark = () => {
         mutated = true;
+        noteScreenMutation(session); // a < 2 s snapshot no longer describes the screen
       };
       try {
         switch (action) {
@@ -207,7 +219,12 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
             await d.terminateApp(pkg);
             mark();
             processKilled = !(await d.isRunning(pkg));
-            foreground = await relaunchAndVerify(d, pkg);
+            // Relaunch into a fresh task, so a foreign activity left on top of the app's
+            // task does not come back with it.
+            if (d.relaunchCleanTask) {
+              await d.relaunchCleanTask(pkg);
+              foreground = await waitForForeground(d, pkg);
+            } else foreground = await relaunchAndVerify(d, pkg);
             break;
           case 'clear_data':
             await d.clearData(pkg);

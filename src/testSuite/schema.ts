@@ -196,6 +196,26 @@ export function functionalitySlug(functionality: string): string {
   );
 }
 
+/** Longest slug used as a directory name; filesystems cap a path component at 255 bytes. */
+export const MAX_DIR_SLUG = 80;
+
+/** Directory name for a functionality's YAML mirror: the slug, capped with a short stable hash when
+ *  long, so a 300-char title can never fail with ENAMETOOLONG. Identity (featureId) keeps the full slug. */
+export function functionalityDirName(functionality: string): string {
+  const slug = functionalitySlug(functionality);
+  if (slug.length <= MAX_DIR_SLUG) return slug;
+  let h = 0x811c9dc5;
+  for (let i = 0; i < slug.length; i++) h = Math.imul(h ^ slug.charCodeAt(i), 0x01000193) >>> 0;
+  return `${slug.slice(0, MAX_DIR_SLUG - 9).replace(/-+$/, '')}-${h.toString(16).padStart(8, '0')}`;
+}
+
+/** A case id is also a file name (`cases/<dir>/<id>.yaml`), so it must be a short, single, safe path
+ *  component: letters, digits, `_` and `-`, starting with a letter or digit, at most 64 chars. */
+export const CASE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+export function isSafeCaseId(id: unknown): id is string {
+  return typeof id === 'string' && CASE_ID_RE.test(id);
+}
+
 /** Derive the ID prefix token for a functionality (e.g. "weather-analysis" > "WEATHER"). */
 export function idPrefix(functionality: string): string {
   const slug = functionalitySlug(functionality);
@@ -223,6 +243,7 @@ export function validateCase(c: CanonicalTestCase): string[] {
   };
   must(c.schemaVersion === TEST_SUITE_SCHEMA_VERSION, `schemaVersion must be ${TEST_SUITE_SCHEMA_VERSION}`);
   must(!!c.id, 'id is required');
+  must(!c.id || isSafeCaseId(c.id), `${String(c.id).slice(0, 80)}: id must match ${CASE_ID_RE.source}`);
   must(!!c.featureId, `${c.id}: featureId is required`);
   must(!!c.functionality, `${c.id}: functionality is required`);
   must(!!c.title, `${c.id}: title is required`);

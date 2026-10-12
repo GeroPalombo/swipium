@@ -1,6 +1,8 @@
 // Shared automation contract. Android adb, iOS simctl, and WDA-backed drivers plug in behind
 // this interface so tool code can stay backend-neutral.
 
+import type { PixelFingerprint } from '../lib/screenFingerprint.js';
+
 export interface SnapshotElement {
   ref: string; // @e1, @e2 …
   role: string; // class / inferred role
@@ -44,6 +46,10 @@ export interface Driver {
   isInstalled(pkg: string): Promise<boolean>;
   isRunning(pkg: string): Promise<boolean>;
   launchApp(pkg: string): Promise<void>;
+  /** Cold relaunch into a FRESH task (Android: `am start -S` with NEW_TASK|CLEAR_TASK), so another
+   *  package's activity left on top of the app's task (e.g. Settings search) does not resurface.
+   *  Optional: restart callers fall back to terminateApp + launchApp. */
+  relaunchCleanTask?(pkg: string): Promise<void>;
   launchAppWithArgs?(pkg: string, args: Record<string, unknown>): Promise<void>;
   terminateApp(pkg: string): Promise<void>;
   clearData(pkg: string): Promise<void>;
@@ -57,16 +63,24 @@ export interface Driver {
   imeState?(): Promise<ImeState>;
   /** Hide the soft keyboard if shown (never a blind BACK). Resolves true when it acted. */
   hideKeyboard?(): Promise<boolean>;
-  /** Dump the last `lines` of logcat (optionally only lines matching `grep`). Evidence, not inference. */
-  logcat(lines: number, grep?: string): Promise<string>;
+  /** Dump the last `lines` of logcat (optionally only lines matching `grep`; `buffer`: one logcat
+   *  buffer such as "crash", default buffers otherwise). Evidence, not inference. */
+  logcat(lines: number, grep?: string, opts?: { buffer?: string }): Promise<string>;
   /** Read airplane-mode flag (global setting). */
   airplaneOn(): Promise<boolean>;
   /** Toggle airplane mode via `cmd connectivity airplane-mode`. */
   setAirplane(on: boolean): Promise<void>;
   /** Foreground package/activity owner, the basis of the system/app/foreign classifier. */
   foregroundOwner(): Promise<string>;
+  /** Root package (realActivity, else affinity) of the task that holds the resumed activity, when the backend can
+   *  tell (Android `dumpsys activity`). Lets health treat another package's activity running
+   *  inside the app's own task (e.g. Settings search) as part of the app. Optional. */
+  foregroundTaskRoot?(): Promise<string | undefined>;
 
   screenshot(): Promise<Buffer>;
+  /** Cheap sampled pixel fingerprint of the current screen (liveness check, lib/screenFingerprint.ts).
+   *  Optional: backends without it (iOS, whose /source is already fast) always re-dump. */
+  pixelFingerprint?(): Promise<PixelFingerprint | undefined>;
   /** Raw uiautomator XML (parsing into @eN refs happens in the snapshot module, M3). */
   dumpXml(opts?: DumpOptions): Promise<string>;
 
@@ -81,22 +95,28 @@ export interface Driver {
   /** True when the natively-selected element is a secure text field (password/OTP), e.g.
    * XCUIElementTypeSecureTextField on iOS. Keeps values typed by selector out of records. */
   isSecureBySelector?(using: NativeSelectorStrategy, value: string): Promise<boolean>;
+  /** The natively-selected element's current value (typing read-back). */
+  valueBySelector?(using: NativeSelectorStrategy, value: string): Promise<string>;
   /** Native platform alert handling when the backend supports it, e.g. WDA on iOS. */
   acceptAlert?(): Promise<void>;
   dismissAlert?(): Promise<void>;
-  inputText(text: string): Promise<void>;
+  /** `careful` (a retry after a field scrambled or dropped input): the backend types slower, in
+   * small verified bursts where it can (Android); others ignore it. */
+  inputText(text: string, opts?: { careful?: boolean }): Promise<void>;
   /** PURE pre-flight: can inputText() deliver this value verbatim? Callers check it BEFORE any
    * focus tap / clear so a refused value leaves the device untouched. Optional: absent means the
    * backend has no known character restriction. */
   canDeliverText?(text: string): TextDeliverability;
-  /** Clear the focused field (move to end, delete ~n chars in one keyevent batch). */
-  clearFocusedText(approxLen?: number): Promise<void>;
+  /** Clear the focused field (move to end, delete ~n chars in one keyevent batch). byLength: a retry
+   * after a clear that left text; clear by the field's length instead of a select-all (Android). */
+  clearFocusedText(approxLen?: number, opts?: { byLength?: boolean }): Promise<void>;
   pressKey(key: 'back' | 'home' | 'enter'): Promise<void>;
   swipe(x1: number, y1: number, x2: number, y2: number, ms?: number): Promise<void>;
   /** `adb reverse tcp:8081 tcp:8081` so a debug RN/Expo build can reach Metro. */
   adbReverseMetro(port?: number): Promise<void>;
-  /** Physical screen size in px (from `wm size`). */
-  screenSize(): Promise<{ width: number; height: number } | null>;
+  /** Physical screen size in px (from `wm size`). knownPx: pixel dims of a screenshot just taken,
+   *  so a driver that sizes from a screenshot (SimctlDriver) need not take another; others ignore it. */
+  screenSize(knownPx?: { width: number; height: number } | null): Promise<{ width: number; height: number } | null>;
   /** Screen density in dpi (from `wm density`). */
   screenDensity(): Promise<number | null>;
   openUrl(url: string): Promise<void>;

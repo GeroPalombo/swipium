@@ -45,6 +45,9 @@ export interface BuildPlanOptions {
   projectRoot: string;
   platform: BuildPlatform;
   variant?: BuildVariant; // default debug (QA-first)
+  /** Expo Android only: the AVD name `expo run:android --device` installs on, so the build never
+   *  picks (or boots) another device. */
+  device?: string;
 }
 
 function hasFile(root: string, ...rel: string[]): boolean {
@@ -137,7 +140,7 @@ export async function buildPlan(opts: BuildPlanOptions): Promise<BuildPlan> {
         notes.push(
           'Expo Android local run compiles native code, installs the app, and starts Metro. First run can take several minutes; later JS/TS-only work should usually reuse the installed development build with Metro.',
         );
-        const argv = ['npx', 'expo', 'run:android', '--variant', variant];
+        const argv = ['npx', 'expo', 'run:android', '--variant', variant, ...(opts.device ? ['--device', opts.device] : [])];
         return base({
           build: { label: 'Expo Android local run', command: argv.join(' '), argv, cwd: root },
           expectedArtifactGlobs: apkGlobs,

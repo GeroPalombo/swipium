@@ -25,7 +25,7 @@ const forbiddenTools = [
   'qa_state_verify',
   'qa_state_teardown',
   'qa_automation_validate',
-  // Deferred pre-1.5.0 surface (src/tools/deferred/, kept for potential revival).
+  // Pre-1.5.0 surface (the parked src/tools/deferred/ modules were deleted in 2.3.0).
   'qa_screen_info',
   'qa_permissions',
   'qa_seed',
@@ -49,7 +49,7 @@ describe('public tool surface', () => {
       { inputSchema?: { properties?: Record<string, unknown> } } | undefined;
     await client.close();
 
-    expect(SWIPIUM_VERSION).toBe('2.2.0');
+    expect(SWIPIUM_VERSION).toBe('2.3.0');
     expect(TOOL_COUNT).toBe(TOOL_NAMES.length);
     expect(listed).toEqual([...TOOL_NAMES].sort());
     expect(doctor?.inputSchema?.properties?.platform).toBeTruthy();
@@ -86,8 +86,7 @@ describe('public tool surface', () => {
 
   // Dead-module gate: a module directly under src/tools/ that server.ts never
   // imports registers nothing yet still ships in dist/ — exactly the rot this repo already
-  // accumulated once. Every .ts file directly under src/tools/ (non-recursive; deferred/
-  // is the sanctioned parking lot and excluded from the build) must be imported by server.ts.
+  // accumulated once. Every .ts file under src/tools/ must be imported by server.ts.
   it('every module directly under src/tools/ is imported by server.ts', () => {
     const root = join(import.meta.dirname, '..');
     const serverSource = readFileSync(join(root, 'src', 'server.ts'), 'utf8');
@@ -97,9 +96,6 @@ describe('public tool surface', () => {
       .map((e) => e.name.replace(/\.ts$/, ''));
     expect(modules.length).toBeGreaterThan(0);
     const orphans = modules.filter((m) => !imported.has(m));
-    expect(
-      orphans,
-      `src/tools/ modules not imported by server.ts — delete them or move them to src/tools/deferred/: ${orphans.join(', ')}`,
-    ).toEqual([]);
+    expect(orphans, `src/tools/ modules not imported by server.ts — delete them: ${orphans.join(', ')}`).toEqual([]);
   });
 });

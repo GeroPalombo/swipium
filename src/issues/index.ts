@@ -148,7 +148,7 @@ function recordObservationLocked(
   const events: IssueEvent[] = [observed];
   let record = foldEvent(prev, observed);
 
-  // Recurrence: append an explicit `reopened` event so the audit trail is honest (spec §Recurrence).
+  // Recurrence: append an explicit `reopened` event so the audit trail is honest.
   let reopened = false;
   let recurrenceMessage: string | undefined;
   if (wasFixed && record.state === 'reopened') {
@@ -251,20 +251,6 @@ export interface LinkRunOptions {
   evidenceUris?: string[];
   appMapRefs?: { screenId?: string; featureId?: string }[];
   sourceRevision?: SourceRevision;
-}
-
-/**
- * Append a `linked_run` event tying a run (test case / audit check) to an issue with a relationship
- * (observed / verified_fixed / regressed / suppressed) and optional evidence. The issue ledger stays
- * the source of truth; this records HOW a run related to the issue.
- */
-export function linkRun(
-  root: string,
-  key: { issueId?: string; fingerprint?: string },
-  opts: LinkRunOptions,
-  now: string,
-): LedgerMutationResult {
-  return withLedgerLock(root, () => linkRunLocked(root, key, opts, now));
 }
 
 function linkRunLocked(

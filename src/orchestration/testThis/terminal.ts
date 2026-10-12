@@ -1,8 +1,14 @@
 // qa_test_this terminal-state assembly: every terminal state (completed OR blocked) generates a
-// report artifact (Milestone B) and lands the uniform TerminalEnvelope on the job result, so the
+// report artifact and lands the uniform TerminalEnvelope on the job result, so the
 // outcome is summarizable from structured output without log parsing.
 
-import { buildTerminalEnvelope, typedBlockerFromCode, type TerminalEnvelope } from '../envelope.js';
+import {
+  buildTerminalEnvelope,
+  typedBlockerFromCode,
+  type NextRecommendedAction,
+  type TerminalEnvelope,
+  type TypedBlocker,
+} from '../envelope.js';
 import { generateSessionReport } from '../../services/report.js';
 import type { SuiteGenerationResult } from '../../services/suiteGenerate.js';
 import { startProgress } from '../../session/progress.js';
@@ -26,10 +32,13 @@ export interface FinishContext {
 
 export type Finish = (state: ExecState, failureCode: string | undefined, summary: string, extra?: Record<string, unknown>) => Promise<void>;
 
-/** Every terminal state (completed OR blocked) generates a report artifact (Milestone B). */
+/** Every terminal state (completed OR blocked) generates a report artifact. */
 export function createFinisher(ctx: FinishContext): Finish {
   const { sessions, session, job, a, attempted, artifacts, upd } = ctx;
-  return async (state: ExecState, failureCode: string | undefined, summary: string, extra: Record<string, unknown> = {}) => {
+  return async (state: ExecState, failureCode: string | undefined, summary: string, extraIn: Record<string, unknown> = {}) => {
+    // Finisher-only keys (not copied onto the job result): `appLaunched:false` = the run stopped before
+    // the app launched; `blockerHowToFix` = the failing step's own concrete recovery.
+    const { appLaunched, blockerHowToFix, ...extra } = extraIn;
     if (a.testThisPlanMutation) {
       sessions.recordMutation(session, {
         tool: 'qa_test_this',
@@ -43,10 +52,14 @@ export function createFinisher(ctx: FinishContext): Finish {
     }
     const reportProg = startProgress(sessions, session, job, 'reporting', { statusText: 'Generating the session report.' });
     let reportUri: string | undefined;
+    let reportMdUri: string | undefined;
+    let reportHead: string | undefined;
     let manifestUri: string | undefined;
     let appVerdict: { status: string; summary: string } | undefined;
     let coverageVerdict: { status: string; summary: string } | undefined;
     let toolVerdict: { status: string; summary: string } | undefined;
+    let releaseRisk: string | undefined;
+    let reportJson: Record<string, unknown> | undefined;
     const suiteForReport = ctx.getSuiteForReport();
     const suiteOpt = suiteForReport
       ? {
@@ -62,29 +75,65 @@ export function createFinisher(ctx: FinishContext): Finish {
     try {
       const r = await generateSessionReport(sessions, session, {
         format: 'summary',
-        includeCurrentDump: true,
+        // No triage dump from a WDA that just hung (one more /source would wait out
+        // its 30 s timeout after the run was already decided).
+        includeCurrentDump: failureCode !== 'WDA_UNREACHABLE',
         suite: suiteOpt,
+        // A blocked/unsafe run stopped before testing what it set out to: never a SHIP.
+        ...((state === 'blocked' || state === 'unsafe') && failureCode
+          ? {
+              notTested: {
+                reason:
+                  appLaunched === false
+                    ? `the app never launched (${failureCode})`
+                    : `the run stopped (${failureCode}) before the app was tested`,
+                failureCode,
+                ...(appLaunched === false ? { reachedApp: false } : {}),
+              },
+            }
+          : {}),
       });
       reportUri = r.reportUri;
+      reportJson = r.report;
+      reportMdUri = r.reportMdUri;
+      reportHead = r.reportHead;
       manifestUri = r.manifestUri;
       sessions.milestone(session, 'report_generated'); // persisted flag for qa_status's ladder
-      if (!artifacts.includes(reportUri)) artifacts.push(reportUri);
+      for (const u of [reportUri, reportMdUri]) if (!artifacts.includes(u)) artifacts.push(u);
       appVerdict = (r.report as { appVerdict?: { status: string; summary: string } }).appVerdict;
       coverageVerdict = (r.report as { coverageVerdict?: { status: string; summary: string } }).coverageVerdict;
       toolVerdict = (r.report as { toolVerdict?: { status: string; summary: string } }).toolVerdict;
+      releaseRisk = (r.report as { executiveSummary?: { risk?: string } }).executiveSummary?.risk;
     } catch (e) {
       log('warn', 'test_this report generation failed', { err: String(e) });
     }
     reportProg.done('Report ready.');
-    const native = session.findings.some((f) => f.layer === 'native' && f.severity === 'high') ? 'error' : 'OK';
-    const app = session.findings.some((f) => f.layer === 'app' && f.severity === 'high')
-      ? 'error'
-      : session.findings.some((f) => f.layer === 'app' && f.severity === 'medium')
-        ? 'degraded'
-        : 'OK';
-    // The report already exists, so point the agent AT it (fetch/open), not back at qa_report.
+    // Health as the report judged it ('not checked' when the app was never reached, 'unverified' on
+    // a visual-only smoke); the local derivation is only the report-failed fallback.
+    const reportHealth = reportJson as { nativeHealth?: string; appHealth?: string } | undefined;
+    const native =
+      reportHealth?.nativeHealth ?? (session.findings.some((f) => f.layer === 'native' && f.severity === 'high') ? 'error' : 'OK');
+    const app =
+      reportHealth?.appHealth ??
+      (session.findings.some((f) => f.layer === 'app' && f.severity === 'high')
+        ? 'error'
+        : session.findings.some((f) => f.layer === 'app' && f.severity === 'medium')
+          ? 'degraded'
+          : 'OK');
+    // The report already exists, so point the agent AT it (report.md, the agent-readable copy), not
+    // back at qa_report. A blocked run points at the blocker's concrete fix (or nothing).
     const question = extra.needsInput as
       { kind?: string; question?: string; resume?: { tool: string; args: Record<string, unknown> } } | undefined;
+    const blockers =
+      state === 'completed' || state === 'needs_input' || !failureCode
+        ? []
+        : [
+            typedBlockerFromCode(
+              failureCode,
+              typeof blockerHowToFix === 'string' && blockerHowToFix ? { howToFix: blockerHowToFix } : undefined,
+            ),
+          ];
+    const readUri = reportMdUri ?? reportUri;
     const nextRecommendedAction =
       state === 'needs_input' && question?.resume
         ? {
@@ -93,20 +142,17 @@ export function createFinisher(ctx: FinishContext): Finish {
             why: `Ask the user exactly this one question, then resume with their answer: ${question.question ?? question.kind ?? 'input needed'}`,
           }
         : state === 'completed'
-          ? reportUri
+          ? readUri
             ? {
                 tool: 'qa_get_artifact',
-                args: { uri: reportUri },
-                why: `Open the generated report (${reportUri})`,
+                args: { uri: readUri },
+                why: `Read the report (report.md: ${readUri})`,
               }
             : { tool: 'qa_report', args: { sessionId: session.id }, why: 'Generate the report' }
-          : {
-              tool: 'qa_explain_blocker',
-              // sessionId lets qa_explain_blocker stamp the blocker as explained, so qa_status moves on.
-              args: { failureCode: failureCode ?? 'UNKNOWN', sessionId: session.id },
-              why: 'Understand the blocker and how to fix it',
-            };
-    // Uniform terminal envelope (Milestone B): summarizable from structured output, no log parsing.
+          : blockers[0]
+            ? blockerFixAction(blockers[0], session.id)
+            : null;
+    // Uniform terminal envelope: summarizable from structured output, no log parsing.
     const envelope: TerminalEnvelope = buildTerminalEnvelope({
       state,
       sessionId: session.id,
@@ -121,7 +167,7 @@ export function createFinisher(ctx: FinishContext): Finish {
         ...(coverageVerdict ? { coverage: coverageVerdict } : {}),
         ...(toolVerdict ? { tool: toolVerdict } : {}),
       },
-      blockers: state === 'completed' || state === 'needs_input' || !failureCode ? [] : [typedBlockerFromCode(failureCode)],
+      blockers,
       reportUri: reportUri ?? null,
       nextRecommendedAction,
     });
@@ -134,23 +180,65 @@ export function createFinisher(ctx: FinishContext): Finish {
         // Pre-launch static app map URI is present in EVERY terminal state, including blocked (Fix 1).
         appMapUri: a.appMapUri,
         goal: a.goal,
+        ...(a.goalText ? { goalText: a.goalText } : {}),
         requiredOutputs: a.requiredOutputs,
         releaseGateRequested: a.releaseGate,
+        // The report's release verdict (ship | caution | block), so a release_gate run states it outright.
+        releaseRisk: releaseRisk ?? null,
         failureCode,
         artifacts,
+        reportMdUri: reportMdUri ?? null,
         manifestUri,
         health: { native, app },
         inputsProvided: session.inputs.map((i) => i.varName),
-        // Compact report pointer: verdict one-liner + URI; the full report lives at reportUri.
-        reportSummary: reportUri
-          ? `${appVerdict?.status ?? 'n/a'} app · ${coverageVerdict?.status ?? 'n/a'} coverage · ${toolVerdict?.status ?? 'n/a'} tool. Read ${reportUri}`
+        // Compact report pointer: verdict one-liner + URI; the full report lives at report.md.
+        reportSummary: readUri
+          ? `${appVerdict?.status ?? 'n/a'} app · ${coverageVerdict?.status ?? 'n/a'} coverage · ${toolVerdict?.status ?? 'n/a'} tool. Read ${readUri}`
           : null,
+        // Completed: the report head inline (verdicts, top findings with evidence URIs), so relaying
+        // the outcome needs no further call.
+        ...(state === 'completed' && reportHead ? { reportHead } : {}),
         notes: session.notes.length,
         findings: session.findings.length,
         ...extra,
       },
-      resultText: summary + (reportUri ? `\nreport: ${reportUri}` : ''),
+      resultText:
+        summary +
+        (state === 'completed' && reportHead ? `\n\n${reportHead}` : readUri ? `\nreport: ${readUri}` : '') +
+        (blockers[0] ? `\nfix (${blockers[0].failureCode}): ${blockers[0].howToFix}` : ''),
       endedAt: Date.now(),
     });
   };
+}
+
+/** Tools a blocker's recovery text may name, with the args Swipium can fill in for them. Re-running
+ *  qa_test_this is the step AFTER the fix, so it is never the recommended action itself. */
+const FIX_TOOL_ARGS: Record<string, (sessionId: string, howToFix: string) => Record<string, unknown>> = {
+  qa_doctor: () => ({}),
+  qa_prepare_target: (sessionId) => ({ sessionId }),
+  qa_prepare_ios_target: (sessionId) => ({ sessionId }),
+  // iOS launch failures name the qa_ios action to take ("boot", "install", "logs").
+  qa_ios: (sessionId, howToFix) => ({ sessionId, action: howToFix.match(/qa_ios \{\s*action:\s*"(\w+)"/)?.[1] ?? 'logs' }),
+  qa_metro: (sessionId) => ({ sessionId, action: 'start' }), // METRO_REQUIRED
+  // WDA_UNREACHABLE (a hung WDA): "restart WDA" starts with stop (device defaults to the session's);
+  // WDA_BUILD_FAILED's "retry qa_wda build" is a build.
+  qa_wda: (sessionId, howToFix) => ({
+    sessionId,
+    action:
+      howToFix.match(/qa_wda \{\s*action:\s*"(\w+)"/)?.[1] ??
+      (/restart WDA/i.test(howToFix) ? 'stop' : (howToFix.match(/qa_wda (build|setup|attach|status|logs)\b/)?.[1] ?? 'status')),
+  }),
+  qa_snapshot: (sessionId) => ({ sessionId }),
+  qa_screenshot: (sessionId) => ({ sessionId }),
+  qa_clear_overlay: (sessionId) => ({ sessionId }),
+  qa_smoke: (sessionId) => ({ sessionId }),
+  qa_explore: (sessionId) => ({ sessionId }),
+  qa_app_map_build: (sessionId) => ({ sessionId }),
+};
+
+/** The blocker's concrete fix as a call: the first fill-able Swipium tool its recovery names, or
+ *  null when the fix is outside Swipium (install a tool, provide data, fix the app). Exported for tests. */
+export function blockerFixAction(b: TypedBlocker, sessionId: string): NextRecommendedAction | null {
+  const tool = (b.howToFix.match(/\bqa_[a-z_]+/g) ?? []).find((t) => t in FIX_TOOL_ARGS);
+  return tool ? { tool, args: FIX_TOOL_ARGS[tool](sessionId, b.howToFix), why: `Fix ${b.failureCode}: ${b.howToFix}` } : null;
 }

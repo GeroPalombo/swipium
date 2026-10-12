@@ -29,3 +29,8 @@ PHASE*.md
 DESIGN.md
 CLIENT-SETUP.md
 requirements/
+
+# Shipped skill + Claude Code plugin files (the *.md and .mcp.json rules above would hide them).
+!/skills/swipium-qa/SKILL.md
+!/plugin/skills/swipium-qa/SKILL.md
+!/plugin/.mcp.json

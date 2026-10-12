@@ -37,12 +37,26 @@ beforeEach(() => {
 
 describe('#3 dumpXml budget', () => {
   it('passes the remaining budget as the adb timeout and stops after opts.attempts', async () => {
-    answers.set('exec-out uiautomator dump /dev/tty', 'ERROR: could not get idle state.');
+    // A transient error that is worth retrying (idle-state errors stop after one attempt, see below).
+    answers.set('exec-out uiautomator dump /dev/tty', 'ERROR: null root node returned by UiTestAutomationBridge.');
     const d = new DirectDriver('emulator-5554');
     await expect(d.dumpXml({ timeoutMs: 3000, attempts: 2 })).rejects.toThrow(/after 2 attempt/);
     const dumps = runMock.mock.calls.filter((c) => (c[1] as string[]).includes('uiautomator'));
     expect(dumps).toHaveLength(2);
     for (const c of dumps) expect((c[2] as { timeoutMs: number }).timeoutMs).toBeLessThanOrEqual(3000);
+  });
+
+  it('"could not get idle state" stops after the first attempt and hints at the agent dumper', async () => {
+    const prev = process.env.SWIPIUM_ANDROID_DUMPER;
+    delete process.env.SWIPIUM_ANDROID_DUMPER;
+    try {
+      answers.set('exec-out uiautomator dump /dev/tty', 'ERROR: could not get idle state.');
+      const d = new DirectDriver('emulator-5554');
+      await expect(d.dumpXml({ timeoutMs: 3000, attempts: 5 })).rejects.toThrow(/after 1 attempt.*SWIPIUM_ANDROID_DUMPER=agent/);
+      expect(runMock.mock.calls.filter((c) => (c[1] as string[]).includes('uiautomator'))).toHaveLength(1);
+    } finally {
+      if (prev !== undefined) process.env.SWIPIUM_ANDROID_DUMPER = prev;
+    }
   });
 
   it('default (no opts) keeps the 5-attempt behaviour', async () => {

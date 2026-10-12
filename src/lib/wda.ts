@@ -89,8 +89,28 @@ export interface WdaProjectDiscovery {
 }
 
 const ELEMENT_KEY = 'element-6066-11e4-a52e-4f735466cecf';
-type PointTapRoute = 'modern' | 'legacy';
-const pointTapRouteBySession = new Map<string, PointTapRoute>();
+
+/** Page-source attributes skipped by default (`/source?excluded_attributes=`). `visible` and
+ * `accessible` are the costliest XCTest lookups; normalizeWdaSource treats a missing `visible` as
+ * true and the snapshot parser drops off-screen nodes by bounds. Override (or set "" to keep
+ * them) with ios.wda.settings.pageSourceExcludedAttributes. */
+export const WDA_DEFAULT_EXCLUDED_ATTRIBUTES = 'visible,accessible';
+
+/** WDA session settings applied unless the user sets them in ios.wda.settings (seconds).
+ * WDA defaults are waitForIdleTimeout 10, animationCoolOffTimeout 2, accessibilityDeadline 0
+ * (unbounded; the setting exists since WDA 16.8 and older builds ignore unknown settings).
+ * The deadline stays under the 30 s /source HTTP timeout so a frozen app fails inside WDA.
+ * respectSystemAlerts: a SpringBoard alert (a permission prompt) counts as the active app, so the
+ * page source shows the alert and its buttons instead of the covered app. */
+export const WDA_DEFAULT_SETTINGS: Readonly<Record<string, number | boolean>> = Object.freeze({
+  waitForIdleTimeout: 1.5,
+  animationCoolOffTimeout: 0.5,
+  accessibilityDeadline: 20,
+  respectSystemAlerts: true,
+});
+
+/** Excluded page-source attributes per WDA session (`baseUrl:sessionId`), set by createWdaSession. */
+const excludedAttributesBySession = new Map<string, string>();
 
 export class WdaHttpError extends Error {
   readonly status: number;
@@ -108,14 +128,8 @@ function normalizeUrl(url: string): string {
   return url.replace(/\/+$/, '');
 }
 
-function wdaRouteKey(baseUrl: string, sessionId: string, route: string): string {
-  return `${normalizeUrl(baseUrl)}:${sessionId}:${route}`;
-}
-
-function isMissingWdaRoute(e: unknown): boolean {
-  if (!(e instanceof WdaHttpError)) return false;
-  if (e.status === 404) return true;
-  return /unknown command|unknown route|unhandled endpoint|not found|unsupported/i.test(e.message);
+function sessionKey(baseUrl: string, sessionId: string): string {
+  return `${normalizeUrl(baseUrl)}:${sessionId}`;
 }
 
 /** Per-call options for WDA HTTP requests. Threaded implicitly (AsyncLocalStorage) so every
@@ -155,6 +169,11 @@ function typedLength(body: unknown): number {
   return 0;
 }
 
+/** Cap for creating a session for an app that was JUST launched (prepare's attach, the
+ *  smoke's launch). A healthy WDA does that in a few seconds; one hung at session creation used to
+ *  hold the run for the full 60 s default below and then drop to visual-only. */
+export const WDA_SESSION_CREATE_MS = 15_000;
+
 /** Default HTTP timeout per endpoint: page source is WDA's slowest call; session creation may
  * launch the app; typing scales with the text length (15 s + 50 ms/char, ≤ 5 min); everything
  * else (taps, finds) must answer within seconds. */
@@ -171,7 +190,7 @@ export function wdaRequestTimeoutMs(method: string, path: string, body?: unknown
 function anySignal(signals: AbortSignal[]): AbortSignal {
   const any = (AbortSignal as unknown as { any?: (s: AbortSignal[]) => AbortSignal }).any;
   if (any) return any(signals);
-  // Node 20.0-20.2 lack AbortSignal.any, so forward the first abort manually.
+  // Defensive fallback for runtimes without AbortSignal.any (Node >= 22.12 has it).
   const ctl = new AbortController();
   for (const s of signals) {
     if (s.aborted) {
@@ -417,6 +436,20 @@ export function discoverAppiumWdaProjects(
   return found;
 }
 
+/** Project-local WDA candidates PLUS the user-installed Appium WebDriverAgent that qa_wda
+ *  setup/build/start auto-use, so doctor/status report the same discovery result setup acts on. */
+export function discoverWdaProjectsWithAppium(root: string, extraCandidates: string[] = []): WdaProjectDiscovery {
+  const local = discoverWdaProjects(root, extraCandidates);
+  const appium = discoverAppiumWdaProjects();
+  const appiumRoots = [process.env.APPIUM_HOME, join(homedir(), '.appium'), ...defaultGlobalNodeModules(process.env)].filter(
+    (p): p is string => !!p && p.trim().length > 0,
+  );
+  return {
+    candidates: [...new Set([...local.candidates, ...appium])],
+    searchedRoots: [...new Set([...local.searchedRoots, ...appiumRoots])],
+  };
+}
+
 export function managedWdaBuildArgs(opts: ManagedWdaOptions): string[] {
   return [
     '-project',
@@ -454,6 +487,37 @@ export function managedWdaStartArgs(opts: ManagedWdaOptions): string[] {
   ];
 }
 
+/** Simulator UDIDs are UUIDs (8-4-4-4-12 hex); device UDIDs are 8-16 or 40 hex. */
+export function isSimulatorUdid(udid: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(udid);
+}
+
+/** The newest `<scheme>_<platform>*.xctestrun` that a previous build-for-testing left under
+ * `<derivedDataPath>/Build/Products` for the UDID's platform (iphonesimulator vs iphoneos). When it
+ * exists, `test-without-building` can start WDA without building again. */
+export function findWdaXctestrun(derivedDataPath: string, udid: string, scheme = 'WebDriverAgentRunner'): string | undefined {
+  const dir = join(derivedDataPath, 'Build', 'Products');
+  const prefix = `${scheme}_${isSimulatorUdid(udid) ? 'iphonesimulator' : 'iphoneos'}`;
+  let best: { path: string; mtime: number } | undefined;
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return undefined;
+  }
+  for (const name of names) {
+    if (!name.startsWith(prefix) || !name.endsWith('.xctestrun')) continue;
+    const p = join(dir, name);
+    try {
+      const mtime = statSync(p).mtimeMs;
+      if (!best || mtime > best.mtime) best = { path: p, mtime };
+    } catch {
+      /* raced away */
+    }
+  }
+  return best?.path;
+}
+
 export function classifyWdaBuildFailure(log: string): FailureCode {
   if (
     /Signing for .* requires a development team|No profiles for|provisioning profile|Code signing is required|requires a provisioning profile|No signing certificate|No Accounts|Development Team/i.test(
@@ -467,6 +531,11 @@ export function classifyWdaBuildFailure(log: string): FailureCode {
 
 export function classifyWdaConnectionFailure(message: string): FailureCode {
   if (/EADDRINUSE|address already in use|port .*in use|bind.*address/i.test(message)) return 'WDA_PORT_CONFLICT';
+  // WDA answered with an HTTP error, so it IS reachable: "Timed out attempting to launch app" is a
+  // launch failure, not WDA_UNREACHABLE.
+  if (/WDA HTTP \d{3}/.test(message) && !/bundle id|bundle identifier|not.*installed|no such application/i.test(message)) {
+    return /launch/i.test(message) ? 'APP_LAUNCH_FAILED' : 'WDA_SESSION_FAILED';
+  }
   if (/ECONNREFUSED|fetch failed|timed out|aborted|network|socket|unreachable/i.test(message)) return 'WDA_UNREACHABLE';
   if (
     /bundle id|bundle identifier|application.*not.*installed|app.*not.*installed|no such application|could not.*launch.*app|failed to launch.*app/i.test(
@@ -495,7 +564,12 @@ export const WDA_REUSE_RUNNING_APP_CAPABILITIES = Object.freeze({ forceAppLaunch
  *    `forceAppLaunch:false` + `shouldTerminateApp:false` for rebind/recovery.
  */
 export async function createWdaSession(baseUrl: string, opts: WdaSessionOptions = {}): Promise<WdaSession> {
+  const { pageSourceExcludedAttributes, ...userSettings } = opts.settings ?? {};
+  const settings: Record<string, unknown> = { ...WDA_DEFAULT_SETTINGS, ...userSettings };
   const alwaysMatch: Record<string, unknown> = {
+    // WDA reads these two straight from the capabilities before launching the app.
+    waitForIdleTimeout: settings.waitForIdleTimeout,
+    accessibilityDeadline: settings.accessibilityDeadline,
     ...(opts.capabilities ?? {}),
     ...settingsCapabilities(opts.settings),
   };
@@ -512,6 +586,20 @@ export async function createWdaSession(baseUrl: string, opts: WdaSessionOptions 
   const v = valueOf<Record<string, unknown>>(json);
   const sessionId = String((json as { sessionId?: unknown }).sessionId ?? v.sessionId ?? '');
   if (!sessionId) throw new Error('WDA did not return a sessionId.');
+  excludedAttributesBySession.set(
+    sessionKey(baseUrl, sessionId),
+    pageSourceExcludedAttributes === undefined
+      ? WDA_DEFAULT_EXCLUDED_ATTRIBUTES
+      : Array.isArray(pageSourceExcludedAttributes)
+        ? pageSourceExcludedAttributes.join(',')
+        : String(pageSourceExcludedAttributes ?? ''),
+  );
+  // WDA ignores `settings[...]` capabilities (an Appium driver convention) and resets its settings
+  // on every new session, so apply them through the settings endpoint. Best effort: unknown keys
+  // are skipped by WDA, and an old WDA without the route keeps its defaults.
+  await wdaFetch(baseUrl, `/session/${sessionId}/appium/settings`, { method: 'POST', body: JSON.stringify({ settings }) }).catch(
+    () => undefined,
+  );
   return {
     sessionId,
     capabilities: typeof v.capabilities === 'object' && v.capabilities ? (v.capabilities as Record<string, unknown>) : undefined,
@@ -537,6 +625,7 @@ export function wdaSessionUdidMismatch(
 }
 
 export async function deleteWdaSession(baseUrl: string, sessionId: string): Promise<void> {
+  excludedAttributesBySession.delete(sessionKey(baseUrl, sessionId));
   await wdaFetch(baseUrl, `/session/${sessionId}`, { method: 'DELETE' });
 }
 
@@ -558,8 +647,12 @@ export async function wdaWindowSize(baseUrl: string, sessionId: string): Promise
   return { width, height };
 }
 
+/** Page source XML. Skips the session's excluded attributes (WDA_DEFAULT_EXCLUDED_ATTRIBUTES unless
+ * the user configured pageSourceExcludedAttributes; also the default for sessions created elsewhere). */
 export async function wdaSource(baseUrl: string, sessionId: string): Promise<string> {
-  const json = await wdaFetch<unknown>(baseUrl, `/session/${sessionId}/source`);
+  const excluded = excludedAttributesBySession.get(sessionKey(baseUrl, sessionId)) ?? WDA_DEFAULT_EXCLUDED_ATTRIBUTES;
+  const query = excluded ? `?excluded_attributes=${encodeURIComponent(excluded).replace(/%2C/gi, ',')}` : '';
+  const json = await wdaFetch<unknown>(baseUrl, `/session/${sessionId}/source${query}`);
   return String(valueOf<string>(json));
 }
 
@@ -639,24 +732,10 @@ export async function clearWdaFocusedByKeys(baseUrl: string, sessionId: string, 
   await typeWdaKeys(baseUrl, sessionId, '\b'.repeat(count));
 }
 
+/** Coordinate tap (POST /session/:id/wda/tap, WDA >= 6.0). The pre-6.0 `/wda/tap/0` route was
+ * removed upstream in 2024 and current Xcode cannot build those WDA versions, so no fallback. */
 export async function tapWdaPoint(baseUrl: string, sessionId: string, x: number, y: number): Promise<void> {
-  const modern = `/session/${sessionId}/wda/tap`;
-  const legacy = `/session/${sessionId}/wda/tap/0`;
-  const key = wdaRouteKey(baseUrl, sessionId, 'pointTap');
-  const body = JSON.stringify({ x, y });
-  const preferred = pointTapRouteBySession.get(key);
-  if (preferred === 'legacy') {
-    await wdaFetch(baseUrl, legacy, { method: 'POST', body });
-    return;
-  }
-  try {
-    await wdaFetch(baseUrl, modern, { method: 'POST', body });
-    pointTapRouteBySession.set(key, 'modern');
-  } catch (e) {
-    if (preferred === 'modern' || !isMissingWdaRoute(e)) throw e;
-    await wdaFetch(baseUrl, legacy, { method: 'POST', body });
-    pointTapRouteBySession.set(key, 'legacy');
-  }
+  await wdaFetch(baseUrl, `/session/${sessionId}/wda/tap`, { method: 'POST', body: JSON.stringify({ x, y }) });
 }
 
 export async function dragWdaPoint(
@@ -758,19 +837,138 @@ export function wdaNodeIdentifier(node: Record<string, unknown>): string {
   return name && label && name !== label ? name : '';
 }
 
-function normalizeNode(node: Record<string, unknown>): Record<string, unknown> {
-  const type = String(node.type ?? node.name ?? 'XCUIElementTypeOther');
-  const id = wdaNodeIdentifier(node);
-  const label = String(node.label ?? node.name ?? '');
-  const value = String(node.value ?? '');
-  const enabled = node.enabled == null ? true : bool(node.enabled);
-  const visible = node.visible == null ? true : bool(node.visible);
-  const textInput = IOS_TEXT_INPUT_RE.test(type);
-  const typeLooksInteractive = textInput || /Button|Cell|Link|Switch|Tab|Image/i.test(type);
-  const clickable = node.hittable == null ? enabled && visible && typeLooksInteractive : bool(node.hittable);
-  const childValues = Object.entries(node)
+type Rect = [number, number, number, number];
+
+/** Context for sources fetched without `visible` (WDA_DEFAULT_EXCLUDED_ATTRIBUTES): content that
+ * scrolled under the top or bottom bars (or the status bar above a navigation bar), under the
+ * keyboard, or behind a later layer of its window (an alert or sheet) keeps on-screen bounds, so a
+ * node whose center is off-screen or under one of those is not clickable, as WDA's own `visible`
+ * would have said. */
+interface VisibilityContext {
+  screen: [number, number];
+  /** Bars and the keyboard (barOccluders); a node inside one of them is exempt. */
+  bars: Rect[];
+  /** Later layers of the node's window (an alert, a sheet); they hide bar content too. */
+  layers: Rect[];
+  inBar: boolean;
+}
+
+/** Bars and the keyboard: they hide what lies under them, never their own content. */
+const IOS_BAR_RE = /^XCUIElementType(?:NavigationBar|TabBar|Toolbar|Keyboard)$/;
+
+function childNodes(node: Record<string, unknown>): Record<string, unknown>[] {
+  return Object.entries(node)
     .filter(([k]) => k === 'children' || k.startsWith('XCUIElementType'))
-    .flatMap(([, v]) => (Array.isArray(v) ? v : v ? [v] : []));
+    .flatMap(([, v]) => (Array.isArray(v) ? v : v ? [v] : [])) as Record<string, unknown>[];
+}
+
+function nodeRect(n: Record<string, unknown>): Rect {
+  const x = Number(n.x ?? 0);
+  const y = Number(n.y ?? 0);
+  return [x, y, x + Number(n.width ?? 0), y + Number(n.height ?? 0)];
+}
+
+/** Bars extend to the screen edge they sit on: a top bar also covers the status bar above it. */
+function barOccluders(root: Record<string, unknown>, screen: [number, number]): Rect[] {
+  const out: Rect[] = [];
+  const stack = [root];
+  while (stack.length) {
+    const n = stack.pop()!;
+    if (IOS_BAR_RE.test(String(n.type ?? ''))) {
+      const [, y1, , y2] = nodeRect(n);
+      if (y2 > y1)
+        out.push(y1 < screen[1] / 3 ? [0, 0, screen[0], y2] : y2 > (screen[1] * 2) / 3 ? [0, y1, screen[0], screen[1]] : nodeRect(n));
+      continue;
+    }
+    stack.push(...childNodes(n));
+  }
+  return out;
+}
+
+/** The area a window layer covers. Single-child wrappers are skipped, since a sheet's container is
+ * full-screen while the sheet itself starts lower. */
+function layerRect(n: Record<string, unknown>): Rect {
+  for (let kids = childNodes(n); kids.length === 1; kids = childNodes(n)) n = kids[0];
+  return nodeRect(n);
+}
+
+function hiddenByContext(node: Record<string, unknown>, ctx: VisibilityContext | undefined): boolean {
+  if (!ctx) return false;
+  const [x1, y1, x2, y2] = nodeRect(node);
+  const cx = (x1 + x2) / 2;
+  const cy = (y1 + y2) / 2;
+  const covered = (rects: Rect[]) => rects.some(([a, b, c, d]) => cx >= a && cx <= c && cy >= b && cy <= d);
+  if (covered(ctx.layers)) return true;
+  if (ctx.inBar) return false;
+  if (cx < 0 || cy < 0 || cx > ctx.screen[0] || cy > ctx.screen[1]) return true;
+  return covered(ctx.bars);
+}
+
+/** Internal view-class names that a name-only node exposes instead of a label
+ *  (`IOSCardsOverlay.OverlayVC.OverlayView`, `ChromeViewController.Viewport`, `AnnotationContainer`). */
+const CLASS_NAME_LABEL_RE =
+  /^(?:[A-Z][A-Za-z0-9_]*\.)+[A-Z][A-Za-z0-9_]*$|^[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]*)*(?:View|Container|Controller|Viewport|Overlay|Layer|Window|VC|Button)$/;
+/** SF Symbol / asset names (`chevron`, `chevron.forward`, `apple.id`, `xmark`): one lowercase token.
+ *  A spoken image label is a word or phrase in sentence case ("Close", "Search"). */
+const SYMBOL_NAME_RE = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
+/** A row's disclosure chevron (`chevron`, `chevron.forward`): pure decoration whatever its type, and
+ *  its SF Symbol label ("Forward") names nothing on screen. */
+const CHEVRON_RE = /^chevron(?:\.[a-z.]+)?$/;
+/** A scroll view's position value ("0 %", "45%"): read by VoiceOver on scroll indicators, never a name. */
+const SCROLL_POSITION_RE = /^\d{1,3}\s?%$/;
+/** Types whose percentage value is real state (a slider's position, a progress bar). */
+const PERCENT_VALUE_TYPE_RE = /Slider|ProgressIndicator|Stepper|TextField|TextView|SearchField/;
+
+/** A label that names no visible text: an image's symbol/asset name, a chevron, or a
+ *  view-class name a node exposes only through `name` (no `label`). Such nodes are listed as unlabeled. */
+function decorativeLabel(type: string, node: Record<string, unknown>): boolean {
+  const shown = String(node.label ?? node.name ?? '');
+  // Settings rows expose the chevron as the label, the name, or (no label) the value, and
+  // not always on an Image / Other / StaticText node: a non-control node named "chevron" is decoration.
+  const chevron = [shown || String(node.value ?? ''), String(node.name ?? '')].some((v) => CHEVRON_RE.test(v.trim()));
+  if (chevron && !/Button|Cell|Link|Switch|Tab|Key\b|TextField|TextView|SearchField/.test(type)) return true;
+  if (!shown) return false;
+  if (type === 'XCUIElementTypeImage' && (node.label == null || SYMBOL_NAME_RE.test(shown))) return true;
+  return node.label == null && node.value == null && CLASS_NAME_LABEL_RE.test(shown);
+}
+
+/** A scroll indicator (`XCUIElementTypeOther`, value "0 %", label "Vertical scroll bar, 2 pages" or
+ *  none): not a target, and inside an alert it sits over the bottom button. */
+function scrollIndicator(type: string, node: Record<string, unknown>): boolean {
+  if (type !== 'XCUIElementTypeOther' || !SCROLL_POSITION_RE.test(String(node.value ?? '').trim())) return false;
+  const label = String(node.label ?? node.name ?? '');
+  return !label || /scroll bar/i.test(label);
+}
+
+function normalizeNode(node: Record<string, unknown>, ctx?: VisibilityContext): Record<string, unknown> {
+  const type = String(node.type ?? node.name ?? 'XCUIElementTypeOther');
+  const indicator = scrollIndicator(type, node);
+  const decorative = indicator || decorativeLabel(type, node);
+  // A name-only identifier (`PageFormatMenuButton`, before WDA fills the label) stays the id.
+  // A chevron's name is not an identifier either.
+  const nameId = node.name != null && !CHEVRON_RE.test(String(node.name).trim()) ? String(node.name) : '';
+  const id = wdaNodeIdentifier(node) || (decorative && !indicator && node.label == null ? nameId : '');
+  const label = decorative ? '' : String(node.label ?? node.name ?? '');
+  // A scroll position ("0 %") is not a name: drop it unless the type carries a real percentage.
+  const rawValue = String(node.value ?? '');
+  const value =
+    (SCROLL_POSITION_RE.test(rawValue.trim()) && !PERCENT_VALUE_TYPE_RE.test(type)) || (decorative && CHEVRON_RE.test(rawValue.trim()))
+      ? ''
+      : rawValue;
+  const enabled = node.enabled == null ? true : bool(node.enabled);
+  const isBar = IOS_BAR_RE.test(type);
+  const visible = node.visible == null ? isBar || !hiddenByContext(node, ctx) : bool(node.visible);
+  const textInput = IOS_TEXT_INPUT_RE.test(type);
+  // Keyboard keys are tappable. Images are not: an icon / chevron inside a row is not its
+  // own target, and listing each one as an unlabeled [button] flooded table rows.
+  const typeLooksInteractive = textInput || /Button|Cell|Link|Switch|Tab|Key\b/i.test(type);
+  const clickable = !indicator && (node.hittable == null ? enabled && visible && typeLooksInteractive : bool(node.hittable));
+  const childValues = childNodes(node);
+  const childCtx = ctx && !ctx.inBar && isBar ? { ...ctx, inBar: true } : ctx;
+  // A window's children paint back to front: a later one (an alert, a sheet) hides earlier ones.
+  const layered = !!ctx && type === 'XCUIElementTypeWindow' && childValues.length > 1;
+  const ctxFor = (i: number): VisibilityContext | undefined =>
+    layered ? { ...ctx!, layers: [...ctx!.layers, ...childValues.slice(i + 1).map(layerRect)] } : childCtx;
   const out: Record<string, unknown> = {
     class: type,
     text: value || label,
@@ -786,7 +984,7 @@ function normalizeNode(node: Record<string, unknown>): Record<string, unknown> {
     password: /SecureTextField/i.test(type),
     ...(textInput && node.placeholderValue != null ? { hint: String(node.placeholderValue) } : {}),
   };
-  if (childValues.length) out.node = childValues.map((c) => normalizeNode(c as Record<string, unknown>));
+  if (childValues.length) out.node = childValues.map((c, i) => normalizeNode(c, ctxFor(i)));
   return out;
 }
 
@@ -818,6 +1016,14 @@ export function normalizeWdaSource(xml: string): string {
   if (!rootKey) return xml;
   const rootRaw = doc[rootKey];
   const root = (Array.isArray(rootRaw) ? rootRaw[0] : rootRaw) as Record<string, unknown>;
-  const normalized = normalizeNode({ ...root, type: root.type ?? rootKey });
+  const typed = { ...root, type: root.type ?? rootKey };
+  const [, , w, h] = nodeRect(typed);
+  // Only for sources without `visible` (the lean default); a full source keeps WDA's verdict.
+  const ctx =
+    root.visible == null && w > 0 && h > 0
+      ? { screen: [w, h] as [number, number], bars: [] as Rect[], layers: [] as Rect[], inBar: false }
+      : undefined;
+  if (ctx) ctx.bars = barOccluders(typed, ctx.screen);
+  const normalized = normalizeNode(typed, ctx);
   return `<hierarchy>${nodeXml(normalized)}</hierarchy>`;
 }

@@ -171,18 +171,6 @@ export async function maskScreenshotForProvider(root: string, imagePath: string,
   return { imagePath: produced, tempPaths: [workDir], masksApplied, providerConfigured: true };
 }
 
-export function boundedProviderObject(value: unknown, redact: Redactor, maxChars = 8000): Record<string, unknown> {
-  const raw = redact(JSON.stringify(value)) ?? '{}';
-  const bounded = raw.length > maxChars ? raw.slice(0, maxChars) : raw;
-  try {
-    const parsed = JSON.parse(bounded) as Record<string, unknown>;
-    if (raw.length > maxChars) parsed.truncated = true;
-    return parsed;
-  } catch {
-    return { text: bounded, truncated: raw.length > maxChars };
-  }
-}
-
 export function boundedText(value: string, redact: Redactor, maxChars = 8000): { text: string; truncated: boolean } {
   const safe = redact(value) ?? '';
   return { text: safe.slice(0, maxChars), truncated: safe.length > maxChars };

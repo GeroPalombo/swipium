@@ -33,11 +33,13 @@ export function emitReadme(input: ReadmeInput): string {
   if (model.platforms.android) platformCoverage.push(`Android (${profile.platforms.android.level})`);
   if (model.platforms.ios) platformCoverage.push(`iOS (${profile.platforms.ios.level})`);
 
+  // A fresh Appium has no drivers; install the one for the target platform first.
+  const driverInstall = `appium driver install ${defaultPlatformOf(profile, model) === 'ios' ? 'xcuitest' : 'uiautomator2'}   # once per Appium install (Android: uiautomator2, iOS: xcuitest)`;
   const runCmd = isPython
     ? profile.testFramework === 'pytest'
-      ? '```sh\npip install -r requirements.txt\nappium &   # start a local Appium server\npytest\n```'
-      : '```sh\npip install -r requirements.txt\nappium &   # start a local Appium server\npython -m unittest discover -s tests\n```'
-    : '```sh\nnpm install\nnpx appium &   # or rely on the @wdio/appium-service\nnpm test\n```';
+      ? `\`\`\`sh\npip install -r requirements.txt\nnpm install -g appium   # Appium 2+ server (Node)\n${driverInstall}\nappium --port 4723 &   # local Appium server; keep APPIUM_PORT/APPIUM_URL in sync if you change the port\npytest\n\`\`\``
+      : `\`\`\`sh\npip install -r requirements.txt\nnpm install -g appium   # Appium 2+ server (Node)\n${driverInstall}\nappium --port 4723 &   # local Appium server; keep APPIUM_PORT/APPIUM_URL in sync if you change the port\npython -m unittest discover -s tests\n\`\`\``
+    : `\`\`\`sh\nnpm install\nnpx ${driverInstall}\nnpm test   # @wdio/appium-service starts Appium on APPIUM_PORT (default 4723); do not start another Appium on that port\n\`\`\``;
 
   const brittle = model.audit.brittle;
   const lines: string[] = [];

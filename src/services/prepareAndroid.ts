@@ -9,7 +9,10 @@ import {
   adbDevices,
   bootEmulator,
   waitForBoot,
+  BOOT_POLL_MS,
+  ensureQuickbootSnapshot,
   resolveApk,
+  apkPackageId,
   deviceFreeDataBytes,
   deviceAbis,
   apkNativeAbis,
@@ -19,13 +22,15 @@ import {
   minSdkCompatible,
   classifyAndroidInstallError,
 } from '../lib/android.js';
-import { metroReadiness } from '../lib/metroState.js';
-import { classifyAndroidSerials, verifiedEmulatorSerials } from '../session/attach.js';
+import { METRO_PORT, metroReadiness, wrongProjectMetroMessage } from '../lib/metroState.js';
+import { classifyAndroidSerials, onlineSerialForAvd, rememberBoundAvd, verifiedEmulatorSerials } from '../session/attach.js';
 import { log } from '../lib/logger.js';
 import type { DirectDriver } from '../drivers/DirectDriver.js';
 import { isInvalidArgumentError } from '../lib/result.js';
 import type { Session, SessionStore } from '../session/store.js';
 import { isAbortError, sleepOrCancel } from '../lib/abortScope.js';
+import { waitForLaunch } from '../lib/launchWait.js';
+import { noteScreenMutation } from '../snapshot/fresh.js';
 
 export interface PrepareAndroidArgs {
   needBoot: boolean;
@@ -87,13 +92,31 @@ export async function prepareAndroid(
         error: `${serial} is not an Android emulator. Swipium never installs on physical devices (docs/physical-devices.md).`,
       };
     }
+    let alreadyRunning = false;
     if (a.needBoot && a.bootTarget) {
+      // The requested AVD may already be running (started by the user or by `expo run:android
+      // --device`): bind THAT emulator instead of booting it twice or using another device.
+      serial = await onlineSerialForAvd(a.bootTarget, await adbDevices());
+      alreadyRunning = !!serial;
+      if (serial) {
+        sessions.recordMutation(session, {
+          tool: 'qa_prepare_target',
+          action: 'bind_emulator',
+          risk: 'low',
+          target: { avd: a.bootTarget, device: serial },
+          consent: { required: false, approved: true },
+          status: 'executed',
+          detail: `AVD ${a.bootTarget} already running as ${serial}; bound, not booted again`,
+        });
+      }
+    }
+    if (a.needBoot && a.bootTarget && !serial) {
       // Serials online BEFORE the boot: the emulator we start must be a NEW serial. Picking the first
       // online device instead installed onto a user's phone that happened to be connected.
       const before = new Set(await adbDevices());
-      serial = undefined;
       progress(`booting ${a.bootTarget}`);
       session.headless = a.headless ?? true;
+      const spawnedAt = Date.now();
       emu = bootEmulator(a.bootTarget, a.headless ?? true);
       signal?.addEventListener('abort', () => {
         try {
@@ -103,14 +126,15 @@ export async function prepareAndroid(
         }
       });
       sessions.milestone(session, 'simulator_boot_start');
-      for (let i = 0; i < 60 && !serial; i++) {
+      // Same ~120 s budget as before, polled every BOOT_POLL_MS instead of 2 s.
+      for (const deadline = Date.now() + 120_000; !serial && Date.now() < deadline;) {
         if (aborted()) return { ok: false, aborted: true };
         const fresh = (await adbDevices()).filter((s) => !before.has(s));
         if (fresh.length) {
           const { emulators } = await classifyAndroidSerials(fresh);
           serial = fresh.find((s) => emulators.includes(s));
         }
-        if (!serial) await sleepOrCancel(2000, signal); // wakes on cancel (CancelledError > aborted below)
+        if (!serial) await sleepOrCancel(BOOT_POLL_MS, signal); // wakes on cancel (CancelledError > aborted below)
       }
       if (!serial)
         return {
@@ -121,11 +145,14 @@ export async function prepareAndroid(
       const booted = await waitForBoot(serial, 180000);
       if (!booted) return { ok: false, failureCode: 'EMULATOR_BOOT_FAILED', error: `emulator "${a.bootTarget}" did not finish booting` };
       sessions.milestone(session, 'simulator_boot_end');
+      noteScreenMutation(session); // a new device: any stored snapshot is from another screen
+      progress('checking quick-boot snapshot');
+      const quickboot = await ensureQuickbootSnapshot(serial, spawnedAt);
       sessions.recordMutation(session, {
         tool: 'qa_prepare_target',
         action: 'boot_emulator',
         risk: 'low',
-        target: { avd: a.bootTarget, headless: a.headless ?? true, device: serial },
+        target: { avd: a.bootTarget, headless: a.headless ?? true, device: serial, quickboot },
         consent: a.mutationConsent ?? { required: false, approved: true },
         status: 'executed',
       });
@@ -134,7 +161,7 @@ export async function prepareAndroid(
     if (aborted()) return { ok: false, aborted: true };
     // adb lists a still-booting emulator as `device` early: always wait for sys.boot_completed
     // (returns at once on a booted one) before installing/launching.
-    if (!a.needBoot) {
+    if (!a.needBoot || alreadyRunning) {
       progress(`waiting for ${serial} to finish booting`);
       if (!(await waitForBoot(serial, 180000))) {
         return {
@@ -150,6 +177,7 @@ export async function prepareAndroid(
     session.device = serial; // bind early so all tools agree
     session.driver = driver;
     sessions.persist(session);
+    if (!a.needBoot) await rememberBoundAvd(sessions, session, serial, 'qa_prepare_target'); // bound by serial: remember its AVD
     await driver.disableAnimations().catch(() => {});
 
     if (a.rnDebug) {
@@ -162,7 +190,7 @@ export async function prepareAndroid(
     }
 
     if (a.bindOnly) {
-      const rd = await metroReadiness(serial);
+      const rd = await metroReadiness(serial, METRO_PORT, session.root);
       return {
         ok: true,
         bound: true,
@@ -179,6 +207,14 @@ export async function prepareAndroid(
       if (!apkPath) {
         const r = resolveApk(session.root, a.apk);
         if (!r.apk) return { ok: false, failureCode: 'NO_ARTIFACT', error: r.error ?? 'no APK to install' };
+        // An implicitly found APK must BE this app: never install another package under its name.
+        const pkg = a.apk ? undefined : await apkPackageId(r.apk).catch(() => null);
+        if (!a.apk && pkg && pkg !== a.resolvedAppId)
+          return {
+            ok: false,
+            failureCode: 'NO_ARTIFACT',
+            error: `${a.resolvedAppId} is not installed on ${serial}, and the APK found (${r.apk}) is a different app (${pkg}). Pass apk= for ${a.resolvedAppId}.`,
+          };
         apkPath = r.apk;
       }
       const apkSize = statSync(apkPath).size;
@@ -243,12 +279,20 @@ export async function prepareAndroid(
 
     if (aborted()) return { ok: false, aborted: true };
     if (a.rnDebug && !a.allowLaunchWithoutMetro) {
-      const rd = await metroReadiness(serial);
+      const rd = await metroReadiness(serial, METRO_PORT, session.root);
+      if (rd.wrongProject) {
+        return {
+          ok: false,
+          failureCode: 'METRO_WRONG_PROJECT',
+          error: `${wrongProjectMetroMessage(rd, session.root)} Stop that Metro, start this project's (qa_metro action="start"), then retry.`,
+          metro: rd,
+        };
+      }
       if (!rd.serving) {
         return {
           ok: false,
           failureCode: 'METRO_REQUIRED',
-          error: `Debug RN/Expo build; Metro is not serving (listening=${rd.listening} serving=${rd.serving}) and the app would RedBox. Start the Metro/dev server, wait until it is serving, then retry.`,
+          error: `Debug RN/Expo build; Metro is not serving (listening=${rd.listening} serving=${rd.serving}) and the app would RedBox. Start the Metro/dev server (qa_metro action="start"), wait until it is serving (qa_wait for:"metro_ready"), then retry.`,
         };
       }
     }
@@ -257,9 +301,10 @@ export async function prepareAndroid(
     progress('launching');
     sessions.milestone(session, 'app_launch_start');
     await driver.launchApp(a.resolvedAppId);
-    await new Promise((r) => setTimeout(r, 2500));
-    const foreground = await driver.foregroundOwner();
-    sessions.milestone(session, 'app_launch_end');
+    noteScreenMutation(session); // a snapshot taken before the launch is stale
+    const foreground = await waitForLaunch(driver, a.resolvedAppId);
+    // The report's "reached the app" evidence, only once the app under test is in front.
+    if (foreground.startsWith(a.resolvedAppId)) sessions.milestone(session, 'app_launch_end');
     sessions.recordMutation(session, {
       tool: 'qa_prepare_target',
       action: 'launch_app',
@@ -304,6 +349,11 @@ export async function prepareAndroid(
     log('error', 'prepareAndroid failed', { err: String(e) });
     // A malformed app id (driver-side validation) is a caller error, not a launch failure.
     if (isInvalidArgumentError(e)) return { ok: false, failureCode: 'INVALID_ARGUMENT', error: e.message };
-    return { ok: false, failureCode: 'APP_LAUNCH_FAILED', error: String(e) };
+    return { ok: false, failureCode: launchFailureCode(e), error: String(e) };
   }
+}
+
+/** A timed-out adb call is a slow / overloaded device, not an app that fails to launch. */
+export function launchFailureCode(e: unknown): 'DEVICE_UNRESPONSIVE' | 'APP_LAUNCH_FAILED' {
+  return /\(timed out\)|DEVICE_UNRESPONSIVE/.test(String(e)) ? 'DEVICE_UNRESPONSIVE' : 'APP_LAUNCH_FAILED';
 }

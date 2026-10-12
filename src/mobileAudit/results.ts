@@ -24,6 +24,8 @@ export interface MobileAuditCheckResult {
   workflow?: string;
   screenId?: string;
   nextStep?: string;
+  /** Stable failure code for a blocked / failed check (e.g. BLANK_SCREEN on the launch check). */
+  failureCode?: string;
 }
 
 export type AuditRunState = 'completed' | 'blocked' | 'needs_input' | 'unsafe';
@@ -63,7 +65,8 @@ export function auditReleaseImpact(checks: MobileAuditCheckResult[], hasBlocking
 /** Map a finished check to a one-line markdown row. */
 export function checkLine(c: MobileAuditCheckResult): string {
   const tag = c.issueId ? ` [${c.issueId}]` : '';
-  return `- ${c.status.toUpperCase()}: ${c.title}${c.reason ? `: ${c.reason}` : ''}${tag}`;
+  const code = c.failureCode ? ` (${c.failureCode})` : '';
+  return `- ${c.status.toUpperCase()}${code}: ${c.title}${c.reason ? `: ${c.reason}` : ''}${tag}`;
 }
 
 /** Render the audit run as a compact markdown block for the report / tool output. */

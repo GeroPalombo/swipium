@@ -1,4 +1,4 @@
-// D6: adb/emulator resolve from $ANDROID_HOME / $ANDROID_SDK_ROOT and the OS-default SDK dir
+// adb/emulator resolve from $ANDROID_HOME / $ANDROID_SDK_ROOT and the OS-default SDK dir
 // before PATH (GUI MCP clients don't inherit the shell PATH).
 
 import { describe, expect, it } from 'vitest';

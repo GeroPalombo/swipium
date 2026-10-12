@@ -4,7 +4,7 @@
 // index record, so the index can always be rebuilt from `issues-log.jsonl`. `buildRecurrenceMessage`
 // produces the product-facing text shown in reports when a fixed issue reappears.
 
-import type { IssueEvent, IssueRecord, IssueState, IssueLinks, AppMapRef, TestRef, ReportRef, EvidenceRef } from './schema.js';
+import type { IssueEvent, IssueRecord, IssueLinks, AppMapRef, TestRef, ReportRef, EvidenceRef } from './schema.js';
 import { ISSUE_SCHEMA_VERSION } from './schema.js';
 
 /** Format an ISO timestamp as a YYYY-MM-DD date for human-facing recurrence text. */
@@ -106,10 +106,14 @@ export function foldEvent(prev: IssueRecord | null, event: IssueEvent): IssueRec
   if (event.environment && record.environment == null) record.environment = event.environment;
 
   // Classification updates (latest classification wins for category/severity/owner/confidence).
+  // A defaulted severity/category (fallback guess) never overwrites what an existing
+  // issue already has: re-logging a high issue without `severity` must not downgrade it to low.
   if (cls) {
-    record.category = cls.category;
-    record.severity = cls.severity;
-    record.owner = cls.owner;
+    if (!(base && cls.categoryDefaulted)) {
+      record.category = cls.category;
+      record.owner = cls.owner;
+    }
+    if (!(base && cls.severityDefaulted)) record.severity = cls.severity;
     record.confidence = cls.confidence;
   }
 
@@ -214,5 +218,3 @@ export function rebuildRecords(events: IssueEvent[]): IssueRecord[] {
   }
   return [...byId.values()];
 }
-
-export const ALL_STATES_FOR_TEST: IssueState[] = ['open', 'fixed', 'reopened'];

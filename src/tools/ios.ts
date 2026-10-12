@@ -15,7 +15,18 @@ import { sensitiveRefusal } from '../lib/sensitive.js';
 import { SimctlDriver } from '../drivers/SimctlDriver.js';
 import * as sim from '../lib/simctl.js';
 import { WdaDriver, invalidateWdaPageSource } from '../drivers/WdaDriver.js';
-import { isSimulatorUdid } from '../session/attach.js';
+import {
+  DEVICE_PIN_ENV,
+  devicePinConflict,
+  isSimulatorUdid,
+  operatorDevicePin,
+  pinAmbiguousMessage,
+  pinFixStep,
+  pinMatches,
+  simulatorsForPin,
+} from '../session/attach.js';
+import { appBuildDestination } from '../ios/signing.js';
+import { noteScreenMutation } from '../snapshot/fresh.js';
 import type { Session, SessionStore } from '../session/store.js';
 
 /** The simulator UDID this session drives, whatever the iOS backend (SimctlDriver, or WdaDriver
@@ -40,19 +51,70 @@ function bind(sessions: SessionStore, session: Session, udid: string): SimctlDri
   return driver;
 }
 
+/** With SWIPIUM_DEVICE set, a DEVICE_PINNED refusal for any simulator other than the pinned
+ *  one (boot / install / privacy_reset / erase; erase can be pre-approved, so the pin is the only
+ *  guard for a bystander simulator). Undefined when allowed. Exported for qa_wda. */
+export async function simulatorPinRefusal(udid: string, sims?: sim.Simulator[]): Promise<ReturnType<typeof qaError> | undefined> {
+  const pin = operatorDevicePin();
+  if (!pin) return undefined;
+  const list = sims ?? (await sim.listSimulators().catch(() => [] as sim.Simulator[]));
+  const pinnedSims = simulatorsForPin(pin, list);
+  if (pinnedSims.length > 1)
+    return qaError({
+      what: pinAmbiguousMessage(pin, pinnedSims),
+      changedState: false,
+      retrySafe: false,
+      failureCode: 'MULTIPLE_DEVICES',
+      nextSteps: [pinFixStep()],
+    });
+  const conflict = await devicePinConflict(udid, [], list);
+  if (!conflict) return undefined;
+  return qaError({
+    what: conflict,
+    changedState: false,
+    retrySafe: false,
+    failureCode: 'DEVICE_PINNED',
+    nextSteps: ['Re-call without device: the pinned simulator is used. Another simulator needs a server without SWIPIUM_DEVICE.'],
+  });
+}
+
+/** The one resolver for a simulator `device` argument: an available simulator's UDID (ignoring
+ *  case) or a unique exact name (ignoring case). Anything else is refused: no match INVALID_ARGUMENT,
+ *  a shared name MULTIPLE_DEVICES. Never a substring, never "the first booted". Exported for qa_wda. */
+export async function resolveSimulatorArg(
+  device: string,
+  sims?: sim.Simulator[],
+): Promise<{ udid: string; name?: string } | { error: ReturnType<typeof qaError> }> {
+  const list = sims ?? (await sim.listSimulators().catch(() => [] as sim.Simulator[]));
+  const byUdid = list.filter((s) => pinMatches(device, s.udid));
+  const matches = byUdid.length ? byUdid : list.filter((s) => pinMatches(device, s.name));
+  if (matches.length === 1) return { udid: matches[0].udid, name: matches[0].name };
+  return {
+    error: qaError({
+      what: matches.length
+        ? `device "${device}" matches ${matches.length} simulators (${matches.map((s) => `${s.name} ${s.udid}`).join(', ')}); nothing was done`
+        : `device "${device}" matches no available simulator (UDID or exact name); nothing was done`,
+      changedState: false,
+      retrySafe: true,
+      failureCode: matches.length ? 'MULTIPLE_DEVICES' : 'INVALID_ARGUMENT',
+      nextSteps: ['Pass the simulator UDID (qa_ios { action:"list" } lists them).'],
+    }),
+  };
+}
+
 export function registerIos(server: McpServer, sessions: SessionStore): void {
   server.registerTool(
     'qa_ios',
     {
       title: 'iOS simulator control',
       description:
-        'Control an iOS Simulator (macOS): list, boot (binds it to the session; a slow cold boot returns status:"booting", poll ' +
-        'qa_wait for:"simulator_booted"), install (.app), launch, terminate, openurl, ' +
-        'logs, privacy_reset, erase (wipes it). install, privacy_reset, and erase are consent-gated. Structured automation: qa_wda.',
+        'Control an iOS Simulator (macOS): list, boot (binds it to the session), install (.app), launch, terminate, openurl, logs, ' +
+        'privacy_reset, erase (wipes it). install, privacy_reset and erase are consent-gated. A slow cold boot returns ' +
+        'status:"booting" (poll qa_wait for:"simulator_booted"). Structured iOS automation: qa_wda.',
       inputSchema: {
         sessionId: z.string(),
         action: z.enum(['list', 'boot', 'install', 'launch', 'terminate', 'openurl', 'logs', 'privacy_reset', 'erase']),
-        device: z.string().optional().describe('boot/erase: simulator udid or name substring.'),
+        device: z.string().optional().describe('boot/erase: simulator UDID or exact name (other actions: the bound one only).'),
         app: z.string().optional().describe('install: .app path (absolute or project-relative).'),
         bundleId: z.string().optional().describe('launch/terminate/privacy_reset: bundle id.'),
         url: z.string().optional().describe('openurl: deep link.'),
@@ -100,10 +162,42 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
 
       if (action === 'boot') {
         const sims = await sim.listSimulators();
-        const pick =
-          (args.device && sims.find((s) => s.udid === args.device || s.name.toLowerCase().includes(args.device!.toLowerCase()))) ||
-          sims.find((s) => s.state === 'Booted') ||
-          sims.find((s) => /iphone/i.test(s.name));
+        // With SWIPIUM_DEVICE set, boot defaults to the pinned simulator (never "the first
+        // Booted", which can be a bystander) and refuses any other one.
+        const pin = operatorDevicePin();
+        let pick: sim.Simulator | undefined;
+        if (args.device) {
+          // Exact UDID or unique exact name only: an unknown or shared name is refused, never "first booted".
+          const r = await resolveSimulatorArg(args.device, sims);
+          if ('error' in r) return r.error;
+          pick = sims.find((s) => s.udid === r.udid);
+        } else if (pin) {
+          pick = simulatorsForPin(pin, sims)[0];
+        } else {
+          // No device, no pin: the one booted simulator (several booted = ask), else the first iPhone.
+          const booted = sims.filter((s) => s.state === 'Booted');
+          if (booted.length > 1)
+            return qaError({
+              what: `${booted.length} simulators are booted (${booted.map((s) => `${s.name} ${s.udid}`).join(', ')}); none was picked`,
+              changedState: false,
+              retrySafe: true,
+              failureCode: 'MULTIPLE_DEVICES',
+              nextSteps: ['Pass device:"<udid>" (qa_ios { action:"list" } lists them).'],
+            });
+          pick = booted[0] ?? sims.find((s) => /iphone/i.test(s.name));
+        }
+        const pinRefusal = pick ? await simulatorPinRefusal(pick.udid, sims) : undefined;
+        if (pinRefusal) return pinRefusal;
+        if (!pick && pin && !args.device)
+          return qaError({
+            what: `${DEVICE_PIN_ENV}=${pin} (server env) matches no simulator, so no other simulator was booted.`,
+            changedState: false,
+            retrySafe: false,
+            failureCode: 'NO_DEVICE',
+            nextSteps: [
+              `Fix or unset ${DEVICE_PIN_ENV} in the MCP server's env (a simulator UDID or exact name), then restart the server.`,
+            ],
+          });
         if (!pick)
           return qaError({
             what: 'No matching simulator',
@@ -182,6 +276,37 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
           nextSteps: ['Call qa_ios { action: "boot" } first.'],
         });
       }
+      // Every action but boot / erase runs on the bound simulator. A `device` naming
+      // another one is refused (DEVICE_PINNED under the pin), never silently replaced by the bound one.
+      if (args.device && action !== 'erase') {
+        const r = await resolveSimulatorArg(args.device);
+        if ('error' in r) return r.error;
+        if (r.udid.toUpperCase() !== udid.toUpperCase()) {
+          const refusal = await simulatorPinRefusal(r.udid);
+          if (refusal) return refusal;
+          return qaError({
+            what: `device "${args.device}" is not this session's simulator (${udid}); qa_ios ${action} runs on the bound simulator, so nothing was done`,
+            changedState: false,
+            retrySafe: true,
+            failureCode: 'INVALID_ARGUMENT',
+            nextSteps: [
+              `Omit device to use ${udid}, or bind the other simulator first: qa_ios { action:"boot", device:"${r.udid}" } (or use a separate session).`,
+            ],
+          });
+        }
+      }
+      // erase gets a resolved UDID (never a name, substring or "booted" straight to simctl).
+      let eraseUdid = udid;
+      if (action === 'erase' && args.device) {
+        const r = await resolveSimulatorArg(args.device);
+        if ('error' in r) return r.error;
+        eraseUdid = r.udid;
+      }
+      // The consent-gated simulator changes never touch a simulator other than the pinned one.
+      if (action === 'install' || action === 'privacy_reset' || action === 'erase') {
+        const refusal = await simulatorPinRefusal(action === 'erase' ? eraseUdid : udid);
+        if (refusal) return refusal;
+      }
 
       if (action === 'install') {
         const e = need(args.app, 'app (a .app path)');
@@ -193,6 +318,17 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
             changedState: false,
             retrySafe: true,
             nextSteps: ['Provide an existing .app bundle path.'],
+          });
+        // Validate the artifact BEFORE asking for consent: never ask to approve an install that cannot run.
+        if (/\.ipa$/i.test(appPath) || appBuildDestination(appPath) === 'device')
+          return qaError({
+            what: /\.ipa$/i.test(appPath)
+              ? `${appPath} is an .ipa; the simulator needs a simulator-SDK .app.`
+              : `${appPath} is a device build (iphoneos); the simulator needs a simulator-SDK .app (iphonesimulator).`,
+            changedState: false,
+            retrySafe: false,
+            failureCode: /\.ipa$/i.test(appPath) ? 'IPA_NEEDS_REAL_DEVICE' : 'IOS_APP_WRONG_ARCH',
+            nextSteps: ['Build for the simulator (xcodebuild -sdk iphonesimulator) and pass that .app.'],
           });
         const gate = consumeConsent(args.consentId, args.approve, { action: 'install_app', affects: { appPath } });
         if (!gate.approved) {
@@ -274,17 +410,26 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
           invalidateWdaPageSource(udid); // the screen changes outside WDA: drop cached page sources
           await sim.launchApp(udid, bundleId!);
           invalidateWdaPageSource(udid); // …and anything a concurrent read cached mid-launch
-          sessions.milestone(session, 'app_launch_end');
+          noteScreenMutation(session); // a snapshot from before the launch is no longer fresh
+          // app_launch_end is the report's "reached the app" evidence: only a launch of the
+          // app under test sets it (launching Safari on a session for another app proves nothing).
+          if (!session.appId || session.appId === bundleId) sessions.milestone(session, 'app_launch_end');
         } catch (err) {
+          // Not every launch failure is a missing bundle: a shut-down simulator, a wedged launch
+          // service (timeout) or an installed device build each get their own code and next step.
+          const why = await sim.classifyIosLaunchFailure(udid, bundleId!, err);
           return qaError({
-            what: `Launch failed: ${String(err)}`,
+            what: why.what,
             changedState: false,
             retrySafe: true,
-            failureCode: 'BUNDLE_ID_NOT_FOUND',
-            nextSteps: ['Confirm the app is installed (qa_ios install) and that bundleId is correct.'],
+            failureCode: why.failureCode,
+            nextSteps: why.nextSteps,
           });
         }
-        session.appId = bundleId!;
+        // Launching another bundle (Safari, Settings) never makes it the app under test: the report
+        // would then treat that app's screens as coverage. Only a session with no app adopts it.
+        const otherApp = !!session.appId && session.appId !== bundleId;
+        if (!session.appId) session.appId = bundleId!;
         sessions.persist(session);
         sessions.recordMutation(session, {
           tool: 'qa_ios',
@@ -294,7 +439,12 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
           consent: { required: false, approved: true },
           status: 'executed',
         });
-        return qaOk({ launched: true, bundleId }, `launched ${bundleId}. Use qa_screenshot / qa_visual to verify.`);
+        return qaOk(
+          { launched: true, bundleId, ...(otherApp ? { appUnderTest: session.appId } : {}) },
+          otherApp
+            ? `launched ${bundleId}; the app under test stays ${session.appId} (start a new session to test ${bundleId}).`
+            : `launched ${bundleId}. Use qa_screenshot / qa_visual to verify.`,
+        );
       }
 
       if (action === 'terminate') {
@@ -304,6 +454,7 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
         invalidateWdaPageSource(udid); // the screen changes outside WDA: drop cached page sources
         await sim.terminateApp(udid, bundleId!);
         invalidateWdaPageSource(udid);
+        noteScreenMutation(session);
         sessions.recordMutation(session, {
           tool: 'qa_ios',
           action: 'ios_terminate',
@@ -321,6 +472,7 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
         try {
           invalidateWdaPageSource(udid); // the screen changes outside WDA: drop cached page sources
           await sim.openUrl(udid, args.url!);
+          noteScreenMutation(session);
         } catch (err) {
           return qaError({
             what: `openurl failed: ${String(err)}`,
@@ -435,7 +587,7 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
 
       // action === 'erase'
       {
-        const target = args.device ?? udid;
+        const target = eraseUdid;
         const gate = consumeConsent(args.consentId, args.approve, { action: 'erase_device', affects: { udid: target } });
         if (!gate.approved) {
           sessions.recordMutation(session, {

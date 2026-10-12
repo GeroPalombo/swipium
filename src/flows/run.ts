@@ -8,12 +8,32 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { parseSnapshot, signature } from '../snapshot/parse.js';
+import { boundsContain, isTextFieldClass, signature } from '../snapshot/parse.js';
+import { composeLabelOf, fieldReadBack, typedReadBack } from '../core/readBack.js';
 import { settle } from '../snapshot/settle.js';
+import {
+  adoptSnapshot,
+  freshSnapshot,
+  noteScreenMutation,
+  preActionFingerprint,
+  SNAPSHOT_REUSE_MS,
+  snapshotNow,
+  snapshotView,
+} from '../snapshot/fresh.js';
+import { awaitIme, IME_HOP_FLOOR_MS } from '../core/ime.js';
 import { checkHealth } from '../oracle/health.js';
 import { recordHealthFindings } from '../oracle/record.js';
 import { isAbortError, sleepOrCancel, throwIfCancelled } from '../lib/abortScope.js';
-import { boundsBucket, resolveTarget, resourceIdMatches, type Target } from '../core/target.js';
+import { waitForForeground } from '../lib/launchWait.js';
+import {
+  boundsBucket,
+  FLOW_TARGET_WAIT_MS,
+  foldText,
+  RESOLVE_POLL_MS,
+  resolveTarget,
+  resourceIdMatches,
+  type Target,
+} from '../core/target.js';
 import { imageDiff, findTemplate } from '../lib/image.js';
 import { captureCoordinateSpace, toDevicePoint } from '../lib/coordSpace.js';
 import { executeSeed } from './seedExec.js';
@@ -31,10 +51,11 @@ import {
 // reproduce their historical vectors byte-for-byte.
 import { swipeVector } from '../lib/gestures.js';
 import { configuredOcrCommand, findOcrRegion, runOcr } from '../visual/ocr.js';
-import { makeRedactor } from '../lib/redact.js';
+import { isSecureNode, makeRedactor } from '../lib/redact.js';
 import { classifyForeground, detectTreeOverlays } from '../snapshot/overlays.js';
 import type { RawNode } from '../snapshot/parse.js';
 import type { FailureCode } from '../oracle/failures.js';
+import { isDeviceGoneError } from '../lib/deviceGone.js';
 import type { Driver, NativeSelectorStrategy } from '../drivers/Driver.js';
 import type { MutationRecord, Session, SessionStore } from '../session/store.js';
 
@@ -125,15 +146,22 @@ function describe(step: FlowStep): string {
   }
 }
 
-async function snapshot(session: Session, d: Driver) {
-  const parsed = parseSnapshot(await d.dumpXml());
-  session.lastSnapshot = { fullByRef: parsed.fullByRef, signatures: new Set(parsed.elements.map(signature)), allNodes: parsed.allNodes };
-  return parsed;
+/** A fresh dump adopted as the session snapshot; `reuse` returns a just-settled one instead (for
+ *  single-shot checks only: a polling loop must see new dumps). */
+async function snapshot(session: Session, d: Driver, reuse = false) {
+  const cached = reuse ? freshSnapshot(session, SNAPSHOT_REUSE_MS) : undefined;
+  if (cached)
+    return {
+      ...snapshotView(cached),
+      screen: [cached.allNodes[0]?.bounds[2] ?? 0, cached.allNodes[0]?.bounds[3] ?? 0] as [number, number],
+    };
+  return snapshotNow(session, d);
 }
 function visible(parsed: { allNodes: { text: string; desc: string; id: string }[] }, query: string): boolean {
-  const q = query.toLowerCase();
+  // Typographic quotes fold to ASCII, as in selector matching.
+  const q = foldText(query);
   return parsed.allNodes.some(
-    (n) => n.text?.toLowerCase().includes(q) || n.desc?.toLowerCase().includes(q) || n.id?.toLowerCase().includes(q),
+    (n) => (!!n.text && foldText(n.text).includes(q)) || (!!n.desc && foldText(n.desc).includes(q)) || n.id?.toLowerCase().includes(q),
   );
 }
 
@@ -243,8 +271,9 @@ async function resourceIdVisibility(
   d: Driver,
   id: string,
   provenance?: FlowProvenanceEntry,
+  reuse = false,
 ): Promise<{ visible: boolean; ambiguous?: boolean; detail?: string }> {
-  const parsed = await snapshot(session, d);
+  const parsed = await snapshot(session, d, reuse);
   const matches = parsed.allNodes.filter((node) => resourceIdMatches(undefined, node.id, id));
   const screenMismatch = provenance?.originalScreenSignature && flowScreenSignature(parsed) !== provenance.originalScreenSignature;
   if (!matches.length)
@@ -303,6 +332,9 @@ export function classifyFlowDriverError(error: unknown, fallback: FailureCode = 
   // because the aborted request's message says "aborted" or "dump failed".
   if (isAbortError(error)) return 'CANCELLED';
   const msg = String((error as Error)?.message ?? error);
+  // The device itself is gone (emulator killed / simulator shut down): before any dump/snapshot
+  // pattern, whose "device 'x' not found" text would otherwise read as SNAPSHOT_FAILED.
+  if (isDeviceGoneError(msg)) return 'NO_DEVICE';
   // A crashing OCR/mask provider (tapOcrText/assertOcrText) is typed, not UNKNOWN.
   if ((error as { code?: unknown } | null)?.code === 'OCR_PROVIDER_FAILED') return 'OCR_PROVIDER_FAILED';
   // Driver-side argument validation (e.g. a malformed app id from assertAndroidAppId) carries
@@ -312,9 +344,13 @@ export function classifyFlowDriverError(error: unknown, fallback: FailureCode = 
   // Drivers self-classify undeliverable text (DirectDriver/WdaDriver prefix the code), so match
   // first so the free-form detail after the prefix can't hit a broader pattern below.
   if (/TEXT_INPUT_UNSUPPORTED/.test(msg)) return 'TEXT_INPUT_UNSUPPORTED';
+  if (/TEXT_INPUT_MISMATCH/.test(msg)) return 'TEXT_INPUT_MISMATCH';
+  // An adb call that ran into its timeout (a stalled emulator) is not a WDA
+  // outage and not a UI-tree problem: before the "dump" and "timed out" patterns below.
+  if (/DEVICE_UNRESPONSIVE|`adb [^`]*` exited \S+ \(timed out\)/.test(msg)) return 'DEVICE_UNRESPONSIVE';
   if (/not hittable|not hit.?point|not visible.*hittable|is not enabled|element.*obscured|other element.*would receive/i.test(msg))
     return 'ELEMENT_NOT_HITTABLE';
-  if (/stale element|stale.*reference|element.*no longer|invalid element/i.test(msg)) return 'STALE_REF';
+  if (/stale element|stale.*reference|element.*no longer|invalid element|not present in the current view/i.test(msg)) return 'STALE_REF';
   if (
     /invalid selector|invalid locator|unsupported locator|unsupported selector|locator strategy.*(invalid|unsupported)|selector strategy.*(invalid|unsupported)|predicate.*parse|class chain.*parse/i.test(
       msg,
@@ -333,7 +369,8 @@ export function classifyFlowDriverError(error: unknown, fallback: FailureCode = 
   if (/source.*slow|page source.*slow/i.test(msg)) return 'WDA_SOURCE_SLOW';
   if (/snapshot|source|dump|hierarchy/i.test(msg)) return 'SNAPSHOT_FAILED';
   if (/webview|web view|context unavailable/i.test(msg)) return 'WEBVIEW_UNAVAILABLE';
-  if (/no such element|element.*not found|could not resolve element|unable to locate|not visible/i.test(msg)) return 'ELEMENT_NOT_FOUND';
+  if (/no such element|element.*not found|could not resolve element|unable to locate|unable to find an element|not visible/i.test(msg))
+    return 'ELEMENT_NOT_FOUND';
   if (/WDA HTTP|session not created|invalid session|did not return a sessionId|failed to create.*session/i.test(msg))
     return 'WDA_SESSION_FAILED';
   if (/ECONNREFUSED|fetch failed|timed out|aborted|network|socket|unreachable/i.test(msg)) return 'WDA_UNREACHABLE';
@@ -359,6 +396,15 @@ export async function runFlow(
   const initialScreenSize = await d.screenSize().catch(() => null);
   const currentScreenSize = async () => (await d.screenSize().catch(() => null)) ?? initialScreenSize;
   const mutationConsent = opts.mutationConsent ?? { required: false, approved: true };
+  // Settle with the pre-action fingerprint (Android fast accept) and keep the settled dump as
+  // the session snapshot, so the next step's target / assertion reuses it instead of dumping again.
+  // `afterAction:false` (waitForIdle): no action ran, so a dump that differs from the last snapshot
+  // means the screen is still changing, never that it settled; keep the 2-dump confirm.
+  const settleStep = async (ms = timeoutMs, afterAction = true) => {
+    const s = await settle(d, { timeoutMs: ms, preFingerprint: afterAction ? preActionFingerprint(session) : undefined });
+    if (s.parsed && s.xml) adoptSnapshot(session, s.parsed);
+    return s;
+  };
 
   const resolveFlowText = (value: string): { out: string; missing: string[] } => {
     const resolved = resolveVars(value, vars);
@@ -414,25 +460,65 @@ export async function runFlow(
     return toDevicePoint(cs, m.x, m.y);
   };
 
+  /** A launch step that "succeeds" while another app is in front is reported in the step
+   * detail (a warning; not a failure, a permission dialog over the app is legitimate). An
+   * unreadable foreground ('unknown' / unsupported backend) is never judged. */
+  const foregroundWarning = async (pkg: string, stepKind: string): Promise<{ detail?: string }> => {
+    let fg = 'unknown';
+    try {
+      fg = await waitForForeground(d, pkg);
+    } catch (e) {
+      if (isAbortError(e)) throw e;
+    }
+    return fg === 'unknown' || fg.startsWith(pkg)
+      ? {}
+      : { detail: `⚠ ${stepKind}: foreground is ${fg}, not ${pkg}; the next step may not see the app.` };
+  };
+
+  // Round-4 Android note: launching an app that isn't on the device (monkey exits 252) is a setup
+  // problem (BUNDLE_ID_NOT_FOUND, environment), not an unclassified tool failure (UNKNOWN).
+  const notInstalled = async (pkg: string, e: unknown): Promise<StepOutcome | undefined> => {
+    if (isAbortError(e)) return undefined;
+    if ((await d.isInstalled(pkg).catch(() => undefined)) !== false) return undefined;
+    return {
+      ok: false,
+      detail: `${pkg} is not installed on this device (${String((e as Error)?.message ?? e).slice(0, 200)}). Install it (qa_prepare_target / qa_prepare_ios_target) or fix the flow's appId.`,
+      failureCode: 'BUNDLE_ID_NOT_FOUND',
+    };
+  };
+
   async function execStep(step: FlowStep, stepIndex: number): Promise<StepOutcome> {
     const provenance = provenanceForStep(flow, stepIndex, step.kind);
     switch (step.kind) {
       case 'prepareTarget':
         if (!appId) return { ok: false, detail: 'no appId (set flow.appId or run qa_prepare_target first)', failureCode: 'NO_ARTIFACT' };
-        await d.launchApp(appId);
-        await settle(d, { timeoutMs });
-        return { ok: true };
+        try {
+          await d.launchApp(appId);
+        } catch (e) {
+          const missing = await notInstalled(appId, e);
+          if (missing) return missing;
+          throw e;
+        }
+        noteScreenMutation(session);
+        await settleStep();
+        return { ok: true, ...(await foregroundWarning(appId, 'prepareTarget')) };
       case 'restartApp':
         if (!appId) return { ok: false, detail: 'no appId', failureCode: 'NO_ARTIFACT' };
         try {
           await d.terminateApp(appId);
-          await d.launchApp(appId);
-          await settle(d, { timeoutMs });
+          // Relaunch into a FRESH task; a plain launcher intent brings back a stale task
+          // that another package's activity still tops (e.g. Settings search).
+          if (d.relaunchCleanTask) await d.relaunchCleanTask(appId);
+          else await d.launchApp(appId);
+          noteScreenMutation(session);
+          await settleStep();
           sessions.addEnvChange(session, 'restartApp');
           recordFlowMutation('flow_restart_app', 'low', { stepKind: step.kind }, 'executed');
-          return { ok: true };
+          return { ok: true, ...(await foregroundWarning(appId, 'restartApp')) };
         } catch (e) {
           recordFlowMutation('flow_restart_app', 'low', { stepKind: step.kind }, 'blocked', String(e));
+          const missing = await notInstalled(appId, e);
+          if (missing) return missing;
           throw e;
         }
       case 'tap': {
@@ -447,7 +533,7 @@ export async function runFlow(
             return { ok: false, detail: String(e), failureCode: classifyFlowDriverError(e, 'ELEMENT_NOT_FOUND') };
           }
           sessions.bump(session, 'actions');
-          await settle(d, { timeoutMs });
+          await settleStep();
           return { ok: true };
         }
         if (native && native.using !== 'accessibility id' && native.using !== 'name') {
@@ -457,17 +543,17 @@ export async function runFlow(
             failureCode: 'BACKEND_UNSUPPORTED',
           };
         }
-        const t = await resolveTarget(session, targetForTapSelector(selector, provenance));
+        const t = await resolveTarget(session, targetForTapSelector(selector, provenance), { waitMs: FLOW_TARGET_WAIT_MS });
         if ('error' in t) return { ok: false, detail: t.error, failureCode: classifyFlowDriverError(t.error, 'ELEMENT_NOT_FOUND') };
         await d.pressXY(t.x, t.y, 100);
         sessions.bump(session, 'actions');
-        await settle(d, { timeoutMs });
+        await settleStep();
         return { ok: true };
       }
       case 'tapAt':
         await d.pressXY(step.x, step.y, 100);
         sessions.bump(session, 'actions');
-        await settle(d, { timeoutMs });
+        await settleStep();
         return { ok: true };
       case 'tapImage': {
         if (!withinRootOrNull(session.root, step.template)) return outsideRoot(step.template);
@@ -475,7 +561,7 @@ export async function runFlow(
         if (!pt) return { ok: false, detail: `image "${step.template}" not found on screen`, failureCode: 'ELEMENT_NOT_FOUND' };
         await d.pressXY(pt.x, pt.y, 100);
         sessions.bump(session, 'actions');
-        await settle(d, { timeoutMs });
+        await settleStep();
         return { ok: true };
       }
       case 'tapOcrText': {
@@ -494,13 +580,15 @@ export async function runFlow(
         if (!hit) return { ok: false, detail: `OCR text "${shown(query)}" not found`, failureCode: 'ELEMENT_NOT_FOUND' };
         await d.pressXY(hit.devicePoint.x, hit.devicePoint.y, 100);
         sessions.bump(session, 'actions');
-        await settle(d, { timeoutMs });
+        await settleStep();
         return { ok: true };
       }
       case 'inputText': {
         const { out, missing } = resolveFlowText(step.value);
         if (missing.length) return unresolved(missing);
-        // Register a secret BEFORE typing so a failing driver call's error is scrubbed too (H2).
+        // The focus tap of an `into` field typed by coordinates, for the read-back below.
+        let typedAt: { x: number; y: number; label?: string | null } | undefined;
+        // Register a secret BEFORE typing so a failing driver call's error is scrubbed too.
         if (step.secret && out) session.secrets.add(out);
         // eslint-disable-next-line no-control-regex -- intentional: detect non-ASCII (outside \x00-\x7F) before adb text input
         if (d.kind === 'direct' && /[^\x00-\x7F]/.test(out)) {
@@ -515,12 +603,25 @@ export async function runFlow(
           if (into.missing.length) return unresolved(into.missing);
           const native = nativeSelectorFor(into.out);
           if (native && d.typeBySelector) {
+            let value: string | undefined;
             try {
               if (d.clearBySelector) await d.clearBySelector(native.using, native.value);
               await d.typeBySelector(native.using, native.value, out);
+              // Read the element's value back (not for a secret or a secure field, masked); an
+              // unreadable value skips it.
+              const secure = d.isSecureBySelector ? await d.isSecureBySelector(native.using, native.value).catch(() => true) : false;
+              if (!step.secret && !secure && out && d.valueBySelector)
+                value = await d.valueBySelector(native.using, native.value).catch(() => undefined);
             } catch (e) {
               return { ok: false, detail: String(e), failureCode: classifyFlowDriverError(e, 'ELEMENT_NOT_FOUND') };
             }
+            if (value !== undefined && typedReadBack(value, out, !!d.clearBySelector) === 'mismatch')
+              return {
+                ok: false,
+                // Lengths only: the typed value never goes into the detail.
+                detail: `the field does not read back the typed text (it holds ${value.length} chars, ${out.length} were typed): it was reordered, cut or not cleared`,
+                failureCode: 'TEXT_INPUT_MISMATCH',
+              };
             if (step.secret && out) session.secrets.add(out);
             sessions.bump(session, 'actions');
             return { ok: true };
@@ -533,43 +634,103 @@ export async function runFlow(
             };
           }
           // selector-bound: focus the named field first (no reliance on existing focus)
-          const t = await resolveTarget(session, targetForTapSelector(into.out, provenance));
+          const t = await resolveTarget(session, targetForTapSelector(into.out, provenance), { waitMs: FLOW_TARGET_WAIT_MS });
           if ('error' in t)
             return {
               ok: false,
               detail: `field "${shown(into.out)}": ${t.error}`,
               failureCode: classifyFlowDriverError(t.error, 'ELEMENT_NOT_FOUND'),
             };
+          // Field hop: with the keyboard already up, "shown" says nothing about the new field having
+          // focus yet, so keep the same floor qa_act uses before typing.
+          const imeWasUp = await d.imeShown().catch(() => false);
+          // The field's Compose label from its node before typing (the read-back strips only it).
+          const preNode = t.ref ? session.lastSnapshot?.fullByRef.get(t.ref) : undefined;
+          const label = composeLabelOf(preNode && isTextFieldClass(preNode.cls) ? preNode : undefined);
           await d.tapXY(t.x, t.y);
-          await new Promise((r) => setTimeout(r, 600));
+          await awaitIme(d, 600, imeWasUp ? IME_HOP_FLOOR_MS : 0); // Proceed once the keyboard is up (600 ms cap)
           await d.clearFocusedText(t.textLen);
+          typedAt = { x: t.x, y: t.y, label };
         }
         if (step.secret && out) session.secrets.add(out);
-        await d.inputText(out);
+        // A field focused and cleared by `into` that scrambled the text or kept
+        // old text gets ONE retry (clear, careful retype), as in qa_act type.
+        let retried = false;
+        const retype = async (len: number) => {
+          retried = true;
+          await d.clearFocusedText(len, { byLength: true });
+          try {
+            await d.inputText(out, { careful: true });
+          } catch (e) {
+            // still scrambled: the field is left as it is and the read-back below fails the step
+            if (!/TEXT_INPUT_MISMATCH/.test(String(e))) throw e;
+          }
+        };
+        try {
+          await d.inputText(out);
+        } catch (e) {
+          if (!typedAt || !/TEXT_INPUT_MISMATCH/.test(String(e))) throw e;
+          await retype(out.length + 2);
+        }
         sessions.bump(session, 'actions');
+        // Read the field back like qa_act type does. Only for a field focused by `into`
+        // (cleared first, so its whole value must be the typed text) and never for a secret (masked).
+        // The settled dump becomes the snapshot the next step reuses.
+        if (typedAt && out && !step.secret) {
+          const at = typedAt;
+          const readBack = async () => {
+            const s = await settleStep();
+            const field = s.parsed?.allNodes.find(
+              (n) => n.focused && isTextFieldClass(n.cls) && boundsContain(n.bounds, at.x, at.y) && !isSecureNode(n),
+            );
+            return field ? { ...fieldReadBack(field, out, true, at.label), rawLength: field.text.length } : undefined;
+          };
+          let back = await readBack();
+          if (back?.verdict === 'mismatch' && !retried) {
+            await retype(Math.max(back.rawLength, back.valueLength) + 2);
+            back = await readBack();
+          }
+          if (back?.verdict === 'mismatch')
+            return {
+              ok: false,
+              // Lengths only: the typed value never goes into the detail.
+              detail: `the field does not read back the typed text (it holds ${back.valueLength} chars, ${out.length} were typed): it was reordered, cut or not cleared`,
+              failureCode: 'TEXT_INPUT_MISMATCH',
+            };
+        }
         return { ok: true };
       }
       case 'assertVisible': {
         const resolved = resolveFlowText(step.query);
         if (resolved.missing.length) return unresolved(resolved.missing);
         const query = resolved.out;
-        try {
-          const native = await nativeVisible(d, query);
-          if (native != null)
-            return native ? { ok: true } : { ok: false, detail: `"${shown(query)}" not visible`, failureCode: 'ASSERTION_FAILED' };
-        } catch (e) {
-          return { ok: false, detail: String((e as Error).message ?? e), failureCode: 'BACKEND_UNSUPPORTED' };
+        // Poll up to FLOW_TARGET_WAIT_MS for the element to appear; the first check may reuse
+        // the just-settled snapshot.
+        const deadline = Date.now() + FLOW_TARGET_WAIT_MS;
+        for (let first = true; ; first = false) {
+          if (!first) await sleepOrCancel(Math.min(RESOLVE_POLL_MS, Math.max(1, deadline - Date.now())));
+          let detail = `"${shown(query)}" not visible`;
+          let native: boolean | null;
+          try {
+            native = await nativeVisible(d, query);
+          } catch (e) {
+            if (isAbortError(e)) throw e;
+            return { ok: false, detail: String((e as Error).message ?? e), failureCode: 'BACKEND_UNSUPPORTED' };
+          }
+          if (native === true) return { ok: true };
+          if (native === null) {
+            const id = resourceIdSelector(query);
+            if (id) {
+              const visibleById = await resourceIdVisibility(session, d, id, provenance, first);
+              if (visibleById.ambiguous) return { ok: false, detail: visibleById.detail, failureCode: 'AMBIGUOUS_SELECTOR' };
+              if (visibleById.visible) return { ok: true };
+              detail = visibleById.detail ?? detail;
+            } else if (visible(await snapshot(session, d, first), fallbackVisibleQuery(query))) {
+              return { ok: true };
+            }
+          }
+          if (Date.now() >= deadline) return { ok: false, detail, failureCode: 'ASSERTION_FAILED' };
         }
-        const id = resourceIdSelector(query);
-        if (id) {
-          const visibleById = await resourceIdVisibility(session, d, id, provenance);
-          if (visibleById.ambiguous) return { ok: false, detail: visibleById.detail, failureCode: 'AMBIGUOUS_SELECTOR' };
-          return visibleById.visible
-            ? { ok: true }
-            : { ok: false, detail: visibleById.detail ?? `"${shown(query)}" not visible`, failureCode: 'ASSERTION_FAILED' };
-        }
-        const ok = visible(await snapshot(session, d), fallbackVisibleQuery(query));
-        return ok ? { ok } : { ok, detail: `"${shown(query)}" not visible`, failureCode: 'ASSERTION_FAILED' };
       }
       case 'assertNotVisible': {
         const resolved = resolveFlowText(step.query);
@@ -592,7 +753,7 @@ export async function runFlow(
             ? { ok: true }
             : { ok: false, detail: `"${shown(query)}" unexpectedly visible`, failureCode: 'ASSERTION_FAILED' };
         }
-        const ok = !visible(await snapshot(session, d), fallbackVisibleQuery(query));
+        const ok = !visible(await snapshot(session, d, true), fallbackVisibleQuery(query));
         return ok ? { ok } : { ok, detail: `"${shown(query)}" unexpectedly visible`, failureCode: 'ASSERTION_FAILED' };
       }
       case 'assertImage': {
@@ -674,7 +835,7 @@ export async function runFlow(
         const v = swipeVector(await currentScreenSize(), step.direction, step.area, step.distance);
         await d.swipe(v[0], v[1], v[2], v[3], 300);
         sessions.bump(session, 'actions');
-        await settle(d, { timeoutMs });
+        await settleStep();
         return { ok: true };
       }
       case 'scrollTo': {
@@ -689,6 +850,7 @@ export async function runFlow(
             if (native === false) {
               const v = swipeVector(screenSize, 'up');
               await d.swipe(v[0], v[1], v[2], v[3], 300);
+              noteScreenMutation(session);
               await new Promise((r) => setTimeout(r, 400));
               continue;
             }
@@ -705,6 +867,7 @@ export async function runFlow(
           }
           const v = swipeVector(screenSize, 'up');
           await d.swipe(v[0], v[1], v[2], v[3], 300);
+          noteScreenMutation(session);
           await new Promise((r) => setTimeout(r, 400));
         }
         return { ok: false, detail: `"${shown(query)}" not found after scrolling`, failureCode: 'ELEMENT_NOT_FOUND' };
@@ -712,13 +875,14 @@ export async function runFlow(
       case 'press':
         await d.pressKey(step.key);
         sessions.bump(session, 'actions');
-        await settle(d, { timeoutMs });
+        await settleStep();
         return { ok: true };
       case 'openUrl': {
         const { out, missing } = resolveFlowText(step.url);
         if (missing.length) return unresolved(missing);
         await d.openUrl(out);
-        await settle(d, { timeoutMs });
+        noteScreenMutation(session);
+        await settleStep();
         return { ok: true };
       }
       case 'wait':
@@ -736,9 +900,14 @@ export async function runFlow(
         const query = resolved.out;
         const deadline = Date.now() + (step.kind === 'waitForVisible' ? (step.timeoutMs ?? timeoutMs) : timeoutMs);
         const waitStarted = Date.now();
+        // The first poll reuses the dump the previous step just settled on (no extra ~2 s dump
+        // when the target is already there); a miss falls straight through to fresh dumps.
+        let reuseSettled = true;
         // A cancelled call/job stops polling at once (CancelledError > step classified CANCELLED).
         while (Date.now() < deadline) {
           throwIfCancelled();
+          const reuse = reuseSettled;
+          reuseSettled = false;
           try {
             const native = await nativeVisible(d, query);
             if (native === true) {
@@ -756,17 +925,17 @@ export async function runFlow(
           }
           const id = resourceIdSelector(query);
           if (id) {
-            const visibleById = await resourceIdVisibility(session, d, id, provenance);
+            const visibleById = await resourceIdVisibility(session, d, id, provenance, reuse);
             if (visibleById.ambiguous) {
               sessions.addMilestoneDuration(session, 'wait_ms', Date.now() - waitStarted);
               return { ok: false, detail: visibleById.detail, failureCode: 'AMBIGUOUS_SELECTOR' };
             }
             if (!visibleById.visible) {
-              await sleepOrCancel(400);
+              if (!reuse) await sleepOrCancel(400);
               continue;
             }
-          } else if (!visible(await snapshot(session, d), fallbackVisibleQuery(query))) {
-            await sleepOrCancel(400);
+          } else if (!visible(await snapshot(session, d, reuse), fallbackVisibleQuery(query))) {
+            if (!reuse) await sleepOrCancel(400);
             continue;
           }
           {
@@ -779,17 +948,18 @@ export async function runFlow(
       }
       case 'waitForIdle': {
         const waitStarted = Date.now();
-        await settle(d, { timeoutMs: step.timeoutMs ?? timeoutMs });
+        await settleStep(step.timeoutMs ?? timeoutMs, false);
         sessions.addMilestoneDuration(session, 'wait_ms', Date.now() - waitStarted);
         return { ok: true };
       }
       case 'clearOverlay': {
         // Best-effort cleanup (always ok), but BACK only when something is there to dismiss:
-        // with nothing open, BACK navigates away / exits the app (H7).
+        // with nothing open, BACK navigates away / exits the app.
         if (await d.imeShown().catch(() => false)) {
           if (d.hideKeyboard) await d.hideKeyboard().catch(() => false);
           else await d.pressKey('back');
-          await settle(d, { timeoutMs });
+          noteScreenMutation(session);
+          await settleStep();
           return { ok: true, detail: 'keyboard hidden' };
         }
         const parsed = await snapshot(session, d).catch(() => null);
@@ -815,6 +985,7 @@ export async function runFlow(
           }
           try {
             await d.dismissAlert();
+            noteScreenMutation(session);
           } catch (e) {
             return {
               ok: true,
@@ -822,7 +993,7 @@ export async function runFlow(
               detail: `${dismissible} detected but NOT dismissed: native alert dismiss failed: ${String((e as Error)?.message ?? e)}`,
             };
           }
-          await settle(d, { timeoutMs });
+          await settleStep();
           const after = await snapshot(session, d).catch(() => null);
           const fgAfter = await d.foregroundOwner().catch(() => 'unknown');
           const still = after ? detectBackDismissibleOverlay(after.allNodes, after.screen, session.appId, fgAfter) : undefined;
@@ -835,7 +1006,8 @@ export async function runFlow(
           return { ok: true, detail: `dismissed ${dismissible} with the native alert API` };
         }
         await d.pressKey('back');
-        await settle(d, { timeoutMs });
+        noteScreenMutation(session);
+        await settleStep();
         return { ok: true, detail: `dismissed ${dismissible} with BACK` };
       }
       case 'networkOffline':
@@ -845,7 +1017,8 @@ export async function runFlow(
         try {
           if (offline && !session.network) session.network = { changed: true, originalAirplane: await d.airplaneOn().catch(() => false) };
           await d.setAirplane(offline);
-          if (session.network) session.network.changed = true;
+          noteScreenMutation(session);
+          if (session.network) Object.assign(session.network, { changed: true, ownerPid: process.pid }); // this server restores it
           sessions.addEnvChange(session, `network ${offline ? 'offline' : 'online'}`);
           sessions.persist(session);
           recordFlowMutation(action, 'medium', { stepKind: step.kind, to: offline ? 'offline' : 'online' }, 'executed');
@@ -859,6 +1032,7 @@ export async function runFlow(
         const fixture = session.fixtures.find((f) => f.name === step.fixture);
         if (!fixture?.seed) return { ok: false, detail: `fixture "${step.fixture}" has no seed spec`, failureCode: 'SEED_FAILED' };
         const r = await executeSeed(sessions, session, d, step.fixture, fixture.seed);
+        noteScreenMutation(session);
         const risk: MutationRecord['risk'] = fixture.seed.type === 'script' ? 'high' : fixture.seed.type === 'api' ? 'medium' : 'low';
         if (!r.ok) {
           sessions.addNote(session, {
@@ -929,10 +1103,11 @@ export async function runFlow(
       const summary = describe(step);
       const budget = sessions.budgetStop(session);
       if (budget && phase !== 'teardown') {
-        steps.push({ index, phase, kind: step.kind, summary, ok: false, durationMs: 0, detail: budget });
+        steps.push({ index, phase, kind: step.kind, summary, ok: false, durationMs: 0, detail: budget, failureCode: 'BUDGET_EXHAUSTED' });
         passed = false;
         failedAtStep = index;
         reason = `budget: ${budget}`;
+        failureCode = 'BUDGET_EXHAUSTED'; // a budget stop, never locator drift (GOAL new)
         return index;
       }
       let outcome: StepOutcome;
@@ -942,7 +1117,7 @@ export async function runFlow(
       } catch (e) {
         outcome = { ok: false, detail: String(e), failureCode: classifyFlowDriverError(e) };
       }
-      // H2: step detail can carry driver errors (argv/stderr), so scrub session secrets, which
+      // Step detail can carry driver errors (argv/stderr), so scrub session secrets, which
       // include every value typed into a secret step/variable before it ran.
       if (outcome.detail) outcome = { ...outcome, detail: shown(outcome.detail) };
       const rec: FlowStepResult = {

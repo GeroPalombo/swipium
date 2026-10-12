@@ -1,9 +1,9 @@
-// Pre-launch finding (HIGH): the secret guard substring-matched every registered secret ≥4 chars in
+// The secret guard used to substring-match every registered secret of 4+ chars in
 // every string field and every generated line. Common QA passwords ("test", "password", "admin",
 // "Login") then (a) failed POM generation with SECRET_IN_GENERATED_OUTPUT on template text
 // ("testID", "tests:", "tests/x.smoke.yaml"), (b) rewrote a resource_id "password" selector to
 // «redacted» (unusable locator) — and persisted it to state.json — and (c) rewrote `screen` fields.
-// Also (P1): an email given via qa_continue_from_blocker (SWIPIUM_TEST_EMAIL) typed raw was written
+// Also: an email given via qa_continue_from_blocker (SWIPIUM_TEST_EMAIL) typed raw was written
 // as a literal into generated tests/flows, and flow vs suite generators named the same password
 // differently (SECRET_1 vs SWIPIUM_TEST_PASSWORD).
 // Hermetic: HOME points at a temp dir BEFORE the store module is loaded.

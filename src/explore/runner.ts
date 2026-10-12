@@ -1,4 +1,4 @@
-// Guided exploration runner (Phase 3.3 Milestones D/E/G). Bounded, safe-by-default screen crawl:
+// Guided exploration runner. Bounded, safe-by-default screen crawl:
 // observe > signature > rank safe candidates > act > health-check > record edge, until a budget is
 // reached. Visual-only screens (poor UI tree) are verified with a screenshot + visual assertion
 // instead of blind coordinate crawling. Honest: unsafe actions are skipped with a note; an auth
@@ -6,13 +6,16 @@
 
 import { parseSnapshot } from '../snapshot/parse.js';
 import { settle } from '../snapshot/settle.js';
+import { waitForAppRender } from '../snapshot/renderWait.js';
+import { iosAlertCancel, ownsForeground, permissionDeniedNote } from '../snapshot/overlays.js';
+import { noteScreenMutation } from '../snapshot/fresh.js';
 import { checkHealth } from '../oracle/health.js';
 import { recordHealthFindings } from '../oracle/record.js';
 import { CancelledError, isAbortError } from '../lib/abortScope.js';
 import { ExploreGraph, type ScreenNode, type EdgeOutcome } from './graph.js';
 import { structuredSignature, visualSignature } from './signatures.js';
 import { actionLikeNonInteractive, rankCandidates, locatorQuality, type RankedCandidate, type SkippedActionLike } from './candidates.js';
-import { allowedUnder, allowsControlledLogout, type SafeMode } from './policy.js';
+import { allowedUnder, allowsControlledLogout, isThirdPartySignIn, type SafeMode } from './policy.js';
 import { FEATURE_KEYS, coverageClaimsFrom, estimateFeatureCoverage, inferAppDomain, proposeTasks, reflectExploration } from './planner.js';
 import { scorePromotionCandidates, type SuitePromotionCandidate } from './suite.js';
 import { hasDisposableState, resolveFixtureValue, type ResolvedFixtureValue } from '../fixtures/catalog.js';
@@ -182,6 +185,22 @@ function valueForField(
   return undefined;
 }
 
+/** A human screen name from the UI tree: the top-most short, non-clickable text in the top
+ *  band (toolbar / large title). Undefined when there is none (the caller falls back to the
+ *  foreground package). */
+function screenTitleOf(
+  elements: Array<{ text?: string; label?: string; clickable: boolean; bounds: [number, number, number, number] }>,
+): string | undefined {
+  if (!elements.length) return undefined;
+  const height = Math.max(...elements.map((e) => e.bounds[3] || 0));
+  const top = height ? height * 0.28 : Number.POSITIVE_INFINITY;
+  const candidates = elements
+    .map((e) => ({ e, t: (e.text || e.label || '').trim() }))
+    .filter(({ e, t }) => !e.clickable && t.length >= 2 && t.length <= 40 && !/^\d[\d:.,\s]*$/.test(t))
+    .sort((a, b) => a.e.bounds[1] - b.e.bounds[1]);
+  return (candidates.find(({ e }) => e.bounds[1] <= top) ?? candidates[0])?.t;
+}
+
 function strategyToKind(strategy: string): RecordedAction['selectorKind'] {
   switch (strategy) {
     case 'accessibility':
@@ -248,6 +267,7 @@ export async function runExplore(
   const maxScreens = opts.maxScreens ?? 12;
   const depth = opts.depth ?? 3;
   const stopOnAuth = opts.stopOnAuth ?? true;
+  let authNoted = false;
   // Resolve the generated-data decision once. Only "allowed" when policy + the
   // classified environment (test/staging) permit safe throwaway data; otherwise generation is off.
   const genCtx: GeneratedDataContext | undefined = opts.allowGeneratedData
@@ -275,16 +295,45 @@ export async function runExplore(
     testabilityBlockers: [],
   };
   const exploredPerScreen = new Map<string, Set<string>>(); // nodeId > explored signatureKeys
+  // Control (signatureKey) > screen it already led to. The same overflow button or tab on
+  // another screen opens a screen we have seen, so it is not worth an action again.
+  const ledTo = new Map<string, string>();
   const skippedNotedScreens = new Set<string>();
   const testabilityNotedScreens = new Set<string>();
   const destructiveCandidates = new Map<string, DestructiveCandidateSummary>();
   let lastNodeId: string | undefined;
   let consecutiveNoChange = 0;
+  let leftAppCount = 0;
   let sameScreenEdges = 0;
+  // Navigation steps (back, relaunch, alert close) are device actions too: they count
+  // against maxActions with the taps. A back is checked on the next observe (pendingBack); a screen
+  // whose back did not leave it is never backed out of again.
+  let navSteps = 0;
+  let pendingBack: string | undefined;
+  const backFailed = new Set<string>();
+  const inAppBackTried = new Set<string>();
+  let relaunches = 0;
+  let rootAfterRelaunch = false;
+  let alertDismissals = 0;
   let planned = false;
+
+  // Never map the RN splash / "Bundling 47%" screen as the app's first screen. Bounded;
+  // returns after one dump when the screen already looks rendered.
+  try {
+    await waitForAppRender(driver, { visualOnly: session.mode === 'visual-fallback' || driver.kind === 'simulator', timeoutMs: 20_000 });
+  } catch {
+    // A cancel here falls through: the main loop sees the aborted signal and stops as "cancelled"
+    // with the (empty) graph finalized, like a cancel at any later point.
+  }
 
   const note = (n: Parameters<SessionStore['addNote']>[1] extends infer T ? Omit<NonNullable<T>, 'at'> : never) =>
     sessions.addNote(session, { at: Date.now(), ...(n as object) } as Parameters<SessionStore['addNote']>[1]);
+
+  // The last settle's final dump, consumed by the next observe() instead of dumping again (P5).
+  let settledXml: string | undefined;
+  const settleAndKeep = async (timeoutMs: number) => {
+    settledXml = (await settle(driver, { timeoutMs }).catch(() => undefined))?.xml || undefined;
+  };
 
   /** Observe the current screen as a graph node (structured or visual-only). */
   const observe = async (): Promise<{
@@ -294,23 +343,45 @@ export async function runExplore(
     visual: boolean;
     authWall: boolean;
     actionLikeSkipped: SkippedActionLike[];
+    foreground: string;
+    leftApp: boolean;
+    alert: ReturnType<typeof iosAlertCancel>;
   }> => {
-    const foreground = await driver.foregroundOwner().catch(() => 'unknown');
     let xml = '';
     let elements: ReturnType<typeof parseSnapshot>['elements'] = [];
     let webviewDominance = 0;
-    try {
-      xml = await driver.dumpXml();
-      const parsed = parseSnapshot(xml);
-      elements = parsed.elements;
-      webviewDominance = parsed.quality.signals.webviewDominance;
-    } catch (e) {
+    let alert: ReturnType<typeof iosAlertCancel> = null;
+    const seeded = settledXml;
+    settledXml = undefined;
+    // Respect the SESSION screenshot budget (not a separate fixed counter) so two observes per
+    // action can't overshoot the cap (P2 fix). The screenshot runs alongside the dump (P5).
+    const wantShot = !session.sensitive && session.counters.screenshots < session.budget.maxScreenshots;
+    const [dumped, shot] = await Promise.all([
+      seeded !== undefined
+        ? Promise.resolve<string | Error>(seeded)
+        : driver.dumpXml().catch((e: unknown) => (e instanceof Error ? e : new Error(String(e)))),
+      wantShot ? driver.screenshot().catch(() => undefined) : Promise.resolve(undefined),
+    ]);
+    if (dumped instanceof Error) {
       // Cancelled job: an aborted dump is not a visual-only screen, a finding or a blocker.
-      if (isAbortError(e, signal)) throw new CancelledError('exploration cancelled');
+      if (isAbortError(dumped, signal)) throw new CancelledError('exploration cancelled');
       /* snapshot failed, so treated as visual-only below */
+    } else {
+      try {
+        xml = dumped;
+        const parsed = parseSnapshot(xml);
+        elements = parsed.elements;
+        webviewDominance = parsed.quality.signals.webviewDominance;
+        alert = iosAlertCancel(parsed.allNodes);
+      } catch {
+        /* unparsable dump, so treated as visual-only below */
+      }
     }
     if (signal?.aborted) throw new CancelledError('exploration cancelled');
     const health = await checkHealth(driver, session.appId, xml || undefined);
+    // P5: the health check already resolved the foreground (from the dump's root package when it is
+    // the app under test, else dumpsys), so no separate up-front foregroundOwner call.
+    const foreground = health.foreground;
     if (health.cancelled || signal?.aborted) throw new CancelledError('exploration cancelled');
     await recordHealthFindings(sessions, session, health.findings, driver, health.foreground);
     if (!health.nativeHealthy) summary.appErrors += 0; // native handled separately below
@@ -319,25 +390,21 @@ export async function runExplore(
       app: health.appStatus === 'error' ? ('error' as const) : health.appStatus === 'degraded' ? ('degraded' as const) : ('OK' as const),
     };
 
-    let screenshotUri: string | undefined;
-    let png: Buffer | undefined;
-    // Respect the SESSION screenshot budget (not a separate fixed counter) so two observes per
-    // action can't overshoot the cap (P2 fix).
-    if (!session.sensitive && session.counters.screenshots < session.budget.maxScreenshots) {
-      try {
-        png = await driver.screenshot();
-        screenshotUri = sessions.saveArtifact(session, 'screenshot', `explore-${Date.now()}.png`, png, 'image/png', 'exploration evidence');
-        sessions.bump(session, 'screenshots');
-      } catch {
-        /* best-effort */
-      }
-    }
+    const png: Buffer | undefined = shot;
 
-    // Visual-only (Milestone E): no usable structured elements (canvas/map/webview/empty) means visual
+    // Visual-only: no usable structured elements (canvas/map/webview/empty) means visual
     // node + assertion, no blind coordinate crawl. A low automation-readiness verdict on a screen
     // that DOES expose identified elements is still structured (we can act on it).
     const visual = elements.length === 0 || webviewDominance > 0.5;
-    const authWall = elements.some((e) => e.secure) || AUTH_RE.test(elements.map((e) => e.text || e.label || '').join(' '));
+    // Auth wording alone (an optional "Sign in to your Apple Account" row on Settings) is not
+    // a wall. It is one when there is a secure field, or auth wording on a screen with an input field
+    // or few other controls to explore.
+    const authText = AUTH_RE.test(elements.map((e) => e.text || e.label || '').join(' '));
+    const otherControls = elements.filter((e) => e.clickable && !AUTH_RE.test(`${e.text ?? ''} ${e.label ?? ''}`)).length;
+    const hasInput = elements.some(
+      (e) => /EditText|Text[-_ ]?Field|TextInput|SearchView/i.test(e.role) && !/search/i.test(`${e.id ?? ''} ${e.label ?? ''}`),
+    );
+    const authWall = elements.some((e) => e.secure) || (authText && (hasInput || otherControls < 4));
     const ctxSig = { foreground, keyboardShown: false };
     let signature: string;
     let candidates: RankedCandidate[] = [];
@@ -351,9 +418,39 @@ export async function runExplore(
       if (candidates.length === 0) actionLikeSkipped = actionLikeNonInteractive(elements);
     }
 
+    // One evidence screenshot per screen. A revisit (back navigation, a re-observe while
+    // a slow app renders) keeps the screen's first shot and costs no screenshot budget; an app error
+    // always gets fresh evidence. The capture itself still feeds the visual signature above.
+    let screenshotUri: string | undefined;
+    if (png && (!graph.bySignature(signature)?.screenshotUri || healthSnap.app === 'error')) {
+      try {
+        screenshotUri = sessions.saveArtifact(session, 'screenshot', `explore-${Date.now()}.png`, png, 'image/png', 'exploration evidence');
+        sessions.bump(session, 'screenshots');
+      } catch {
+        /* best-effort */
+      }
+    }
+
+    // Another app (Safari from an attribution link, SpringBoard) is in front. Not an app
+    // screen: the loop drops it and returns to the app. Permission dialogs, system surfaces and a
+    // foreign activity inside the app's own task (Settings search) are not "left the app".
+    // On iOS only SpringBoard hosts system prompts; another app in front (iOS Settings
+    // reached from an alert) has left the app even when its screen reads like a permission prompt.
+    const fgPkg = (foreground ?? '').split('/')[0];
+    const systemHost = platform !== 'ios' || /^com\.apple\.springboard$/i.test(fgPkg);
+    const leftApp =
+      !!session.appId &&
+      !!fgPkg &&
+      fgPkg !== 'unknown' &&
+      !ownsForeground(session.appId, fgPkg) &&
+      !(
+        systemHost && health.findings.some((f) => ['foreign_activity_in_app_task', 'permission_dialog', 'system_surface'].includes(f.kind))
+      );
     const { node, isNew } = graph.upsert({
       signature,
-      title: foreground,
+      // Name the screen after its visible title, not the package (every screen used to be
+      // called "com.google.android.deskclock").
+      title: visual ? foreground : (screenTitleOf(elements) ?? foreground),
       mode: visual ? 'visual' : 'structured',
       platform,
       screenshotUri,
@@ -380,7 +477,7 @@ export async function runExplore(
     if (isNew && visual) summary.visualOnlyScreens++;
     if (healthSnap.app === 'error') summary.appErrors++;
 
-    // Visual-only screens get a recorded visual assertion as their oracle (Milestone E).
+    // Visual-only screens get a recorded visual assertion as their oracle.
     if (visual && isNew) {
       note({
         workflow: 'guided_exploration',
@@ -392,10 +489,13 @@ export async function runExplore(
         artifactUris: screenshotUri ? [screenshotUri] : undefined,
       });
     }
-    return { node, isNew, candidates, visual, authWall, actionLikeSkipped };
+    return { node, isNew, candidates, visual, authWall, actionLikeSkipped, foreground, leftApp, alert };
   };
 
   const allowedCandidate = (candidate: RankedCandidate, node: ScreenNode): boolean => {
+    // A third-party / OS sign-in leaves the app in every safe mode, balanced included.
+    if (isThirdPartySignIn({ label: candidate.label, id: candidate.locator?.strategy === 'id' ? candidate.locator.value : undefined }))
+      return false;
     if (candidate.risk !== 'destructive') return allowedUnder(candidate.risk, safeMode);
     // Controlled account-cycle exception: logout (and only logout) is an expected step
     // on a disposable generated account inside the mobile-audit account-cycle workflow.
@@ -440,8 +540,8 @@ export async function runExplore(
         stoppedReason = 'cancelled';
         break;
       }
-      if (summary.actionsTried >= maxActions) {
-        stoppedReason = `action budget reached (${maxActions})`;
+      if (summary.actionsTried + navSteps >= maxActions) {
+        stoppedReason = `action budget reached (${maxActions}${navSteps ? `, ${navSteps} of them back / relaunch / alert-close steps` : ''})`;
         break;
       }
       if (graph.nodeCount() >= maxScreens) {
@@ -449,7 +549,9 @@ export async function runExplore(
         break;
       }
       if (Date.now() >= deadline) {
-        stoppedReason = 'time budget reached';
+        // The result state is "blocked" for this stop (see the return below), so a run cut off by
+        // its clock never reads as a completed exploration.
+        stoppedReason = `time budget reached (${Math.round((Date.now() - startedAt) / 1000)} s; ${summary.actionsTried} actions, ${navSteps} navigation steps)`;
         break;
       }
       const budgetStop = sessions.budgetStop(session);
@@ -460,6 +562,95 @@ export async function runExplore(
 
       const obs = await observe();
       progress(`exploring: ${summary.screensVisited} screens, ${summary.actionsTried} actions${obs.visual ? ', visual-only' : ''}`);
+      // Judge the last back step by the screen it produced. iOS has no system back key
+      // (WdaDriver taps a navigation-bar back button or edge-swipes), so a back can do nothing: that is
+      // a no-change action, and that screen is never backed out of again.
+      if (pendingBack) {
+        const from = pendingBack;
+        pendingBack = undefined;
+        const moved = obs.node.id !== from;
+        graph.addEdge({
+          from,
+          ...(obs.leftApp ? {} : { to: obs.node.id }),
+          action: { type: 'back', targetDescription: 'back' },
+          outcome: obs.leftApp ? 'blocked' : moved ? 'changed_screen' : 'same_screen',
+          evidenceUris: [],
+          oracle: moved ? 'screen_signature_changed' : 'screen_signature_same',
+        });
+        if (moved) {
+          consecutiveNoChange = 0;
+        } else {
+          backFailed.add(from);
+          sameScreenEdges++;
+          consecutiveNoChange++;
+          if (consecutiveNoChange >= 3) {
+            stoppedReason = 'repeated no-change actions';
+            break;
+          }
+        }
+      }
+      // An alert (a system one like "Sign in to your Apple Account", or the app's own)
+      // is closed with its cancel action, never explored: its other buttons ("Settings") leave the app.
+      // The alert screen is not an app screen and earns no coverage.
+      if (obs.alert) {
+        if (obs.isNew) {
+          graph.removeNode(obs.node.id);
+          summary.screensVisited = Math.max(0, summary.screensVisited - 1);
+          if (obs.visual) summary.visualOnlyScreens = Math.max(0, summary.visualOnlyScreens - 1);
+        }
+        const cancel = obs.alert.cancel;
+        if (!cancel || alertDismissals >= 5) {
+          stoppedReason = cancel
+            ? `an alert ("${obs.alert.title}") kept coming back after ${alertDismissals} closes`
+            : `an alert ("${obs.alert.title}") covers the app and has no cancel / close button; its buttons are not explored`;
+          break;
+        }
+        alertDismissals++;
+        navSteps++;
+        sessions.bump(session, 'actions');
+        await driver.tapXY(cancel.x, cancel.y).catch(() => {});
+        noteScreenMutation(session);
+        note({
+          workflow: 'guided_exploration',
+          outcome: 'skipped',
+          category: 'other',
+          reason: `closed the alert "${obs.alert.title}" with "${cancel.label}"${permissionDeniedNote(cancel.label)}; alert buttons are not explored`,
+        });
+        await settleAndKeep(4000);
+        continue;
+      }
+      // The last action left the app. Don't map/credit the foreign screen; go back to the app.
+      // Also when the run STARTS in another app (iOS Settings left in front by an earlier
+      // run): that screen must not become the graph's root and earn coverage.
+      if (obs.leftApp && session.appId) {
+        if (obs.isNew) {
+          graph.removeNode(obs.node.id);
+          summary.screensVisited = Math.max(0, summary.screensVisited - 1);
+          if (obs.visual) summary.visualOnlyScreens = Math.max(0, summary.visualOnlyScreens - 1);
+        }
+        leftAppCount++;
+        note({
+          workflow: 'guided_exploration',
+          outcome: 'skipped',
+          category: 'other',
+          reason: `an action left the app (foreground ${obs.foreground}); that screen is not counted as an app screen; returning to ${session.appId}`,
+        });
+        if (leftAppCount >= 3) {
+          stoppedReason = `exploration left the app ${leftAppCount} times (external links / system UI)`;
+          break;
+        }
+        await driver.launchApp(session.appId).catch(() => {});
+        noteScreenMutation(session);
+        await settleAndKeep(4000);
+        continue;
+      }
+      // The screen a relaunch opens IS the app's first screen now (the home screen's signature can
+      // change during the run, e.g. after "Change map style"): make it the root, so "nothing left
+      // here" ends the run instead of another back / relaunch round.
+      if (rootAfterRelaunch) {
+        rootAfterRelaunch = false;
+        graph.rootId = obs.node.id;
+      }
       if (!planned && (opts.strategy === 'task_planner' || opts.strategy === 'hybrid')) {
         planned = true;
         const screenText = obs.candidates.map((c) => `${c.label ?? ''} ${c.locator?.value ?? ''}`).join(' ');
@@ -509,7 +700,7 @@ export async function runExplore(
       }
 
       // Auth wall with no credentials.
-      if (obs.authWall && !hasCredentials(session)) {
+      if (obs.authWall && !hasCredentials(session) && !authNoted) {
         note({
           workflow: 'guided_exploration',
           outcome: 'blocked',
@@ -531,16 +722,16 @@ export async function runExplore(
             destructiveCandidates: [...destructiveCandidates.values()],
           };
         }
-        // stopOnAuth:false: record blocked and stop crawling further (only public screens were reachable).
-        stoppedReason = 'auth required: recorded blocked, no credentials to proceed';
-        break;
+        // stopOnAuth:false: the wall is recorded (note above); keep exploring the reachable pre-login
+        // surface. Auth controls are not "safe", so strict mode never taps into the login itself.
+        authNoted = true;
       }
 
       const explored = exploredPerScreen.get(obs.node.id) ?? new Set<string>();
       exploredPerScreen.set(obs.node.id, explored);
 
       // Visual-only screens: no safe structured target, so step back to keep the graph connected.
-      const pick = obs.candidates.find((c) => !explored.has(c.signatureKey) && allowedCandidate(c, obs.node));
+      const pick = obs.candidates.find((c) => !explored.has(c.signatureKey) && !ledTo.has(c.signatureKey) && allowedCandidate(c, obs.node));
       const blockedCandidates = obs.candidates.filter((c) => !allowedCandidate(c, obs.node));
       if (blockedCandidates.length && !skippedNotedScreens.has(obs.node.id)) {
         skippedNotedScreens.add(obs.node.id);
@@ -583,16 +774,67 @@ export async function runExplore(
         }
         // Nothing safe+new here. Go back to keep exploring; if we're at the root with nothing, stop.
         if (lastNodeId && obs.node.id !== graph.rootId && depth > 1) {
-          await driver.pressKey('back').catch(() => {});
-          graph.addEdge({
-            from: obs.node.id,
-            action: { type: 'back', targetDescription: 'back' },
-            outcome: 'changed_screen',
-            evidenceUris: [],
-          });
-          await settle(driver, { timeoutMs: 4000 }).catch(() => {});
-          lastNodeId = obs.node.id;
-          continue;
+          // Back once per screen; the next observe records whether it moved.
+          if (!backFailed.has(obs.node.id)) {
+            navSteps++;
+            sessions.bump(session, 'actions');
+            await driver.pressKey('back').catch(() => {});
+            noteScreenMutation(session); // a stored snapshot is stale now
+            pendingBack = obs.node.id;
+            await settleAndKeep(4000);
+            lastNodeId = obs.node.id;
+            continue;
+          }
+          // Back did not leave this screen (no system back on iOS, no navigation-bar back button). Try
+          // the app's own back / close control once (a JS header's "Back"), then relaunch the app to
+          // get back to its first screen, at most twice per run.
+          const inAppBack = inAppBackTried.has(obs.node.id)
+            ? undefined
+            : obs.candidates.find(
+                (c) =>
+                  c.actionType === 'tap' &&
+                  allowedCandidate(c, obs.node) &&
+                  (/^(back|go back|navigate up|close)$/i.test((c.label ?? '').trim()) ||
+                    /(^|[-_.])(back|close)([-_.]?(button|btn))?$/i.test(
+                      c.locator?.strategy === 'coordinate' ? '' : (c.locator?.value ?? ''),
+                    )),
+              );
+          if (inAppBack?.bounds) {
+            const b = inAppBack.bounds;
+            inAppBackTried.add(obs.node.id);
+            navSteps++;
+            sessions.bump(session, 'actions');
+            await driver.tapXY(Math.round(b.x + b.w / 2), Math.round(b.y + b.h / 2)).catch(() => {});
+            noteScreenMutation(session);
+            pendingBack = obs.node.id;
+            await settleAndKeep(4000);
+            lastNodeId = obs.node.id;
+            continue;
+          }
+          if (session.appId && relaunches < 2) {
+            relaunches++;
+            navSteps++;
+            sessions.bump(session, 'actions');
+            note({
+              workflow: 'guided_exploration',
+              outcome: 'skipped',
+              category: 'other',
+              reason: `back did not leave "${obs.node.title}"; relaunching ${session.appId} to continue from its first screen`,
+            });
+            await driver.terminateApp(session.appId).catch(() => {});
+            await driver.launchApp(session.appId).catch(() => {});
+            noteScreenMutation(session);
+            await waitForAppRender(driver, {
+              visualOnly: session.mode === 'visual-fallback' || driver.kind === 'simulator',
+              timeoutMs: 10_000,
+            }).catch(() => {});
+            await settleAndKeep(4000);
+            lastNodeId = obs.node.id;
+            rootAfterRelaunch = true;
+            continue;
+          }
+          stoppedReason = `no way back from "${obs.node.title}" (back did not change the screen, relaunch limit reached)`;
+          break;
         }
         stoppedReason = 'no further safe, unexplored actions';
         break;
@@ -673,7 +915,7 @@ export async function runExplore(
             provenance: provenanceForCandidate(obs.node, pick),
           });
         }
-        await settle(driver, { timeoutMs: 5000 }).catch(() => {});
+        await settleAndKeep(5000);
         const afterType = await observe();
         graph.addEdge({
           from: fromId,
@@ -721,7 +963,7 @@ export async function runExplore(
       }
       summary.actionsTried++;
       sessions.bump(session, 'actions');
-      // Record durable taps so qa_generate target:"suite" can promote the path (§9.3).
+      // Record durable taps so qa_generate target:"suite" can promote the path.
       if (pick.locator && pick.locator.strategy !== 'coordinate') {
         sessions.addRecordedAction(session, {
           at: Date.now(),
@@ -733,12 +975,53 @@ export async function runExplore(
           provenance: provenanceForCandidate(obs.node, pick),
         });
       }
-      await settle(driver, { timeoutMs: 5000 }).catch(() => {});
+      await settleAndKeep(5000);
 
       // ---- observe outcome to classify the transition ----
       const after = await observe();
+      if (after.leftApp && session.appId) {
+        // The tap opened another app (external link, system UI). Record the edge as
+        // blocked, drop the foreign screen, and return to the app.
+        if (after.isNew) {
+          graph.removeNode(after.node.id);
+          summary.screensVisited = Math.max(0, summary.screensVisited - 1);
+          if (after.visual) summary.visualOnlyScreens = Math.max(0, summary.visualOnlyScreens - 1);
+        }
+        graph.addEdge({
+          from: fromId,
+          action: {
+            type: 'tap',
+            targetDescription: `${pick.label ?? pick.locator?.value ?? 'control'} (left the app: ${after.foreground})`,
+          },
+          outcome: 'blocked',
+          evidenceUris: after.node.screenshotUri ? [after.node.screenshotUri] : [],
+        });
+        // Don't promote an app-leaving tap into generated suites/flows.
+        const lastRec = session.recordedActions.at(-1);
+        if (lastRec?.action === 'tap' && pick.locator && lastRec.selector === pick.locator.value) session.recordedActions.pop();
+        leftAppCount++;
+        note({
+          workflow: 'guided_exploration',
+          outcome: 'skipped',
+          category: 'other',
+          reason: `tapping "${pick.label ?? pick.locator?.value ?? 'control'}" left the app (foreground ${after.foreground}); not counted as an app screen`,
+        });
+        if (leftAppCount >= 3) {
+          stoppedReason = `exploration left the app ${leftAppCount} times (external links / system UI)`;
+          break;
+        }
+        await driver.launchApp(session.appId).catch(() => {});
+        noteScreenMutation(session);
+        await settleAndKeep(4000);
+        lastNodeId = fromId;
+        continue;
+      }
       const outcome: EdgeOutcome = after.node.id === fromId ? 'same_screen' : 'changed_screen';
       if (outcome === 'changed_screen') {
+        ledTo.set(pick.signatureKey, after.node.id);
+        // A popup opened from the overflow button is that menu, not its first row ("Screen saver").
+        if (after.isNew && /\b(more options|overflow)\b/i.test(`${pick.label ?? ''} ${pick.locator?.value ?? ''}`))
+          after.node.title = `${pick.label ?? 'More options'} menu`;
         summary.workflowsFound++;
         consecutiveNoChange = 0;
       } else {
@@ -775,7 +1058,21 @@ export async function runExplore(
   return {
     graph,
     summary,
-    state: summary.appErrors > 0 || summary.blockers > 0 ? 'blocked' : 'completed',
+    // A SESSION budget stop is not a completed exploration (often nothing was explored at
+    // all). Report it as blocked (BUDGET_EXHAUSTED in the job result), never "completed".
+    // Neither is a run cut off by its own time budget (the 6-minute back loop read as
+    // a completed, SHIP-worthy exploration).
+    state:
+      summary.appErrors > 0 ||
+      summary.blockers > 0 ||
+      stoppedReason.startsWith('session budget:') ||
+      stoppedReason.startsWith('time budget reached') ||
+      // An alert with no way to close it, leaving the app again and again, or no way back is
+      // not a completed exploration when it tested nothing (no action, or no real app screen).
+      (/^(an alert \(|exploration left the app|no way back)/.test(stoppedReason) &&
+        (summary.actionsTried === 0 || summary.screensVisited - summary.visualOnlyScreens === 0))
+        ? 'blocked'
+        : 'completed',
     stoppedReason,
     suitePromotion,
     destructiveCandidates: [...destructiveCandidates.values()],
@@ -791,7 +1088,7 @@ function finalizeGraph(
 ): SuitePromotionCandidate[] {
   const nodes = graph.allNodes();
   const existing = graph.serialize(new Date(0).toISOString());
-  const features = estimateFeatureCoverage(nodes, existing.tasks);
+  const features = estimateFeatureCoverage(nodes, existing.tasks, graph.allEdges());
   summary.featureCoverage = features;
   summary.destructiveCandidates = destructiveCandidates.size;
   if (existing.tasks.length) {

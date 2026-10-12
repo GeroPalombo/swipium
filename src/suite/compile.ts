@@ -1,14 +1,17 @@
-// POM > Flow V2 compiler (hardening P0.4). Generated POM suites reference page-object elements by
+// POM > Flow V2 compiler. Generated POM suites reference page-object elements by
 // name; this resolves those refs against the page objects and emits Flow V2 YAML that parseFlow()
 // accepts and qa_flow_run can execute. Without this, a generated suite is only
 // documentation. With it, a recorded run becomes a runnable, CI-usable flow.
 //
-// PURE: reads YAML files, no device. The compiler output is validated by the caller via parseFlow().
+// Compilation reads YAML files only (no device); the output is validated by the caller via
+// parseFlow(). writeCompiledFlow is the one writer, shared by the CLI and the MCP tools, and it
+// never clobbers a hand-edited .swipium/flows file.
 
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse as parseYaml, stringify } from 'yaml';
 import { waitForVisibleGuard } from '../flows/waitGuards.js';
+import { capSlug } from '../lib/stableHash.js';
 
 export interface CompiledFlow {
   name: string;
@@ -104,7 +107,7 @@ export function compileTest(
         } else if (s.coords) {
           steps.push({ tapAt: s.coords });
         } else {
-          errors.push(`step ${i}: tap has neither element nor coords`);
+          errors.push(`step ${i + 1}: tap has neither element nor coords`);
         }
         break;
       case 'tapAt':
@@ -135,12 +138,15 @@ export function compileTest(
       case 'assertVisible':
         if (s.text) steps.push(waitForVisibleGuard(s.text), { assertVisible: s.text });
         break;
+      case 'restartApp':
+        steps.push('restartApp');
+        break;
       case 'visualCheck':
         // Visual judgement > evidence-capturing checkpoint (flow assertVisual), never a text assertion.
         steps.push({ assertVisual: s.text ?? 'visual checkpoint' });
         break;
       default:
-        errors.push(`step ${i}: unknown action "${s.action}"`);
+        errors.push(`step ${i + 1}: unknown action "${s.action}"`);
     }
   });
 
@@ -172,6 +178,57 @@ export function compileTestFile(root: string, testRel: string, pages?: Map<strin
     variables: compiled.variables,
     errors: compiled.errors,
   };
+}
+
+export interface WrittenCompiledFlow {
+  /** .swipium/flows/<slug>.yaml (what qa_flow_run flow:"<slug>" and smoke runs pick up). */
+  flowPath: string;
+  /** .swipium/compiled/<slug>.flow.yaml: Swipium's own copy, always refreshed. */
+  compiledPath: string;
+  /** The flows/ file was hand-edited (differs from the last compiled copy), so it was kept and
+   *  the new output went to `<slug>.yaml.new` instead. Pass force to overwrite. */
+  kept?: boolean;
+  newPath?: string;
+  /** A previous compiled flow with different content was replaced. */
+  replaced?: boolean;
+}
+
+/** File slug for a compiled flow name: word chars only, capped so a long test name can't hit ENAMETOOLONG. */
+export function flowSlug(name: string): string {
+  return capSlug(name.replace(/[^\w.-]+/g, '-'));
+}
+
+/** Write one compiled flow without clobbering hand edits: the flows/ copy is overwritten
+ *  only when it is missing, unchanged since the last compile, or `force` is set. */
+export function writeCompiledFlow(root: string, slug: string, yaml: string, opts: { force?: boolean } = {}): WrittenCompiledFlow {
+  const flowsDir = join(root, '.swipium', 'flows');
+  const compiledDir = join(root, '.swipium', 'compiled');
+  mkdirSync(flowsDir, { recursive: true });
+  mkdirSync(compiledDir, { recursive: true });
+  const flowPath = join(flowsDir, `${slug}.yaml`);
+  const compiledPath = join(compiledDir, `${slug}.flow.yaml`);
+  const read = (p: string): string | undefined => {
+    try {
+      return existsSync(p) ? readFileSync(p, 'utf8') : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const current = read(flowPath);
+  const previousCompiled = read(compiledPath);
+  const out: WrittenCompiledFlow = { flowPath, compiledPath };
+  if (current !== undefined && current !== yaml && current !== previousCompiled && !opts.force) {
+    out.kept = true;
+    out.newPath = `${flowPath}.new`;
+    writeFileSync(out.newPath, yaml);
+  } else {
+    if (current !== undefined && current !== yaml) out.replaced = true;
+    writeFileSync(flowPath, yaml);
+    // A `.new` left by an earlier "kept your edit" run is stale once flows/ holds the new output.
+    rmSync(`${flowPath}.new`, { force: true });
+  }
+  writeFileSync(compiledPath, yaml);
+  return out;
 }
 
 /** Compile every test referenced by a suite file (default .swipium/suites/smoke.yaml). */

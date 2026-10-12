@@ -1,16 +1,17 @@
-// qa_clear_overlay: clear common overlays so a covered CTA becomes tappable (Phase 2 CR5).
+// qa_clear_overlay: clear common overlays so a covered CTA becomes tappable.
 // Strategies: auto | hide_keyboard | press_back | tap_outside | minimize_logbox |
 // dismiss_logbox | allow_permission | deny_permission | dismiss_toast_if_possible.
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
-import { blockedDeviceResult, getDriver } from '../session/attach.js';
+import { blockedDeviceResult, getDriver, prepareFirstStep } from '../session/attach.js';
 import { parseSnapshot, boundsContain, type RawNode } from '../snapshot/parse.js';
-import { detectTreeOverlays, classifyForeground, obstructionAt } from '../snapshot/overlays.js';
+import { detectTreeOverlays, classifyForeground, obstructionAt, type Overlay } from '../snapshot/overlays.js';
 import type { Driver } from '../drivers/Driver.js';
 import { classifyFlowDriverError } from '../flows/run.js';
 import type { SessionStore } from '../session/store.js';
+import { noteScreenMutation } from '../snapshot/fresh.js';
 
 const STRATEGIES = [
   'auto',
@@ -34,8 +35,16 @@ async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
   }
 }
 
-async function tapByText(d: Driver, nodes: RawNode[], re: RegExp): Promise<boolean> {
-  const n = nodes.find((x) => re.test(x.text) || re.test(x.desc));
+/** Tap the best node matching `re`: a node whose whole text/desc matches `exact` (or whose id
+ *  matches `idRe`) first, clickable before static text ("allow" once picked the dialog's
+ *  message "Allow Contacts to send you notifications?" over the Allow button). */
+async function tapByText(d: Driver, nodes: RawNode[], re: RegExp, exact?: RegExp, idRe?: RegExp): Promise<boolean> {
+  const matches = nodes.filter((x) => re.test(x.text) || re.test(x.desc) || (!!idRe && idRe.test(x.id)));
+  const rank = (x: RawNode) =>
+    (idRe?.test(x.id) ? 4 : 0) +
+    (exact && (exact.test(x.text.trim()) || exact.test(x.desc.trim())) ? 2 : 0) +
+    (x.clickable || x.longClickable ? 1 : 0);
+  const n = matches.reduce<RawNode | undefined>((best, x) => (!best || rank(x) > rank(best) ? x : best), undefined);
   if (!n) return false;
   const c = center(n.bounds);
   await d.pressXY(c.x, c.y, 100);
@@ -51,6 +60,15 @@ async function handleNativeAlert(d: Driver, action: 'accept' | 'dismiss'): Promi
   } catch {
     return false;
   }
+}
+
+/** Overlay types on screen: tree overlays, the keyboard, a classified foreground surface (deduped). */
+function overlayTypes(tree: Overlay[], ime: boolean, fg: Overlay | null): string[] {
+  const out = tree.map((o) => o.type as string);
+  if (ime) out.push('keyboard');
+  // An iOS system alert makes SpringBoard the foreground; the tree already reports the dialog.
+  if (fg && !(fg.type === 'foreign_app' && out.includes('permission_dialog'))) out.push(fg.type);
+  return [...new Set(out)];
 }
 
 export function registerClearOverlay(server: McpServer, sessions: SessionStore): void {
@@ -79,9 +97,23 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
             changedState: false,
             retrySafe: true,
             failureCode: 'NO_DEVICE',
-            nextSteps: ['Call qa_prepare_target first.'],
+            nextSteps: [prepareFirstStep(session)],
           })
         );
+      }
+
+      // The visual-only iOS simulator backend can't press, tap or read the tree. Same
+      // contract as qa_snapshot / qa_act: BACKEND_UNSUPPORTED, nothing changed.
+      if (d.kind === 'simulator') {
+        return qaError({
+          what: 'Clearing overlays is not available on the visual-only iOS simulator backend; nothing was changed.',
+          changedState: false,
+          retrySafe: false,
+          failureCode: 'BACKEND_UNSUPPORTED',
+          nextSteps: [
+            'Attach WebDriverAgent with qa_wda for structured interaction, or dismiss the overlay with qa_visual (mode:"find_text", tap:true).',
+          ],
+        });
       }
 
       const obstructionFor = async (): Promise<{ obstructed: boolean; node?: RawNode }> => {
@@ -96,9 +128,14 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
         const node = session.lastSnapshot?.fullByRef.get(targetRef);
         if (!node) return { obstructed: false };
         const c = center(node.bounds);
-        // re-resolve the target in the FRESH tree by matching bounds/id
+        // re-resolve the target in the FRESH tree by id, structural key or exact bounds. The first
+        // node containing the center is usually the window, an ancestor of everything, which
+        // would never count as obstructed and disagree with qa_act.
+        const sameBounds = (x: RawNode) => x.bounds.every((v, i) => v === node.bounds[i]);
         const fresh =
           parsed.allNodes.find((x) => x.id && node.id && x.id === node.id) ??
+          parsed.allNodes.find((x) => x.key && x.key === node.key) ??
+          [...parsed.allNodes].reverse().find(sameBounds) ??
           parsed.allNodes.find((x) => boundsContain(x.bounds, c.x, c.y));
         return { obstructed: obstructionAt(parsed.allNodes, fresh, c.x, c.y).obstructed, node: fresh };
       };
@@ -113,8 +150,10 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
       const parsedBefore = xml ? parseSnapshot(xml) : undefined;
       const nodes = parsedBefore?.allNodes ?? [];
       const treeOverlays = detectTreeOverlays(nodes, parsedBefore?.screen);
-      const overlaysBefore = treeOverlays.map((o) => o.type);
       const fgOverlay = classifyForeground(session.appId, fg);
+      // What blocks the screen before acting: tree overlays plus the keyboard and a system surface in
+      // front (otherwise a permission dialog / keyboard the strategy then acted on was missing).
+      const overlaysBefore = overlayTypes(treeOverlays, ime, fgOverlay);
 
       // Set when the keyboard is up and could not be dismissed: typed KEYBOARD_NOT_DISMISSIBLE.
       let keyboardStuck: string | undefined;
@@ -156,7 +195,13 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
           cleared.push({ type: 'permission_dialog', action: 'allowed_native_alert' });
           return;
         }
-        const ok = await tapByText(d, nodes, /allow|while using/i);
+        const ok = await tapByText(
+          d,
+          nodes,
+          /allow|while using/i,
+          /^(allow|allow (once|all|all the time)|(allow )?(only )?while using( the)? app)$/i,
+          /permission_allow(_foreground_only|_one_time)?_button$/,
+        );
         cleared.push({ type: 'permission_dialog', action: ok ? 'allowed' : 'allow_not_found' });
       };
       const doDenyPermission = async () => {
@@ -164,7 +209,13 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
           cleared.push({ type: 'permission_dialog', action: 'denied_native_alert' });
           return;
         }
-        const ok = await tapByText(d, nodes, /deny|don.?t allow/i);
+        const ok = await tapByText(
+          d,
+          nodes,
+          /deny|don.?t allow/i,
+          /^(deny|don.?t allow|deny (&|and) don.?t ask again)$/i,
+          /permission_deny(_and_dont_ask_again)?_button$/,
+        );
         cleared.push({ type: 'permission_dialog', action: ok ? 'denied' : 'deny_not_found' });
       };
 
@@ -199,14 +250,17 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
           default:
             if (ime) await doHideKeyboard();
             else if (treeOverlays.some((o) => o.type === 'rn_logbox' || o.type === 'rn_redbox')) await doMinimizeLogbox();
-            else if (fgOverlay?.type === 'permission_dialog')
+            else if (fgOverlay?.type === 'permission_dialog' || treeOverlays.some((o) => o.type === 'permission_dialog'))
               cleared.push({ type: 'permission_dialog', action: 'present; call allow_permission/deny_permission deliberately' });
             else if (treeOverlays.some((o) => o.type === 'native_dialog'))
               cleared.push({ type: 'native_dialog', action: 'present; handle via qa_act (e.g. tap a dialog button)' });
-            else await doTapOutside();
+            // Tap outside only when something blocks (an unclassified overlay, or the target is
+            // obstructed): with nothing there a blind tap lands on the app and changes its state.
+            else if (overlaysBefore.length || before) await doTapOutside();
             break;
         }
       } catch (e) {
+        noteScreenMutation(session); // the strategy may have partly run (changedState:true)
         const msg = String((e as Error)?.message ?? e);
         return qaError({
           what: `clear_overlay "${strategy}" failed: ${msg}`,
@@ -235,6 +289,7 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
         );
       }
 
+      if (cleared.length) noteScreenMutation(session); // a < 2 s snapshot no longer describes the screen
       await new Promise((r) => setTimeout(r, 500));
       const after = (await obstructionFor()).obstructed;
       let parsedAfter: ReturnType<typeof parseSnapshot> | undefined;
@@ -245,16 +300,23 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
         /* keep undefined */
       }
       const afterOverlays = parsedAfter ? detectTreeOverlays(parsedAfter.allNodes, parsedAfter.screen) : [];
-      const remaining = afterOverlays.map((o) => o.type);
+      // Verify, don't assume: the keyboard / a foreground permission dialog count when still there.
+      const [imeAfter, fgAfter] = await Promise.all([safe(() => d.imeShown(), false), safe(() => d.foregroundOwner(), 'unknown')]);
+      const remaining = overlayTypes(afterOverlays, imeAfter, classifyForeground(session.appId, fgAfter));
 
-      // Outcome (Phase 2.2): distinguish cleared / reappeared (persistent) / not_dismissible /
+      // Outcome: distinguish cleared / reappeared (persistent) / not_dismissible /
       // still_obstructing_target so the agent (and report) know whether the overlay is real noise.
+      // Only the overlay types this call acted on decide it: an unrelated banner that was there
+      // before and stays does not make a dismissed alert "reappeared".
       const attemptedTypes = new Set(cleared.map((c) => c.type));
-      const sameTypeRemains = remaining.some((t) => attemptedTypes.has(t) || overlaysBefore.includes(t));
+      const sameTypeRemains = remaining.some((t) => attemptedTypes.has(t));
       const triedDismiss = cleared.some((c) => /minimized|dismissed|hidden|allowed|denied|tap_outside|press_back/.test(c.action));
-      let outcome: 'cleared' | 'reappeared' | 'not_dismissible' | 'still_obstructing_target' | 'nothing_to_clear';
+      let outcome: 'cleared' | 'reappeared' | 'not_dismissible' | 'still_obstructing_target' | 'nothing_to_clear' | 'needs_decision';
       if (targetRef && after) outcome = 'still_obstructing_target';
-      else if (!cleared.length) outcome = 'nothing_to_clear';
+      // auto only reported a dialog it leaves for the caller to answer (allow vs deny): nothing was cleared.
+      else if (cleared.length && cleared.every((c) => c.action.startsWith('present;'))) outcome = 'needs_decision';
+      // A hide_keyboard with no keyboard up acted on nothing.
+      else if (!cleared.some((c) => c.action !== 'not_visible_or_unsupported')) outcome = 'nothing_to_clear';
       else if (sameTypeRemains && triedDismiss)
         outcome = overlaysBefore.length && remaining.length >= overlaysBefore.length ? 'reappeared' : 'not_dismissible';
       else outcome = 'cleared';

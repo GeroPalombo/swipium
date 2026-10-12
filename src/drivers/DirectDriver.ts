@@ -9,6 +9,9 @@ import { run, runBinary } from '../lib/spawn.js';
 import { currentSignal, isAbortError, sleepOrCancel } from '../lib/abortScope.js';
 import { adbDevices } from '../lib/android.js';
 import type { DumpOptions, Driver, ImeState, TextDeliverability } from './Driver.js';
+import { fingerprintRawScreencap, type PixelFingerprint } from '../lib/screenFingerprint.js';
+import { isTextFieldClass, parseSnapshot } from '../snapshot/parse.js';
+import { textFieldReadings } from '../core/readBack.js';
 
 /** Characters the device-side /system/bin/sh (mksh) treats specially; each gets a backslash.
  * Includes brace/glob expansion (`{a,b}` > `a b`, `[s]dcard` > `sdcard`). Backslash itself is
@@ -49,6 +52,80 @@ export function adbInputTextChunks(text: string): string[] {
   }
   chunks.push(text.slice(start));
   return chunks.filter((c) => c.length > 0);
+}
+
+/** Longest piece of text one `adb shell input text` call sends; longer text is split. */
+export const ADB_TEXT_PIECE_CHARS = 40;
+
+/** How long one piece of long text may take to show up at the end of the focused field. */
+const TEXT_PIECE_SETTLE_MS = 4000;
+
+/** Long text is read back after this many pieces (and after the last one), not after each. */
+const TEXT_PIECES_PER_CHECK = 2;
+
+/** Read-backs in a row that may fail to dump the screen before long text stops checking. */
+const DUMP_MISSES_BEFORE_OFF = 3;
+
+/** Careful typing (the retry after a scramble): a labeled Compose field jumps its caret to
+ * the start and drops keys in the middle of one burst, so the retry sends bursts this short, paced,
+ * and reads back every CAREFUL_PIECES_PER_CHECK of them. */
+const CAREFUL_PIECE_CHARS = 8;
+const CAREFUL_PIECES_PER_CHECK = 5;
+const CAREFUL_PACE_MS = 250;
+
+/** The select-all clear waits this long after the focusing tap (1 s by hand always cleared). */
+const CLEAR_AFTER_TAP_MS = 900;
+
+/** PURE: the `input text` pieces for `text`: split at every literal `%s` (adbInputTextChunks), then
+ * into pieces of at most `max` chars. A cut is moved back (up to 8 chars) so no piece starts or ends
+ * on a space: a space at a piece boundary was dropped by some fields. */
+export function adbTextPieces(text: string, max = ADB_TEXT_PIECE_CHARS): string[] {
+  const out: string[] = [];
+  for (const c of adbInputTextChunks(text)) {
+    let start = 0;
+    while (c.length - start > max) {
+      let cut = start + max;
+      for (let k = cut; k > start + max - 8 && k > start + 1; k--) {
+        if (c[k - 1] !== ' ' && c[k] !== ' ') {
+          cut = k;
+          break;
+        }
+      }
+      out.push(c.slice(start, cut));
+      start = cut;
+    }
+    if (start < c.length) out.push(c.slice(start));
+  }
+  return out;
+}
+
+/** PURE: the focused text field in a uiautomator dump: its value (textFieldReadings: hint and a
+ * Compose label left out), every reading, and whether it is a password field. null when no
+ * editable field has focus. */
+export function focusedFieldValue(xml: string): { text: string; readings: string[]; password: boolean } | null {
+  const node = parseSnapshot(xml, { interactiveOnly: false }).allNodes.find((n) => n.focused && isTextFieldClass(n.cls));
+  if (!node) return null;
+  const readings = textFieldReadings(node);
+  return { text: readings[0], readings, password: node.attrs['password'] === 'true' };
+}
+
+/** PURE: does a field value end with the text typed so far? Case, whitespace
+ * runs and trailing spaces are ignored, and an input mask or filter that only changes punctuation
+ * or spacing still counts (letters and digits compared alone). */
+export function fieldEndsWithTyped(value: string, typed: string): boolean {
+  const norm = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
+  const loose = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+  if (norm(value).endsWith(norm(typed))) return true;
+  const lt = loose(typed);
+  return !!lt && loose(value).endsWith(lt);
+}
+
+/** PURE: is a field value a non-empty start of the text typed so far (a max length cut
+ * it)? Letters and digits only, as in fieldEndsWithTyped. */
+export function fieldIsCutTyped(value: string, typed: string): boolean {
+  const loose = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+  const lv = loose(value);
+  return !!lv && lv.length < loose(typed).length && loose(typed).startsWith(lv);
 }
 
 /** PURE: POSIX single-quote a value for the device shell (`'` > `'\''`), so deep links and
@@ -141,7 +218,7 @@ const KEYCODE: Record<'back' | 'home' | 'enter', string> = {
   enter: '66',
 };
 
-/** How long a DirectDriver reuses its last screen size + rotation (review round 2: swipes used
+/** How long a DirectDriver reuses its last screen size + rotation (swipes used
  * to run `wm size` + a full `dumpsys input` (a few hundred ms) on EVERY gesture). A device-side
  * rotation is picked up sooner than the TTL: every UI dump carries `<hierarchy rotation=N>`, and a
  * rotation different from the cached one drops the cache (plus invalidateScreenSizeCache for
@@ -201,6 +278,7 @@ export class DirectDriver implements Driver {
     this.serial = serial;
     this.sizeCache = undefined;
     this.dumpScreen = undefined;
+    this.densityCache = undefined;
   }
 
   currentDevice(): string | undefined {
@@ -260,9 +338,9 @@ export class DirectDriver implements Driver {
     }
   }
 
-  async logcat(lines: number, grep?: string): Promise<string> {
+  async logcat(lines: number, grep?: string, opts: { buffer?: string } = {}): Promise<string> {
     try {
-      const r = await this.adb(['logcat', '-d', '-t', String(lines)], { timeoutMs: 8000 });
+      const r = await this.adb(['logcat', '-d', ...(opts.buffer ? ['-b', opts.buffer] : []), '-t', String(lines)], { timeoutMs: 8000 });
       const out = r.stdout;
       if (!grep) return out;
       const re = new RegExp(grep, 'i');
@@ -289,19 +367,94 @@ export class DirectDriver implements Driver {
     await this.adb(['shell', 'cmd', 'connectivity', 'airplane-mode', on ? 'enable' : 'disable']);
   }
 
-  async launchApp(pkg: string): Promise<void> {
-    // monkey is the simplest reliable launcher when we don't know the main activity.
-    await this.adb(['shell', 'monkey', '-p', shellAppId(pkg), '-c', 'android.intent.category.LAUNCHER', '1']);
-  }
-
-  async launchAppWithArgs(pkg: string, args: Record<string, unknown>): Promise<void> {
+  /** The package's launcher activity (`pkg/.Main`) via `cmd package resolve-activity`, or null. */
+  private async resolveLaunchComponent(pkg: string): Promise<string | null> {
     const resolved = await this.adb(['shell', 'cmd', 'package', 'resolve-activity', '--brief', shellAppId(pkg)], { timeoutMs: 8000 });
     const component = resolved.stdout
       .split(/\r?\n/)
       .map((l) => l.trim())
       .filter(Boolean)
       .at(-1);
-    if (!component || !component.includes('/')) throw new Error(`Could not resolve launch activity for ${pkg}`);
+    return component && component.includes('/') ? component : null;
+  }
+
+  async launchApp(pkg: string): Promise<void> {
+    // `am start -W` with the resolved launcher activity returns once the activity is drawn, so
+    // callers poll the foreground briefly instead of sleeping. Same intent shape as a launcher tap
+    // (MAIN/LAUNCHER, NEW_TASK|RESET_TASK_IF_NEEDED): a running app's task is brought forward,
+    // not restarted. monkey stays the fallback when resolution or `am start` fails.
+    const component = await this.resolveLaunchComponent(pkg).catch((e) => {
+      if (isAbortError(e)) throw e;
+      return null;
+    });
+    if (component) {
+      try {
+        const r = await this.adb(
+          [
+            'shell',
+            'am',
+            'start',
+            '-W',
+            '-a',
+            'android.intent.action.MAIN',
+            '-c',
+            'android.intent.category.LAUNCHER',
+            '-f',
+            '0x10200000',
+            '-n',
+            deviceShellQuote(component),
+          ],
+          { timeoutMs: 30000 },
+        );
+        if (!/^Error/m.test(r.stdout)) return;
+      } catch (e) {
+        if (isAbortError(e)) throw e;
+      }
+    }
+    await this.adb(['shell', 'monkey', '-p', shellAppId(pkg), '-c', 'android.intent.category.LAUNCHER', '1']);
+  }
+
+  async relaunchCleanTask(pkg: string): Promise<void> {
+    // Force-stop alone leaves the app's task alive when another package's activity tops
+    // it (Settings > search is a settings.intelligence activity in Settings' task), and a launcher
+    // intent (RESET_TASK_IF_NEEDED) brings that stale task back. -S force-stops first, and
+    // NEW_TASK|CLEAR_TASK (0x10008000) wipes the task before the launcher activity starts.
+    const component = await this.resolveLaunchComponent(pkg).catch((e) => {
+      if (isAbortError(e)) throw e;
+      return null;
+    });
+    if (component) {
+      try {
+        const r = await this.adb(
+          [
+            'shell',
+            'am',
+            'start',
+            '-W',
+            '-S',
+            '-a',
+            'android.intent.action.MAIN',
+            '-c',
+            'android.intent.category.LAUNCHER',
+            '-f',
+            '0x10008000',
+            '-n',
+            deviceShellQuote(component),
+          ],
+          { timeoutMs: 30000 },
+        );
+        if (!/^Error/m.test(r.stdout)) return;
+      } catch (e) {
+        if (isAbortError(e)) throw e;
+      }
+    }
+    await this.terminateApp(pkg);
+    await this.launchApp(pkg);
+  }
+
+  async launchAppWithArgs(pkg: string, args: Record<string, unknown>): Promise<void> {
+    const component = await this.resolveLaunchComponent(pkg);
+    if (!component) throw new Error(`Could not resolve launch activity for ${pkg}`);
     const extras: string[] = [];
     for (const [key, value] of Object.entries(args)) {
       // `adb shell` space-joins argv into ONE string the device sh re-parses: every
@@ -320,9 +473,36 @@ export class DirectDriver implements Driver {
 
   async foregroundOwner(): Promise<string> {
     // Parse the currently focused window/activity. Works across recent Android versions.
-    const r = await this.adb(['shell', 'dumpsys', 'activity', 'activities']);
+    // Filtered on the device: the full dump is tens of KB and only these lines are parsed.
+    // `|| true`: grep exits 1 on no match, which must read as 'unknown', not an adb failure.
+    const r = await this.adb([
+      'shell',
+      "dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity|mCurrentFocus' || true",
+    ]);
     const m = r.stdout.match(/mResumedActivity:.*\{[^}]*\s([^\s/]+\/[^\s}]+)/) || r.stdout.match(/mCurrentFocus=.*\s([^\s/]+\/[^\s}]+)/);
     return m?.[1] ?? 'unknown';
+  }
+
+  async foregroundTaskRoot(): Promise<string | undefined> {
+    // The resumed activity line ends with its task id (`… pkg/.Act t45}`). That task's block
+    // (`Task{… #45 … A=1000:com.android.settings.root …}` / older `TaskRecord{… #45 A=com.x …}`)
+    // carries `realActivity=<pkg>/<activity>`: the package whose activity started the task. The
+    // `A=` taskAffinity is only a fallback (apps set custom affinities, e.g. `….settings.root`).
+    const r = await this.adb([
+      'shell',
+      "dumpsys activity activities | grep -E 'Task\\{|TaskRecord\\{|realActivity=|mResumedActivity|topResumedActivity' || true",
+    ]);
+    const t = r.stdout.match(/(?:mResumedActivity|topResumedActivity)[:=]\s*ActivityRecord\{[^}]*\st(\d+)\b/);
+    if (!t) return undefined;
+    const lines = r.stdout.split('\n');
+    const head = new RegExp(`(?:Task|TaskRecord)\\{\\S+ #${t[1]}\\b`);
+    const i = lines.findIndex((l) => head.test(l));
+    if (i < 0) return undefined;
+    for (let j = i + 1; j < lines.length && !/(?:Task|TaskRecord)\{/.test(lines[j]); j++) {
+      const real = lines[j].match(/realActivity=\{?([\w.]+)\//);
+      if (real) return real[1];
+    }
+    return lines[i].match(/\bA=(?:\d+:)?([\w.]+)/)?.[1];
   }
 
   async screenshot(): Promise<Buffer> {
@@ -335,6 +515,16 @@ export class DirectDriver implements Driver {
     return r.stdout;
   }
 
+  /** Raw `screencap` (no PNG encode, ~120 ms on an emulator) sampled into a small fingerprint. */
+  async pixelFingerprint(): Promise<PixelFingerprint | undefined> {
+    const r = await runBinary('adb', [...this.base(), 'exec-out', 'screencap'], {
+      timeoutMs: 5000,
+      signal: currentSignal(),
+      rejectOnNonZero: true,
+    });
+    return fingerprintRawScreencap(r.stdout);
+  }
+
   async dumpXml(opts: DumpOptions = {}): Promise<string> {
     // mobile-mcp's proven recipe: exec-out to stdout, retry on the transient
     // "could not get hierarchy" / null-root, strip warning lines before <?xml.
@@ -343,8 +533,27 @@ export class DirectDriver implements Driver {
     // deadline (settle) pass opts.timeoutMs (TOTAL budget, retries included) + fewer attempts.
     const ATTEMPTS = Math.max(1, opts.attempts ?? 5);
     const deadline = opts.timeoutMs ? Date.now() + opts.timeoutMs : undefined;
+    // Opt-in (SWIPIUM_ANDROID_DUMPER=agent): persistent on-device dumper, ~7x faster. Any
+    // failure stops it (it holds the UiAutomation slot exec-out needs) and falls through.
+    if (process.env.SWIPIUM_ANDROID_DUMPER) {
+      const agent = await import('./androidDumper.js');
+      if (agent.androidDumperUsable(this.serial)) {
+        try {
+          const xml = await agent.agentDump(this.serial, opts.timeoutMs ? Math.min(opts.timeoutMs, 10000) : 10000);
+          currentSignal()?.throwIfAborted();
+          this.noteDump(xml);
+          return xml;
+        } catch (e) {
+          if (isAbortError(e)) throw e;
+          await agent.noteAndroidDumperFailure(this.serial, e);
+        }
+      }
+    }
     let lastErr = '';
     let attempt = 0;
+    // A dump that ran into a full (>= 10 s) adb timeout means the device stopped
+    // answering (a stalled emulator), not a transient miss; retrying cost 20 s each (~100 s a call).
+    let hung = false;
     for (; attempt < ATTEMPTS; attempt++) {
       const remaining = deadline === undefined ? 20000 : Math.min(20000, deadline - Date.now());
       if (remaining <= 0) break;
@@ -361,14 +570,30 @@ export class DirectDriver implements Driver {
         // Cancelled: rethrow at once (still an AbortError for isAbortError) instead of retrying.
         if (isAbortError(e)) throw e;
         lastErr = String(e);
+        hung = remaining >= 10000 && /\(timed out\)/.test(lastErr);
       }
-      if (attempt + 1 >= ATTEMPTS || (deadline !== undefined && deadline - Date.now() <= 400)) {
+      // "could not get idle state" means uiautomator already waited ~12 s for an idle
+      // window that a looping animation never gives; each retry burns the same 12 s (60 s per call).
+      // Give up after the first one so the tool layer can fall back (visual / settle deadline).
+      const idle = /could not get idle state/i.test(lastErr);
+      if (hung) {
+        attempt++;
+        throw new Error(
+          `DEVICE_UNRESPONSIVE: uiautomator dump got no answer within ${Math.round(remaining / 1000)} s ` +
+            `(attempt ${attempt}); the device looks stalled. Restart the app, or the emulator if it stays unresponsive.`,
+        );
+      }
+      if (idle || attempt + 1 >= ATTEMPTS || (deadline !== undefined && deadline - Date.now() <= 400)) {
         attempt++;
         break;
       }
       await sleepOrCancel(400);
     }
-    throw new Error(`uiautomator dump failed after ${attempt} attempt(s): ${lastErr}`);
+    const hint =
+      /could not get idle state/i.test(lastErr) && !process.env.SWIPIUM_ANDROID_DUMPER
+        ? ' (the screen never goes idle, e.g. a looping animation; SWIPIUM_ANDROID_DUMPER=agent dumps such screens without waiting for idle)'
+        : '';
+    throw new Error(`uiautomator dump failed after ${attempt} attempt(s): ${lastErr}${hint}`);
   }
 
   /** Last dump's root-derived screen size (see dumpRootScreen), for screenSize(). */
@@ -383,8 +608,12 @@ export class DirectDriver implements Driver {
     this.dumpScreen = size ? { at: Date.now(), serial: this.serial, size } : undefined;
   }
 
+  /** When the last tap went out (clearFocusedText waits CLEAR_AFTER_TAP_MS past it). */
+  private lastTapAt = 0;
+
   async tapXY(x: number, y: number): Promise<void> {
     await this.adb(['shell', 'input', 'tap', String(Math.round(x)), String(Math.round(y))]);
+    this.lastTapAt = Date.now();
   }
 
   async pressXY(x: number, y: number, ms: number): Promise<void> {
@@ -398,7 +627,7 @@ export class DirectDriver implements Driver {
     return adbTextDeliverability(text);
   }
 
-  async inputText(text: string): Promise<void> {
+  async inputText(text: string, opts: { careful?: boolean } = {}): Promise<void> {
     // `input text` cannot deliver characters outside printable ASCII (Unicode, newline, tab):
     // the device-side shell/IME drops or mangles them, so refuse loudly instead of mistyping.
     const verdict = adbTextDeliverability(text);
@@ -407,25 +636,188 @@ export class DirectDriver implements Driver {
     if (!text) return;
     // `adb shell` space-joins its args into one string the DEVICE-side sh re-parses, so every
     // shell-significant character needs a backslash escape (escapeAdbInputText). A literal
-    // "%s" can't be escaped for `input text`, so it is split across calls (adbInputTextChunks).
-    for (const chunk of adbInputTextChunks(text)) {
-      const escaped = escapeAdbInputText(chunk);
+    // "%s" can't be escaped for `input text`, so it is split across calls (adbTextPieces).
+    // Careful (a retry): short bursts, each moved to the end and paced, whatever the text length.
+    const careful = !!opts.careful;
+    const pieces = adbTextPieces(text, careful ? CAREFUL_PIECE_CHARS : ADB_TEXT_PIECE_CHARS);
+    const long = careful || text.length > ADB_TEXT_PIECE_CHARS;
+    const perCheck = careful ? CAREFUL_PIECES_PER_CHECK : TEXT_PIECES_PER_CHECK;
+    const pace = careful ? CAREFUL_PACE_MS : 300;
+    // A field whose state round-trips through the app (Compose) can't keep up with one long
+    // stream of key events: it moves the caret mid-way, so later parts land first and characters
+    // drop. Long text goes out piece by piece, and each piece must read back at the end of the
+    // focused field (the dump also waits for the UI to go idle) before the next one is sent. A
+    // field that never reads back right fails with TEXT_INPUT_MISMATCH instead of passing.
+    let verify = long;
+    let typed = '';
+    // The field's value at the last good read-back (undefined before the first one), and the
+    // pieces sent since then.
+    let prev: string | undefined;
+    let unchecked: string[] = [];
+    // Read-backs in a row that could not dump the screen: one is skipped (the pieces stay
+    // unchecked for the next read-back), only DUMP_MISSES_BEFORE_OFF in a row turn checking off.
+    let dumpMisses = 0;
+    const send = async (piece: string) => {
+      const escaped = escapeAdbInputText(piece);
       try {
-        // H2: the argv IS the (possibly secret) text, so never let it into the error message.
-        await this.adb(['shell', 'input', 'text', escaped], { sensitiveLastArg: true });
+        // Long text: move to the end first, in the same shell call, so each piece goes at the end
+        // even if the field moved the caret (or the focus tap put it mid-text).
+        const cmd = long ? [...this.moveEndArgs(), ';', 'input', 'text', escaped] : ['input', 'text', escaped];
+        // The argv IS the (possibly secret) text, so never let it into the error message.
+        await this.adb(['shell', ...cmd], { sensitiveLastArg: true });
       } catch (e) {
         let msg = String((e as Error)?.message ?? e);
-        for (const v of [escaped, chunk, text]) if (v.length >= 3 && msg.includes(v)) msg = msg.split(v).join('«redacted»');
+        for (const v of [escaped, piece, text]) if (v.length >= 3 && msg.includes(v)) msg = msg.split(v).join('«redacted»');
         // cause: the spawn error is already argv-redacted (redactArgs), so it's safe to chain.
         throw new Error(`adb input text failed (${text.length} chars, value withheld): ${msg}`, { cause: e });
+      }
+    };
+    for (let i = 0; i < pieces.length; i++) {
+      const piece = pieces[i];
+      await send(piece);
+      typed += piece;
+      if (!long) continue;
+      unchecked.push(piece);
+      // No readable focused field (password, or none reports focus): pace the pieces instead. Else
+      // read back every TEXT_PIECES_PER_CHECK pieces (CAREFUL_PIECES_PER_CHECK when careful) and
+      // after the last one (a uiautomator dump costs about 2 s), pacing the pieces in
+      // between.
+      if (!verify || (unchecked.length < perCheck && i < pieces.length - 1)) {
+        await sleepOrCancel(pace);
+        continue;
+      }
+      let held = await this.awaitFieldEndsWith(typed);
+      // What was sent since the last read-back landed at the end but lost characters: delete what
+      // it added and send it once more.
+      if (held === undefined) {
+        // Could not dump the screen: skip this check, keep the pieces for the next one.
+        if (++dumpMisses >= DUMP_MISSES_BEFORE_OFF) verify = false;
+        await sleepOrCancel(pace);
+        continue;
+      }
+      dumpMisses = 0;
+      if (held && !held.ok && prev !== undefined && held.text.startsWith(prev) && held.text.length > prev.length) {
+        const before = held.text;
+        await this.adb(['shell', ...this.moveEndArgs(), ';', 'input', 'keyevent', ...Array(held.text.length - prev.length).fill('67')]);
+        for (const [k, p] of unchecked.entries()) {
+          if (k) await sleepOrCancel(pace);
+          await send(p);
+        }
+        const again = await this.awaitFieldEndsWith(typed);
+        // Unreadable after the resend: the resent pieces stay unchecked for the next read-back.
+        if (again === undefined) continue;
+        held = again;
+        // Cut at the same place twice: the field has a max length. Stop typing; the caller's
+        // read-back reports the cut-short value.
+        if (held && !held.ok && held.text === before && fieldIsCutTyped(held.text, typed)) return;
+      }
+      // The field holds only a start of the typed text and did not grow: a max length. Stop there and
+      // leave the verdict to the caller's read-back. A first cut is confirmed by the next piece
+      // adding nothing (dropped input would still add the next piece).
+      if (held && !held.ok && fieldIsCutTyped(held.text, typed) && (prev === undefined || held.text === prev)) {
+        if (held.text === prev || i === pieces.length - 1) return;
+        prev = held.text;
+        unchecked = [];
+        continue;
+      }
+      if (held === null) verify = false;
+      else if (!held.ok)
+        throw new Error(
+          `TEXT_INPUT_MISMATCH: after ${typed.length} of ${text.length} chars the focused field does not end with the text typed so far ` +
+            `(it holds ${held.text.length} chars); the field reordered or dropped input. The field was left as it is.`,
+        );
+      else {
+        prev = held.text;
+        unchecked = [];
       }
     }
   }
 
-  async clearFocusedText(approxLen = 40): Promise<void> {
-    const n = Math.min(Math.max(approxLen + 2, 1), 120);
-    // MOVE_END (123) then a batch of DEL (67) in a single keyevent call.
-    await this.adb(['shell', 'input', 'keyevent', '123', ...Array(n).fill('67')]);
+  /** Poll the focused field until its value ends with `want` (fieldEndsWithTyped), up to
+   * TEXT_PIECE_SETTLE_MS. Returns the last value read and whether it matched. null when no
+   * readable field has focus; undefined when the screen could not be dumped (a timeout). */
+  private async awaitFieldEndsWith(want: string): Promise<{ ok: boolean; text: string } | null | undefined> {
+    const deadline = Date.now() + TEXT_PIECE_SETTLE_MS;
+    for (;;) {
+      const left = deadline - Date.now();
+      let field: ReturnType<typeof focusedFieldValue>;
+      try {
+        field = focusedFieldValue(await this.dumpXml({ timeoutMs: Math.max(left, 1500), attempts: 2 }));
+      } catch (e) {
+        if (isAbortError(e)) throw e;
+        return undefined; // can't read the screen: don't fail the typing on that
+      }
+      if (!field || field.password) return null;
+      const hit = field.readings.find((r) => fieldEndsWithTyped(r, want));
+      if (hit !== undefined) return { ok: true, text: hit };
+      if (deadline - Date.now() < 300) return { ok: false, text: field.text };
+      await sleepOrCancel(200);
+    }
+  }
+
+  /** Per device: does `input keycombination` work (Android 13+)? Probed by the first clear. */
+  private keyCombo = new Map<string, boolean>();
+
+  /** Shell argv that moves the caret to the end of the TEXT. CTRL+MOVE_END where key combinations
+   * work: a plain MOVE_END stops at the end of the caret's line in a multi-line field. */
+  private moveEndArgs(): string[] {
+    return this.keyCombo.get(this.serial ?? '') ? ['input', 'keycombination', '113', '123'] : ['input', 'keyevent', '123'];
+  }
+
+  async clearFocusedText(approxLen = 40, opts: { byLength?: boolean } = {}): Promise<void> {
+    // A retry after a clear that left text uses the by-length clear below, not the same
+    // select-all again.
+    if (opts.byLength) return this.clearByLength(approxLen);
+    // Select all (CTRL+A) then DEL clears the whole field wherever the caret
+    // is, whatever the target kind and however long or multi-line the field. Needs Android 13
+    // (`input keycombination`); the first clear on a device probes it.
+    const serial = this.serial ?? '';
+    const combo = this.keyCombo.get(serial);
+    // A tap on a Compose field that already has focus starts a caret-placement
+    // gesture whose late handling collapses a select-all sent ~0.5 s after it (1 in 3 clears
+    // deleted one char). Send it only once the focusing tap is CLEAR_AFTER_TAP_MS old.
+    const sinceTap = Date.now() - this.lastTapAt;
+    if (combo !== false && sinceTap < CLEAR_AFTER_TAP_MS) await sleepOrCancel(CLEAR_AFTER_TAP_MS - sinceTap);
+    if (combo) {
+      await this.adb(['shell', 'input', 'keycombination', '113', '29', ';', 'input', 'keyevent', '67']);
+      return;
+    }
+    if (combo === undefined) {
+      let ok = false;
+      try {
+        const r = await this.adb(['shell', 'input', 'keycombination', '113', '29']);
+        ok = !/unknown command|usage:|error/i.test(`${r.stdout}\n${r.stderr}`);
+      } catch (e) {
+        if (isAbortError(e)) throw e;
+      }
+      this.keyCombo.set(serial, ok);
+      if (ok) {
+        await this.adb(['shell', 'input', 'keyevent', '67']);
+        return;
+      }
+    }
+    await this.clearByLength(approxLen);
+  }
+
+  /** Clear by the field's length: move to the end, then DEL and FORWARD_DEL that many times. */
+  private async clearByLength(approxLen: number): Promise<void> {
+    // Older Android: read the field's real length (the snapshot's or the caller's guess can be
+    // short or stale), then DEL before the caret and FORWARD_DEL (112) after it, so text after
+    // the caret's line in a multi-line field goes too. No upper cap. qa_act reads the field back.
+    let len = approxLen;
+    try {
+      const f = focusedFieldValue(await this.dumpXml({ timeoutMs: 5000, attempts: 2 }));
+      if (f && !f.password && f.text === '') return;
+      if (f) len = Math.max(len, ...f.readings.map((r) => r.length));
+    } catch (e) {
+      if (isAbortError(e)) throw e;
+    }
+    const n = Math.max(len + 2, 1);
+    // CTRL+MOVE_END first where key combinations work (the end of the text, not of the caret's line).
+    const toEnd = this.keyCombo.get(this.serial ?? '') ? ['input', 'keycombination', '113', '123', ';'] : [];
+    await this.adb(['shell', ...toEnd, 'input', 'keyevent', '123', ...Array(n).fill('67'), ...Array(n).fill('112')], {
+      timeoutMs: 20000 + n * 100,
+    });
   }
 
   async pressKey(key: 'back' | 'home' | 'enter'): Promise<void> {
@@ -505,11 +897,18 @@ export class DirectDriver implements Driver {
     return true;
   }
 
+  /** Density cached per bound device (dropped on useDevice); failures are never cached. */
+  private densityCache?: { serial?: string; density: number };
+
   async screenDensity(): Promise<number | null> {
+    const c = this.densityCache;
+    if (c && c.serial === this.serial) return c.density;
     try {
       const r = await this.adb(['shell', 'wm', 'density']);
       const m = r.stdout.match(/Override density:\s*(\d+)/) ?? r.stdout.match(/Physical density:\s*(\d+)/);
-      return m ? Number(m[1]) : null;
+      if (!m) return null;
+      this.densityCache = { serial: this.serial, density: Number(m[1]) };
+      return this.densityCache.density;
     } catch {
       return null;
     }

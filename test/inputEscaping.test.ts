@@ -211,7 +211,7 @@ describe('device-shell single quoting for deep links and launch extras', () => {
   });
 });
 
-describe('H2: a failed `input text` never leaks the typed text', () => {
+describe('a failed `input text` never leaks the typed text', () => {
   it('rethrows without the argv or the text, keeping exit code and stderr', async () => {
     const { run: realRun } = await vi.importActual<typeof import('../src/lib/spawn.js')>('../src/lib/spawn.js');
     // Real spawn through a stand-in "adb" (sh) that fails the way adb does, echoing its argv.

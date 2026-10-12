@@ -1,6 +1,6 @@
 # Swipium Threat Model
 
-Last updated: 2026-10-05 (Swipium 2.2.0)
+Last updated: 2026-10-11 (Swipium 2.3.0)
 
 This document describes what Swipium protects, where its trust boundaries are, who it defends
 against, and which controls enforce each defense. Every control listed here is implemented in the
@@ -10,8 +10,11 @@ code named next to it. Residual risks are listed separately and honestly.
 
 Swipium is a local stdio MCP server. An MCP client (Claude Code, Codex, Gemini CLI, Cursor, VS Code,
 Claude Desktop, Windsurf, or another host) starts it as a child process and drives Android
-Emulators and iOS Simulators on the developer's own machine. Swipium opens no network listener and
-has no authentication surface and no multi-tenant state. It runs with the privileges of the user
+Emulators and iOS Simulators on the developer's own machine. The server opens no network listener
+and has no authentication surface and no multi-tenant state. The one listener it can start is a
+managed WebDriverAgent for iOS (see the WebDriverAgent control in section 2), whose control port
+binds loopback only for the default `127.0.0.1` URL; its MJPEG screen stream port listens on every
+interface (see Residual risks). It runs with the privileges of the user
 who started the client. One binary serves both MCP protocol eras over stdio: `initialize` for
 2025-06-18 and 2025-11-25 clients, `server/discover` for 2026-07-28 clients. The controls below apply
 to both unless a bullet says otherwise.
@@ -35,7 +38,7 @@ to both unless a bullet says otherwise.
 | Cloned repository > Swipium | `.swipium/config.json`, `.swipium/flows/*.yaml`, `.swipium/fixtures.json`, suites, build and Metro commands | Untrusted. Anyone who can commit to the repo controls these files. |
 | Device / app > Swipium > agent | UI trees, screenshots, OCR text, logs, deep-link targets | Untrusted. The app, or a server it talks to, controls what is on screen. |
 | Local processes > Swipium | PIDs of processes Swipium started earlier, the adb server, WebDriverAgent | Verified before use. Another process can reuse a PID or listen on a port. |
-| Swipium > WebDriverAgent endpoint | App screens and typed text (WDA receives both) | Loopback only unless the user approves otherwise. |
+| Swipium > WebDriverAgent endpoint | App screens and typed text (WDA receives both) | Loopback only unless the user approves otherwise. A WDA must also belong to the session's simulator before Swipium reuses or attaches to it. |
 
 ## Adversaries and mitigations
 
@@ -73,6 +76,10 @@ Swipium.
   `SWIPIUM_CONSENT_PREAPPROVE`; a failed prompt (timeout, transport error, aborted call) is never
   flagged and its refusal reason is tagged `transport/abort`. Without form elicitation, the
   challenge goes back to the model as the portable envelope (`consentId` + `approve:true` re-call).
+  A re-call with `approve:false` burns the pending challenge, writes a `refused` ledger row and
+  returns `CONSENT_DECLINED` without running the tool; a re-call that omits `approve` leaves the
+  challenge pending. An unknown, used or expired id is never silently replaced: every tool says so in
+  `consentNote` (with `previousConsentId`) before issuing a new challenge.
 - **Single-use `requestState`** (2026-07-28 only; `issueConsentPrompt` / `redeemConsentPrompt` in
   `src/consent/consent.ts`, `resumeConsentPrompt` in `src/server.ts`). The spec treats
   `requestState` as attacker-controlled. Swipium's is an opaque 256-bit random handle to a
@@ -98,24 +105,45 @@ Swipium.
     cloned repo can't reach a Codex-launched server that way.
   - Exact names only: no wildcards or risk thresholds. Unknown names are ignored with a warning.
   - Actions that run repository- or model-chosen code (`build_from_source`, `flow_mutation_run`,
-    `ocr_run`, `seed_state`, `start_metro`, `suite_fresh_state_replay`, `wda_build`, `wda_start`)
+    `ocr_run`, `start_metro`, `suite_fresh_state_replay`, `wda_build`, `wda_start`)
     are honoured only with `SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE=1` as well.
   - `test_this_plan` does not cover a bundled sub-step that runs code (such as a
     `build_from_source` step) unless that action is itself pre-approved; otherwise the user is
     asked.
   - `wda_non_loopback` is never pre-approvable by name (see the WebDriverAgent control below).
+  - It is not scoped to a device: a listed action is approved for whatever device the plan picks.
+    `SWIPIUM_DEVICE` (server env only) pins the server to one device; with it set, plans and
+    auto-binding use only that device and an explicit request for another is refused
+    (`DEVICE_PINNED`), so the pre-approval can only ever act on the pinned device. That includes
+    the low-level `qa_ios` (`boot`, `install`, `privacy_reset`, `erase`) and `qa_wda` (`build`,
+    `start`, `setup`, `attach`, `stop`) actions and `qa_bundletool` installs, checked before
+    consent, so a pre-approved `erase_device` can't reach a bystander simulator. A `device` is
+    resolved to one simulator UDID first (exact UDID or unique exact name; never a substring or
+    `booted`), `erase` runs and prompts with that UDID, other `qa_ios` actions refuse a `device`
+    that isn't the session's simulator, and a pinned simulator name that several simulators share
+    pins none of them (`MULTIPLE_DEVICES`) instead of passing either. A tool for the other
+    platform (`qa_prepare_target` under an iOS pin) refuses instead of picking a device.
   - It is checked before any prompt on both eras and wins over `SWIPIUM_REQUIRE_ELICITATION=1`
     (an explicit operator decision).
 
   Pre-approved challenges stay single-use and session-bound, are ledgered as `operator-policy`, and
   each use is logged to stderr at `warn` with the exact command. The honoured names are logged once
   at startup.
+
+  `swipium init claude --trust-local` writes this variable for the user: it lists only actions that
+  run no repository- or model-chosen code (no build, Metro, WebDriverAgent, seed or OCR action) and are
+  local to the machine (no `destructive_ui_candidate`, which taps a destructive control on the app's
+  backend), and only into a machine-local registration (`--scope local` or `user`). It refuses `--scope project`,
+  which would write the team-shared `.mcp.json` that a cloned repository controls. The Claude Code
+  plugin in `plugin/` never sets it.
 - **Prompt sanitising**. The elicitation text quotes every interpolated field. It strips control
   characters, newlines, bidi overrides and zero-width characters, and caps each field and the whole
   message in length. A flow name or URL therefore cannot forge an extra "Will run:" line.
 - **Exact commands shown**. Challenges carry the exact argv or target: the resolved build command,
-  `adb install -r -g <path>`, a SHA-256 for APKs from outside the project, and seed and provider
-  argv labelled with their origin.
+  `adb -s <serial> install -r -g <path>` or `xcrun simctl install <udid> <app>` (the target device
+  is named in the prompt and bound into `affects`), a SHA-256 for APKs from outside the project, and
+  seed and provider argv labelled with their origin. An artifact that cannot be installed (a `.ipa`,
+  a device build, a missing path, no APK for the requested app id) is refused before any prompt.
 - **Audit trail**. The mutation ledger records how each consent was decided: `elicitation` (either
   era), `client-assertion`, `operator-policy` or `policy`.
 - **Strict arguments**. Each tool's arguments are validated against one strict schema
@@ -127,9 +155,11 @@ Swipium.
   connection. Errors cap every string that echoes caller input (`what` and each next step at 2,000
   characters, keeping head and tail; strings inside extra fields at 8,000), list at most 20 unknown
   or invalid arguments with names cut at 100 characters, and drop their extra fields when the
-  envelope still exceeds 64 KB. `resources/read` and `qa_get_artifact` return text over 1 MB as a
-  head (or, for logs, a tail) with a marker and never inline binaries over 8 MB. `resources/list`
-  is capped at 100 entries.
+  envelope still exceeds 64 KB. Successes cap caller-echoed strings at 2,000 characters (a
+  `qa_note` workflow or reason, a `qa_app_map_query` query, and the `qa_note` strings that are
+  stored) and their summary text at 20,000 characters, keeping head and tail. `resources/read` and
+  `qa_get_artifact` return text over 1 MB as a head (or, for logs, a tail) with a marker and never
+  inline binaries over 8 MB. `resources/list` is capped at 100 entries.
 - **Guardrail speed bumps**. On debug React Native and Expo builds, data wipes also require
   `acknowledgeBundleRisk:true`. This guards against accidents. It is not a boundary, because a
   client can pass the flag.
@@ -153,16 +183,46 @@ A developer clones an untrusted repository and points Swipium at it.
   cannot quietly leave the machine inside a URL.
 - **WebDriverAgent stays on loopback** (`src/lib/wda.ts`, `src/tools/wda.ts`,
   `src/services/prepareIos.ts`). Only `localhost`, `127.0.0.0/8` and `[::1]` are used without
-  asking. A non-loopback URL needs `allowNonLoopback:true` and a per-call consent. The repository's
+  asking. A non-loopback URL needs `allowNonLoopback:true` and a per-call consent: the approval is
+  single-use, so a later `attach`, `setup`, `build` or `start` on the same URL asks again (only
+  read-only actions and `stop` on the session's attached WDA don't). The repository's
   `ios.wda.allowNonLoopbackUrls` is ignored as a pre-approval. The only pre-approval is the user's
   own `SWIPIUM_ALLOW_REMOTE_WDA` exact-URL list in the MCP server environment
   (`SWIPIUM_CONSENT_PREAPPROVE` ignores `wda_non_loopback`). iOS preparation
-  never auto-connects to a non-loopback configured URL.
-- **Path confinement**. Image templates, visual baselines and `qa_flow_repair` targets must resolve
-  inside the project root after symlinks are followed (`src/flows/paths.ts`, `src/tools/visual.ts`).
+  never auto-connects to a non-loopback configured URL. A WDA that Swipium starts gets `USE_IP`
+  set to the URL's `127.x` host, so it listens on loopback only; a `localhost` or `::1` URL, or a
+  WDA build without `USE_IP` support, still binds every interface (anyone on the network could
+  then drive the simulator while it runs). `USE_IP` covers only WDA's HTTP control port: its MJPEG
+  screen stream (port = WDA port + 1000, so each simulator's WDA gets its own) listens on every
+  interface whatever the URL (see Residual risks). Before reusing or attaching to a WDA, Swipium checks
+  which simulator owns the listening process, so a WDA started for another simulator (or by
+  another session) is never driven by mistake (`STALE_WDA_DEVICE`). A managed WDA runs on its
+  simulator's own port (8101 to 8900) by default, and `qa_wda stop` only stops a WDA registered for
+  the session's simulator, never one matched by port alone.
+- **Path confinement**. Flow files (`qa_flow_check`, `qa_flow_run`), image templates, visual
+  baselines and `qa_flow_repair` targets must resolve inside the project root after symlinks are
+  followed (`src/tools/flow.ts`, `src/flows/paths.ts`, `src/tools/visual.ts`). A flow path must also
+  end in `.yaml`, `.yml` or `.json`; anything else (for example `./.env`) is refused with
+  `UNSAFE_ACTION_REFUSED` before it is read, so a parse error can't echo another file's contents.
+  `/` and the home directory are refused as project roots.
   Baselines must stay under `.swipium/baselines` and cannot be symlinks. Repair never auto-applies a
-  low-confidence guess. Session artifact names are sanitised and must stay inside the session
+  low-confidence guess, nor a label that adds words to the old one or negates it ("Delete account"
+  for "Delete", "Don't allow" for "Allow"), so a repaired flow doesn't silently tap a different or
+  opposite action. Session artifact names are sanitised and must stay inside the session
   directory.
+- **Suite ids are file names** (`src/testSuite/store.ts`, `src/testSuite/exporter.ts`,
+  `src/tools/testSuite.ts`). A committed `.swipium/test-suite.json` is untrusted: a stored case id
+  that is unsafe as a file name (`../../x`) or a duplicate is renamed to a fresh id when the suite is
+  read, reported as `loadRepairs` and flagged by `qa_suite_lint` (`unsafe_id`), and
+  `qa_suite_export` skips any YAML path that would resolve outside
+  `.swipium/test-suite-export/yaml/`. Ids given to `qa_suite_update` are validated as before.
+  Suite writes (`test-suite.json`, the `test-suite/` mirror, `test-runs/` and
+  `test-suite-export/`) refuse to write through a symlink: every path component below the project
+  root is checked with `lstat`, and a symlinked file or folder fails the write with
+  `ARTIFACT_PATH_UNWRITABLE` instead of following it out of the project.
+  Not yet covered: a committed symlink at `.swipium/issues-log.jsonl` makes the issue log append
+  through it, outside the project. Check a cloned repo's `.swipium/` for symlinks before running
+  Swipium on it.
 - **git refusal**. Swipium refuses to spawn `git` itself or through `sh -c`-style payloads
   (`src/lib/spawn.ts`). This is a speed bump against accidental repository changes, not a security
   boundary: a consented script or build can run anything the user can, git included.
@@ -177,14 +237,22 @@ The app under test, or a server it talks to, shows text designed to steer the ag
 - **Nothing on screen is executed**. Swipium never runs app-derived text as a command. UI trees,
   OCR matches and logs are returned as data. The actions the agent can take are still gated as in
   section 1.
+- **Automatic taps stay inside the app** (`src/explore/policy.ts`, `src/explore/runner.ts`,
+  `src/firstRun/`). Exploration and first-run never tap a third-party or OS sign-in control ("Sign
+  in with Apple", "Continue with Google"), in any safe mode, and generated flows leave such recorded
+  taps out. An alert is closed with its cancel button and never explored, so its "Settings" button
+  can't lead the explorer into iOS Settings, and a screen of another app counts as leaving the app
+  (the app is relaunched) instead of being mapped. Launching another bundle with `qa_ios launch`
+  doesn't make it the app under test.
 - **Argv-only process spawning** (`src/lib/spawn.ts`). Host commands run from argv arrays and never
   through a shell. Legacy string commands are split into argv without a shell.
 - **App ids and device-shell quoting** (`src/drivers/DirectDriver.ts`). Android application ids
   must match the package-name grammar, and are checked before they reach `adb shell` (`INVALID_ARGUMENT`
   otherwise). Values passed to the device shell, such as the app id, component, deep links and
   launch extras, are single-quoted so `&`, `;` and quotes stay literal.
-- **Secure screens** (`src/tools/screenshot.ts`, `src/tools/visual.ts`). When the latest UI tree
-  shows a secure field (password, OTP, PIN), `qa_screenshot` and `qa_visual` refuse the capture with
+- **Secure screens** (`src/tools/screenshot.ts`, `src/tools/visual.ts`, `src/lib/redact.ts`). When
+  the latest UI tree shows a secure field (a password field, or an input field whose id or label
+  names a password, OTP, PIN or other secret; buttons, rows and labels never count), `qa_screenshot` and `qa_visual` refuse the capture with
   `CAPTURE_WITHHELD_SECURE` unless the call passes `force:true`. A forced capture succeeds with a
   warning and `sensitiveForced: true`, because the pixels are not redacted. When no fresh UI tree is
   available, `qa_visual` withholds OCR text that reads like a credential screen, and refuses to save
@@ -192,8 +260,13 @@ The app under test, or a server it talks to, shows text designed to steer the ag
 
 ### 4. Other local users and processes
 
-- **Private storage** (`src/session/store.ts`). Session directories under `~/.swipium/runs/` are
-  created `0700` and artifacts are written `0600` (POSIX, best effort). OCR and visual-provider
+- **Private storage** (`src/session/store.ts`, `src/lib/lockfile.ts`). Session directories under
+  `~/.swipium/runs/` are created `0700` and artifacts are written `0600` (POSIX, best effort).
+  `~/.swipium` itself is `0700`, and the shared state files that list every project root, session
+  directory and child command line (`registry.json`, `projects.json`, `processes.json`) are written
+  `0600`; files from older versions get the mode on their next write. A `projects.json` that doesn't
+  parse is moved aside to `projects.json.corrupt-<time>` (with a logged warning) before the server
+  writes a new one, never overwritten silently. OCR and visual-provider
   images go to a fresh private `mkdtemp` directory per call.
 - **Process fingerprints** (`src/session/processRegistry.ts`). Long-lived children (Metro, managed
   WDA, screen recorders, emulators) are recorded in `~/.swipium/processes.json` with their start
@@ -213,6 +286,19 @@ their limits.
 - **Registration**. Values typed into secure fields, secrets supplied through
   `qa_continue_from_blocker`, secret flow variables, and fixture values read from `SWIPIUM_*`
   variables are registered for the session.
+- **Typed text in responses**. A value typed into a field that is not secure, and that is not a
+  registered secret, is screen state like any other text: since 2.3.0 it can appear in the
+  `qa_act` response, in the element line of the field that now holds it (the call's own fields and
+  first text line still don't echo it, and a `${SWIPIUM_*}` value is recorded as its placeholder).
+  This includes non-secret `${SWIPIUM_*}` values such as `SWIPIUM_TEST_EMAIL`. Type credentials
+  through secret-named variables, `qa_continue_from_blocker` or a secure field so they are
+  registered and redacted. A typing read-back mismatch (`TEXT_INPUT_MISMATCH`, also in
+  flows) reports lengths only, never the typed or the read-back value.
+- **Log scrubbing** (`scrubLogCredentials` in `src/lib/redact.ts`). Text artifacts in a session's
+  `logs/` folder (logcat, Metro and WDA logs) are also scrubbed of credential-looking values that were
+  never registered: `Bearer`/`Basic` tokens, JWTs, `password=`/`token:`/`api_key=`-style pairs, and
+  common cloud and SaaS key formats. This is pattern-based and best effort; Metro's own live log file
+  is not covered.
 - **Matching** (`src/lib/redact.ts`). Values of 4 or more characters are scrubbed wherever they
   appear as a substring. 3-character values, and digit-only values shorter than 8 digits (PINs,
   OTPs, CVVs), are scrubbed only as whole tokens: a CVV `123` is redacted in "CVV 123" but not in
@@ -245,7 +331,12 @@ their limits.
 ## Environment hygiene
 
 - Network changes record the original state and are restored when the report is generated, on
-  `restore`, and on server shutdown.
+  `restore`, and on server shutdown. Only the server process that made the change restores it on
+  shutdown (each change records its owner's pid), never another server's session, even one this
+  server snapshotted, or one rehydrated from disk without a device connection; those are restored
+  by `qa_network restore` or `qa_report` on that session. A change left behind by a server that
+  crashed is not restored automatically, but `qa_status` and `qa_network status` on any session
+  bound to that device warn about it, and `qa_network restore` on such a session takes it back.
 - Shutdown runs on `SIGINT`, `SIGTERM`, and when the client goes away: stdin EOF or a closed
   transport, even in the middle of a long call. It cancels every running job first, so none can
   flip device state back afterwards, then restores network state and stops screen recorders and
@@ -273,7 +364,8 @@ their limits.
   a prompt, whatever the model asks for, including targets the operator never saw. The ledger
   (`operator-policy`) and a `warn` line on stderr record each use with its exact command; with
   `SWIPIUM_LOG_LEVEL=error` that stderr line is suppressed and only the ledger remains. List only
-  what the run needs.
+  what the run needs, and set `SWIPIUM_DEVICE` where more than one device can be online, so the
+  approval can't land on a device the operator didn't intend.
 - **`SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE=1` escapes the client sandbox**. With it, listed actions
   run repository- or model-chosen code (build scripts, seed scripts, OCR commands, `xcodebuild` on a
   model-chosen project, the project's Metro config) with the user's privileges. Under `codex exec`
@@ -296,6 +388,23 @@ their limits.
 - **Secrets after a restart**. Secret values never persist, so a session resumed after a server
   restart cannot redact values registered before the restart. It is flagged as degraded and asks
   for credentials again.
+- **Opt-in Android dumper writes to the device**. With `SWIPIUM_ANDROID_DUMPER=agent`, Swipium
+  pushes a small dex jar to `/data/local/tmp/swipium-dumper.jar`, runs it through `app_process` as
+  the shell user and talks to it over an `adb forward` socket. The opt-in variable is the only gate
+  (there is no consent prompt yet). The agent holds the device's single UiAutomation connection
+  until it exits (120 s after its last dump, or with Swipium). The jar and the `adb forward` entries
+  are removed when Swipium stops the agent and when the server shuts down (best effort, about 1 s).
+  The socket is an abstract Unix socket (`localabstract:swipium-dumper`) with no file permissions,
+  so the agent checks each connection's peer uid and serves only the shell user (adb) and root:
+  apps on the emulator are refused and cannot request UI dumps, and a client that connects but
+  sends nothing is dropped after 5 s. Other shell-user processes can still connect. It is off by
+  default.
+- **WebDriverAgent screen stream on the network**. A managed WDA's MJPEG screen stream (port = WDA
+  port + 1000, for example 9100 or 9101 to 9900) listens on every network interface, because
+  WebDriverAgent has no bind-address setting for it. While WDA runs, anyone who can reach the Mac on
+  that port can watch the simulator screen, including credentials typed into it. The control port
+  stays on loopback. Use a host firewall on untrusted networks, and stop WDA (`qa_wda stop`) when you
+  are done.
 - **Shared temp directory**. iOS simulator screenshots and recordings pass briefly through
   predictably named files in the system temp directory before they are read and deleted.
 - **Weak permissions on Windows**. File-permission hardening is POSIX-only. On Windows, session data

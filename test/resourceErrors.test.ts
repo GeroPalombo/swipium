@@ -1,4 +1,4 @@
-// F5 + I6: resources/read errors and size caps.
+// resources/read errors and size caps.
 //  - an unknown artifact / app-map URI is a typed resource-not-found error: -32602 with `data.uri`
 //    (SDK v2 sends -32602 on every protocol revision; Swipium <= 2.1 sent -32002), not the SDK's
 //    generic -32603 for a plain Error;

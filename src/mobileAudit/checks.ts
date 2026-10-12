@@ -8,8 +8,11 @@
 import { rankCandidates } from '../explore/candidates.js';
 import { allowsControlledLogout } from '../explore/policy.js';
 import { parseSnapshot } from '../snapshot/parse.js';
+import { waitForAppRender, type RenderWaitResult } from '../snapshot/renderWait.js';
 import type { IssueCategory, IssueSeverity } from '../issues/schema.js';
 import type { CheckStatus } from './results.js';
+import { isAbortError } from '../lib/abortScope.js';
+import { metroListening } from '../lib/metroState.js';
 import { captureScreenshot, foreground, health, snapshotText, type AuditEvidenceCtx } from './evidence.js';
 
 export interface RawCheckResult {
@@ -21,6 +24,8 @@ export interface RawCheckResult {
   workflow?: string;
   screenId?: string;
   nextStep?: string;
+  /** Stable failure code (src/oracle/failures.ts) for a blocked / failed check, e.g. BLANK_SCREEN. */
+  failureCode?: string;
 }
 
 const ok = (reason: string, evidenceUris: string[] = []): RawCheckResult => ({ status: 'pass', reason, evidenceUris });
@@ -44,9 +49,23 @@ export async function checkLaunch(ctx: AuditEvidenceCtx): Promise<RawCheckResult
       nextStep: 'Confirm the app is installed and (for debug builds) Metro is reachable.',
     };
   }
+  // The relaunched app shows its splash first: the health / navigation / readiness checks that follow
+  // read the tree, and judged an empty splash ("no interactive controls").
+  const render = await renderWait(ctx);
   const fg = await foreground(ctx);
   const shot = await captureScreenshot(ctx, 'audit launch');
   const evidence = shot ? [shot] : [];
+  // `no_tree`: no UI tree was ever read, so nothing was judged; the foreground check below decides.
+  if (render && !render.ready && render.reason !== 'no_tree')
+    return {
+      status: 'blocked',
+      reason: render.loadingText
+        ? `app never finished rendering: "${render.loadingText}" still visible after ${Math.round(render.waitedMs / 1000)} s`
+        : `app showed only a blank / splash screen after ${Math.round(render.waitedMs / 1000)} s; launch not verified`,
+      evidenceUris: evidence,
+      failureCode: 'BLANK_SCREEN',
+      nextStep: 'For a debug RN/Expo build, wait until Metro finished bundling (qa_wait { for:"metro_ready" }) and re-run.',
+    };
   if (fg && ctx.appId && fg.includes(ctx.appId.split('/')[0])) return ok(`launched, foreground=${fg}`, evidence);
   return {
     status: 'fail',
@@ -55,6 +74,18 @@ export async function checkLaunch(ctx: AuditEvidenceCtx): Promise<RawCheckResult
     reason: `expected ${ctx.appId} foreground, saw ${fg}`,
     evidenceUris: evidence,
   };
+}
+
+/** Bounded wait for the app's first rendered screen (one dump when it already rendered). */
+async function renderWait(ctx: AuditEvidenceCtx): Promise<RenderWaitResult | undefined> {
+  return waitForAppRender(ctx.driver, {
+    visualOnly: ctx.session.mode === 'visual-fallback' || ctx.driver.kind === 'simulator',
+    timeoutMs: 20_000,
+    metroProbe: () => metroListening(),
+  }).catch((e) => {
+    if (isAbortError(e)) throw e;
+    return undefined;
+  });
 }
 
 export async function checkHealthScan(ctx: AuditEvidenceCtx): Promise<RawCheckResult> {
@@ -134,30 +165,29 @@ function found(text: string, ...needles: string[]): boolean {
   return needles.some((n) => text.includes(n));
 }
 
+/** "No check passes without evidence" applies to failures too. Only the current screen is
+ *  inspected, so a link/path that is not on it is NOT VERIFIED (blocked, no issue recorded), never a
+ *  store-compliance fail: it usually lives under Settings / About / Profile. */
+function notVerifiedOnThisScreen(what: string, evidenceUris: string[] = []): RawCheckResult {
+  return {
+    status: 'blocked',
+    reason: `not verified: no ${what} on the inspected screen (only the current screen is checked; it is usually under Settings / About / Profile)`,
+    evidenceUris,
+    nextStep: `Navigate to Settings / About (qa_act) and re-run the audit there, or verify the ${what} manually.`,
+  };
+}
+
 export async function checkPrivacyLink(ctx: AuditEvidenceCtx, text: string): Promise<RawCheckResult> {
   const shot = await captureScreenshot(ctx, 'audit privacy');
   if (found(text, 'privacy policy', 'privacy notice')) return ok('Privacy Policy surface found', shot ? [shot] : []);
-  return {
-    status: 'fail',
-    category: 'store_compliance',
-    severity: 'high',
-    reason: 'no Privacy Policy link found on the inspected screens',
-    evidenceUris: shot ? [shot] : [],
-    nextStep: 'Expose a Privacy Policy link (required for app stores).',
-  };
+  return notVerifiedOnThisScreen('Privacy Policy link', shot ? [shot] : []);
 }
 
 export async function checkTermsLink(ctx: AuditEvidenceCtx, text: string): Promise<RawCheckResult> {
   const shot = await captureScreenshot(ctx, 'audit terms');
   if (found(text, 'terms of service', 'terms of use', 'terms and conditions', 'terms'))
     return ok('Terms surface found', shot ? [shot] : []);
-  return {
-    status: 'fail',
-    category: 'store_compliance',
-    severity: 'medium',
-    reason: 'no Terms link found on the inspected screens',
-    evidenceUris: shot ? [shot] : [],
-  };
+  return notVerifiedOnThisScreen('Terms link', shot ? [shot] : []);
 }
 
 export async function checkAccountDeletion(ctx: AuditEvidenceCtx, text: string): Promise<RawCheckResult> {
@@ -165,14 +195,7 @@ export async function checkAccountDeletion(ctx: AuditEvidenceCtx, text: string):
   if (!hasAccountContext) return na('no account/profile surface observed, account deletion not applicable here');
   if (found(text, 'delete account', 'delete your account', 'data deletion', 'close account', 'remove account'))
     return ok('account deletion / data-deletion path found');
-  return {
-    status: 'fail',
-    category: 'store_compliance',
-    severity: 'high',
-    reason: 'account surface present but no delete-account / data-deletion path found',
-    evidenceUris: [],
-    nextStep: 'Expose an account/data deletion flow (required where the app has accounts).',
-  };
+  return notVerifiedOnThisScreen('delete-account / data-deletion path (an account surface is present)');
 }
 
 export async function checkSubscriptionManagement(ctx: AuditEvidenceCtx, text: string): Promise<RawCheckResult> {
@@ -180,13 +203,7 @@ export async function checkSubscriptionManagement(ctx: AuditEvidenceCtx, text: s
   if (!hasSub) return na('no subscription/paywall surface observed');
   if (found(text, 'restore purchase', 'restore purchases', 'manage subscription', 'manage your subscription'))
     return ok('restore / manage-subscription path found');
-  return {
-    status: 'fail',
-    category: 'store_compliance',
-    severity: 'medium',
-    reason: 'subscription surface present but no restore-purchase / manage-subscription path found',
-    evidenceUris: [],
-  };
+  return notVerifiedOnThisScreen('restore-purchase / manage-subscription path (a subscription surface is present)');
 }
 
 export async function checkPaywall(ctx: AuditEvidenceCtx, text: string): Promise<RawCheckResult> {
@@ -258,25 +275,46 @@ export async function checkProcessRelaunch(ctx: AuditEvidenceCtx): Promise<RawCh
     await ctx.driver.terminateApp(ctx.appId);
     await ctx.driver.launchApp(ctx.appId);
   } catch (e) {
-    return {
-      status: 'fail',
-      category: 'app_bug',
-      severity: 'high',
-      reason: `relaunch failed: ${String((e as Error).message ?? e)}`,
-      evidenceUris: [],
-    };
+    const msg = String((e as Error).message ?? e);
+    // A WDA / transport timeout is a tool or environment failure, not an app bug.
+    if (isAbortError(e)) throw e;
+    if (TOOL_ERROR_RE.test(msg)) return toolBlocked(`relaunch could not be driven: ${msg}`);
+    return { status: 'fail', category: 'app_bug', severity: 'high', reason: `relaunch failed: ${msg}`, evidenceUris: [] };
   }
-  const h = await health(ctx);
+  // Same render wait as the smoke's launch check: judging the splash right after a relaunch read a
+  // WDA hiccup or an empty tree as an unhealthy app. The wait's last tree feeds the health check, so
+  // a rendered app costs one dump, not two.
+  const render = await renderWait(ctx);
+  const h = await health(ctx, render?.xml);
   const shot = await captureScreenshot(ctx, 'audit relaunch');
+  const evidence = shot ? [shot] : [];
+  if (h.deviceGone || h.nativeStatus === 'wda_unreachable')
+    return toolBlocked(
+      h.deviceGone ? 'the device went offline after the relaunch' : 'WebDriverAgent did not return a UI source after the relaunch',
+      evidence,
+    );
   if (!h.healthy)
     return {
       status: 'fail',
       category: 'app_bug',
       severity: 'high',
       reason: `app unhealthy after relaunch (${h.nativeStatus}/${h.appStatus})`,
-      evidenceUris: shot ? [shot] : [],
+      evidenceUris: evidence,
     };
-  return ok('app returned to a sane state after kill/relaunch', shot ? [shot] : []);
+  return ok('app returned to a sane state after kill/relaunch', evidence);
+}
+
+/** A driver / WDA transport failure, not something the app did. */
+const TOOL_ERROR_RE = /timed? ?out|timeout|ECONNREFUSED|ECONNRESET|socket hang up|WebDriverAgent|\bWDA\b/i;
+
+/** Blocked with no category: the runner records no issue and the release impact is at most WARN. */
+function toolBlocked(reason: string, evidenceUris: string[] = []): RawCheckResult {
+  return {
+    status: 'blocked',
+    reason: `${reason} (tool / environment, not an app bug)`,
+    evidenceUris,
+    nextStep: 'Check the device connection (and WebDriverAgent on iOS), then re-run the audit.',
+  };
 }
 
 export function checkRotation(): RawCheckResult {
@@ -366,9 +404,10 @@ export function checkForgotPassword(loggedOutText: string): RawCheckResult {
 // ---- readiness -----------------------------------------------------------------------------
 
 export async function checkLocatorReadiness(ctx: AuditEvidenceCtx): Promise<RawCheckResult> {
+  const render = await renderWait(ctx); // earlier checks may have relaunched / backgrounded the app
   let xml = '';
   try {
-    xml = await ctx.driver.dumpXml();
+    xml = render?.xml ?? (await ctx.driver.dumpXml());
   } catch {
     return skip('no UI tree available to assess locator readiness');
   }

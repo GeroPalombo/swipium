@@ -9,6 +9,7 @@
 
 import type { Durability, PomResult, PomTestStep } from '../suite/pom.js';
 import { asciiFold } from './identifiers.js';
+import { capSlug } from '../lib/stableHash.js';
 
 export type AppiumStrategy = 'accessibilityId' | 'id' | 'name' | 'iosPredicate' | 'iosClassChain' | 'androidUiautomator' | 'coordinate';
 
@@ -37,7 +38,8 @@ export interface CrossPlatformElement {
 
 /** `visualCheck` is a manual visual checkpoint (qa_visual assert prose), emitted as a clearly-marked
  *  TODO comment, never as a text assertion. */
-export type AppiumActionKind = 'tap' | 'tapAt' | 'inputText' | 'press' | 'swipe' | 'scrollTo' | 'openUrl' | 'assertVisible' | 'visualCheck';
+export type AppiumActionKind =
+  'tap' | 'tapAt' | 'inputText' | 'press' | 'swipe' | 'scrollTo' | 'openUrl' | 'assertVisible' | 'visualCheck' | 'restartApp';
 
 export interface AppiumStep {
   /** Screen CLASS name (e.g. LoginScreen) the step targets. */
@@ -206,9 +208,11 @@ function toStep(s: PomTestStep, secrets: Set<string>, variables: Set<string>): A
 }
 
 function kebab(s: string): string {
-  return asciiFold(s)
-    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
-    .replace(/[^A-Za-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .toLowerCase();
+  return capSlug(
+    asciiFold(s)
+      .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+      .replace(/[^A-Za-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .toLowerCase(),
+  );
 }

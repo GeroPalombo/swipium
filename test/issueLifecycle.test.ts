@@ -38,13 +38,20 @@ describe('qa_issue_log lifecycle modes', () => {
   let projectRoot: string;
   let issueId: string;
   let fingerprint: string;
+  // Evidence must name real artifacts (unknown swipium://session/ URIs are refused), so a
+  // session in the temp HOME holds the screenshot and report the lifecycle points at.
+  let screenshotUri: string;
+  let reportUri: string;
 
   const issueLog = async (args: Record<string, unknown>): Promise<Record<string, unknown>> =>
     structured((await client.callTool({ name: 'qa_issue_log', arguments: { projectRoot, ...args } })) as CallToolResult);
 
   beforeAll(async () => {
     projectRoot = mkdtempSync(join(tmpdir(), 'swipium-issue-test-project-'));
-    const { server } = createServer();
+    const { server, sessions } = createServer();
+    const session = sessions.create(projectRoot);
+    screenshotUri = sessions.saveArtifact(session, 'screenshot', 'avatar.png', Buffer.alloc(8), 'image/png');
+    reportUri = sessions.saveArtifact(session, 'report', 'r.json', '{"ok":true}', 'application/json');
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     client = new Client({ name: 'issue-lifecycle-test', version: '0' });
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -56,8 +63,19 @@ describe('qa_issue_log lifecycle modes', () => {
     rmSync(projectRoot, { recursive: true, force: true });
   });
 
+  it('mode "log" refuses an evidence URI that names no known artifact (nothing recorded)', async () => {
+    const res = (await client.callTool({
+      name: 'qa_issue_log',
+      arguments: { projectRoot, mode: 'log', ...OBSERVATION, evidenceUris: ['swipium://session/x/screenshot/avatar.png'] },
+    })) as CallToolResult;
+    expect(res.isError).toBe(true);
+    const s = structured(res);
+    expect(s.failureCode).toBe('INVALID_ARGUMENT');
+    expect(existsSync(join(projectRoot, '.swipium', 'issues-log.jsonl'))).toBe(false);
+  });
+
   it('mode "log" records a new observation in the ledger', async () => {
-    const s = await issueLog({ mode: 'log', ...OBSERVATION, evidenceUris: ['swipium://session/x/screenshot/avatar.png'] });
+    const s = await issueLog({ mode: 'log', ...OBSERVATION, evidenceUris: [screenshotUri] });
     expect(s.ok).toBe(true);
     expect(s.isNew).toBe(true);
     expect(s.reopened).toBe(false);
@@ -98,7 +116,7 @@ describe('qa_issue_log lifecycle modes', () => {
       mode: 'verify_fixed',
       issueId,
       testCaseId: 'avatar-regression',
-      evidenceUris: ['swipium://session/x/report/r.json'],
+      evidenceUris: [reportUri],
     });
     expect(s.ok).toBe(true);
     const issue = s.issue as Record<string, unknown>;
@@ -174,10 +192,10 @@ describe('qa_issue_log lifecycle modes', () => {
   });
 });
 
-// B1 (1.6.0-RC): manual logs used to fingerprint only failureCode/platform, so every issue logged
-// on one platform collapsed into one — a fixed "Login button unresponsive" came back as a false
+// Manual logs used to fingerprint only failureCode/platform, so every issue logged
+// on one platform collapsed into one: a fixed "Login button unresponsive" came back as a false
 // regression when "Checkout total shows NaN" was logged. Identity now includes the normalized title.
-describe('qa_issue_log mode "log" identity (B1)', () => {
+describe('qa_issue_log mode "log" identity', () => {
   let client: Client;
   let projectRoot: string;
   let sessions: ReturnType<typeof createServer>['sessions'];

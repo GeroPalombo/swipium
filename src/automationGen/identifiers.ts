@@ -1,4 +1,4 @@
-// Identifier safety for the generated JS/TS and Python suites (H4). Recorded element/page names
+// Identifier safety for the generated JS/TS and Python suites. Recorded element/page names
 // come from arbitrary app copy ("Continue", "Return", "2FA code", "class", "登录"), so every name
 // that becomes a class, field, attribute or method in generated source is sanitized here:
 //   - Latin diacritics transliterated first (asciiFold: "Configuración" > "Configuracion"), then

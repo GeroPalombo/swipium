@@ -6,15 +6,28 @@
 import { z } from 'zod';
 import type { McpServer, CallToolResult } from '@modelcontextprotocol/server';
 import { qaOk, qaError, qaStop, qaAnnotate, unknownSessionError, cancelledResult } from '../lib/result.js';
-import { parseSnapshot, signature } from '../snapshot/parse.js';
+import {
+  boundsContain,
+  isTextFieldClass,
+  parseSnapshot,
+  signature,
+  subtreeLabel,
+  toElement,
+  weakTreeHint,
+  type ParsedSnapshot,
+} from '../snapshot/parse.js';
+import { adoptSnapshot, noteScreenMutation, preActionFingerprint, snapshotNow } from '../snapshot/fresh.js';
+import { awaitIme, IME_HOP_FLOOR_MS } from '../core/ime.js';
+import { imageDiff } from '../lib/image.js';
 import { presentElements } from '../snapshot/present.js';
 import { obstructionAt } from '../snapshot/overlays.js';
 import { settle } from '../snapshot/settle.js';
 import { checkHealth } from '../oracle/health.js';
 import { recordHealthFindings } from '../oracle/record.js';
 import { isSecureNode, makeRedactor } from '../lib/redact.js';
-import { blockedDeviceResult, getDriver } from '../session/attach.js';
-import { adbInputTextChunks, escapeAdbInputText } from '../drivers/DirectDriver.js';
+import { blockedDeviceResult, getDriver, lostWdaResult, prepareFirstStep } from '../session/attach.js';
+import { adbInputTextChunks, adbTextPieces, escapeAdbInputText } from '../drivers/DirectDriver.js';
+import { composeLabelOf, fieldReadBack, typedReadBack } from '../core/readBack.js';
 import {
   GESTURE_EDGE_INSET,
   SCROLL_CONTAINER_INSET,
@@ -24,9 +37,11 @@ import {
   swipeVector,
   type SwipeVec,
 } from '../lib/gestures.js';
-import { center, resolveTarget, setsEqual, type Point } from '../core/target.js';
+import { center, foldText, reresolveRef, resolveTarget, sameIdentity, setsEqual, type Point, type ResolveError } from '../core/target.js';
 import { recordableNativeSelector, recordableTap } from '../flows/generate.js';
 import { classifyFlowDriverError } from '../flows/run.js';
+import { deviceGoneNextSteps, isDeviceGoneError } from '../lib/deviceGone.js';
+import { diagnoseIosOutage } from '../lib/iosOutage.js';
 import { structuredSignature } from '../explore/signatures.js';
 import type { RecordedAction, Session, SessionStore } from '../session/store.js';
 import type { RawNode } from '../snapshot/parse.js';
@@ -34,6 +49,10 @@ import type { Driver, NativeSelectorStrategy, SnapshotElement } from '../drivers
 import type { FailureCode } from '../oracle/failures.js';
 import { isAbortError, runWithSignal, sleepOrCancel, throwIfCancelled } from '../lib/abortScope.js';
 import { SECRET_VAR_NAME } from '../flows/schema.js';
+import { withWdaCall } from '../lib/wda.js';
+
+/** The iOS home screen's bundle id, as WDA's active app info reports it. */
+const IOS_SPRINGBOARD = 'com.apple.springboard';
 
 interface NativeSelector {
   using: NativeSelectorStrategy;
@@ -55,30 +74,8 @@ const nativeSelectorSchema = z.object({
   value: z.string(),
 });
 
-/** After the focus tap, wait for the soft keyboard instead of a fixed sleep. Poll
- * imeShown() in ~100ms steps up to capMs (the old sleep), proceeding as soon as it's up.
- * The tap stays a REAL touch (RN ignores synthetic focus, so tap-then-type is required);
- * backends whose imeShown() throws get the original fixed sleep. */
-async function awaitIme(d: Driver, capMs: number, floorMs = 0): Promise<void> {
-  const started = Date.now();
-  const deadline = started + capMs;
-  try {
-    while (Date.now() < deadline) {
-      if (await d.imeShown()) {
-        // Field hop: the IME was ALREADY up before the tap, so "shown" says nothing about the
-        // new field having focus yet, so give RN a floor to move focus before typing.
-        const rest = floorMs - (Date.now() - started);
-        if (rest > 0) await sleepOrCancel(rest);
-        return;
-      }
-      await sleepOrCancel(Math.min(100, Math.max(1, deadline - Date.now())));
-    }
-  } catch (e) {
-    if (isAbortError(e)) throw e; // cancelled: unwind, the action's catch returns CANCELLED
-    // imeShown unsupported here: keep the original fixed-sleep behavior
-    await sleepOrCancel(Math.max(0, deadline - Date.now()));
-  }
-}
+/** PURE: moved to core/readBack.ts (shared with the flow runner); re-exported here. */
+export { typedReadBack } from '../core/readBack.js';
 
 /** Values to scrub from driver error text: session secrets + the value just typed, in raw AND
  * adb-escaped form (escaping would otherwise defeat plain-substring redaction, H2). */
@@ -86,7 +83,7 @@ function errorSecrets(session: Session, typed?: string): string[] {
   const out = [...session.secrets];
   for (const v of [...session.secrets, ...(typed ? [typed] : [])]) {
     out.push(v);
-    for (const chunk of adbInputTextChunks(v)) out.push(escapeAdbInputText(chunk));
+    for (const chunk of [...adbInputTextChunks(v), ...adbTextPieces(v)]) out.push(escapeAdbInputText(chunk));
   }
   return out;
 }
@@ -216,8 +213,6 @@ function targetErrorCode(error: string): FailureCode {
   return 'UNKNOWN';
 }
 
-/** Minimum wait after a focus tap when the keyboard was already shown (field hop). */
-export const IME_HOP_FLOOR_MS = 250;
 /** A reported IME frame taller than this fraction of the screen is not a keyboard rect (older
  * builds size the IME window near full-screen; accessory bars/suggestion strips can inflate it),
  * so it is treated as UNKNOWN rather than as "the keyboard covers everything". */
@@ -252,32 +247,62 @@ async function keyboardArea(d: Driver): Promise<{ shown: boolean; rect?: Rect }>
   return { shown: true, rect: frame };
 }
 
+/** Classes whose content the UI tree does not describe (web, canvas, game / Flutter surfaces). */
+const OPAQUE_CLASS_RE = /WebView|SurfaceView|TextureView|GLSurfaceView|Canvas|Flutter/i;
+/** X5: pixel share above which pre/post screenshots count as "changed". */
+export const PIXEL_CHANGE_RATIO = 0.005;
+
+/** X5: would the hierarchy alone miss this tap's effect? Visual session, a target without
+ * text/desc/id on it or inside it, or a point inside a WebView/canvas-like node. */
+export function needsPixelCheck(session: Session, t: Point): boolean {
+  if (session.mode === 'visual-fallback') return true;
+  const snap = session.lastSnapshot;
+  if (!snap) return true;
+  const under = snap.allNodes.filter((n) => n.bounds[0] <= t.x && t.x <= n.bounds[2] && n.bounds[1] <= t.y && t.y <= n.bounds[3]);
+  if (under.some((n) => OPAQUE_CLASS_RE.test(n.cls))) return true;
+  const node = t.ref ? snap.fullByRef.get(t.ref) : under[under.length - 1];
+  return !node || !subtreeLabel(node, snap.allNodes); // a row labeled by a child TextView counts as labeled
+}
+
+/** X5: do two screenshots differ by more than PIXEL_CHANGE_RATIO? Not comparable / undecodable = no. */
+export function pixelsDiffer(a: Buffer, b: Buffer): boolean {
+  try {
+    const r = imageDiff(a, b);
+    return r.comparable && r.ratio > PIXEL_CHANGE_RATIO;
+  } catch {
+    return false;
+  }
+}
+
 function inRect(r: Rect | undefined, x: number, y: number): boolean {
   return !!r && x >= r[0] && x < r[2] && y >= r[1] && y < r[3];
 }
 
-/** After the keyboard hid, the layout may shift and refs renumber: re-find the SAME node
- * (class/id/text/desc, nearest to its old position) in a fresh dump. */
+/** After the keyboard hid, the layout may shift: re-find the SAME node (class/id/text/desc,
+ * nearest to its old position) in a fresh dump (core/target.ts reresolveRef). */
 async function reresolveAfterKeyboard(
   session: Session,
-  d: Driver,
   t: Point,
   target: Parameters<typeof resolveTarget>[1],
-): Promise<Point | { error: string }> {
+): Promise<Point | ResolveError> {
+  noteScreenMutation(session); // the keyboard hid: the stored snapshot is stale
   if (!t.ref || !target?.ref) return resolveTarget(session, target); // text/id re-dump + re-match
   const old = session.lastSnapshot?.fullByRef.get(t.ref);
-  const parsed = parseSnapshot(await d.dumpXml());
-  session.lastSnapshot = { fullByRef: parsed.fullByRef, signatures: new Set(parsed.elements.map(signature)), allNodes: parsed.allNodes };
-  if (!old) return { error: `${t.ref} is no longer on screen after hiding the keyboard; re-run qa_snapshot.` };
-  let best: { ref: string; node: RawNode; dist: number } | undefined;
-  for (const [ref, node] of parsed.fullByRef) {
-    if (node.cls !== old.cls || node.id !== old.id || node.text !== old.text || node.desc !== old.desc) continue;
-    const c = center(node.bounds);
-    const dist = Math.abs(c.x - t.x) + Math.abs(c.y - t.y);
-    if (!best || dist < best.dist) best = { ref, node, dist };
+  if (!old) {
+    await snapshotNow(session, session.driver!);
+    return { error: `${t.ref} is no longer on screen after hiding the keyboard; re-run qa_snapshot.` };
   }
-  if (!best) return { error: `${t.ref} is no longer on screen after hiding the keyboard; re-run qa_snapshot.` };
-  return { ...center(best.node.bounds), via: best.ref, ref: best.ref, textLen: best.node.text.length, secure: isSecureNode(best.node) };
+  return reresolveRef(session, t.ref, old, { context: ' after hiding the keyboard' });
+}
+
+/** Is the resolved target a key of the on-screen keyboard (WDA: an XCUIElementTypeKey, or any
+ *  node inside the XCUIElementTypeKeyboard)? Such a tap is deliberate typing, not an obstruction. */
+export function isKeyboardKey(session: Session, t: Point): boolean {
+  const snap = session.lastSnapshot;
+  const node = t.ref ? snap?.fullByRef.get(t.ref) : undefined;
+  if (!snap || !node) return false;
+  if (/^XCUIElementType(?:Key|Keyboard)$/.test(node.cls)) return true;
+  return snap.allNodes.some((m) => m.cls === 'XCUIElementTypeKeyboard' && m.dfs < node.dfs && m.subtreeEnd >= node.dfs);
 }
 
 /** H5: a tap on a point under the soft keyboard lands on a KEY (typing a stray character).
@@ -314,7 +339,7 @@ async function guardKeyboard(
     };
   }
   await new Promise((r) => setTimeout(r, 300)); // let the layout reflow after the IME hides
-  const again = await reresolveAfterKeyboard(session, d, t, target);
+  const again = await reresolveAfterKeyboard(session, t, target);
   if ('error' in again)
     return {
       result: qaError(
@@ -431,10 +456,9 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
     {
       title: 'Act on the screen',
       description:
-        'One UI action (tap, type, clear, swipe, scroll, press, open_url, wait), then wait for the screen to settle and ' +
-        'report changed/settled, snapshot quality, health, and new elements (observe). Target: an @eN ref from qa_snapshot, ' +
-        'text, id, a native selector (WDA iOS), or x/y. Each param names the actions it applies to. Details: ' +
-        'docs/tools.md#qa_act.',
+        'Tap, type, clear, swipe, scroll, press a key, open a URL or wait: one UI step, then it waits for the screen to settle and ' +
+        'reports changed/settled, snapshot quality, health, new elements. Target: an @eN ref from qa_snapshot, text, id, a native ' +
+        'selector (WDA iOS), or x/y. For 3+ known steps, batch them in one qa_flow_run {flowYaml}. Details: docs/tools.md#qa_act.',
       inputSchema: {
         sessionId: z.string(),
         action: z.enum(['tap', 'type', 'clear', 'swipe', 'scroll', 'press', 'open_url', 'wait']),
@@ -470,9 +494,12 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
             text: z.string().optional(),
             id: z.string().optional(),
             selector: nativeSelectorSchema.optional(),
+            gone: z.boolean().optional(),
           })
           .optional()
-          .describe('wait: {settled:true} (default) or an element.'),
+          .describe(
+            'wait: {settled:true} (default), or until an element (ref/text/id/selector) is visible; gone:true waits until it is not.',
+          ),
         timeoutMs: z
           .number()
           .min(0)
@@ -508,11 +535,13 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               changedState: false,
               retrySafe: true,
               failureCode: 'NO_DEVICE',
-              nextSteps: ['Call qa_prepare_target first.'],
+              nextSteps: [prepareFirstStep(session)],
             })
           );
         }
         if (d.kind === 'simulator') {
+          const lost = await lostWdaResult(session, 'No structured interaction');
+          if (lost) return lost;
           return qaError({
             what: 'Structured interaction (tap/type/swipe) is not available on the iOS simulator backend',
             changedState: false,
@@ -531,28 +560,47 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
         if (stopReason && (action !== 'wait' || /time budget/.test(stopReason))) {
           return qaStop(stopReason, { counters: session.counters, mode: session.mode });
         }
-        const fail = (what: string, changedState: boolean) =>
-          qaError({
-            what,
-            changedState,
-            retrySafe: true,
-            failureCode: targetErrorCode(what),
-            nextSteps: ['Run qa_snapshot to see the current screen, then retry.'],
-          });
+        const fail = (what: string, changedState: boolean, r?: ResolveError) =>
+          qaError(
+            {
+              what,
+              changedState,
+              retrySafe: true,
+              failureCode: r?.failureCode ?? targetErrorCode(what),
+              nextSteps: ['Run qa_snapshot to see the current screen, then retry.'],
+            },
+            r?.candidates?.length ? { candidates: r.candidates } : undefined,
+          );
 
         // ---- wait is its own path (no settle/health afterward) ----
         if (action === 'wait') {
+          // A wait takes its element in `for`; a `target` would be ignored and the wait would return
+          // ok:true for an element that is not there.
+          if (args.target && !args.for)
+            return qaError({
+              what: 'wait takes the element to wait for in `for`, not `target`',
+              changedState: false,
+              retrySafe: true,
+              failureCode: 'INVALID_ARGUMENT',
+              nextSteps: [
+                'Retry with for:{text|id|ref|selector} (gone:true to wait until it disappears), or omit target to wait for the screen to settle.',
+              ],
+            });
           // A cancelled wait (notifications/cancelled) stops polling at once and is not a failure.
           try {
             const timeoutMs = args.timeoutMs ?? 8000;
             if (args.for?.settled || !args.for) {
               const s = await settle(d, { timeoutMs });
-              const post = parseSnapshot(s.xml);
-              session.lastSnapshot = {
-                fullByRef: post.fullByRef,
-                signatures: new Set(post.elements.map(signature)),
-                allNodes: post.allNodes,
-              };
+              const post = adoptSnapshot(session, s.parsed ?? parseSnapshot(s.xml));
+              // observe:"none" returns verdicts only.
+              if (args.observe === 'none') {
+                const hint = `${post.elements.length} element(s) not shown (observe:"none"); pass observe:"full" or run qa_snapshot to see the screen.`;
+                return qaOk(
+                  { action, settled: s.settled, quality: post.quality.verdict, observe: 'none', hint },
+                  `wait(settled)=${s.settled}\n\n${hint}`,
+                  { textOmit: ['hint'] },
+                );
+              }
               const { payload: shown, rendered, omitted } = presentElements(post.elements, makeRedactor(session.secrets));
               return qaOk(
                 { action, settled: s.settled, quality: post.quality.verdict, elementsOmitted: omitted, elements: shown },
@@ -574,10 +622,12 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
                 });
               while (Date.now() < deadline) {
                 throwIfCancelled();
-                if (await d.existsBySelector(native.using, native.value)) {
+                if ((await d.existsBySelector(native.using, native.value)) !== !!want.gone) {
                   return qaOk(
-                    { action, found: true, selector: want?.selector, via: 'native-selector' },
-                    `wait: found ${native.using}=${native.value}`,
+                    want.gone
+                      ? { action, gone: true, selector: want?.selector, via: 'native-selector' }
+                      : { action, found: true, selector: want?.selector, via: 'native-selector' },
+                    `wait: ${want.gone ? 'gone' : 'found'} ${native.using}=${native.value}`,
                   );
                 }
                 await sleepOrCancel(400);
@@ -586,34 +636,48 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
                 what: `wait timed out (${timeoutMs}ms) for ${JSON.stringify(want)}`,
                 changedState: false,
                 retrySafe: true,
-                failureCode: 'ELEMENT_NOT_FOUND',
+                failureCode: want.gone ? 'ASSERTION_FAILED' : 'ELEMENT_NOT_FOUND',
                 nextSteps: ['Re-check the native selector value, or run qa_snapshot to inspect the current screen.'],
               });
             }
-            while (Date.now() < deadline) {
+            // A ref is matched by the node it named when the wait started (refs are stable across dumps).
+            const refNode = want.ref ? session.lastSnapshot?.fullByRef.get(want.ref) : undefined;
+            // Each dump gets only the time left, so the wait ends near timeoutMs (a dump
+            // that runs past the deadline used to add its whole duration).
+            while (deadline - Date.now() > 250) {
               throwIfCancelled();
-              const parsed = parseSnapshot(await d.dumpXml());
-              session.lastSnapshot = {
-                fullByRef: parsed.fullByRef,
-                signatures: new Set(parsed.elements.map(signature)),
-                allNodes: parsed.allNodes,
-              };
+              let parsed: ParsedSnapshot;
+              try {
+                parsed = await snapshotNow(session, d, { timeoutMs: deadline - Date.now(), attempts: 2 });
+              } catch (e) {
+                if (isAbortError(e) || deadline - Date.now() > 250) throw e;
+                break; // the dump ran out of the wait's time: report the timeout below
+              }
               const hit = parsed.elements.find(
                 (e) =>
                   (want.ref && e.ref === want.ref) ||
                   (want.id && e.id === want.id) ||
                   (want.text &&
-                    (e.text?.toLowerCase().includes(want.text.toLowerCase()) || e.label?.toLowerCase().includes(want.text.toLowerCase()))),
+                    ((e.text !== undefined && foldText(e.text).includes(foldText(want.text))) ||
+                      (e.label !== undefined && foldText(e.label).includes(foldText(want.text))))),
               );
-              if (hit) return qaOk({ action, found: true, ref: hit.ref }, `wait: found ${hit.ref}`);
-              await sleepOrCancel(400);
+              if (want.gone) {
+                const node = hit && parsed.fullByRef.get(hit.ref);
+                const stillThere = hit && (!refNode || (!!node && sameIdentity(node, refNode)));
+                if (!stillThere) return qaOk({ action, gone: true }, `wait: gone ${JSON.stringify(want)}`);
+              } else if (hit) return qaOk({ action, found: true, ref: hit.ref }, `wait: found ${hit.ref}`);
+              await sleepOrCancel(Math.max(1, Math.min(400, deadline - Date.now() - 250)));
             }
             return qaError({
               what: `wait timed out (${timeoutMs}ms) for ${JSON.stringify(want)}`,
               changedState: false,
               retrySafe: true,
-              failureCode: 'ELEMENT_NOT_FOUND',
-              nextSteps: ['Re-snapshot; the element may use different text/id.'],
+              failureCode: want.gone ? 'ASSERTION_FAILED' : 'ELEMENT_NOT_FOUND',
+              nextSteps: [
+                want.gone
+                  ? 'The element is still on screen; re-snapshot to see why.'
+                  : 'Re-snapshot; the element may use different text/id.',
+              ],
             });
           } catch (e) {
             if (isAbortError(e)) return cancelledResult('wait cancelled: the call was aborted before the condition held');
@@ -621,16 +685,23 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
           }
         }
 
-        // Phase timing (P1.6): mark the first real action so the report can split setup vs active.
+        // Phase timing: mark the first real action so the report can split setup vs active.
         sessions.milestone(session, 'first_action');
 
-        const preSigs = session.lastSnapshot?.signatures ?? new Set<string>();
+        const preSnap = session.lastSnapshot;
+        let preSigs = preSnap?.signatures ?? new Set<string>();
+        // The nodes behind preSigs, so removed elements render as element lines.
+        let preByRef = preSnap?.fullByRef;
         // F: positions too. A scroll/swipe can move content without adding/removing elements.
-        const prePositions = positionalFingerprint(session.lastSnapshot?.fullByRef);
+        let prePositions = positionalFingerprint(preSnap?.fullByRef);
         // Toggle/selection state of the pre-action screen (a Switch flip changes no signature).
-        const preState = stateByIdentity(session.lastSnapshot?.fullByRef);
+        let preState = stateByIdentity(preSnap?.fullByRef);
         // The value actually typed (after ${SWIPIUM_*} expansion), redacted from results/errors.
         let typedValue: string | undefined;
+        // The field typed into (generic type path), for the read-back check.
+        // x/y: the focus tap, so a field found by focus that covers it is the typed one.
+        let typedField:
+          { ref?: string; x: number; y: number; secure: boolean; replace: boolean; label?: string | null; retried: boolean } | undefined;
         // untilVisible's last probe dump. Seeds the post-action settle (no redundant dump).
         let settleSeed: { xml: string; at: number } | undefined;
         // I: set when the soft keyboard was hidden because it covered the target.
@@ -641,6 +712,8 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
         // remembered so a no-change tap can be retried as a longer press (RN tap quirk)
         // imeUp: the soft keyboard was shown at tap time, so a re-press could hit a key (H5).
         let tapRetry: { x: number; y: number; instant: boolean; imeUp: boolean } | undefined;
+        // X5: pre-tap screenshot, taken only when the hierarchy alone may not show the tap's effect.
+        let prePng: Buffer | undefined;
         // action-IR step to record once the action succeeds (built here while lastSnapshot is
         // still the PRE-navigation screen, so a tapped @ref still resolves to its label).
         let toRecord: Omit<RecordedAction, 'at'> | undefined;
@@ -666,12 +739,15 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
                 break;
               }
               const resolved = await resolveTarget(session, stripSelector(args.target));
-              if ('error' in resolved) return fail(resolved.error, false);
+              if ('error' in resolved) return fail(resolved.error, false, resolved);
               let t = resolved;
               // H5: keyboard obstruction (the IME window is not in the app's UI dump, so the
               // overlay check below can't see it). Coordinate taps are taken as deliberate.
               let imeUp = false;
-              if (!args.ignoreOverlay && t.via !== 'coords') {
+              // A key of the on-screen keyboard is the target itself, never obstructed by it.
+              const keyTap = isKeyboardKey(session, t);
+              if (keyTap) imeUp = true;
+              else if (!args.ignoreOverlay && t.via !== 'coords') {
                 const g = await guardKeyboard(session, d, t, stripSelector(args.target));
                 if ('result' in g) return g.result;
                 t = g.t;
@@ -706,10 +782,12 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               // ref/selector taps stay instant unless durationMs is given.
               const isCoord = t.via === 'coords';
               const durationMs = args.durationMs ?? (isCoord ? 100 : undefined);
+              // X5: a tap on an unlabeled / canvas-like target may change only pixels; keep a pre-shot.
+              if (needsPixelCheck(session, t)) prePng = await d.screenshot().catch(() => undefined);
               if (durationMs) await d.pressXY(t.x, t.y, durationMs);
               else await d.tapXY(t.x, t.y);
               tapRetry = { x: t.x, y: t.y, instant: !durationMs, imeUp };
-              meta = { tappedAt: [t.x, t.y], via: t.via, ...(durationMs ? { durationMs } : {}) };
+              meta = { tappedAt: [t.x, t.y], via: t.via, ...(durationMs ? { durationMs } : {}), ...(t.refMoved ? { refMoved: true } : {}) };
               toRecord = { action: 'tap', ...recordableTap(session, stripSelector(args.target), t) };
               break;
             }
@@ -739,7 +817,8 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               const deliverable = d.canDeliverText?.(text);
               if (deliverable && !deliverable.ok) {
                 return qaError({
-                  what: `${deliverable.reason} Nothing was tapped or cleared.`,
+                  // The failure line already carries the code; don't repeat it.
+                  what: `${deliverable.reason.replace(/^TEXT_INPUT_UNSUPPORTED:\s*/, '')} Nothing was tapped or cleared.`,
                   changedState: false,
                   retrySafe: false,
                   failureCode: 'TEXT_INPUT_UNSUPPORTED',
@@ -773,7 +852,8 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
                 // Heuristic first (selector value looks secret, same SECRET_RE the generic
                 // resolver applies to ids), then the real signal: probe the resolved element's
                 // type (XCUIElementTypeSecureTextField). A failing probe keeps the heuristic verdict.
-                let secure = isSecureNode({ id: native.value, desc: '', attrs: {} });
+                // A type target is an input field: name the class so the input-only rule applies.
+                let secure = isSecureNode({ id: native.value, desc: '', attrs: {}, cls: 'XCUIElementTypeTextField' });
                 if (!secure && d.isSecureBySelector) {
                   try {
                     secure = await d.isSecureBySelector(native.using, native.value);
@@ -788,6 +868,29 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
                 }
                 if (replace) await d.clearBySelector!(native.using, native.value);
                 await d.typeBySelector(native.using, native.value, text);
+                // Read the element's value back like the generic path (not secure, no submit).
+                // A mismatch fails the call (TEXT_INPUT_MISMATCH, lengths only); an unreadable value skips it.
+                if (!secure && !args.submit && text && d.valueBySelector) {
+                  let value: string | undefined;
+                  try {
+                    value = await d.valueBySelector(native.using, native.value);
+                  } catch (e) {
+                    if (isAbortError(e)) throw e;
+                  }
+                  if (value !== undefined) {
+                    const verdict = typedReadBack(value, text, replace);
+                    const holds = `it holds ${value.length} chars, ${text.length} were typed`;
+                    if (verdict === 'mismatch')
+                      throw new Error(
+                        `TEXT_INPUT_MISMATCH: the field does not read back the typed text (${holds}${replace ? ', replace mode' : ''}): it was reordered, cut or not cleared.`,
+                      );
+                    if (verdict === 'reformatted') warnings.push(`the field holds the typed text reformatted by the app (${holds})`);
+                    else if (verdict === 'truncated')
+                      warnings.push(
+                        `the field holds only the start of the typed text (${holds}): a max length, or the rest went to the next field`,
+                      );
+                  }
+                }
                 const recordSecret = secure || knownSecret;
                 meta = {
                   typedChars: text.length,
@@ -816,7 +919,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
                 break;
               }
               const resolved = await resolveTarget(session, stripSelector(args.target));
-              if ('error' in resolved) return fail(resolved.error, false);
+              if ('error' in resolved) return fail(resolved.error, false, resolved);
               let t = resolved;
               // H5: focusing a field hidden under the keyboard would type a stray key character.
               const g = await guardKeyboard(session, d, t, stripSelector(args.target));
@@ -825,17 +928,36 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               if (g.warning) warnings.push(g.warning);
               if (g.hidKeyboard) keyboardHidden = true;
               // Typing into a secure field > remember the value so it's scrubbed everywhere, and
-              // record that a login was performed (auth-state reporting, P1.5).
+              // record that a login was performed (auth-state reporting).
               if (t.secure) {
                 session.secrets.add(text);
                 sessions.markAuth(session, { loginPerformed: true, loginPerformedAt: Date.now() });
                 sessions.milestone(session, 'login_performed');
               }
+              // The field's Compose label, from its node before typing (by ref, else the text
+              // field under the tap), so the read-back strips only that label.
+              const preNode = t.ref
+                ? session.lastSnapshot?.fullByRef.get(t.ref)
+                : session.lastSnapshot?.allNodes.find((n) => isTextFieldClass(n.cls) && boundsContain(n.bounds, t.x, t.y));
+              const label = composeLabelOf(preNode && isTextFieldClass(preNode.cls) ? preNode : undefined);
               await d.tapXY(t.x, t.y); // focus + raise IME (real touch)
               await awaitIme(d, 700, g.imeUp ? IME_HOP_FLOOR_MS : 0);
-              if ((args.mode ?? 'replace') === 'replace') await d.clearFocusedText(t.textLen);
-              await d.inputText(text);
+              const replace = (args.mode ?? 'replace') === 'replace';
+              if (replace) await d.clearFocusedText(t.textLen);
+              let retried = false;
+              try {
+                await d.inputText(text);
+              } catch (e) {
+                // Long text that did not read back in order gets ONE retry from a cleared
+                // field (it may hold the old value plus what landed), typed carefully (short paced
+                // bursts on Android). A second miss fails the call.
+                if (!replace || !/TEXT_INPUT_MISMATCH/.test(String(e))) throw e;
+                await d.clearFocusedText((t.textLen ?? 0) + text.length);
+                await d.inputText(text, { careful: true });
+                retried = true;
+              }
               if (args.submit) await d.pressKey('enter');
+              typedField = { ref: t.ref, x: t.x, y: t.y, secure: !!t.secure, replace, label, retried };
               // Never echo the typed value. It may be a password/OTP/email/token and would
               // leak into the agent transcript + artifacts (sensitive-mode).
               const recordSecret = !!t.secure || knownSecret;
@@ -880,7 +1002,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
                 break;
               }
               const resolved = await resolveTarget(session, stripSelector(args.target));
-              if ('error' in resolved) return fail(resolved.error, false);
+              if ('error' in resolved) return fail(resolved.error, false, resolved);
               const g = await guardKeyboard(session, d, resolved, stripSelector(args.target));
               if ('result' in g) return g.result;
               const t = g.t;
@@ -905,7 +1027,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               let vec: SwipeVec;
               if (args.target) {
                 const start = await resolveTarget(session, stripSelector(args.target));
-                if ('error' in start) return fail(start.error, false);
+                if ('error' in start) return fail(start.error, false, start);
                 vec = swipeFromPoint(size, { x: start.x, y: start.y }, direction, 0.5, GESTURE_EDGE_INSET);
               } else {
                 vec = swipeVector(size, direction, 'center', 0.5, GESTURE_EDGE_INSET);
@@ -936,7 +1058,8 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
                   const match =
                     (u?.id && e.id === u.id) ||
                     (u?.text &&
-                      (e.text?.toLowerCase().includes(u.text.toLowerCase()) || e.label?.toLowerCase().includes(u.text.toLowerCase())));
+                      ((e.text !== undefined && foldText(e.text).includes(foldText(u.text))) ||
+                        (e.label !== undefined && foldText(e.label).includes(foldText(u.text)))));
                   if (!match) return false;
                   const c = center(e.bounds);
                   const onScreen = !(sw > 0 && sh > 0) || (c.x >= 0 && c.y >= 0 && c.x < sw && c.y < sh);
@@ -1033,25 +1156,61 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               break;
             }
           }
+          // X1/P2: resolving the target may have dumped the screen again (an aged or retired ref, a
+          // text/id target, the keyboard re-check). That dump is the real pre-action view, so the
+          // change check compares against it, not against the older snapshot the agent read.
+          const nowSnap = session.lastSnapshot;
+          if (nowSnap && nowSnap !== preSnap) {
+            preSigs = nowSnap.signatures;
+            preByRef = nowSnap.fullByRef;
+            prePositions = positionalFingerprint(nowSnap.fullByRef);
+            preState = stateByIdentity(nowSnap.fullByRef);
+          }
         } catch (e) {
+          noteScreenMutation(session); // the action may have partly run: a stored snapshot is stale
           // Cancelled mid-action: not a driver failure (no WDA_UNREACHABLE / SNAPSHOT_FAILED tool
           // error, no finding). The action may have partly run, so changedState stays true.
           if (isAbortError(e)) return cancelledResult(`Action "${action}" cancelled: the call was aborted before it finished`, true);
           const msg = String((e as Error)?.message ?? e);
+          // iOS: a shut-down simulator or a dead WDA gets its own code and the concrete
+          // recovery; a refused connection never reached the device.
+          const outage = await diagnoseIosOutage(session, e);
+          if (outage)
+            return qaError({
+              what: `Action "${action}" failed: ${outage.what}`,
+              changedState: outage.changedState,
+              retrySafe: true,
+              failureCode: outage.failureCode,
+              nextSteps: outage.nextSteps,
+            });
           const failureCode: FailureCode = /BACKEND_UNSUPPORTED|not supported by the WDA backend/.test(msg)
             ? 'BACKEND_UNSUPPORTED'
             : classifyFlowDriverError(e);
           // H2: driver errors can echo argv/stderr. Scrub known secrets AND the value just typed.
           const redactErr = makeRedactor(errorSecrets(session, action === 'type' ? (typedValue ?? args.text) : undefined));
+          // An append that did not read back left part of the text in the field: repeating it
+          // types that part twice.
+          // A timed-out adb input (DEVICE_UNRESPONSIVE) may also have typed part of it.
+          const appendMismatch =
+            (failureCode === 'TEXT_INPUT_MISMATCH' || failureCode === 'DEVICE_UNRESPONSIVE') && action === 'type' && args.mode === 'append';
           return qaError({
             what: `Action "${action}" failed: ${redactErr(String(e)) ?? ''}`,
-            changedState: true,
-            retrySafe: !['WDA_SESSION_FAILED', 'UNKNOWN'].includes(failureCode),
+            // A device that is gone cannot have changed.
+            changedState: failureCode !== 'NO_DEVICE',
+            retrySafe: !appendMismatch && !['WDA_SESSION_FAILED', 'UNKNOWN', 'NO_DEVICE'].includes(failureCode),
             failureCode,
             nextSteps:
-              failureCode === 'UNKNOWN'
-                ? ['Confirm the device is online and re-snapshot.']
-                : ['Use the failureCode to choose recovery, then re-snapshot before retrying.'],
+              failureCode === 'NO_DEVICE'
+                ? deviceGoneNextSteps(session.device)
+                : failureCode === 'UNKNOWN'
+                  ? ['Confirm the device is online and re-snapshot.']
+                  : appendMismatch
+                    ? ['Run qa_snapshot to see the field. Do not repeat the append: retry the whole value with mode:"replace".']
+                    : failureCode === 'DEVICE_UNRESPONSIVE'
+                      ? [
+                          'The device did not answer adb in time (a stalled or overloaded emulator). Run qa_screenshot to see what landed; if it stays slow, restart the app or the emulator, then retry.',
+                        ]
+                      : ['Use the failureCode to choose recovery, then re-snapshot before retrying.'],
           });
         }
 
@@ -1059,9 +1218,11 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
         sessions.bump(session, 'actions');
         // Record the action into the IR for qa_generate target:"flow" (the action definitely happened here;
         // recorded now so a later post-snapshot failure doesn't lose the step).
+        let recorded: RecordedAction | undefined;
         if (toRecord) {
           const sc = recordingScreenContext(session);
           sessions.addRecordedAction(session, { at: Date.now(), ...sc, ...toRecord });
+          recorded = session.recordedActions.at(-1);
         }
 
         // Post-action observation is wrapped so a settle/dump/parse failure (e.g. the
@@ -1069,12 +1230,54 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
         try {
           // settle > observe > health (seeded with untilVisible's last probe; it was taken after the
           // last swipe, so re-dumping it first would be pure latency)
-          let s = await settle(d, { timeoutMs: args.timeoutMs ?? 8000, ...(settleSeed ? { seed: settleSeed } : {}) });
+          // Home on iOS leaves the app. WDA's source still describes the backgrounded app (a
+          // stale tree, up to ~28 s per dump), so don't settle on it: report the foreground instead.
+          // Never a no-change action (it does not count toward maxNoChangeActions).
+          if (action === 'press' && args.key === 'home' && d.kind === 'wda') {
+            // WDA's active app lags the home transition by a few hundred ms: poll until the
+            // app under test is no longer in front (or, with no app id, until SpringBoard is), up
+            // to ~2 s. Each read is capped so a WDA busy settling SpringBoard can't stall the call.
+            const inApp = (fg: string) => !!session.appId && fg.startsWith(session.appId);
+            const onHome = (fg: string) => fg === IOS_SPRINGBOARD;
+            const pending = (fg: string) => fg !== 'unknown' && !onHome(fg) && (inApp(fg) || !session.appId);
+            const readForeground = () => withWdaCall({ timeoutMs: 1000 }, () => d.foregroundOwner()).catch(() => 'unknown');
+            const homeDeadline = Date.now() + 2000;
+            let foreground = await readForeground();
+            while (pending(foreground) && Date.now() < homeDeadline) {
+              await sleepOrCancel(250);
+              foreground = await readForeground();
+            }
+            const left = foreground === 'unknown' || onHome(foreground) || (!!session.appId && !inApp(foreground));
+            const budgetReached = sessions.budgetStop(session);
+            const hint = 'The app is in the background; run qa_snapshot (or relaunch the app) to see the current screen.';
+            return qaOk(
+              {
+                action,
+                ...meta,
+                changed: left,
+                retriedAsPress: false,
+                settled: false,
+                foreground,
+                counters: session.counters,
+                ...(budgetReached ? { budgetReached } : {}),
+                observe,
+                hint,
+              },
+              `${action} ${JSON.stringify(meta)} > changed=${left} foreground=${foreground}` +
+                (budgetReached ? `\n⏹ budget reached: ${budgetReached}, call qa_report.` : '') +
+                `\n\n${hint}`,
+              { textOmit: ['hint'] },
+            );
+          }
+          // P1: the pre-action fingerprint enables the Android fast accept (first dump differs, not busy).
+          const preFingerprint = preActionFingerprint(session);
+          let s = await settle(d, { timeoutMs: args.timeoutMs ?? 8000, preFingerprint, ...(settleSeed ? { seed: settleSeed } : {}) });
           // Cancelled while observing: an empty/aborted dump is not evidence (no WDA_UNREACHABLE
           // health finding, no visual-fallback switch).
           if (isAbortError(undefined))
             return cancelledResult(`Action "${action}" ran, but the call was cancelled before its result was observed`, true);
-          let post = parseSnapshot(s.xml);
+          // P2/X3: adopted as the session snapshot (stable refs, capture time + action counter).
+          let post: ParsedSnapshot = adoptSnapshot(session, s.parsed ?? parseSnapshot(s.xml));
           let postSigs = new Set(post.elements.map(signature));
           // F: for gestures that move content, a bounds shift counts as a change too.
           const positional = action === 'scroll' || action === 'swipe';
@@ -1082,6 +1285,13 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
           // Toggle state counts: a Switch/Checkbox flip keeps every signature (role|label|id|text).
           let toggled = stateChangedRefs(preState, post.fullByRef);
           let changed = !setsEqual(preSigs, postSigs) || movedContent() || toggled.length > 0;
+          // X5: same hierarchy, but the pixels may say otherwise (canvas / WebView / unlabeled target).
+          let pixelChanged = false;
+          if (!changed && prePng) {
+            const postPng = await d.screenshot().catch(() => undefined);
+            pixelChanged = !!postPng && pixelsDiffer(prePng, postPng);
+            changed = pixelChanged;
+          }
 
           // No-change retry (review §4.5/§4.7): an instant tap that did nothing is often the RN
           // tap quirk. Retry ONCE as a longer press before believing it's blocked.
@@ -1092,34 +1302,126 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
             await d.pressXY(tapRetry.x, tapRetry.y, 120);
             retriedAsPress = true;
             s = await settle(d, { timeoutMs: args.timeoutMs ?? 8000 });
-            post = parseSnapshot(s.xml);
+            post = adoptSnapshot(session, s.parsed ?? parseSnapshot(s.xml));
             postSigs = new Set(post.elements.map(signature));
             toggled = stateChangedRefs(preState, post.fullByRef);
             changed = !setsEqual(preSigs, postSigs) || movedContent() || toggled.length > 0;
           }
 
-          session.lastSnapshot = { fullByRef: post.fullByRef, signatures: postSigs, allNodes: post.allNodes };
+          // Read the field back. Long adb text could land out of order, and a replace could
+          // leave old text behind, while the call still "succeeded". The typed field holding other
+          // text fails the call (TEXT_INPUT_MISMATCH): found by its ref, or in replace mode the
+          // focused field under the focus tap (a coordinate target, or a ref that moved). A
+          // reformatted or cut-short value, or a mismatch in another focused field (the screen may
+          // have moved on), is a warning. The field's value is compared, not a Compose label after
+          // it. Not for secure fields (masked), submitted fields (cleared / navigated) or
+          // empty values.
+          if (action === 'type' && typedField && typedValue && !typedField.secure && !args.submit) {
+            const tf = typedField;
+            const typedText = typedValue;
+            const readField = () => {
+              const byRef = tf.ref ? post.fullByRef.get(tf.ref) : undefined;
+              const node = byRef ?? [...post.fullByRef.values()].find((n) => n.focused && isTextFieldClass(n.cls));
+              if (!node || !isTextFieldClass(node.cls) || isSecureNode(node)) return undefined;
+              const isTyped = node === byRef || (tf.replace && node.focused && boundsContain(node.bounds, tf.x, tf.y));
+              return { node, isTyped, ...fieldReadBack(node, typedText, tf.replace, tf.label) };
+            };
+            let back = readField();
+            // A replace that left other text (a select-all the field
+            // collapsed, a scramble) or came out cut short is retried ONCE while the field still has
+            // focus: clear, retype (carefully after a mismatch), read back again. A cut-short value
+            // passes (warning) only when the retype stops at the same length (a max length); a
+            // different cut is dropped input and fails. Not when focus moved on (an OTP box handed
+            // the rest to the next box).
+            let firstCut: number | undefined;
+            if (
+              back?.isTyped &&
+              tf.replace &&
+              !tf.retried &&
+              back.node.focused &&
+              (back.verdict === 'mismatch' || back.verdict === 'truncated')
+            ) {
+              if (back.verdict === 'truncated') firstCut = back.valueLength;
+              try {
+                await d.clearFocusedText(Math.max(back.node.text.length, back.valueLength) + 2, { byLength: true });
+                await d.inputText(typedText, { careful: back.verdict === 'mismatch' });
+              } catch (e) {
+                // A careful retype that still scrambles leaves the field as it is: the read-back fails it.
+                if (!/TEXT_INPUT_MISMATCH/.test(String(e))) throw e;
+              }
+              tf.retried = true;
+              meta = { ...meta, retyped: true };
+              s = await settle(d, { timeoutMs: args.timeoutMs ?? 8000 });
+              post = adoptSnapshot(session, s.parsed ?? parseSnapshot(s.xml));
+              postSigs = new Set(post.elements.map(signature));
+              back = readField();
+            }
+            if (back) {
+              const { valueLength, isTyped } = back;
+              // A cut that a retype did not repeat (or a cut after a scramble) is dropped input.
+              const verdict = back.verdict === 'truncated' && tf.retried && firstCut !== valueLength ? 'mismatch' : back.verdict;
+              const holds = `it holds ${valueLength} chars, ${typedValue.length} were typed`;
+              if (verdict === 'mismatch' && isTyped)
+                return qaError({
+                  what: `The field does not read back the typed text (${holds}${typedField.replace ? ', replace mode' : ''}): it was reordered, cut or not cleared.`,
+                  changedState: true,
+                  // Append mode: the field keeps what landed, so the same append would type it twice.
+                  retrySafe: typedField.replace,
+                  failureCode: 'TEXT_INPUT_MISMATCH',
+                  nextSteps: typedField.replace
+                    ? [
+                        'Run qa_snapshot to see the field, then retry the type (replace mode clears it first). For long text, type it in shorter parts with mode:"append".',
+                      ]
+                    : ['Run qa_snapshot to see the field. Do not repeat the append: retry the whole value with mode:"replace".'],
+                });
+              if (verdict === 'mismatch')
+                warnings.push(`the focused field does not read back the typed text (${holds}); check the field before relying on it`);
+              else if (verdict === 'reformatted') warnings.push(`the field holds the typed text reformatted by the app (${holds})`);
+              else if (verdict === 'truncated')
+                warnings.push(
+                  `the field holds only the start of the typed text (${holds}): a max length, or the rest went to the next field`,
+                );
+            }
+          }
           // A structured dump succeeded > a visual-fallback session is structured again (per-screen).
           const modeRecovered = s.xml ? sessions.noteStructuredDump(session) : false;
           const health = await checkHealth(d, session.appId, s.xml, { nodes: post.allNodes });
           if (health.cancelled)
             return cancelledResult(`Action "${action}" ran, but the call was cancelled before its result was observed`, true);
+          // qa_report counts a recorded action as device evidence only when the app under test
+          // was in front after it (not a tap on SpringBoard / another app, not a press home).
+          // Exact package / bundle id (an Android ":process" suffix allowed): `com.example.app` must not
+          // match `com.example.app2`.
+          const fgOwner = health.foreground.split('/')[0];
+          if (recorded && session.appId && !health.deviceGone && (fgOwner === session.appId || fgOwner.startsWith(`${session.appId}:`))) {
+            recorded.appForeground = true;
+            sessions.persist(session);
+          }
 
           // Track no-change actions for the budget / no-op-loop detector.
-          if (!changed && (action === 'tap' || action === 'swipe' || action === 'scroll' || action === 'press')) {
+          // `press home` leaves the app; it is never a no-op loop step.
+          // A satisfied untilVisible is a success even with no swipe.
+          const untilVisibleMet = action === 'scroll' && meta.untilVisibleFound === true;
+          if (
+            !changed &&
+            !untilVisibleMet &&
+            (action === 'tap' || action === 'swipe' || action === 'scroll' || (action === 'press' && args.key !== 'home'))
+          ) {
             sessions.bump(session, 'noChangeActions');
           }
           const budgetReached = sessions.budgetStop(session);
 
-          // Sensitive-mode present: mask secure fields + scrub known secrets AND the just-typed
-          // value (covers non-secure fields like email for this immediate response).
-          const redact = makeRedactor([...session.secrets, ...(action === 'type' && typedValue ? [typedValue] : [])]);
+          // Sensitive-mode present: mask secure fields + scrub registered secrets only. A value typed
+          // into an ordinary field stays visible: scrubbing it hid the field's value
+          // and every search result containing it, while the next qa_snapshot showed it anyway.
+          // Secure-field values and secret placeholders were registered in session.secrets above.
+          const redact = makeRedactor(session.secrets);
 
           // Record non-info findings for qa_report (deterministic bug trail) + app-error screenshot.
           await recordHealthFindings(sessions, session, health.findings, d, health.foreground);
 
           const banner =
-            `${action} ${JSON.stringify(meta)} > changed=${changed}${retriedAsPress ? ' (retried as press)' : ''} ` +
+            `${action} ${JSON.stringify(meta)} > changed=${changed}${retriedAsPress ? ' (retried as press)' : ''}${pixelChanged ? ' (pixels)' : ''} ` +
             `settled=${s.settled} quality=${post.quality.verdict} native=${health.nativeHealthy ? 'ok' : health.nativeStatus} app=${health.appStatus}` +
             (budgetReached ? `\n⏹ budget reached: ${budgetReached}, call qa_report.` : '') +
             (modeRecovered ? '\nmode: structured again (a UI tree dump succeeded; visual-fallback cleared)' : '') +
@@ -1144,13 +1446,23 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
           const diffAsFull =
             observe === 'diff' && post.elements.length > 0 && added.length > post.elements.length * DIFF_FULL_FALLBACK_RATIO;
           if (observe === 'diff' && !diffAsFull) {
-            const removed = [...preSigs].filter((sig) => !postSigs.has(sig)).map((sig) => redact(sig) ?? sig);
+            // Removed elements as element lines (capped like any list), not internal identity keys.
+            const removedEls: SnapshotElement[] = [];
+            const removedSeen = new Set<string>();
+            for (const [ref, n] of preByRef ?? []) {
+              const e = toElement(ref, n);
+              const sig = signature(e);
+              if (!preSigs.has(sig) || postSigs.has(sig) || removedSeen.has(sig)) continue;
+              removedSeen.add(sig);
+              removedEls.push(e);
+            }
+            const removed = presentElements(removedEls, redact).lines;
             const { payload: addedShown, rendered: renderedAdded, omitted } = presentElements(added, redact);
             const unchangedElements = post.elements.length - added.length;
             const hint = `${unchangedElements} unchanged element(s) not shown; pass observe:"full" to see the whole screen.`;
             elementPayload = { elementsOmitted: omitted, elements: addedShown, removed, unchangedElements, hint };
             elementsText =
-              `\n\nDIFF vs pre-action: +${added.length} / -${removed.length}` +
+              `\n\nDIFF vs pre-action: +${added.length} / -${removedEls.length}` +
               (added.length ? `\n${renderedAdded}` : '') +
               (removed.length ? `\nremoved: ${removed.join(' | ')}` : '') +
               `\n${hint}`;
@@ -1187,6 +1499,10 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
             elementsText += `\nstate changed: ${lines.join(' | ')}`;
           }
 
+          // C10: a weak tree may not show what is on screen; point at the visual tools.
+          const weakHint = observe !== 'none' ? weakTreeHint(post) : undefined;
+          if (weakHint) elementsText += `\n${weakHint}`;
+
           // The WDA driver transparently re-creates a reaped session (without relaunching the app);
           // the agent must know the screen may not be where it left it.
           if (d.consumeSessionRecovered?.()) warnings.push(WDA_SESSION_RECOVERED_WARNING);
@@ -1198,8 +1514,11 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               ...(keyboardHidden ? { keyboardHidden: true } : {}),
               ...(modeRecovered ? { modeRecovered: true, mode: 'structured' } : {}),
               changed,
+              ...(pixelChanged ? { pixelChanged: true } : {}),
               retriedAsPress,
               settled: s.settled,
+              ...(s.fastAccepted ? { settleFast: true } : {}),
+              ...(weakHint ? { treeHint: weakHint } : {}),
               quality: post.quality.verdict,
               health,
               counters: session.counters,
@@ -1210,11 +1529,20 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
             },
             `${banner}${keyboardHidden ? '\nNote: the soft keyboard covered the target and was hidden first (keyboardHidden:true).' : ''}` +
               `${findings}${warnings.map((w) => `\n⚠ ${w}`).join('')}${elementsText}`,
-            { textOmit: ['elements', 'removed', 'hint', 'stateChanged'] },
+            { textOmit: ['elements', 'removed', 'hint', 'stateChanged', 'treeHint'] },
           );
         } catch (e) {
           if (isAbortError(e))
             return cancelledResult(`Action "${action}" ran, but the call was cancelled before its result was observed`, true);
+          // The device disappeared (emulator killed): NO_DEVICE, no visual-fallback switch.
+          if (isDeviceGoneError(e))
+            return qaError({
+              what: `Action "${action}" could not be observed: the device is offline: ${String(e)}`,
+              changedState: false,
+              retrySafe: false,
+              failureCode: 'NO_DEVICE',
+              nextSteps: deviceGoneNextSteps(session.device),
+            });
           // The action ran; observing the result failed (often a UI that never reaches idle).
           // visual-fallback is per-screen: the next successful qa_snapshot / qa_act dump clears it.
           const idle = /idle|dump|hierarchy/i.test(String(e));

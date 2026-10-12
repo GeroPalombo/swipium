@@ -1,4 +1,4 @@
-// H3/H4/§4 — generated Appium suites must COMPILE, whatever the recorded names/titles contain.
+// Generated Appium suites must COMPILE, whatever the recorded names/titles contain.
 // Golden-style compile test: a recording full of hostile names (Python/JS keywords, a leading
 // digit, non-ASCII-only copy, quotes, backslashes, backticks, ${x}, BaseScreen member names,
 // derived-name collisions) plus swipes/scrolls/presses is turned into JS, TS and Python suites,
@@ -87,7 +87,7 @@ function writeTree(files: GeneratedFile[]): string {
 
 const all = (files: GeneratedFile[]) => files.map((f) => f.content).join('\n');
 
-describe('identifier sanitization (H4)', () => {
+describe('identifier sanitization', () => {
   it.each([
     ['Continue', 'continue_', 'continue_'],
     ['Return', 'return_', 'return_'],
@@ -143,10 +143,19 @@ describe('identifier sanitization (H4)', () => {
     expect(pyName('Contraseña')).toBe('contrasena');
     expect(jsMemberName('Contraseña')).toBe('contrasena');
 
-    // Two distinct screens titled "Configuración" (different signatures) → deduped page names.
-    const cfg = (screenSig: string, selector: string): RecordedAction =>
-      act({ action: 'tap', screen: 'Configuración', screenSig, selector, selectorKind: 'text' });
-    const p = generatePom([cfg('sig-a', 'Contraseña'), cfg('sig-b', 'Guardar')], { name: 'ajustes', appId: 'com.example' });
+    // Same title, different signatures: one page object with merged elements.
+    const cfg = (screenSig: string, selector: string, screen = 'Configuración'): RecordedAction =>
+      act({ action: 'tap', screen, screenSig, selector, selectorKind: 'text' });
+    const merged = generatePom([cfg('sig-a', 'Contraseña'), cfg('sig-b', 'Guardar')], { name: 'ajustes', appId: 'com.example' });
+    expect(merged.pages.map((pg) => pg.name)).toEqual(['ConfiguracionPage']);
+    expect(merged.pages[0].elements.map((e) => e.name)).toEqual(['contrasena', 'guardar']);
+
+    // Two distinct screens whose titles fold to the same name ("Configuración" / "Configuracion")
+    // > deduped page names.
+    const p = generatePom([cfg('sig-a', 'Contraseña'), cfg('sig-b', 'Guardar', 'Configuracion')], {
+      name: 'ajustes',
+      appId: 'com.example',
+    });
     expect(p.pages.map((pg) => pg.name)).toEqual(['ConfiguracionPage', 'Configuracion2Page']);
     expect(p.pages[0].elements.map((e) => e.name)).toEqual(['contrasena']);
     expect(p.files.map((f) => f.path)).toEqual(
@@ -168,7 +177,7 @@ describe('identifier sanitization (H4)', () => {
   });
 });
 
-describe('JavaScript output is plain JS (H3)', () => {
+describe('JavaScript output is plain JS', () => {
   it('has no TypeScript-only syntax', () => {
     for (const f of jsFiles.filter((x) => x.path.endsWith('.js'))) {
       expect(f.content, f.path).not.toMatch(/^\s*(protected|private|readonly)\s/m);
@@ -242,7 +251,7 @@ function tsDiagnostics(files: GeneratedFile[]): string[] {
   });
 }
 
-describe('TypeScript output type-checks (H3/H4)', () => {
+describe('TypeScript output type-checks', () => {
   it('a strict program over the generated .ts files has zero diagnostics', () => {
     const diags = tsDiagnostics(tsFiles);
     expect(diags, diags.join('\n')).toEqual([]);
@@ -259,7 +268,7 @@ describe('TypeScript output type-checks (H3/H4)', () => {
   });
 });
 
-describe('Python output compiles (H4)', () => {
+describe('Python output compiles', () => {
   const hasPython3 = spawnSync('python3', ['--version']).status === 0;
   it.runIf(hasPython3).each([
     ['pytest', pyFiles],

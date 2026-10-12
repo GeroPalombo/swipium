@@ -2,7 +2,7 @@
 // can use without the agent transcript: an issue-ready Markdown doc and a CI-ready JUnit XML.
 // (a third-party-format exporter is deferred and out of scope here.)
 //
-// Callers pass the report through redactReportData() FIRST (B9): every string field (steps,
+// Callers pass the report through redactReportData() FIRST: every string field (steps,
 // nextStep, missingPrecondition, workflow names, …) is scrubbed with the session redactor before
 // any format escapes it, so XML/JSON/Markdown escaping can never hide a secret from redaction.
 
@@ -31,6 +31,11 @@ export interface ReportNote {
   missingPrecondition?: string;
   recommendedSetup?: string;
   artifactUris?: string[];
+  /** 'qa_note' = written by the agent, not by Swipium. */
+  source?: string;
+  /** An agent's pass claim nothing on the device backs (services/report.ts). Rendered as
+   *  skipped / "pass (unverified)", never as a passing test. */
+  unverified?: boolean;
 }
 export interface ReportFinding {
   severity: string;
@@ -88,6 +93,11 @@ export interface ReportData {
     };
   } | null;
   executiveSummary: { risk: string; reasons: string[]; nextAction: string };
+  /** The run did not test what it set out to (services/report.ts). `reachedApp:false` gates like a
+   *  failed required flow (code `failureCode`, default NOT_TESTED), so a run that tested nothing
+   *  can't pass `--fail-on-gate`. `exercised:false` (no workflow tested, even on a reached app) gates
+   *  the same way; reports saved before it existed gate on `reachedApp` only. */
+  notTested?: { reachedApp: boolean; exercised?: boolean; reason: string; failureCode?: string };
   appVerdict?: { status: string; summary: string };
   coverageVerdict?: { status: string; summary: string };
   toolVerdict?: { status: string; summary: string };
@@ -152,7 +162,7 @@ export interface ReportData {
 }
 
 /**
- * Deep-redact a report (B9): returns a copy where EVERY string value at any depth (and every string
+ * Deep-redact a report: returns a copy where EVERY string value at any depth (and every string
  * object key) has been passed through the session redactor. Run it once on the assembled report,
  * before persisting it or rendering any export format. Escaping (`&` > `&amp;`, `"` > `\"`) would
  * otherwise turn a secret like `P@ss&w0rd"1` into text the redactor no longer matches.
@@ -198,8 +208,10 @@ export function toPlaywrightJson(r: ReportData): string {
   const evidenceTaxonomy = r.evidenceTaxonomy ?? evidenceTaxonomyForNotes(r.testOutcomes);
   const evidenceByWorkflow = new Map(evidenceTaxonomy.assessments.map((a) => [a.workflow, a]));
   const specs = r.testOutcomes.map((n) => {
-    const status = playwrightStatus(n.outcome);
-    const message = [n.category, n.reason, n.missingPrecondition, n.recommendedSetup].filter(Boolean).join(': ') || n.outcome;
+    const status = n.unverified ? 'skipped' : playwrightStatus(n.outcome); // a claim is not a pass
+    const message =
+      (n.unverified ? 'unverified manual claim: ' : '') +
+      ([n.category, n.reason, n.missingPrecondition, n.recommendedSetup].filter(Boolean).join(': ') || n.outcome);
     const evidence = evidenceByWorkflow.get(n.workflow);
     return {
       title: n.workflow,
@@ -322,6 +334,27 @@ export function toPlaywrightJson(r: ReportData): string {
 const RISK_BADGE: Record<string, string> = { ship: '🟢 SHIP', caution: '🟡 CAUTION', block: '🔴 BLOCK' };
 const OUTCOME_MARK: Record<string, string> = { pass: '✅', fail: '❌', blocked: '⛔', skipped: '⏭️', not_applicable: '➖' };
 
+/** A workflow outcome as shown to people: an unverified pass claim reads "pass (unverified)". */
+function outcomeLabel(n: Pick<ReportNote, 'outcome' | 'unverified'>): string {
+  return n.outcome === 'pass' && n.unverified
+    ? `${OUTCOME_MARK.skipped} pass (unverified)`
+    : `${OUTCOME_MARK[n.outcome] ?? ''} ${n.outcome}`;
+}
+
+/** WebDriverAgent returning no UI source is a tool / environment failure
+ *  (WDA_UNREACHABLE), not an app or native defect: SARIF note, JUnit skipped, labelled "tool". It
+ *  still fails the release gate (reportPolicyVerdicts), so the run never passes on it. */
+export function isToolReportFinding(f: Pick<ReportFinding, 'kind' | 'failureCode'>): boolean {
+  return f.kind === 'wda_unreachable' || f.failureCode === 'WDA_UNREACHABLE';
+}
+
+/** Outcome tally with unverified pass claims counted apart (no "pass=1" for a claim). */
+function displayOutcomeTally(r: Pick<ReportData, 'outcomeTally' | 'testOutcomes'>): Array<[string, number]> {
+  const unverified = r.testOutcomes.filter((n) => n.outcome === 'pass' && n.unverified).length;
+  const out: Array<[string, number]> = Object.entries(r.outcomeTally).map(([k, v]) => [k, k === 'pass' ? v - unverified : v]);
+  return [...out.filter(([, v]) => v > 0), ...(unverified ? ([['pass (unverified)', unverified]] as Array<[string, number]>) : [])];
+}
+
 function statusWord(risk: string): string {
   return risk === 'block' ? 'BLOCK' : risk === 'caution' ? 'CAUTION' : 'SHIP';
 }
@@ -349,14 +382,17 @@ function likelyReportCategory(problem: ReturnType<typeof firstReportProblem>, r:
   const raw = `${problem?.category ?? ''} ${problem?.reason ?? ''}`.toLowerCase();
   if (/accessibility|identifier|locator|element|not found|missing/.test(raw)) return 'automation readiness';
   if (/wda|simulator|emulator|device|install|network|fixture|seed|permission|toolchain/.test(raw)) return 'environment/setup';
-  if (r.appHealth !== 'OK' || /assert|visible|crash|error|redbox|logbox/.test(raw)) return 'app regression';
+  if (r.appHealth === 'error' || r.appHealth === 'degraded' || /assert|visible|crash|error|redbox|logbox/.test(raw))
+    return 'app regression';
   return 'unknown';
 }
 
 function evidenceSummary(r: ReportData, problem: ReturnType<typeof firstReportProblem>): string {
   const kinds = new Set<string>();
-  const uris = [...(problem?.evidence ?? []), ...r.artifacts.map((a) => a.uri)];
-  for (const a of r.artifacts) {
+  // The report's own exports (report JSON/Markdown, manifest) are never evidence.
+  const artifacts = r.artifacts.filter((a) => !REPORT_EXPORT_KINDS.has(a.kind));
+  const uris = [...(problem?.evidence ?? []), ...artifacts.map((a) => a.uri)];
+  for (const a of artifacts) {
     if (a.kind === 'screenshot') kinds.add('screenshot');
     else if (a.kind === 'recording') kinds.add('video');
     else if (a.kind === 'dump') kinds.add('UI tree');
@@ -366,8 +402,16 @@ function evidenceSummary(r: ReportData, problem: ReturnType<typeof firstReportPr
   return kinds.size ? `${[...kinds].join(', ')} (${uris.slice(0, 5).join(', ')})` : uris.slice(0, 5).join(', ') || 'none recorded';
 }
 
+/** Artifact kinds Swipium writes as report output (report.json / report.md / exports, manifest). */
+const REPORT_EXPORT_KINDS = new Set(['report', 'manifest']);
+
 function tableCell(s: string): string {
   return s.replace(/\|/g, '\\|');
+}
+
+/** A Markdown-export table cell: pipes escaped and newlines flattened, so the row stays one row. */
+function mdCell(s: string): string {
+  return tableCell(s.replace(/\r?\n/g, ' '));
 }
 
 function compactValue(value: unknown, maxLength = 180): string {
@@ -399,6 +443,15 @@ function mutationEvidenceSummary(m: ReportMutation): string {
     m.consent?.payloadHash ? `payload ${m.consent.payloadHash.slice(0, 12)}` : '',
   ].filter(Boolean);
   return parts.length ? parts.join('; ') : '-';
+}
+
+/** Health badge; 'not checked' (app never reached) and 'unverified' (visual-only) are not OK. */
+function healthMark(h: string): string {
+  if (h === 'OK') return '✅ OK';
+  if (h === 'degraded') return '⚠️ degraded';
+  if (h === 'error') return '❌ error';
+  if (h === 'unverified') return '⚠️ unverified (visual-only)';
+  return h;
 }
 
 export function inlinePrSummary(r: ReportData): string {
@@ -448,7 +501,7 @@ export function toMarkdown(r: ReportData): string {
     L.push(r.issuesMarkdown);
   }
   L.push('');
-  L.push(`> ${r.coverage}. Session \`${r.sessionId}\` on \`${r.device ?? 'device'}\`.`);
+  L.push(`> ${r.coverage}. Session \`${r.sessionId}\` ${r.device ? `on \`${r.device}\`` : '(no device bound)'}.`);
   if (r.automationBackend) {
     L.push(
       `> Backend: ${r.automationBackend.description} (${r.automationBackend.mode}; structured=${r.automationBackend.structured ? 'yes' : 'no'}).`,
@@ -488,15 +541,13 @@ export function toMarkdown(r: ReportData): string {
       L.push('', '| Workflow | Grade | Outcome | Evidence | Fix |');
       L.push('| --- | --- | --- | --- | --- |');
       for (const w of ar.workflowGrades)
-        L.push(`| ${w.workflow} | ${w.grade} | ${w.outcome} | ${w.evidence} | ${(w.fix ?? '-').replace(/\|/g, '\\|')} |`);
+        L.push(`| ${mdCell(w.workflow)} | ${w.grade} | ${w.outcome} | ${w.evidence} | ${mdCell(w.fix ?? '-')} |`);
     }
     if (ar.screenGrades.length) {
       L.push('', '| Screen | Grade | Durable locators | Weak actions | Fixes |');
       L.push('| --- | --- | ---: | ---: | --- |');
       for (const s of ar.screenGrades)
-        L.push(
-          `| ${s.screen} | ${s.grade} | ${s.durableLocatorPct}% | ${s.weakActions} | ${(s.fixes.join('; ') || '-').replace(/\|/g, '\\|')} |`,
-        );
+        L.push(`| ${mdCell(s.screen)} | ${s.grade} | ${s.durableLocatorPct}% | ${s.weakActions} | ${mdCell(s.fixes.join('; ') || '-')} |`);
     }
     if (ar.prComments.length) {
       L.push('', '### Suggested PR comments', '');
@@ -505,8 +556,8 @@ export function toMarkdown(r: ReportData): string {
   }
 
   L.push('', '## Health', '');
-  L.push(`- Native: ${r.nativeHealth === 'OK' ? '✅ OK' : '❌ error'}`);
-  L.push(`- App: ${r.appHealth === 'OK' ? '✅ OK' : r.appHealth === 'degraded' ? '⚠️ degraded' : '❌ error'}`);
+  L.push(`- Native: ${healthMark(r.nativeHealth)}`);
+  L.push(`- App: ${healthMark(r.appHealth)}`);
   L.push(`- Auth: ${r.authState}`);
 
   if (r.testOutcomes.length) {
@@ -521,9 +572,9 @@ export function toMarkdown(r: ReportData): string {
         n.recommendedSetup ? `setup: ${n.recommendedSetup}` : '',
       ]
         .filter(Boolean)
-        .join('; ')
-        .replace(/\|/g, '\\|');
-      L.push(`| ${n.workflow} | ${OUTCOME_MARK[n.outcome] ?? ''} ${n.outcome} | ${detail || '-'} |`);
+        .join('; ');
+      // A "|" or newline in a workflow name / reason must not break the table row.
+      L.push(`| ${mdCell(n.workflow)} | ${outcomeLabel(n)} | ${detail ? mdCell(detail) : '-'} |`);
     }
 
     L.push('', '## Evidence quality', '');
@@ -567,7 +618,7 @@ export function toMarkdown(r: ReportData): string {
       const retry = f.retrySafe == null ? '' : ` retrySafe=${f.retrySafe}`;
       const next = f.nextStep ? ` Next: ${f.nextStep}` : '';
       L.push(
-        `- **[${f.severity}]**${code}${bucket}${retry} ${f.layer ?? '?'}/${f.kind}: ${f.detail}${f.count && f.count > 1 ? ` (×${f.count})` : ''}${f.evidence ? `: _"${f.evidence}"_` : ''}${f.screenshotUri ? ` ([screenshot](${f.screenshotUri}))` : ''}${next}`,
+        `- **[${f.severity}]**${code}${bucket}${retry} ${isToolReportFinding(f) ? 'tool' : (f.layer ?? '?')}/${f.kind}:${f.detail}${f.count && f.count > 1 ? ` (×${f.count})` : ''}${f.evidence ? `: _"${f.evidence}"_` : ''}${f.screenshotUri ? ` ([screenshot](${f.screenshotUri}))` : ''}${next}`,
       );
     }
   }
@@ -636,7 +687,24 @@ export function toMarkdown(r: ReportData): string {
   for (const a of r.artifacts) L.push(`  - \`${a.uri}\` (${a.kind}${a.label ? `: ${a.label}` : ''})`);
 
   L.push('', '---', '_Generated by Swipium._');
-  return L.join('\n');
+  return neutralizeMarkdownHtml(stripControls(L.join('\n')));
+}
+
+/** Run text in the Markdown export (note reasons, app text, logs) is not trusted HTML.
+ *  Outside fenced code blocks "<" becomes "&lt;", so `<img onerror>` / `<script>` render as text;
+ *  the export's own Markdown (blockquotes, tables) uses no raw HTML, so nothing else changes. */
+function neutralizeMarkdownHtml(md: string): string {
+  let inFence = false;
+  return md
+    .split('\n')
+    .map((line) => {
+      if (/^\s*```/.test(line)) {
+        inFence = !inFence;
+        return line;
+      }
+      return inFence ? line : line.replace(/</g, '&lt;');
+    })
+    .join('\n');
 }
 
 /** Characters XML 1.0 forbids even as character references (https://www.w3.org/TR/xml/#charsets):
@@ -667,15 +735,24 @@ export function escapeXml(s: string): string {
  *  workflow outcome plus every high-severity finding. This is the seam that lets the release-gate
  *  policy (.swipium/policy.json blockOn/warnOn/ignoreKnown) decide the CI pass/fail verdict. */
 export function reportPolicyVerdicts(r: ReportData): FlowVerdict[] {
-  const verdicts: FlowVerdict[] = r.testOutcomes.map((n) => ({
+  const verdicts: FlowVerdict[] = [...r.testOutcomes, ...notReachedOutcomes(r)].map((n) => ({
     flow: n.workflow,
     passed: n.outcome !== 'fail',
     failureCode: n.outcome === 'fail' ? workflowFailureCode(n) : undefined,
+    outcome: n.outcome,
   }));
   for (const f of r.findings) {
     if (f.severity === 'high') verdicts.push({ flow: `finding:${f.kind}`, passed: false, failureCode: f.failureCode ?? f.kind });
   }
   return verdicts;
+}
+
+/** A run that never reached the app, as a synthetic failed workflow: the gate and
+ *  JUnit count it, so CI can't go green on a run that tested nothing. */
+function notReachedOutcomes(r: ReportData): ReportNote[] {
+  const nt = r.notTested;
+  if (!nt || (nt.reachedApp && nt.exercised !== false)) return [];
+  return [{ workflow: 'swipium: not tested', outcome: 'fail', category: nt.failureCode ?? 'NOT_TESTED', reason: nt.reason }];
 }
 
 function junitTestcase(lines: string[], name: string, classname: string, body: string[], systemOut: string[]): void {
@@ -716,15 +793,16 @@ function nonBlockingFailures(policy?: PolicyDecision): Map<string, 'warned' | 's
  *  the verdicts (D5): a failure the policy only warns on or ignores (warnOn / ignoreKnown) is
  *  emitted as <skipped message="policy …"> rather than <failure>, so "gate PASS" never fails CI. */
 export function toJUnit(r: ReportData, policy?: PolicyDecision): string {
-  const cases = r.testOutcomes;
+  const cases = [...r.testOutcomes, ...notReachedOutcomes(r)];
   const lenient = nonBlockingFailures(policy);
   const caseVerdict = (n: ReportNote): 'failure' | 'skipped' | 'pass' => {
-    if (n.outcome === 'pass') return 'pass';
+    if (n.outcome === 'pass') return n.unverified ? 'skipped' : 'pass'; // a claim is not a passing test
     if (n.outcome !== 'fail') return 'skipped';
     return lenient.has(workflowPolicyKey(n)) ? 'skipped' : 'failure';
   };
+  // A tool / environment finding is not an app failure (the gate still fails on it).
   const findingVerdict = (f: ReportFinding): 'failure' | 'skipped' | 'pass' =>
-    f.severity !== 'high' ? 'pass' : lenient.has(findingPolicyKey(f)) ? 'skipped' : 'failure';
+    f.severity !== 'high' ? 'pass' : lenient.has(findingPolicyKey(f)) || isToolReportFinding(f) ? 'skipped' : 'failure';
   const failures = cases.filter((n) => caseVerdict(n) === 'failure').length;
   const skipped = cases.filter((n) => caseVerdict(n) === 'skipped').length;
   const findingFailures = r.findings.filter((f) => findingVerdict(f) === 'failure').length;
@@ -750,34 +828,40 @@ export function toJUnit(r: ReportData, policy?: PolicyDecision): string {
     const verdict = caseVerdict(n);
     if (verdict === 'failure') body.push(`      <failure message="${escapeXml(text)}">${escapeXml(text)}</failure>`);
     else if (verdict === 'skipped') {
-      const why = n.outcome === 'fail' ? `policy ${lenient.get(workflowPolicyKey(n))} (release gate not blocked): ${text}` : text;
+      const why =
+        n.outcome === 'fail'
+          ? `policy ${lenient.get(workflowPolicyKey(n))} (release gate not blocked): ${text}`
+          : n.outcome === 'pass'
+            ? `unverified manual claim (qa_note pass that no Swipium check or device evidence backs): ${text}`
+            : text;
       body.push(`      <skipped message="${escapeXml(why)}"></skipped>`);
     }
     junitTestcase(lines, n.workflow, suiteName, body, n.artifactUris ?? []);
   }
   lines.push('  </testsuite>');
-  if (r.findings.length) {
-    const findingsSuite = `${suiteName}.findings`;
-    lines.push(
-      `  <testsuite name="${escapeXml(findingsSuite)}" tests="${r.findings.length}" failures="${findingFailures}" skipped="${findingSkipped}" time="0">`,
-    );
-    for (const f of r.findings) {
-      const name = `[${f.severity}] ${f.layer ?? '?'}/${f.kind}`;
-      const detail = `${f.detail}${f.evidence ? `: "${f.evidence}"` : ''}${f.nextStep ? ` Next: ${f.nextStep}` : ''}`;
-      const body: string[] = [];
-      const systemOut: string[] = f.screenshotUri ? [f.screenshotUri] : [];
-      const verdict = findingVerdict(f);
-      if (verdict === 'failure') body.push(`      <failure message="${escapeXml(f.failureCode ?? f.kind)}">${escapeXml(detail)}</failure>`);
-      else if (verdict === 'skipped') {
-        body.push(
-          `      <skipped message="${escapeXml(`policy ${lenient.get(findingPolicyKey(f))} (release gate not blocked): ${f.failureCode ?? f.kind}`)}"></skipped>`,
-        );
-        systemOut.unshift(detail);
-      } else systemOut.unshift(detail);
-      junitTestcase(lines, name, findingsSuite, body, systemOut);
-    }
-    lines.push('  </testsuite>');
+  // Always two suites (docs/ci-reports.md), the findings suite empty when nothing was found.
+  const findingsSuite = `${suiteName}.findings`;
+  lines.push(
+    `  <testsuite name="${escapeXml(findingsSuite)}" tests="${r.findings.length}" failures="${findingFailures}" skipped="${findingSkipped}" time="0">`,
+  );
+  for (const f of r.findings) {
+    const tool = isToolReportFinding(f);
+    const name = `[${f.severity}] ${tool ? 'tool' : (f.layer ?? '?')}/${f.kind}`;
+    const detail = `${f.detail}${f.evidence ? `: "${f.evidence}"` : ''}${f.nextStep ? ` Next: ${f.nextStep}` : ''}`;
+    const body: string[] = [];
+    const systemOut: string[] = f.screenshotUri ? [f.screenshotUri] : [];
+    const verdict = findingVerdict(f);
+    if (verdict === 'failure') body.push(`      <failure message="${escapeXml(f.failureCode ?? f.kind)}">${escapeXml(detail)}</failure>`);
+    else if (verdict === 'skipped') {
+      const why = lenient.has(findingPolicyKey(f))
+        ? `policy ${lenient.get(findingPolicyKey(f))} (release gate not blocked): ${f.failureCode ?? f.kind}`
+        : `tool / environment failure, not an app defect (the app was not judged): ${f.failureCode ?? f.kind}`;
+      body.push(`      <skipped message="${escapeXml(why)}"></skipped>`);
+      systemOut.unshift(detail);
+    } else systemOut.unshift(detail);
+    junitTestcase(lines, name, findingsSuite, body, systemOut);
   }
+  lines.push('  </testsuite>');
   lines.push('</testsuites>');
   return lines.join('\n');
 }
@@ -863,14 +947,15 @@ export function toSarif(r: ReportData, policy?: PolicyDecision, options: SarifOp
     const file = (f.screen && sources.byScreen?.[f.screen.toLowerCase()]) || sources.defaultUri;
     return {
       ruleId,
-      level: sarifLevel(f.severity),
+      // A tool / environment failure is not a defect in the code: a note, like mcp_limitation.
+      level: isToolReportFinding(f) ? 'note' : sarifLevel(f.severity),
       message: { text: `${f.detail}${f.evidence ? `: "${f.evidence}"` : ''}${f.nextStep ? ` Next: ${f.nextStep}` : ''}` },
       locations: [anchor(file)],
       partialFingerprints: fingerprints(ruleId, f.kind, f.screen ?? '', f.detail),
       ...evidenceLocations(f.screenshotUri ? [f.screenshotUri] : []),
       properties: {
         severity: f.severity,
-        ...(f.layer ? { layer: f.layer } : {}),
+        ...(isToolReportFinding(f) ? { layer: 'tool' } : f.layer ? { layer: f.layer } : {}),
         ...(f.bucket ? { bucket: f.bucket } : {}),
         ...(f.screen ? { screen: f.screen } : {}),
         ...(f.retrySafe == null ? {} : { retrySafe: f.retrySafe }),
@@ -884,7 +969,8 @@ export function toSarif(r: ReportData, policy?: PolicyDecision, options: SarifOp
     const file = sources.byWorkflow?.[n.workflow.toLowerCase()] ?? sources.defaultUri;
     results.push({
       ruleId,
-      level: 'error',
+      // A Swipium/tool limitation is not an app defect: a note, not a code-scanning error.
+      level: n.category === 'mcp_limitation' ? 'note' : 'error',
       message: { text: `${n.workflow}: ${[n.reason, n.missingPrecondition].filter(Boolean).join('; ') || 'workflow failed'}` },
       locations: [anchor(file)],
       partialFingerprints: fingerprints(ruleId, 'workflow', n.workflow),
@@ -950,16 +1036,30 @@ function summaryCell(s: string): string {
 /** Neutralize Markdown/HTML in free text shown in the job summary (app ids, device names, policy
  *  reasons, next actions come from the device / project and are not trusted Markdown). */
 export function mdText(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/([\\`*_[\]#|~])/g, '\\$1');
+  return (
+    stripControls(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/([\\`*_[\]#|~])/g, '\\$1')
+      // No live @mentions / team pings and no autolinks from run text. A zero-width space
+      // after "@" and inside "://" / "www." keeps the text readable but inert on GitHub.
+      .replace(/@/g, '@\u200b')
+      .replace(/:\/\//g, ':\u200b//')
+      .replace(/\bwww\./gi, (m) => `${m.slice(0, 3)}\u200b.`)
+  );
+}
+
+/** Drop ANSI escape sequences and other C0 controls (except TAB/LF/CR) from run text: GitHub renders
+ *  a raw ESC as a replacement glyph ("[31m" noise). */
+export function stripControls(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
 }
 
 /** Inline-code span that survives backticks/newlines in the value. */
 function mdCode(s: string): string {
-  const flat = s.replace(/\r?\n/g, ' ');
+  const flat = stripControls(s).replace(/\r?\n/g, ' ');
   return flat.includes('`') ? `\`\` ${flat.replace(/``+/g, '`')} \`\`` : `\`${flat}\``;
 }
 
@@ -974,42 +1074,55 @@ export function toGithubSummary(r: ReportData, policy?: PolicyDecision): string 
   const L: string[] = [];
   L.push(`## Swipium QA: ${RISK_BADGE[r.executiveSummary.risk] ?? mdText(r.executiveSummary.risk.toUpperCase())}`);
   L.push('');
-  L.push(`App ${mdCode(r.appId ?? 'unknown')} on ${mdCode(r.device ?? 'device')}, session ${mdCode(r.sessionId)}.`);
+  // Say what is missing instead of printing placeholder words as if they were values.
+  L.push(
+    `App ${r.appId ? mdCode(r.appId) : '(not resolved)'} ${r.device ? `on ${mdCode(r.device)}` : '(no device bound)'}, session ${mdCode(r.sessionId)}.`,
+  );
   L.push('');
-  if (policy) L.push(`**Release gate (policy):** ${policy.block ? '❌ FAIL' : '✅ PASS'}: ${mdText(policy.reason)}`, '');
+  if (policy) L.push(`**Release gate (policy):** ${policy.block ? '❌ BLOCK' : '✅ PASS'}: ${mdText(policy.reason)}`, '');
   L.push(`**Next action:** ${mdText(r.executiveSummary.nextAction)}`);
   L.push('');
-  const sevCount = (sev: string) => r.findings.filter((f) => f.severity === sev).length;
-  const outcomes = Object.entries(r.outcomeTally)
-    .map(([k, v]) => `${OUTCOME_MARK[k] ?? ''} ${mdText(k)}=${v}`)
+  // Tool / environment findings (WDA_UNREACHABLE) are counted apart from app findings.
+  const toolCount = r.findings.filter(isToolReportFinding).length;
+  const sevCount = (sev: string) => r.findings.filter((f) => f.severity === sev && !isToolReportFinding(f)).length;
+  const outcomes = displayOutcomeTally(r)
+    .map(([k, v]) => `${k === 'pass (unverified)' ? OUTCOME_MARK.skipped : (OUTCOME_MARK[k] ?? '')} ${mdText(k)}=${v}`)
     .join(' · ');
   L.push(
-    `Findings: **${sevCount('high')} high** · ${sevCount('medium')} medium · ${sevCount('low')} low. Workflows: ${outcomes || 'none recorded'}.`,
+    `Findings: **${sevCount('high')} high** · ${sevCount('medium')} medium · ${sevCount('low')} low${toolCount ? ` · ${toolCount} tool/environment` : ''}. Workflows: ${outcomes || 'none recorded'}.`,
   );
   if (r.findings.length) {
     L.push('', '### Top findings', '', '| Severity | Code | Detail | Evidence |', '| --- | --- | --- | --- |');
     const bySeverity = { high: 0, medium: 1, low: 2 } as Record<string, number>;
     const top = [...r.findings].sort((a, b) => (bySeverity[a.severity] ?? 3) - (bySeverity[b.severity] ?? 3)).slice(0, 10);
     for (const f of top) {
-      const evidence = f.screenshotUri ? `[screenshot](${f.screenshotUri})` : '-';
+      // swipium:// URIs are not browsable on GitHub: show them as artifact paths, not dead links.
+      const evidence = f.screenshotUri ? tableCell(mdCode(f.screenshotUri)) : '-';
       const times = f.count && f.count > 1 ? ` (×${f.count})` : '';
       L.push(
-        `| ${summaryCell(f.severity)} | ${tableCell(mdCode(f.failureCode ?? f.kind))} | ${summaryCell(f.detail)}${times} | ${evidence} |`,
+        `| ${summaryCell(isToolReportFinding(f) ? `${f.severity} (tool/environment)` : f.severity)} | ${tableCell(mdCode(f.failureCode ?? f.kind))} | ${summaryCell(f.detail)}${times} | ${evidence} |`,
       );
     }
   }
-  const problems = r.testOutcomes.filter((n) => n.outcome !== 'pass');
+  const problems = r.testOutcomes.filter((n) => n.outcome !== 'pass' || n.unverified);
   if (problems.length) {
     L.push('', '### Failed / blocked workflows', '', '| Workflow | Outcome | Reason | Evidence |', '| --- | --- | --- | --- |');
     for (const n of problems) {
       const reason = [n.category, n.reason, n.missingPrecondition].filter(Boolean).join(': ') || '-';
-      const evidence = (n.artifactUris ?? []).map((uri, i) => `[${i + 1}](${uri})`).join(' ') || '-';
-      L.push(`| ${summaryCell(n.workflow)} | ${OUTCOME_MARK[n.outcome] ?? ''} ${n.outcome} | ${summaryCell(reason)} | ${evidence} |`);
+      const evidence = (n.artifactUris ?? []).map((uri) => tableCell(mdCode(uri))).join(' ') || '-';
+      L.push(`| ${summaryCell(n.workflow)} | ${outcomeLabel(n)} | ${summaryCell(reason)} | ${evidence} |`);
     }
   }
-  const evidenceArtifacts = r.artifacts.filter((a) => ['screenshot', 'recording', 'report'].includes(a.kind)).slice(0, 10);
+  // Swipium's own report exports are not evidence of the run: screenshots and recordings only.
+  const evidenceArtifacts = r.artifacts.filter((a) => ['screenshot', 'recording'].includes(a.kind)).slice(0, 10);
   if (evidenceArtifacts.length) {
-    L.push('', '### Evidence', '');
+    L.push(
+      '',
+      '### Evidence',
+      '',
+      '_`swipium://` URIs: read them with `qa_get_artifact`, or find the files under the session folder in `~/.swipium/runs/` (upload it as a build artifact to keep them)._',
+      '',
+    );
     for (const a of evidenceArtifacts) L.push(`- ${mdCode(a.uri)} (${mdText(a.kind)}${a.label ? `: ${mdText(a.label)}` : ''})`);
   }
   L.push('', '_Generated by Swipium._');

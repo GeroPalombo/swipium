@@ -69,10 +69,9 @@ export function registerGenerate(server: McpServer, sessions: SessionStore): voi
     {
       title: 'Generate test assets from recorded actions',
       description:
-        'Turn the actions recorded in this session into reusable assets. target: flow (Flow V2 YAML), pom (page objects), ' +
-        'suite (POM suite under .swipium/, compiled to flows, replay-gated), testcases (TC catalog), appium (WebdriverIO or ' +
-        'Python project; can bootstrap from projectRoot). mode:"plan" previews. For the durable repo suite use ' +
-        'qa_suite_generate.',
+        'Generate reusable test assets from the actions recorded in this session. target: flow (Flow V2 YAML), pom (page objects), ' +
+        'suite (POM suite under .swipium/, compiled to flows, replay-gated), testcases (TC catalog), appium (WebdriverIO or Python ' +
+        'project; can bootstrap from projectRoot). mode:"plan" previews. Durable repo suite: qa_suite_generate.',
       inputSchema: {
         target: z.enum(['flow', 'pom', 'suite', 'testcases', 'appium']),
         mode: z.enum(['plan', 'generate']).optional().describe('generate (default) or plan (read-only preview).'),
@@ -164,6 +163,7 @@ export function registerGenerate(server: McpServer, sessions: SessionStore): voi
       if (!sessionId) {
         return qaError({
           what: `qa_generate target:"${target}" needs a sessionId with recorded actions`,
+          failureCode: 'INVALID_ARGUMENT',
           changedState: false,
           retrySafe: true,
           nextSteps: ['Call qa_start_session, drive the app with qa_act/qa_smoke/qa_explore, then re-run qa_generate.'],

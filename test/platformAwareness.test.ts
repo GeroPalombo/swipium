@@ -1,4 +1,4 @@
-// H9 — Android/iOS awareness. After `qa_ios boot` the next-best-action must route to the iOS
+// Android/iOS awareness. After `qa_ios boot` the next-best-action must route to the iOS
 // prepare tool; qa_resolve_target include:["context","plan"] must count iOS simulators as devices; qa_device_info /
 // qa_orientation must not return ok:true-with-nulls (or run adb) on an iOS backend; and
 // qa_prepare_target must refuse a physical Android device with the same typed
@@ -64,7 +64,7 @@ function session(over: Record<string, unknown> = {}) {
   } as never;
 }
 
-describe('nextBestAction is platform-aware (H9)', () => {
+describe('nextBestAction is platform-aware', () => {
   it('bound iOS simulator with no app → qa_prepare_ios_target', () => {
     const a = nextBestAction(session({ device: sims[0].udid }));
     expect(a.tool).toBe('qa_prepare_ios_target');
@@ -79,7 +79,7 @@ describe('nextBestAction is platform-aware (H9)', () => {
   });
 });
 
-describe('project context / workflow plan (qa_resolve_target include) count iOS simulators (H9)', () => {
+describe('project context / workflow plan (qa_resolve_target include) count iOS simulators', () => {
   it('lists booted + available simulators and does not demand adb when iOS is usable', async () => {
     const ctx = await detectContext(root);
     expect(ctx.devices.iosBooted.map((d) => d.name)).toEqual(['iPhone 16']);
@@ -123,7 +123,7 @@ function deviceTools() {
   return tools;
 }
 
-describe('qa_device_info / qa_orientation on iOS (H9)', () => {
+describe('qa_device_info / qa_orientation on iOS', () => {
   const iosDriver = { kind: 'simulator', currentDevice: () => sims[0].udid, screenSize: async () => ({ width: 393, height: 852 }) };
 
   it('qa_device_info reports simctl facts instead of ok:true with all-null Android props', async () => {
@@ -151,7 +151,7 @@ describe('qa_device_info / qa_orientation on iOS (H9)', () => {
   });
 });
 
-describe('qa_prepare_target physical-device policy (H9)', () => {
+describe('qa_prepare_target physical-device policy', () => {
   it('refuses a physical serial with the planner’s PHYSICAL_DEVICE_UNSUPPORTED wording', async () => {
     const r = await physicalDeviceRefusalFor('R58M12345');
     expect(r?.what).toMatch(/simulator\/emulator-only by policy/);

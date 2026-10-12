@@ -21,6 +21,9 @@ const env = vi.hoisted(() => ({
   avds: [] as string[],
   simPresent: false,
   sims: [] as Array<{ udid: string; name: string; state: string; runtime: string }>,
+  /** Loopback WDA ports that answer /status, and the simulator UDID whose process listens there. */
+  wda: new Map<number, string>(),
+  lsofTimeout: false,
 }));
 
 vi.mock('../src/lib/android.js', async (orig) => ({
@@ -39,12 +42,26 @@ vi.mock('../src/lib/simctl.js', async (orig) => ({
 }));
 vi.mock('../src/lib/wda.js', async (orig) => ({
   ...(await orig<typeof import('../src/lib/wda.js')>()),
-  checkWda: vi.fn(async () => ({ reachable: false, ready: false })),
+  checkWda: vi.fn(async (url: string) =>
+    env.wda.has(Number(new URL(url).port)) ? { reachable: true, ready: true } : { reachable: false, ready: false },
+  ),
 }));
 // getprop: emulator-N → qemu emulator; anything else → a physical phone.
 vi.mock('../src/lib/spawn.js', async (orig) => ({
   ...(await orig<typeof import('../src/lib/spawn.js')>()),
-  run: vi.fn(async (_bin: string, args: string[]) => {
+  run: vi.fn(async (bin: string, args: string[]) => {
+    // lsof / ps for a WDA port owner: pid 7<port> runs inside the simulator recorded in env.wda.
+    const port = Number(args.find((a) => a.startsWith('-iTCP:'))?.slice(6));
+    if (bin === 'lsof' && env.lsofTimeout) return { code: null, stdout: '', stderr: '', timedOut: true };
+    if (bin === 'lsof' && env.wda.has(port)) return { code: 0, stdout: `7${port}\n`, stderr: '', timedOut: false };
+    const pid = bin === 'ps' ? Number(args[args.length - 1]) : NaN;
+    if (bin === 'ps' && env.wda.has(pid - 70000))
+      return {
+        code: 0,
+        stdout: `/Users/x/Library/Developer/CoreSimulator/Devices/${env.wda.get(pid - 70000)}/data/Containers/Bundle/Application/X/WebDriverAgentRunner-Runner.app/WebDriverAgentRunner-Runner\n`,
+        stderr: '',
+        timedOut: false,
+      };
     const serial = args[0] === '-s' ? args[1] : '';
     if (args.includes('getprop')) {
       const emu = /^emulator-/.test(serial);
@@ -60,6 +77,7 @@ vi.mock('../src/lib/spawn.js', async (orig) => ({
 }));
 
 const { createServer } = await import('../src/server.js');
+const { preferredWdaPort } = await import('../src/lib/wdaDevice.js');
 type SessionStore = import('../src/session/store.js').SessionStore;
 
 const realPlatform = process.platform;
@@ -105,6 +123,8 @@ beforeEach(() => {
   env.avds = [];
   env.simPresent = false;
   env.sims = [];
+  env.wda = new Map();
+  env.lsofTimeout = false;
 });
 
 afterAll(async () => {
@@ -114,11 +134,11 @@ afterAll(async () => {
   rmSync(fakeHome, { recursive: true, force: true });
 });
 
-describe('plan mode never loops (P0 #4)', () => {
+describe('plan mode never loops', () => {
   it('an Expo project without an APK → next action is qa_test_this with mode:"execute" and the original goal', async () => {
     env.avds = ['Pixel_7'];
     const root = project('expo-nobuild', { 'package.json': expoPkg, 'app.json': '{"expo":{"name":"demo"}}' });
-    const r = await call('qa_test_this', { projectRoot: root, platform: 'android', goal: 'release_gate' });
+    const r = await call('qa_test_this', { projectRoot: root, mode: 'plan', platform: 'android', goal: 'release_gate' });
     expect(r.isError).toBeFalsy();
     const next = sc(r).nextAction as { tool: string; args: Record<string, unknown> };
     expect(next.tool).toBe('qa_test_this');
@@ -136,18 +156,18 @@ describe('plan mode never loops (P0 #4)', () => {
       'build.gradle': '',
       'app/build/outputs/bundle/release/app-release.aab': 'PK-fake-aab',
     });
-    const r = await call('qa_test_this', { projectRoot: root, fastSmoke: true });
+    const r = await call('qa_test_this', { projectRoot: root, mode: 'plan', fastSmoke: true });
     const steps = sc(r).plan as Array<{ tool: string; args?: Record<string, unknown> }>;
     const convert = steps.find((s) => s.tool === 'qa_test_this');
     expect(convert?.args).toMatchObject({ mode: 'execute', fastSmoke: true });
   });
 });
 
-describe('physical devices and missing adb (P0 #1 plan side, P1 #5)', () => {
+describe('physical devices and missing adb (plan side)', () => {
   it('phone online + AVD available → plans a boot of the AVD, never the phone', async () => {
     env.online = ['R58M123ABC'];
     env.avds = ['Pixel_7'];
-    const r = await call('qa_test_this', { projectRoot: androidApp(), goal: 'smoke' });
+    const r = await call('qa_test_this', { projectRoot: androidApp(), mode: 'plan', goal: 'smoke' });
     expect(r.isError).toBeFalsy();
     const target = sc(r).target as { willBoot: boolean; bootTarget?: string; device?: string };
     expect(target).toMatchObject({ willBoot: true, bootTarget: 'Pixel_7' });
@@ -180,7 +200,7 @@ describe('physical devices and missing adb (P0 #1 plan side, P1 #5)', () => {
   });
 });
 
-describe('iOS without WebDriverAgent (P0 #2)', () => {
+describe('iOS without WebDriverAgent', () => {
   const iosApp = () =>
     project(`ios-${Math.random().toString(36).slice(2)}`, {
       'App.xcodeproj/project.pbxproj': '// fake',
@@ -198,7 +218,7 @@ describe('iOS without WebDriverAgent (P0 #2)', () => {
     expect(sc(r).failureCode).toBeUndefined();
     expect(sc(r).requiresConsent).toBe(true); // reaches the install consent — not blocked
     const s = sessions.get(sc(r).sessionId as string)!;
-    expect(s.workarounds.join('\n')).toMatch(/WebDriverAgent not ready .* visual-only/);
+    expect(s.workarounds.join('\n')).toMatch(/WebDriverAgent not ready .* running the iOS smoke only/);
   });
 
   it('an explicit WDA-only goal blocks precisely and offers the goal:"smoke" alternative', async () => {
@@ -210,10 +230,94 @@ describe('iOS without WebDriverAgent (P0 #2)', () => {
     expect(String(sc(r).what)).toMatch(/suite generation/);
     expect(sc(r).requiresWdaFor).toContain('suite generation');
     expect((sc(r).nextSteps as string[]).join('\n')).toContain('"goal":"smoke"');
+    // The blocked plan never binds the simulator, so the WDA steps name it.
+    expect(JSON.stringify(sc(r).nextSteps)).toContain(sim.udid);
+  });
+
+  it("finds the simulator's own WDA on its per-simulator port (not only ios.wda.url / :8100)", async () => {
+    env.bins = new Set();
+    env.simPresent = true;
+    env.sims = [sim];
+    env.wda.set(preferredWdaPort(sim.udid), sim.udid);
+    const r = await call('qa_test_this', { projectRoot: iosApp(), mode: 'execute', platform: 'ios', goal: 'create_automation_suite' });
+    expect(sc(r).failureCode).toBeUndefined();
+    expect(JSON.stringify(sc(r))).not.toContain('WDA_UNREACHABLE');
+    expect(sc(r).requiresConsent).toBe(true); // passes the WDA gate, reaches the install consent
+  });
+
+  it('a WDA answering on the per-simulator port but running in ANOTHER simulator is not used', async () => {
+    env.bins = new Set();
+    env.simPresent = true;
+    env.sims = [sim];
+    env.wda.set(preferredWdaPort(sim.udid), '11111111-2222-3333-4444-555555555555');
+    const r = await call('qa_test_this', { projectRoot: iosApp(), mode: 'execute', platform: 'ios', goal: 'create_automation_suite' });
+    expect(sc(r).failureCode).toBe('WDA_UNREACHABLE');
+  });
+
+  it('a reachable :8100 WDA whose owner could not be verified (lsof timed out) is not used', async () => {
+    env.bins = new Set();
+    env.simPresent = true;
+    env.sims = [sim];
+    env.wda.set(8100, sim.udid);
+    env.lsofTimeout = true;
+    const r = await call('qa_test_this', { projectRoot: iosApp(), mode: 'execute', platform: 'ios', goal: 'create_automation_suite' });
+    expect(sc(r).failureCode).toBe('WDA_UNREACHABLE');
+    env.lsofTimeout = false;
+    const ok = await call('qa_test_this', { projectRoot: iosApp(), mode: 'execute', platform: 'ios', goal: 'create_automation_suite' });
+    expect(sc(ok).failureCode).toBeUndefined();
+  });
+
+  it("an unverified WDA is usable when it is this session's own recorded WDA for the simulator", async () => {
+    env.bins = new Set();
+    env.simPresent = true;
+    env.sims = [sim];
+    env.wda.set(8100, sim.udid);
+    env.lsofTimeout = true;
+    const root = iosApp();
+    const sessionId = sc(await call('qa_start_session', { projectRoot: root })).sessionId as string;
+    const args = { sessionId, projectRoot: root, mode: 'execute', platform: 'ios', goal: 'create_automation_suite' };
+    // Another URL than the session's own: still not used.
+    sessions.recordMutation(sessions.get(sessionId)!, {
+      tool: 'qa_wda',
+      action: 'wda_attach',
+      risk: 'low',
+      target: { udid: sim.udid, webDriverAgentUrl: 'http://127.0.0.1:8555' },
+      consent: { required: false, approved: true },
+      status: 'executed',
+    });
+    expect(sc(await call('qa_test_this', args)).failureCode).toBe('WDA_UNREACHABLE');
+    sessions.recordMutation(sessions.get(sessionId)!, {
+      tool: 'qa_wda',
+      action: 'wda_attach',
+      risk: 'low',
+      target: { udid: sim.udid, webDriverAgentUrl: 'http://127.0.0.1:8100' },
+      consent: { required: false, approved: true },
+      status: 'executed',
+    });
+    const r = await call('qa_test_this', args);
+    expect(sc(r).failureCode).toBeUndefined();
+    expect(JSON.stringify(sc(r))).not.toContain('WDA_UNREACHABLE');
+  });
+
+  it('a wrong-case SWIPIUM_DEVICE pin finds the simulator; a name two simulators share is MULTIPLE_DEVICES', async () => {
+    env.bins = new Set();
+    env.simPresent = true;
+    env.sims = [sim];
+    process.env.SWIPIUM_DEVICE = 'iphone 16';
+    try {
+      const r = await call('qa_test_this', { projectRoot: iosApp(), mode: 'plan', platform: 'ios', goal: 'smoke' });
+      expect(sc(r).failureCode).toBeUndefined();
+      expect(JSON.stringify(sc(r).target)).toContain(sim.udid);
+      env.sims = [sim, { ...sim, udid: '99999999-8888-4777-8666-555555555555' }];
+      const twice = await call('qa_test_this', { projectRoot: iosApp(), mode: 'plan', platform: 'ios', goal: 'smoke' });
+      expect(sc(twice).failureCode).toBe('MULTIPLE_DEVICES');
+    } finally {
+      delete process.env.SWIPIUM_DEVICE;
+    }
   });
 });
 
-describe('consent ids (P2 #9)', () => {
+describe('consent ids', () => {
   it('a bogus consentId is explained, and the new challenge carries sessionId', async () => {
     env.avds = ['Pixel_7'];
     const r = await call('qa_test_this', {
@@ -235,7 +339,7 @@ describe('consent ids (P2 #9)', () => {
   });
 });
 
-describe('blocker resume replays the original intent (P1 #6) and decline handling (P2 #10)', () => {
+describe('blocker resume replays the original intent, and decline handling', () => {
   it('release_gate → monorepo_target → resume keeps goal', async () => {
     const root = project('mono', {
       'package.json': JSON.stringify({ name: 'mono', private: true, workspaces: ['apps/*'] }),
@@ -279,7 +383,7 @@ describe('blocker resume replays the original intent (P1 #6) and decline handlin
   });
 });
 
-describe('credentials after a restart (P1 #7)', () => {
+describe('credentials after a restart', () => {
   it('stored credential metadata without values re-asks instead of going straight to consent', async () => {
     env.avds = ['Pixel_7'];
     const root = androidApp();

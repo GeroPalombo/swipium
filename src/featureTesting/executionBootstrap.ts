@@ -21,7 +21,17 @@ import { buildTestThisPreflight } from '../services/preflight.js';
 import { prepareAndroid } from '../services/prepareAndroid.js';
 import { prepareIos } from '../services/prepareIos.js';
 import { DirectDriver } from '../drivers/DirectDriver.js';
-import { blockedDeviceResult, getDriver, verifiedEmulatorSerials } from '../session/attach.js';
+import {
+  DEVICE_PIN_ENV,
+  blockedDeviceResult,
+  devicePinConflict,
+  getDriver,
+  operatorDevicePin,
+  pinAmbiguousMessage,
+  pinFixStep,
+  pinnedTarget,
+  verifiedEmulatorSerials,
+} from '../session/attach.js';
 import type { Session, SessionStore } from '../session/store.js';
 import type { Driver } from '../drivers/Driver.js';
 import { currentSignal, runWithSignal } from '../lib/abortScope.js';
@@ -105,11 +115,29 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
     adbPresent ? listAvds() : Promise.resolve<string[]>([]),
     simPresent ? listSimulators() : Promise.resolve([]),
   ]);
-  // H6: property-verified emulators (localhost:5555, Genymotion) use the same policy as getDriver.
+  // Property-verified emulators (localhost:5555, Genymotion) use the same policy as getDriver.
   const emulators = await verifiedEmulatorSerials(online);
+  // Same device choice as qa_test_this: an explicit device must be the pinned one (DEVICE_PINNED),
+  // and without one the pin is the only candidate (never another booted simulator or emulator).
+  const pinBlock = (failureCode: string, what: string): BootstrapResult => ({
+    ok: false,
+    result: qaError({ what, changedState: false, retrySafe: false, failureCode, nextSteps: [pinFixStep()] }, { sessionId: session.id }),
+  });
+  const pinConflict = await devicePinConflict(a.device, online, sims);
+  if (pinConflict) return pinBlock('DEVICE_PINNED', pinConflict);
+  const pin = a.device ? undefined : operatorDevicePin();
+  const pinned = pin ? pinnedTarget(pin, online, avds, sims) : undefined;
+  if (pin && pinned?.ambiguous) return pinBlock('MULTIPLE_DEVICES', pinAmbiguousMessage(pin, pinned.ambiguous));
+  if (pin && !pinned?.device)
+    return pinBlock('NO_DEVICE', `${DEVICE_PIN_ENV}=${pin} (server env) matches no available device, so no other device was used.`);
+  if (pin && a.platform && pinned?.platform !== a.platform)
+    return pinBlock(
+      'DEVICE_PINNED',
+      `${DEVICE_PIN_ENV}=${pin} pins this server to a ${pinned?.platform} device; platform "${a.platform}" was refused.`,
+    );
   const tInputs: TargetInputs = {
     requestedPlatform: a.platform,
-    requestedDevice: a.device,
+    requestedDevice: a.device ?? pinned?.device,
     artifactPlatform: art.best.platform,
     artifactInstallTargets: art.best.installableOn,
     android: { online, avds, emulators },
@@ -162,6 +190,7 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
     needBuild: false,
     willBoot: target.willBoot,
     bootTarget: target.bootTarget,
+    device: target.device,
     isAab: false,
     apkPath: effectiveApk,
     externalApk,
@@ -265,7 +294,13 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
         const res = await prepareIos(
           a.sessions,
           session,
-          { app: iosApp, bundleId: best.appId ?? undefined, simulator: target.device, attachWda: 'auto', mutationConsent },
+          {
+            app: iosApp,
+            bundleId: best.appId ?? undefined,
+            simulator: target.device ?? target.bootTarget,
+            attachWda: 'auto',
+            mutationConsent,
+          },
           {},
         );
         if (!res.ok)

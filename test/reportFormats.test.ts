@@ -185,7 +185,7 @@ describe('toSarif', () => {
     expect(levelByRule.log_noise).toBe('note'); // low
     expect(levelByRule.app_bug).toBe('error'); // failed workflow
     expect(run.results[0].message.text).toContain(NASTY); // escaping survives JSON round-trip
-    // B3: executionSuccessful means "the tool ran"; the gate verdict lives in run.properties.
+    // executionSuccessful means "the tool ran"; the gate verdict lives in run.properties.
     expect(run.invocations[0].executionSuccessful).toBe(true);
     expect(run.properties.releaseGate?.block).toBe(true);
     expect(run.properties.releaseGateVerdict).toBe('block');
@@ -208,7 +208,7 @@ describe('toGithubSummary', () => {
     const decision = applyPolicy(reportPolicyVerdicts(fixture()), gatePolicy);
     const md = toGithubSummary(fixture(), decision);
     expect(md).toContain('🔴 BLOCK');
-    expect(md).toContain('**Release gate (policy):** ❌ FAIL');
+    expect(md).toContain('**Release gate (policy):** ❌ BLOCK'); // matches the BLOCK verdict wording
     expect(md).toContain('release blocked: finding:crash: NATIVE\\_CRASH'); // Markdown-escaped
     expect(md).toContain('NATIVE_CRASH');
     expect(md).toContain('login flow');
@@ -219,8 +219,8 @@ describe('toGithubSummary', () => {
 });
 
 // ---------------------------------------------------------------------------------------------
-// 1.6.0-RC fixes: B2 (XML-illegal chars), B3 (SARIF locations), B9 (deep redaction), D5 (policy-
-// aware JUnit + GitHub summary cap/escaping).
+// Fixes: XML-illegal chars, SARIF locations, deep redaction, policy-aware JUnit and GitHub
+// summary cap/escaping.
 
 /** Strict XML 1.0 Char production check (https://www.w3.org/TR/xml/#charsets), applied to the raw
  *  document AND to every numeric character reference — fast-xml-parser happily accepts both. */
@@ -244,7 +244,7 @@ function assertStrictXmlChars(xml: string): void {
 
 const hasXmllint = spawnSync('xmllint', ['--version']).status === 0;
 
-describe('B2: JUnit is well-formed XML 1.0 even with control characters', () => {
+describe('JUnit is well-formed XML 1.0 even with control characters', () => {
   const dirty = (): ReportData => {
     const r = fixture();
     r.findings[0].detail = 'logcat: \x1b[31mFATAL\x1b[0m nul=\0 bell=\x07 ff=\x0c lone=\ud800 end=￿ ok=\u{1F600}';
@@ -269,7 +269,7 @@ describe('B2: JUnit is well-formed XML 1.0 even with control characters', () => 
   });
 });
 
-describe('B3: SARIF results carry a real repo location GitHub will display', () => {
+describe('SARIF results carry a real repo location GitHub will display', () => {
   it('anchors every result to a repo-relative file with a full region and fingerprints', () => {
     const sarif = JSON.parse(toSarif(fixture(), undefined, { sources: { defaultUri: 'app.json' } })) as SarifDoc;
     const run = sarif.runs[0];
@@ -382,7 +382,7 @@ describe('review: redactReportData key collisions', () => {
   });
 });
 
-describe('B9: every export is deep-redacted before escaping', () => {
+describe('every export is deep-redacted before escaping', () => {
   const SECRET = 'P@ss&w0rd"1';
   const leaky = (): ReportData => {
     const r = fixture();
@@ -434,7 +434,7 @@ describe('B9: every export is deep-redacted before escaping', () => {
   });
 });
 
-describe('D5: policy-aware JUnit and GitHub summary limits', () => {
+describe('policy-aware JUnit and GitHub summary limits', () => {
   it('failures the policy only warns on / ignores are <skipped>, so a gate PASS has zero JUnit failures', () => {
     const r = fixture();
     const lenient: Policy = { blockOn: ['native_crash'], warnOn: ['app_bug'], ignoreKnown: ['NATIVE_CRASH'], ciAllowMutations: [] };

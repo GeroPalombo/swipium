@@ -1,0 +1,44 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.GeroPalombo/swipium",
+  "title": "Swipium",
+  "description": "Mobile QA on local Android Emulators and iOS Simulators: autopilot tests, evidence, reports.",
+  "repository": {
+    "url": "https://github.com/GeroPalombo/swipium",
+    "source": "github"
+  },
+  "websiteUrl": "https://swipium.com",
+  "version": "2.3.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "swipium",
+      "version": "2.3.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "SWIPIUM_PROJECT_ROOT",
+          "description": "Absolute path of the mobile app repo when the client exposes no workspace root.",
+          "isRequired": false,
+          "format": "filepath"
+        },
+        {
+          "name": "SWIPIUM_TEST_EMAIL",
+          "description": "Test account email or username for login flows.",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "SWIPIUM_TEST_PASSWORD",
+          "description": "Test account password for login flows.",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}

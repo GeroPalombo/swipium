@@ -1,4 +1,4 @@
-// B10: project root resolution falls back past MCP roots to SWIPIUM_PROJECT_ROOT,
+// Project root resolution falls back past MCP roots to SWIPIUM_PROJECT_ROOT,
 // CLAUDE_PROJECT_DIR, then a meaningful cwd (never `/` or $HOME); unresolved roots carry the
 // typed PROJECT_ROOT_UNRESOLVED failure code.
 

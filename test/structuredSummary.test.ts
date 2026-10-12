@@ -1,4 +1,4 @@
-// F3: Claude Code and Codex hand the model structuredContent (not the text block) for successful
+// Claude Code and Codex hand the model structuredContent (not the text block) for successful
 // results, so the human summary and its next-step guidance must also live in structuredContent.
 // qaOk/qaStop put `summary` first and the extracted guidance under `next`.
 
@@ -88,10 +88,18 @@ describe('qaOk / qaStop structured summary', () => {
     const r = qaStop('action budget (40) reached', { counters: { actions: 40 } });
     const s = sc(r);
     expect(Object.keys(s)[0]).toBe('summary');
-    expect(s).toMatchObject({ ok: true, stopped: true, reason: 'action budget (40) reached' });
-    expect(String(s.summary)).toContain('Stopped: action budget (40) reached');
+    // A budget stop did nothing, so it is never ok:true (but not an isError either).
+    expect(r.isError).toBeFalsy();
+    expect(s).toMatchObject({
+      ok: false,
+      stopped: true,
+      performed: false,
+      failureCode: 'BUDGET_EXHAUSTED',
+      reason: 'action budget (40) reached',
+    });
+    expect(String(s.summary)).toContain('BUDGET_EXHAUSTED: action budget (40) reached');
     expect(textOf(r)).toContain('Call qa_report');
-    expect(s.next).toEqual(['qa_report to summarize what was verified']);
+    expect(s.next).toEqual(['qa_report to summarize what was verified', 'qa_start_session { budget: {...} } for a larger budget']);
   });
 });
 

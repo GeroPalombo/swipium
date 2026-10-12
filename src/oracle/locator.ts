@@ -75,20 +75,6 @@ function suggestedHandle(el: SnapshotElement, platform: LocatorPlatform): string
   return label ? `${label}_${suffix}` : `${role}_${refStem(el.ref)}`;
 }
 
-function dynamicTextReason(value: string | undefined): string | null {
-  if (!isMeaningful(value)) return null;
-  const text = value.trim();
-  if (text.length > 60) return 'text is long and likely to change with content or localization';
-  if (/\b\d{1,2}[:/.-]\d{1,2}([:/.-]\d{2,4})?\b/.test(text)) return 'text contains a date/time-like value';
-  if (
-    /\b\d+(?:[.,]\d+)?\b/.test(text) &&
-    /[$€£¥%]|\b(items?|results?|messages?|notifications?|total|balance|km|mi|min|sec|hours?)\b/i.test(text)
-  )
-    return 'text contains count, currency, percent, or measurement data';
-  if (/[0-9a-f]{8,}/i.test(text)) return 'text contains an id/hash-like token';
-  return null;
-}
-
 export function suggestLocator(el: SnapshotElement, opts: { platform?: LocatorPlatform } = {}): LocatorSuggestion {
   const platform = opts.platform ?? 'generic';
   const base = { ref: el.ref, role: el.role };
@@ -281,83 +267,4 @@ export interface LocatorReadinessIssue {
   refs: string[];
   suggestion: string;
   suggestedTestIds?: Array<{ ref: string; name: string }>;
-}
-
-export function locatorReadinessIssues(
-  suggestions: LocatorSuggestion[],
-  elements: SnapshotElement[],
-  opts: { platform?: LocatorPlatform } = {},
-): LocatorReadinessIssue[] {
-  const platform = opts.platform ?? 'generic';
-  const issues: LocatorReadinessIssue[] = [];
-  const byRef = new Map(elements.map((e) => [e.ref, e]));
-
-  if (platform === 'ios') {
-    const missing = suggestions.filter((s) => s.needsTestId && byRef.get(s.ref)?.clickable);
-    if (missing.length) {
-      const nameCounts = missing.reduce<Record<string, number>>((acc, s) => {
-        if (s.suggestedTestId) acc[s.suggestedTestId] = (acc[s.suggestedTestId] ?? 0) + 1;
-        return acc;
-      }, {});
-      issues.push({
-        code: 'IOS_MISSING_ACCESSIBILITY_IDENTIFIER',
-        severity: 'warn',
-        message: `${missing.length} interactive iOS control(s) lack a stable accessibilityIdentifier.`,
-        refs: missing.map((s) => s.ref),
-        suggestion: 'Add SwiftUI .accessibilityIdentifier(...), UIKit accessibilityIdentifier, or React Native testID for these controls.',
-        suggestedTestIds: missing
-          .filter((s) => s.suggestedTestId)
-          .map((s) => ({
-            ref: s.ref,
-            name: nameCounts[s.suggestedTestId!] > 1 ? `${s.suggestedTestId}_${refStem(s.ref)}` : s.suggestedTestId!,
-          })),
-      });
-    }
-    const labels = new Map<string, string[]>();
-    for (const e of elements) {
-      const label = e.label?.trim();
-      if (!label || !e.clickable) continue;
-      const key = label.toLowerCase();
-      labels.set(key, [...(labels.get(key) ?? []), e.ref]);
-    }
-    for (const [label, refs] of labels) {
-      if (refs.length < 2) continue;
-      issues.push({
-        code: 'IOS_DUPLICATE_LABEL',
-        severity: 'warn',
-        message: `Duplicate iOS accessibility label "${label}" appears on ${refs.length} interactive controls.`,
-        refs,
-        suggestion: 'Keep user-facing labels, but give each control a unique accessibilityIdentifier for automation.',
-      });
-    }
-    const dynamicText = suggestions
-      .filter((s) => s.locatorKind === 'visible_text' || s.locatorKind === 'accessibility_label')
-      .map((s) => ({ suggestion: s, reason: dynamicTextReason(s.locator ?? undefined) }))
-      .filter((x): x is { suggestion: LocatorSuggestion; reason: string } => !!x.reason);
-    if (dynamicText.length) {
-      issues.push({
-        code: 'DYNAMIC_TEXT_LOCATOR',
-        severity: 'warn',
-        message: `${dynamicText.length} iOS locator candidate(s) depend on dynamic text.`,
-        refs: dynamicText.map((x) => x.suggestion.ref),
-        suggestion: 'Avoid dynamic labels/text in CI flows; add stable accessibilityIdentifier values and target those instead.',
-      });
-    }
-  }
-
-  const coordinateOnly = suggestions.filter((s) => s.tier === 'structure' || s.tier === 'coordinate');
-  if (coordinateOnly.length) {
-    issues.push({
-      code: 'COORDINATE_ONLY',
-      severity: 'warn',
-      message: `${coordinateOnly.length} element(s) have no semantic locator and would require structure, image, or coordinates.`,
-      refs: coordinateOnly.map((s) => s.ref),
-      suggestion:
-        platform === 'ios'
-          ? 'Add accessibilityIdentifier values before relying on these controls in CI.'
-          : 'Add testID/resource-id/content-desc values before relying on these controls in CI.',
-    });
-  }
-
-  return issues;
 }

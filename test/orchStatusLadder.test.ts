@@ -1,8 +1,8 @@
-// qa_status ladder (P0 #3): following nextBestAction must always change the state it keys on.
+// qa_status ladder: following nextBestAction must always change the state it keys on.
 // Before: an app-up session with no recorded actions recommended qa_smoke forever (qa_smoke records
 // no actions), and a finished qa_test_this job with a report still recommended qa_smoke. Milestones
 // (smoke ran, report generated) are persisted session state, not recorded-action counts.
-// Also P3 #12: after a restart (no live driver) the persisted driverKind still drives mode/platform.
+// Also: after a restart (no live driver) the persisted driverKind still drives mode/platform.
 
 import { describe, expect, it } from 'vitest';
 import { nextBestAction, effectiveMode, sessionPlatform } from '../src/tools/agent.js';
@@ -104,10 +104,30 @@ describe('nextBestAction ladder — no loops (table)', () => {
       args: { uri: 'swipium://session/s1/report/report-90.json' },
     },
     {
-      name: 'blocked job → qa_explain_blocker with its failureCode',
-      s: makeSession({ jobs: job({ state: 'blocked', failureCode: 'EMULATOR_BOOT_FAILED' }) }),
-      tool: 'qa_explain_blocker',
-      args: { failureCode: 'EMULATOR_BOOT_FAILED', sessionId: 's1' },
+      name: 'blocked job with a fix call → that fix (the terminal nextRecommendedAction), not qa_explain_blocker',
+      s: makeSession({
+        ...up,
+        jobs: job({
+          state: 'blocked',
+          failureCode: 'SNAPSHOT_FAILED',
+          blockers: [{ howToFix: 'Retry qa_snapshot.' }],
+          nextRecommendedAction: { tool: 'qa_snapshot', args: { sessionId: 's1' }, why: 'Fix SNAPSHOT_FAILED' },
+        }),
+      }),
+      tool: 'qa_snapshot',
+      args: { sessionId: 's1' },
+    },
+    {
+      name: 'blocked job without a fix call → normal ladder, the fix in the why',
+      s: makeSession({
+        jobs: job({
+          state: 'blocked',
+          failureCode: 'EMULATOR_BOOT_FAILED',
+          blockers: [{ howToFix: 'Free host RAM.' }],
+          nextRecommendedAction: null,
+        }),
+      }),
+      tool: 'qa_test_this',
     },
     {
       name: 'needs_input job → the resume call it carries',

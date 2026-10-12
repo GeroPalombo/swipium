@@ -1,4 +1,4 @@
-// H6: getDriver's lazy auto-bind must apply the same physical-device policy as planTarget
+// getDriver's lazy auto-bind must apply the same physical-device policy as planTarget
 // (PHYSICAL_DEVICE_UNSUPPORTED), accept emulators whose serial isn't `emulator-N`
 // (ro.kernel.qemu / ro.boot.qemu / Genymotion), and refuse a still-booting emulator.
 
@@ -55,7 +55,7 @@ function newSession() {
   return store.create(mkdtempSync(join(tmpdir(), 'swipium-attach-proj-')));
 }
 
-describe('getDriver device policy (H6)', () => {
+describe('getDriver device policy', () => {
   it('refuses to auto-bind a single online physical phone', async () => {
     online = ['R5CN30XXXX'];
     props = { R5CN30XXXX: PHONE_PROPS };

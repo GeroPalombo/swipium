@@ -5,12 +5,19 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
+import { compileTest, loadPages } from './compile.js';
 
 export interface SuiteLintItem {
   page: string;
   element: string;
   severity: 'error' | 'warning';
-  code?: 'IOS_MISSING_ACCESSIBILITY_IDENTIFIER' | 'DYNAMIC_TEXT_LOCATOR' | 'COORDINATE_ONLY';
+  code?:
+    | 'IOS_MISSING_ACCESSIBILITY_IDENTIFIER'
+    | 'ANDROID_MISSING_RESOURCE_ID'
+    | 'DYNAMIC_TEXT_LOCATOR'
+    | 'COORDINATE_ONLY'
+    | 'YAML_PARSE_ERROR'
+    | 'UNRESOLVED_REFERENCE';
   message: string;
 }
 
@@ -33,8 +40,14 @@ export function lintSuitePages(root: string): SuiteLintResult {
     let doc: Record<string, unknown>;
     try {
       doc = parseYaml(readFileSync(join(pagesDir, f), 'utf8')) as Record<string, unknown>;
-    } catch {
-      items.push({ page: f, element: '(file)', severity: 'error', message: 'could not parse page YAML' });
+    } catch (e) {
+      items.push({
+        page: f,
+        element: '(file)',
+        severity: 'error',
+        code: 'YAML_PARSE_ERROR',
+        message: `could not parse page YAML: ${yamlErrorText(e)}`,
+      });
       continue;
     }
     const pageName = (doc?.name as string) ?? f;
@@ -52,8 +65,14 @@ export function lintSuitePages(root: string): SuiteLintResult {
           message: (el.remediation as string) ?? 'no durable locator (coordinate-only). Add a testID/accessibilityIdentifier',
         });
       } else if (durability === 'semi' || el.text) {
+        const androidOnly = Array.isArray(doc?.platforms) && doc.platforms.length === 1 && doc.platforms[0] === 'android';
         const code =
-          readinessCode ?? ((el.text || el.name) && !el['accessibility id'] ? 'IOS_MISSING_ACCESSIBILITY_IDENTIFIER' : undefined);
+          readinessCode ??
+          ((el.text || el.name) && !el['accessibility id']
+            ? androidOnly
+              ? 'ANDROID_MISSING_RESOURCE_ID'
+              : 'IOS_MISSING_ACCESSIBILITY_IDENTIFIER'
+            : undefined);
         items.push({
           page: pageName,
           element: name,
@@ -73,5 +92,52 @@ export function lintSuitePages(root: string): SuiteLintResult {
       }
     }
   }
+  items.push(...lintSuiteTests(root));
   return { pagesDir, exists: true, pageCount, items };
+}
+
+/** First line of a YAML parser error (it carries "at line L, column C"). */
+function yamlErrorText(e: unknown): string {
+  return String((e as Error)?.message ?? e).split('\n')[0];
+}
+
+/** Lint the POM tests too, with the same reference checks `suite compile` runs
+ *  (unknown page, element without a usable locator) plus coordinate-only taps. */
+function lintSuiteTests(root: string): SuiteLintItem[] {
+  const testsDir = join(root, '.swipium', 'tests');
+  if (!existsSync(testsDir)) return [];
+  const items: SuiteLintItem[] = [];
+  const pages = loadPages(root);
+  for (const f of readdirSync(testsDir)) {
+    if (!/\.ya?ml$/i.test(f)) continue;
+    let doc: Record<string, unknown>;
+    try {
+      doc = parseYaml(readFileSync(join(testsDir, f), 'utf8')) as Record<string, unknown>;
+    } catch (e) {
+      items.push({
+        page: f,
+        element: '(file)',
+        severity: 'error',
+        code: 'YAML_PARSE_ERROR',
+        message: `could not parse test YAML: ${yamlErrorText(e)}`,
+      });
+      continue;
+    }
+    if (!doc || typeof doc !== 'object') continue;
+    const compiled = compileTest(doc, pages);
+    for (const err of new Set(compiled.errors))
+      items.push({ page: f, element: '(test)', severity: 'error', code: 'UNRESOLVED_REFERENCE', message: err });
+    const steps = Array.isArray(doc.steps) ? (doc.steps as Array<Record<string, unknown>>) : [];
+    steps.forEach((s, i) => {
+      if (s && typeof s === 'object' && (s.action === 'tapAt' || (s.action === 'tap' && !s.element && s.coords)))
+        items.push({
+          page: f,
+          element: `step ${i + 1}`,
+          severity: 'warning',
+          code: 'COORDINATE_ONLY',
+          message: 'coordinate tap is brittle (screen size/orientation). Add a testID/accessibilityIdentifier and tap the element',
+        });
+    });
+  }
+  return items;
 }

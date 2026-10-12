@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { run } from '../lib/spawn.js';
 import { log } from '../lib/logger.js';
 import { resolveArtifact, type ArtifactCandidate } from '../artifacts/resolve.js';
-import type { BuildPlan, BuildStep } from '../build/plan.js';
+import type { BuildPlan } from '../build/plan.js';
 import { analyzeBuildFailure } from '../build/parseBuildLog.js';
 import type { FailureCode, FailureOwner } from '../oracle/failures.js';
 import type { Session, SessionStore } from '../session/store.js';
@@ -30,11 +30,6 @@ export interface BuildExecResult {
   fix?: string;
   /** Which log signature matched (null when only the tool default applied). */
   signal?: string | null;
-}
-
-/** Most specific build-failure code for a failed step (log-aware classification). */
-export function failureForStep(step: BuildStep, timedOut: boolean, log = ''): FailureCode {
-  return analyzeBuildFailure({ step, log, timedOut }).failureCode;
 }
 
 export interface BuildExecCtx {
@@ -67,7 +62,8 @@ export async function executeBuild(
       }
       progress(step.label);
       logBuf += `\n=== ${step.label}: ${step.command} (cwd ${step.cwd}) ===\n`;
-      const r = await run(step.argv[0], step.argv.slice(1), { cwd: step.cwd, timeoutMs, signal });
+      // Own process group: a cancel / shutdown stops the whole build tree (npx > node > gradle/java).
+      const r = await run(step.argv[0], step.argv.slice(1), { cwd: step.cwd, timeoutMs, signal, processGroup: true });
       logBuf += r.stdout + r.stderr;
       if (r.code !== 0 || r.timedOut) {
         if (aborted()) return { ok: false, aborted: true };

@@ -56,6 +56,20 @@ export function buttonScreen(prefix: string, count: number, pkg = 'com.example.a
   return dump(nodes, pkg);
 }
 
+/**
+ * `xml` with the EditText under (x, y) holding `text` (appended when `append`), so a fake field
+ * reads back what was typed (qa_act verifies a typed field).
+ */
+export function fillTextField(xml: string, x: number, y: number, text: string, append = false): string {
+  const esc = (v: string) => v.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  return xml.replace(/<node [^>]*class="[^"]*EditText"[^>]*>/g, (tag) => {
+    const b = /bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/.exec(tag);
+    if (!b || x < +b[1] || x > +b[3] || y < +b[2] || y > +b[4]) return tag;
+    const value = / password="true"/.test(tag) ? '\u2022'.repeat(text.length) : text; // Android masks a password field
+    return tag.replace(/ text="([^"]*)"/, (_m, old: string) => ` text="${append ? old : ''}${esc(value)}"`);
+  });
+}
+
 export class FakeDriver implements Driver {
   readonly kind = 'direct' as const;
   calls: Array<{ m: string; a: unknown[] }> = [];
@@ -67,6 +81,9 @@ export class FakeDriver implements Driver {
   signalsSeen: Array<AbortSignal | undefined> = [];
   onTap?: (x: number, y: number) => void;
   onSwipe?: () => void;
+  /** When true, inputText fills the EditText under the last tap (clearFocusedText empties it). */
+  reflectTyping = false;
+  private lastTap?: [number, number];
   /** When set, tapXY/pressXY block until the call's scoped signal aborts (cancellation test). */
   hangTap = false;
   abortedDuringTap = false;
@@ -129,6 +146,7 @@ export class FakeDriver implements Driver {
   }
   async tapXY(x: number, y: number) {
     this.rec('tapXY', x, y);
+    this.lastTap = [x, y];
     await this.maybeHang();
     this.onTap?.(x, y);
   }
@@ -152,9 +170,11 @@ export class FakeDriver implements Driver {
   }
   async inputText(text: string) {
     this.rec('inputText', text);
+    if (this.reflectTyping && this.lastTap) this.xml = fillTextField(this.xml, ...this.lastTap, text, true);
   }
   async clearFocusedText() {
     this.rec('clearFocusedText');
+    if (this.reflectTyping && this.lastTap) this.xml = fillTextField(this.xml, ...this.lastTap, '');
   }
   async pressKey(key: string) {
     this.rec('pressKey', key);

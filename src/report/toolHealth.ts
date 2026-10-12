@@ -6,6 +6,7 @@
 // Tool health never changes the APP verdict. A Swipium/driver error is not an app defect.
 
 import { FAILURES } from '../oracle/failures.js';
+import { isAbortError } from '../lib/abortScope.js';
 import type { SessionStore, TestNote, ToolErrorRecord } from '../session/store.js';
 
 /** Buckets that are deliberate outcomes, not tool malfunctions. */
@@ -16,6 +17,24 @@ const NOT_TOOL_ERRORS = new Set(['unsafe_refused', 'missing_data']);
  *  TOOL status to DEGRADED on their own; they are not Swipium/driver malfunctions. */
 export const AGENT_PROBING_CODES = new Set(['ELEMENT_NOT_FOUND', 'STALE_REF', 'AMBIGUOUS_SELECTOR', 'INVALID_ARGUMENT']);
 
+/** Expected environment / setup gates: Swipium correctly REFUSED because of the user's environment
+ *  (another project's Metro on 8081, Metro not started yet, a device pin, an ambiguous target). Not a
+ *  Swipium/driver malfunction, so they never make the TOOL status DEGRADED (AND NEW: a correct
+ *  METRO_REQUIRED gate before qa_metro start made a successful run read "Tool status: DEGRADED"). */
+export const ENVIRONMENT_GATE_CODES = new Set([
+  'METRO_REQUIRED',
+  'METRO_WRONG_PROJECT',
+  'DEV_SERVER_DOWN',
+  'MULTIPLE_DEVICES',
+  'DEVICE_PINNED',
+  'NOT_MOBILE_PROJECT',
+  'MONOREPO_TARGET_AMBIGUOUS',
+  'PROJECT_ROOT_EMPTY',
+  'PROJECT_ROOT_UNRESOLVED',
+  'MULTIPLE_ARTIFACTS_AMBIGUOUS',
+  'ARTIFACT_OUTSIDE_ROOT_REQUIRES_APPROVAL',
+]);
+
 /** An error result without a typed failureCode (qaError defaults it to UNKNOWN). Most are deliberate
  *  refusals / guard messages. Counted in a separate `uncoded` bucket that does NOT degrade by itself. */
 export const UNCODED_CODES = new Set(['UNKNOWN', 'UNCODED']);
@@ -23,7 +42,7 @@ export const UNCODED_CODES = new Set(['UNKNOWN', 'UNCODED']);
 /** Does this recorded tool error, by itself, make the TOOL status DEGRADED? */
 export function isDegradingToolError(failureCode: string): boolean {
   if (failureCode === 'CANCELLED') return false;
-  if (UNCODED_CODES.has(failureCode) || AGENT_PROBING_CODES.has(failureCode)) return false;
+  if (UNCODED_CODES.has(failureCode) || AGENT_PROBING_CODES.has(failureCode) || ENVIRONMENT_GATE_CODES.has(failureCode)) return false;
   const info = (FAILURES as Record<string, { bucket: string } | undefined>)[failureCode];
   return !(info && NOT_TOOL_ERRORS.has(info.bucket));
 }
@@ -63,6 +82,27 @@ export function recordToolErrorFromResult(
   }
 }
 
+/** Record a tool call that THREW (no typed result, e.g. a raw "`adb … monkey …` exited null (timed
+ *  out)") against the calling session: a raw exception is never a deliberate refusal, so
+ *  it always degrades the TOOL status. Best-effort, never throws. */
+export function recordThrownToolError(sessions: SessionStore, tool: string, args: unknown, err: unknown, signal?: AbortSignal): void {
+  try {
+    const e = err as { code?: unknown; message?: unknown } | null;
+    // Cancelled work, and JSON-RPC protocol errors (numeric code, e.g. an invalid requestState), are
+    // not tool failures.
+    if (isAbortError(err, signal) || e?.code === 'CANCELLED' || typeof e?.code === 'number') return;
+    const sessionId = (args as { sessionId?: unknown } | undefined)?.sessionId;
+    if (typeof sessionId !== 'string') return;
+    const session = sessions.get(sessionId);
+    if (!session) return;
+    const code = typeof e?.code === 'string' && e.code in FAILURES ? e.code : 'UNKNOWN';
+    const message = typeof e?.message === 'string' ? e.message : String(err);
+    sessions.recordToolError(session, { tool, failureCode: code, message: message.split('\n')[0], thrown: true });
+  } catch {
+    /* tool-health bookkeeping must never break a tool call */
+  }
+}
+
 export interface ToolVerdict {
   status: 'PASS' | 'DEGRADED' | 'BLOCKED';
   summary: string;
@@ -76,6 +116,8 @@ export interface ToolVerdict {
   uncodedCount?: number;
   /** Agent-probing errors (ELEMENT_NOT_FOUND, STALE_REF, AMBIGUOUS_SELECTOR, INVALID_ARGUMENT). */
   probingCount?: number;
+  /** Expected environment/setup gate refusals (METRO_REQUIRED, METRO_WRONG_PROJECT, …): never degrade. */
+  environmentCount?: number;
 }
 
 /**
@@ -99,10 +141,12 @@ export function toolVerdictFor(
   const codeText = Object.entries(byCode)
     .map(([c, n]) => `${c}×${n}`)
     .join(', ');
-  const degradingCount = errors.filter((e) => isDegradingToolError(e.failureCode)).length;
-  const uncodedCount = errors.filter((e) => UNCODED_CODES.has(e.failureCode)).length;
+  // A tool that threw (raw error) degrades whatever its code; it is not an uncoded refusal.
+  const degradingCount = errors.filter((e) => e.thrown || isDegradingToolError(e.failureCode)).length;
+  const uncodedCount = errors.filter((e) => !e.thrown && UNCODED_CODES.has(e.failureCode)).length;
   const probingCount = errors.filter((e) => AGENT_PROBING_CODES.has(e.failureCode)).length;
-  const breakdown = { degradingCount, uncodedCount, probingCount };
+  const environmentCount = errors.filter((e) => ENVIRONMENT_GATE_CODES.has(e.failureCode)).length;
+  const breakdown = { degradingCount, uncodedCount, probingCount, environmentCount };
   const errorText = errors.length
     ? `${errors.length} tool error(s) recorded (${codeText}; e.g. ${errors[0].tool}: ${redact(errors[0].message) ?? errors[0].message})`
     : '';
@@ -132,7 +176,7 @@ export function toolVerdictFor(
       status: 'PASS',
       summary:
         `No Swipium/MCP limitations or tool-side failures recorded. ${errors.length} non-degrading error result(s) ` +
-        `(${codeText}: ${uncodedCount} uncoded refusal/guard message(s), ${probingCount} agent-probing miss(es)). See toolErrors.`,
+        `(${codeText}: ${uncodedCount} uncoded refusal/guard message(s), ${probingCount} agent-probing miss(es), ${environmentCount} environment/setup gate refusal(s)). See toolErrors.`,
       toolErrorCount: errors.length,
       toolErrorsByCode: byCode,
       ...breakdown,

@@ -1,10 +1,10 @@
-import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { StdioServerTransport, serveStdio } from '@modelcontextprotocol/server/stdio';
 import {
   CLIENT_CAPABILITIES_META_KEY,
+  CLIENT_INFO_META_KEY,
   McpServer,
   ProtocolError,
   ProtocolErrorCode,
@@ -17,15 +17,18 @@ import {
 import type {
   CacheHint,
   CallToolResult,
+  Implementation,
   InputRequiredResult,
   ListToolsResult,
   ProtocolEra,
   ServerContext as SdkServerContext,
 } from '@modelcontextprotocol/server';
+export { clientInfoOf } from './lib/clientInfo.js';
 import { SessionStore, decodeUriSegment, encodeUriSegment, isWithinRoot, type Session } from './session/store.js';
 import {
   AUTO_ANSWER_MS,
   burnConsent,
+  declineConsent,
   issueConsentPrompt,
   noPromptDecision,
   operatorPolicyDecision,
@@ -34,7 +37,6 @@ import {
   redeemConsentPrompt,
   requestConsentDecision,
   runWithConsentScope,
-  setElicitationProvider,
   settleConsentAnswer,
   warnIgnoredPreapprovals,
   type ApprovalMechanism,
@@ -49,7 +51,7 @@ import { registerScreenshot } from './tools/screenshot.js';
 import { registerSnapshot } from './tools/snapshot.js';
 import { registerAct } from './tools/act.js';
 import { registerCheckHealth } from './tools/health.js';
-import { registerNetwork, restoreAllNetwork } from './tools/network.js';
+import { registerNetwork, restoreAllNetwork, sessionsToRestoreOnShutdown } from './tools/network.js';
 import { registerScreenRecord, stopAllRecordings } from './tools/screenRecord.js';
 import { registerDevice } from './tools/device.js';
 import { registerMetro, stopAllMetro } from './tools/metro.js';
@@ -57,7 +59,7 @@ import { registerAppControl } from './tools/appControl.js';
 import { registerIos } from './tools/ios.js';
 import { registerWda } from './tools/wda.js';
 import { registerClearOverlay } from './tools/clearOverlay.js';
-import { registerJobs } from './tools/jobs.js';
+import { registerJobs, maxWaitSettingWarning } from './tools/jobs.js';
 import { registerGetArtifact, readArtifactResource } from './tools/getArtifact.js';
 import { registerNote } from './tools/note.js';
 import { registerVisual } from './tools/visual.js';
@@ -84,9 +86,10 @@ import { registerResolveTarget } from './tools/resolveTarget.js';
 import { registerBuild } from './tools/build.js';
 import { registerBundletool } from './tools/bundletool.js';
 import { registerPrompts } from './prompts/index.js';
-import { log, logEnabled } from './lib/logger.js';
+import { log, logEnabled, logLevelSettingWarning } from './lib/logger.js';
+import { rememberClientInfo } from './lib/clientInfo.js';
 import { qaAnnotate, qaError, runWithResponseMode } from './lib/result.js';
-import { recordToolErrorFromResult } from './report/toolHealth.js';
+import { recordThrownToolError, recordToolErrorFromResult } from './report/toolHealth.js';
 import { computeSchemaHash, describeZodField, setSchemaHash, type ToolSurfaceEntry } from './lib/schemaHash.js';
 import { REMOVED_TOOLS, STALE_CLIENT_HINT, SWIPIUM_VERSION, TOOL_COUNT, TOOL_NAMES, TOOL_NAME_SET, type ToolName } from './version.js';
 import { toolAnnotations } from './lib/toolAnnotations.js';
@@ -100,12 +103,17 @@ import {
   type ToolInputSchema,
   type ToolInputShape,
 } from './lib/toolSchema.js';
-import { CAPABILITY_GROUPS } from './core/capabilityGroups.js';
+import { CAPABILITY_GROUPS, codexCoreTools, toolsSettingWarning } from './core/capabilityGroups.js';
 import { ensureAndroidToolsOnPath } from './lib/android.js';
-import { annotateRootSource, withRootResolutionRecording } from './context/projectRoot.js';
-import { markModernServer, servesModernEra } from './context/protocolEra.js';
+import { annotateRootSource, clearClientRootsCache, clientRootUris, withRootResolutionRecording } from './context/projectRoot.js';
+import { markModernServer } from './context/protocolEra.js';
 import { reapOrphanedProcesses } from './session/processRegistry.js';
+import { shutdownAndroidDumpers } from './drivers/androidDumper.js';
 import { runWithSignal } from './lib/abortScope.js';
+import { killAbortedProcessGroups } from './lib/spawn.js';
+import { stableHash } from './lib/stableHash.js';
+import { progressSinkFromContext, runWithProgressSink } from './lib/progressNotify.js';
+import { SKILL_MD } from './skills/content.js';
 
 export interface ServerContext {
   server: McpServer;
@@ -196,6 +204,7 @@ function recordConsentRefusal(
   req: ConsentRequest | undefined,
   mechanism: ApprovalMechanism,
   detail: string,
+  failureCode: 'CONSENT_DECLINED' | 'CONSENT_CANCELLED' | 'CONSENT_REFUSED',
 ): void {
   if (!req || typeof sessionId !== 'string') return;
   const session = sessions.get(sessionId);
@@ -209,15 +218,51 @@ function recordConsentRefusal(
       consent: { required: true, consentId, approved: false, approvalMechanism: mechanism },
       status: 'refused',
       detail,
+      failureCode, // qa_report gates a run that tested nothing with this code
     });
   } catch (e) {
     log('warn', 'failed to ledger a consent refusal', { tool, consentId, err: String(e) });
   }
 }
 
+/** A re-call with `{consentId, approve:false}` for a still-pending consent is an explicit decline
+ * (concepts.md "Consent > Rules"): the challenge is burned, a `refused` ledger row written, and
+ * CONSENT_DECLINED returned without running the tool (never a silent fresh challenge). undefined
+ * when the call is not such a decline (the tool then runs and explains an unknown id). */
+function explicitDeclineResult(sessions: SessionStore, tool: string, args: unknown): CallToolResult | undefined {
+  const a = args as { consentId?: unknown; approve?: unknown; sessionId?: unknown } | undefined;
+  if (a?.approve !== false || typeof a.consentId !== 'string' || !a.consentId) return undefined;
+  const sessionId = typeof a.sessionId === 'string' && a.sessionId ? a.sessionId : undefined;
+  const req = declineConsent(a.consentId, sessionId);
+  if (!req) return undefined;
+  recordConsentRefusal(sessions, tool, sessionId, a.consentId, req, 'client-assertion', 'declined (approve:false)', 'CONSENT_DECLINED');
+  return qaError(
+    {
+      what: `Consent ${a.consentId} for "${req.action}" was declined (approve:false). Nothing ran.`,
+      changedState: false,
+      retrySafe: false,
+      failureCode: 'CONSENT_DECLINED',
+      nextSteps: ['Do not retry this action; ask the user before attempting it again (a re-call without consentId asks anew).'],
+    },
+    { action: req.action, declinedConsentId: a.consentId },
+  );
+}
+
 function pendingConsentId(result: unknown): string | undefined {
   const sc = (result as CallToolResult | null | undefined)?.structuredContent as Record<string, unknown> | undefined;
   return sc?.requiresConsent === true && typeof sc.consentId === 'string' ? sc.consentId : undefined;
+}
+
+/** The session a routed consent envelope belongs to. qa_test_this creates its session
+ *  before asking (the envelope carries `sessionId`), but the call's arguments do not, so a refusal
+ *  would otherwise lose it and the agent could not qa_note / qa_report. Bounded; dropped once the
+ *  consent is decided. */
+const consentEnvelopeSession = new Map<string, string>();
+function rememberEnvelopeSession(consentId: string, result: unknown): void {
+  const sc = (result as CallToolResult | null | undefined)?.structuredContent as Record<string, unknown> | undefined;
+  if (typeof sc?.sessionId !== 'string') return;
+  if (consentEnvelopeSession.size >= 500) consentEnvelopeSession.delete(consentEnvelopeSession.keys().next().value as string);
+  consentEnvelopeSession.set(consentId, sc.sessionId);
 }
 
 /** How the tool wrapper routes consents for one server instance (its protocol era + provider). */
@@ -233,18 +278,7 @@ export const CONSENT_INPUT_KEY = 'swipium_consent';
 /** sha256 over the canonical JSON (sorted keys) of a tool call's validated arguments: binds a
  * 2026 consent prompt to the exact call it was issued for. Exported for tests. */
 export function argsDigest(args: unknown): string {
-  const canon = (v: unknown): unknown => {
-    if (Array.isArray(v)) return v.map(canon);
-    if (v && typeof v === 'object') {
-      const out: Record<string, unknown> = {};
-      for (const k of Object.keys(v as Record<string, unknown>).sort()) out[k] = canon((v as Record<string, unknown>)[k]);
-      return out;
-    }
-    return v;
-  };
-  return createHash('sha256')
-    .update(JSON.stringify(canon(args ?? {})) ?? '')
-    .digest('hex');
+  return stableHash(args ?? {});
 }
 
 /** Does this protocol 2026-07-28 request declare form elicitation in its per-request
@@ -319,6 +353,7 @@ async function routePendingConsent(
 ): Promise<unknown> {
   const consentId = pendingConsentId(result);
   if (!consentId) return result;
+  rememberEnvelopeSession(consentId, result);
   const first = (args[0] ?? {}) as Record<string, unknown>;
   const ctx = args[1] as ToolCallContext | undefined;
   const mcpReq = ctx?.mcpReq;
@@ -425,15 +460,24 @@ async function applyConsentDecision(
   reinvoke: (args: unknown[]) => unknown,
   ledger: { sessions: SessionStore; tool: string },
 ): Promise<unknown> {
+  // The session the refused call belongs to (its argument, else the one the envelope created), so
+  // the agent can still qa_note / qa_report after a refusal.
+  const envelopeSession = consentEnvelopeSession.get(consentId);
+  consentEnvelopeSession.delete(consentId);
+  const refusedSessionId = typeof first.sessionId === 'string' ? first.sessionId : envelopeSession;
+  const sessionExtra = refusedSessionId ? { sessionId: refusedSessionId } : {};
   if (decision.mechanism === 'refused') {
-    recordConsentRefusal(ledger.sessions, ledger.tool, first.sessionId, consentId, req, 'policy', decision.reason);
-    return qaError({
-      what: decision.reason,
-      changedState: false,
-      retrySafe: false,
-      failureCode: 'CONSENT_REFUSED',
-      nextSteps: ['Connect with an MCP client that supports elicitation, or unset SWIPIUM_REQUIRE_ELICITATION.'],
-    });
+    recordConsentRefusal(ledger.sessions, ledger.tool, refusedSessionId, consentId, req, 'policy', decision.reason, 'CONSENT_REFUSED');
+    return qaError(
+      {
+        what: decision.reason,
+        changedState: false,
+        retrySafe: false,
+        failureCode: 'CONSENT_REFUSED',
+        nextSteps: ['Connect with an MCP client that supports elicitation, or unset SWIPIUM_REQUIRE_ELICITATION.'],
+      },
+      sessionExtra,
+    );
   }
   if (!decision.approved) {
     // A failed elicitation (timeout, transport error, aborted call) is not an answer: ledger it
@@ -442,11 +486,12 @@ async function applyConsentDecision(
     recordConsentRefusal(
       ledger.sessions,
       ledger.tool,
-      first.sessionId,
+      refusedSessionId,
       consentId,
       req,
       'elicitation',
       failed ? `transport/abort: ${decision.reason}` : decision.reason,
+      decision.outcome === 'cancelled' ? 'CONSENT_CANCELLED' : 'CONSENT_DECLINED',
     );
     // Headless clients (codex exec, claude -p) answer prompts automatically: a near-instant
     // answer is flagged as likely automatic and only then carries the pre-approve hint (a real
@@ -454,9 +499,16 @@ async function applyConsentDecision(
     const action = req?.action ?? 'unknown';
     const likelyAutomatic = !failed && decision.elapsedMs < AUTO_ANSWER_MS;
     const extra = failed
-      ? { action, answeredInMs: decision.elapsedMs, likelyAutomatic: false, elicitationFailure: decision.failure }
-      : { action, answeredInMs: decision.elapsedMs, likelyAutomatic };
-    const hint = likelyAutomatic ? [preapproveHint(action, req)] : [];
+      ? { action, answeredInMs: decision.elapsedMs, likelyAutomatic: false, elicitationFailure: decision.failure, ...sessionExtra }
+      : { action, answeredInMs: decision.elapsedMs, likelyAutomatic, ...sessionExtra };
+    // Under an auto-answering client a chat "go ahead" + re-call is auto-refused again, so
+    // say outright that only the operator setting helps (never offer an in-chat approval).
+    const hint = likelyAutomatic
+      ? [
+          preapproveHint(action, req),
+          'Approving in chat and re-calling will not work in this client (its prompts are answered automatically): tell the user the operator setting above is the only way to allow this here.',
+        ]
+      : [];
     if (decision.outcome === 'cancelled') {
       return qaError(
         {
@@ -468,7 +520,7 @@ async function applyConsentDecision(
             failed
               ? 'Nothing ran. The consent prompt failed (timeout, transport error or cancelled call) before anyone answered: re-call the tool (without consentId) to prompt again, or ask the user first.'
               : likelyAutomatic
-                ? 'Nothing ran. The prompt was answered too fast for a human: do not re-call in a loop, ask the user first.'
+                ? 'Nothing ran. The prompt was answered too fast for a human: do not re-call in a loop.'
                 : 'Nothing ran. Re-call the tool (without consentId) to show the user a fresh consent prompt, or ask them first.',
             ...hint,
           ],
@@ -494,13 +546,16 @@ async function applyConsentDecision(
   if (again) {
     burnConsent(again);
     burnConsent(consentId);
-    return qaError({
-      what: 'The action changed while the user was deciding, so the approval no longer matches it. Nothing ran.',
-      changedState: false,
-      retrySafe: true,
-      failureCode: 'CONSENT_CANCELLED',
-      nextSteps: ['Re-call the tool (without consentId) to prompt the user for the current action.'],
-    });
+    return qaError(
+      {
+        what: 'The action changed while the user was deciding, so the approval no longer matches it. Nothing ran.',
+        changedState: false,
+        retrySafe: true,
+        failureCode: 'CONSENT_CANCELLED',
+        nextSteps: ['Re-call the tool (without consentId) to prompt the user for the current action.'],
+      },
+      sessionExtra,
+    );
   }
   return out;
 }
@@ -599,6 +654,10 @@ export interface ToolEntry {
   title?: string;
   description: string;
   annotations: Record<string, unknown>;
+  /** Advertised `outputSchema` (TOOL_OUTPUT_SCHEMAS), for the few tools that declare one. */
+  outputSchema?: Record<string, unknown>;
+  /** Advertised `_meta` (e.g. anthropic/alwaysLoad). */
+  meta?: Record<string, unknown>;
   /** z.object(shape).strict(): validates arguments and produces the advertised JSON schema. */
   schema: ToolInputSchema;
   /** Declared top-level parameters, in declaration order. */
@@ -613,6 +672,9 @@ type ToolCallContext = {
   mcpReq?: {
     signal?: AbortSignal;
     id?: string | number;
+    /** The request's `_meta` (progressToken). */
+    _meta?: { progressToken?: unknown };
+    notify?: (n: { method: string; params?: Record<string, unknown> }) => Promise<void>;
     /** Protocol 2026-07-28 per-request `_meta` envelope (client capabilities, version). */
     envelope?: Partial<Record<string, unknown>>;
     /** Protocol 2026-07-28 retry: the client's answers to our InputRequiredResult. */
@@ -622,6 +684,124 @@ type ToolCallContext = {
   };
 };
 
+/** Tools the client should load up front instead of deferring them behind tool search
+ * (`_meta["anthropic/alwaysLoad"]`): the canonical loop. */
+export const ALWAYS_LOAD_TOOLS: ReadonlySet<ToolName> = new Set<ToolName>(['qa_test_this', 'qa_status', 'qa_act', 'qa_snapshot']);
+
+/** Permissive output schemas (core keys only, additionalProperties allowed) for the tools agents
+ * chain on most. Only keys every non-error result carries are required (a consent envelope from
+ * qa_test_this carries no `ok`, so nothing is required there). Exported for tests. */
+export const TOOL_OUTPUT_SCHEMAS: Partial<Record<ToolName, Record<string, unknown>>> = {
+  qa_test_this: {
+    type: 'object',
+    properties: {
+      ok: { type: 'boolean' },
+      sessionId: { type: 'string' },
+      state: { type: 'string', description: 'running | completed | blocked | unsafe | needs_input | ready' },
+      mode: { type: 'string' },
+      jobId: { type: 'string' },
+      reportUri: { type: 'string' },
+      requiresConsent: { type: 'boolean' },
+      consentId: { type: 'string' },
+    },
+    additionalProperties: true,
+  },
+  qa_job_status: {
+    type: 'object',
+    properties: {
+      ok: { type: 'boolean' },
+      jobId: { type: 'string' },
+      kind: { type: 'string' },
+      status: { type: 'string', enum: ['running', 'done', 'failed', 'cancelled'] },
+      progressDetail: {},
+      result: {},
+      error: {},
+      artifactUris: { type: 'array', items: { type: 'string' } },
+      waited: { type: 'object', properties: { waitedMs: { type: 'number' }, timedOut: { type: 'boolean' } } },
+    },
+    required: ['ok', 'jobId', 'kind', 'status'],
+    additionalProperties: true,
+  },
+  qa_act: {
+    type: 'object',
+    properties: {
+      ok: { type: 'boolean' },
+      action: { type: 'string' },
+      changed: { type: 'boolean' },
+      settled: { type: 'boolean' },
+      elements: { type: 'array' },
+    },
+    required: ['ok'],
+    additionalProperties: true,
+  },
+  qa_snapshot: {
+    type: 'object',
+    properties: {
+      ok: { type: 'boolean' },
+      screen: { type: 'string' },
+      elementCount: { type: 'number' },
+      elements: { type: 'array' },
+      diff: {},
+    },
+    required: ['ok'],
+    additionalProperties: true,
+  },
+};
+
+/** SWIPIUM_TOOLS=core lists only the core tool set (the same set `swipium init codex` suggests as
+ * enabled_tools); anything else (default) lists every tool. Read when a server instance is built. */
+export function hiddenToolNames(env: NodeJS.ProcessEnv = process.env): ReadonlySet<string> {
+  if (env.SWIPIUM_TOOLS?.trim().toLowerCase() !== 'core') return new Set();
+  const core = new Set(codexCoreTools());
+  return new Set(TOOL_NAMES.filter((n) => !core.has(n)));
+}
+
+function hiddenToolError(name: string): CallToolResult {
+  return qaError(
+    {
+      what: `${name} is hidden because SWIPIUM_TOOLS=core. Nothing was run.`,
+      changedState: false,
+      retrySafe: false,
+      failureCode: 'INVALID_ARGUMENT',
+      nextSteps: [
+        'Use a listed (core) tool instead, or set SWIPIUM_TOOLS=all in the MCP server env and restart the client to enable every tool.',
+      ],
+    },
+    { hiddenTool: name },
+  );
+}
+
+/** Largest combined count of array elements + object members one tools/call `arguments` may carry
+ * (also passed to the SDK as maxToolInputElements). Generous for real calls (flows, suite edits);
+ * it bounds pathological payloads before validation walks them. */
+export const MAX_TOOL_INPUT_ELEMENTS = 10_000;
+
+/** Count array elements + object members of `value`, stopping once past `max`. Exported for tests. */
+export function toolInputElementCount(value: unknown, max = MAX_TOOL_INPUT_ELEMENTS): number {
+  let count = 0;
+  const stack: unknown[] = [value];
+  while (stack.length) {
+    const node = stack.pop();
+    if (node === null || typeof node !== 'object') continue;
+    const children = Array.isArray(node) ? node : Object.values(node as Record<string, unknown>);
+    for (const child of children) {
+      if (++count > max) return count;
+      if (child !== null && typeof child === 'object') stack.push(child);
+    }
+  }
+  return count;
+}
+
+function rememberRequestClientInfo(server: McpServer, ctx: ToolCallContext | undefined): void {
+  const info = ctx?.mcpReq?.envelope?.[CLIENT_INFO_META_KEY] as Implementation | undefined;
+  if (info && typeof info === 'object' && typeof info.name === 'string') rememberClientInfo(server, info);
+}
+
+/**
+ * Collect every tool the register* functions declare into Swipium's own table (the SDK's
+ * registerTool is replaced on this instance, so McpServer keeps no tool registry of its own):
+ * schema-hash surface, annotations, output schema and the wrapped handler.
+ */
 function installResponseModeWrapper(
   server: McpServer,
   sessions: SessionStore,
@@ -630,19 +810,18 @@ function installResponseModeWrapper(
   tools: Map<string, ToolEntry>,
   routing: ConsentRouting,
 ): void {
-  const orig = server.registerTool.bind(server) as (name: string, config: unknown, handler: (...a: unknown[]) => unknown) => unknown;
   const valid = (m: unknown): m is 'compact' | 'normal' | 'verbose' => m === 'compact' || m === 'normal' || m === 'verbose';
-  (server as unknown as { registerTool: typeof orig }).registerTool = (name, config, handler) => {
+  type Register = (name: string, config: unknown, handler: (...a: unknown[]) => unknown) => undefined;
+  (server as unknown as { registerTool: Register }).registerTool = (name, config, handler) => {
     attempted.add(name);
     if (!TOOL_NAME_SET.has(name)) return undefined; // assertToolSurface() makes this drop loud at startup
-    // Capture the tool surface (name + description + per-field type descriptors) for the schema hash
-    // (3.3 A/§5). Encoding each field's zod shape catches nested enum/type/optionality changes.
+    // Capture the tool surface (name + description + per-field type descriptors) for the schema hash.
+    // Encoding each field's zod shape catches nested enum/type/optionality changes.
     const cfg = config as { title?: string; description?: string; inputSchema?: ToolInputShape } | undefined;
     const inputKeys = Object.entries(cfg?.inputSchema ?? {}).map(([k, v]) => `${k}:${describeZodField(v)}`);
     surface.push({ name, description: cfg?.description ?? '', inputKeys });
     // MCP annotations for every tool, from one reviewed table (src/lib/toolAnnotations.ts).
     const annotations = toolAnnotations(name as ToolName) as unknown as Record<string, unknown>;
-    const annotated = { ...(config as Record<string, unknown>), annotations };
     const wrapped = async (...a: unknown[]) => {
       const first = a[0] as { sessionId?: string; responseMode?: unknown } | undefined;
       // Prefer the existing session's mode; fall back to a directly-passed responseMode so the
@@ -658,13 +837,17 @@ function installResponseModeWrapper(
       const callCtx = a[a.length - 1] as ToolCallContext | undefined;
       const signal = callCtx?.mcpReq?.signal;
       const callSignal = signal instanceof AbortSignal ? signal : undefined;
+      // notifications/progress for calls that wait on a job (src/lib/progressNotify.ts).
+      const progressSink = progressSinkFromContext(callCtx);
       // Protocol 2026-07-28: a retry answering our consent InputRequiredResult echoes requestState.
       const state =
         routing.era === 'modern' && typeof callCtx?.mcpReq?.requestState === 'function' ? callCtx.mcpReq.requestState() : undefined;
       const run = async (callArgs: unknown[]) => {
         const { value, resolved } = await runWithSignal(callSignal, () =>
-          withRootResolutionRecording(async () =>
-            runWithConsentScope(first?.sessionId, () => runWithResponseMode(mode, () => handler(...callArgs))),
+          runWithProgressSink(progressSink, () =>
+            withRootResolutionRecording(async () =>
+              runWithConsentScope(first?.sessionId, () => runWithResponseMode(mode, () => handler(...callArgs))),
+            ),
           ),
         );
         return annotateRootSource(value, resolved);
@@ -680,7 +863,9 @@ function installResponseModeWrapper(
           if (typeof state !== 'string') throw invalidRequestState(name, 'not a string');
           routed = await resumeConsentPrompt(state, a, run, { sessions, tool: name });
         } else {
-          routed = await routePendingConsent(await run(a), a, run, { sessions, tool: name }, routing);
+          routed =
+            explicitDeclineResult(sessions, name, first) ??
+            (await routePendingConsent(await run(a), a, run, { sessions, tool: name }, routing));
         }
         // An InputRequiredResult is an interim answer (the client's user is being asked): no tool
         // status, no notes, it goes to the client as is.
@@ -691,24 +876,30 @@ function installResponseModeWrapper(
         out = routed as CallToolResult;
         recordToolErrorFromResult(sessions, name, a[0], out, callSignal); // qa_report tool status (report/toolHealth.ts)
         return jobNote ? annotateKeepingNotes(out, jobNote) : out;
+      } catch (e) {
+        // A tool that threw still counts against the TOOL status (otherwise a raw adb launch
+        // timeout could still read "Tool status: PASS"). The error itself goes to the client unchanged.
+        recordThrownToolError(sessions, name, a[0], e, callSignal);
+        throw e;
       } finally {
         if (interim) log('debug', 'tool call', { tool: name, durationMs: Date.now() - startedAt, inputRequired: true });
         else logToolCall(name, first?.sessionId, startedAt, out, callSignal);
       }
     };
     const schema = strictToolSchema(cfg?.inputSchema);
+    const outputSchema = TOOL_OUTPUT_SCHEMAS[name as ToolName];
     tools.set(name, {
       name,
       ...(cfg?.title !== undefined ? { title: cfg.title } : {}),
       description: cfg?.description ?? '',
       annotations,
+      ...(outputSchema ? { outputSchema } : {}),
+      ...(ALWAYS_LOAD_TOOLS.has(name as ToolName) ? { meta: { 'anthropic/alwaysLoad': true } } : {}),
       schema,
       accepted: Object.keys(cfg?.inputSchema ?? {}),
       handler: (args, extra) => wrapped(args, extra),
     });
-    // Also registered with the SDK so McpServer declares the tools capability; its own
-    // tools/list + tools/call handlers are replaced by installToolHandlers once all tools exist.
-    return orig(name, annotated, wrapped);
+    return undefined;
   };
 }
 
@@ -729,7 +920,8 @@ export function staleClientReplacement(name: string, args: Record<string, unknow
 function staleClientError(name: string, replacement: string): CallToolResult {
   return qaError(
     {
-      what: `${name} (this call shape) was removed in Swipium v${SWIPIUM_VERSION}; use ${replacement}`,
+      // Every legacy shape mapped here went away in the 2.0.0 surface redesign (tools.md "Migrating from 1.5.0").
+      what: `${name} (this call shape) no longer exists (removed in Swipium 2.0.0; this server is v${SWIPIUM_VERSION}); use ${replacement}`,
       changedState: false,
       retrySafe: true,
       failureCode: 'STALE_CLIENT',
@@ -830,19 +1022,24 @@ function unknownToolResult(name: string): CallToolResult {
  *    > INVALID_ARGUMENT (invalidArguments), or STALE_CLIENT when the call is a legacy shape; then
  *    the wrapped handler runs with the validated arguments and the SDK request context. A handler
  *    that throws becomes an isError text result, as McpServer does.
+ * SWIPIUM_TOOLS=core (hiddenToolNames): hidden tools are left out of tools/list and a call to one
+ * gets an error naming SWIPIUM_TOOLS=all. Arguments larger than MAX_TOOL_INPUT_ELEMENTS are
+ * rejected before validation.
  */
 function installToolHandlers(server: McpServer, tools: ReadonlyMap<string, ToolEntry>, era: ProtocolEra): void {
+  const hidden = hiddenToolNames();
   let listed: Array<Record<string, unknown>> | undefined;
   server.server.setRequestHandler('tools/list', () => {
-    const ordered = [...tools.values()];
+    const ordered = [...tools.values()].filter((t) => !hidden.has(t.name));
     if (era === 'modern') ordered.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     listed ??= ordered.map((t) => ({
       name: t.name,
       ...(t.title !== undefined ? { title: t.title } : {}),
       description: t.description,
       inputSchema: toolInputJsonSchema(t.schema),
+      ...(t.outputSchema ? { outputSchema: t.outputSchema } : {}),
       annotations: t.annotations,
-      execution: { taskSupport: 'forbidden' },
+      ...(t.meta ? { _meta: t.meta } : {}),
     }));
     return { tools: listed } as ListToolsResult;
   });
@@ -850,6 +1047,7 @@ function installToolHandlers(server: McpServer, tools: ReadonlyMap<string, ToolE
     const name = String(request.params.name);
     const args = request.params.arguments as Record<string, unknown> | undefined;
     const startedAt = Date.now();
+    if (era === 'modern') rememberRequestClientInfo(server, ctx as ToolCallContext);
     // Envelopes built here never reach the tool wrapper (the handler did not run): still log the
     // debug tool-call line for them. Session ids are caller input here: only a sane string is logged.
     const rejected = (out: CallToolResult): CallToolResult => {
@@ -860,6 +1058,18 @@ function installToolHandlers(server: McpServer, tools: ReadonlyMap<string, ToolE
     const replacement = staleClientReplacement(name, args);
     const tool = tools.get(name);
     if (!tool) return replacement ? rejected(staleClientError(name, replacement)) : unknownToolResult(name);
+    if (hidden.has(name)) return rejected(hiddenToolError(name));
+    if (toolInputElementCount(args) > MAX_TOOL_INPUT_ELEMENTS) {
+      return rejected(
+        qaError({
+          what: `${name}: arguments contain more than ${MAX_TOOL_INPUT_ELEMENTS} array elements / object members. Nothing was run.`,
+          changedState: false,
+          retrySafe: false,
+          failureCode: 'INVALID_ARGUMENT',
+          nextSteps: ['Send a smaller payload (e.g. split a large suite update or flow into several calls).'],
+        }),
+      );
+    }
     if (!replacement) {
       const unknown = unknownArgumentKeys(args, tool.accepted);
       if (unknown.length) return rejected(unknownArgumentsError(name, unknown, tool.accepted));
@@ -877,7 +1087,7 @@ function installToolHandlers(server: McpServer, tools: ReadonlyMap<string, ToolE
       if (isInputRequiredResult(result)) return result;
       // projectCallToolResult: the SDK's per-era result projection, which low-level tools/call
       // handlers apply themselves (identity for Swipium's object-shaped structuredContent).
-      return server.server.projectCallToolResult(result as CallToolResult, undefined);
+      return server.server.projectCallToolResult(result as CallToolResult, tool.outputSchema);
     } catch (error) {
       if (error && typeof error === 'object' && requestStateErrors.has(error)) throw error; // -32602 on the wire
       return { content: [{ type: 'text', text: error instanceof Error ? error.message : String(error) }], isError: true };
@@ -926,15 +1136,8 @@ function capResourceListing<T extends { description?: string }>(all: T[], cap = 
  * these so one client never browses another project's artifacts from the machine-wide registry. */
 async function currentProjectRoots(server: McpServer, sessions: SessionStore): Promise<string[]> {
   const roots = new Set(sessions.activeRoots());
-  try {
-    // Never on a 2026-07-28 instance: roots/list is a server-to-client request it cannot send.
-    if (!servesModernEra(server) && server.server.getClientCapabilities()?.roots) {
-      const res = await server.server.listRoots(undefined, { timeout: 5_000 });
-      for (const r of res.roots ?? []) if (typeof r.uri === 'string' && r.uri.startsWith('file://')) roots.add(fileURLToPath(r.uri));
-    }
-  } catch {
-    // roots/list failed: fall back to the process-local roots only
-  }
+  // Cached per instance (clientRootUris); [] on a 2026-07-28 instance or when roots/list fails.
+  for (const uri of await clientRootUris(server)) if (uri.startsWith('file://')) roots.add(fileURLToPath(uri));
   return [...roots];
 }
 
@@ -995,6 +1198,9 @@ export const SERVER_CACHE_HINTS: Readonly<Record<string, CacheHint>> = {
   'resources/read': { ttlMs: 0, cacheScope: 'private' },
 };
 
+/** URI of the swipium-qa skill resource. */
+export const SKILL_RESOURCE_URI = 'skill://swipium-qa/SKILL.md';
+
 export interface CreateServerOptions {
   /** The protocol era this instance serves (serveStdio picks it per connection). Default 'legacy':
    *  an instance connected by hand (tests, embedders) negotiates with `initialize`. */
@@ -1007,9 +1213,16 @@ export interface CreateServerOptions {
 /** Construct the server and register all tools + the artifact resource. Exported for tests. */
 export function createServer(options: CreateServerOptions = {}): ServerContext {
   const era: ProtocolEra = options.era ?? 'legacy';
+  // tools capability declared up front (tools/list + tools/call are Swipium's own handlers,
+  // installToolHandlers); the tool list never changes while the process runs, so no listChanged.
   const server = new McpServer(
     { name: 'swipium', version: SWIPIUM_VERSION },
-    { instructions: SERVER_INSTRUCTIONS, cacheHints: SERVER_CACHE_HINTS },
+    {
+      capabilities: { tools: { listChanged: false } },
+      instructions: SERVER_INSTRUCTIONS,
+      cacheHints: SERVER_CACHE_HINTS,
+      maxToolInputElements: MAX_TOOL_INPUT_ELEMENTS,
+    },
   );
   // Out-of-band consent (consent.ts header): when the connected client supports MCP
   // elicitation, pending consents are decided by a real user prompt instead of a
@@ -1021,7 +1234,8 @@ export function createServer(options: CreateServerOptions = {}): ServerContext {
   if (era === 'modern') markModernServer(server);
   else {
     provider = makeElicitationProvider(server);
-    setElicitationProvider(provider);
+    // MCP roots are cached per instance (context/projectRoot.ts); the client says when they change.
+    server.server.setNotificationHandler('notifications/roots/list_changed', () => clearClientRootsCache(server));
   }
   warnIgnoredPreapprovals(); // SWIPIUM_CONSENT_PREAPPROVE: one stderr line for ignored names
   const sessions = options.sessions ?? new SessionStore();
@@ -1036,7 +1250,7 @@ export function createServer(options: CreateServerOptions = {}): ServerContext {
   registerPrepareTarget(server, sessions);
   registerIos(server, sessions);
   registerWda(server, sessions);
-  // Device / app environment parity (Phase 5)
+  // Device / app environment parity
   registerDevice(server, sessions);
   registerNetwork(server, sessions);
   registerMetro(server, sessions);
@@ -1086,6 +1300,14 @@ export function createServer(options: CreateServerOptions = {}): ServerContext {
 
   // Reusable workflow templates (MCP prompts capability): thin orchestration of the tools above.
   registerPrompts(server);
+
+  // The swipium-qa agent skill (same text `swipium init` installs) as a plain resource (SEP-2640).
+  server.registerResource(
+    'swipium-qa-skill',
+    SKILL_RESOURCE_URI,
+    { title: 'swipium-qa skill', description: 'Agent skill: the canonical Swipium QA loop.', mimeType: 'text/markdown' },
+    async (uri) => ({ contents: [{ uri: uri.href, mimeType: 'text/markdown', text: SKILL_MD }] }),
+  );
 
   // Artifacts as MCP resources (clients that support them); qa_get_artifact is the fallback.
   // The list callback lets resource-aware clients BROWSE artifacts instead of mining
@@ -1170,11 +1392,12 @@ export function createServer(options: CreateServerOptions = {}): ServerContext {
   return { server, sessions };
 }
 
-export async function startServer(): Promise<void> {
+/** `orphanSweep:false`: the throwaway server `swipium verify` / `init --apply` starts, which must
+ *  not adopt (re-own) or reap other runs' managed processes. */
+export async function startServer(opts: { orphanSweep?: boolean } = {}): Promise<void> {
   // GUI MCP clients don't inherit the shell PATH: APPEND the Android SDK's platform-tools/ and
   // emulator/ to PATH, but only for a tool (adb / emulator) that is not already resolvable on PATH,
-  // so the user's own copy is never shadowed. Idempotent (the CLI entry already calls it); done
-  // here too so embedders that call startServer() directly get it.
+  // so the user's own copy is never shadowed. Idempotent; the CLI subcommands never need it.
   try {
     ensureAndroidToolsOnPath();
   } catch (e) {
@@ -1196,10 +1419,13 @@ export async function startServer(): Promise<void> {
   const restoreThenExit = async (code: number, why: string) => {
     if (restoring) return;
     restoring = true;
-    const changed = sessions.list().filter((s) => s.network?.changed).length;
+    const changed = sessionsToRestoreOnShutdown(sessions).length; // only sessions this process drives
     // Cancel every running job FIRST: a job left running could flip device network state (or
     // anything else) back after the restore below.
     const cancelledJobs = cancelAllRunningJobs(sessions);
+    // Cancelled build groups get <= 2 s (overlapping the restore below) to exit on
+    // SIGTERM; survivors are SIGKILLed before process.exit, which would skip the unref'd kill timer.
+    const reapingGroups = killAbortedProcessGroups(2000);
     log('info', 'shutdown: restoring network', { why, changed, cancelledJobs });
     try {
       if (cancelledJobs) await new Promise((r) => setImmediate(r)); // let aborted workers unwind
@@ -1212,14 +1438,24 @@ export async function startServer(): Promise<void> {
     } catch (e) {
       log('warn', 'shutdown: restore failed', { err: String(e) });
     }
+    await shutdownAndroidDumpers(); // drop the dumper's adb forwards + pushed jar (<= 1 s, never throws)
+    const forceKilled = await reapingGroups;
+    if (forceKilled) log('info', 'shutdown: force-killed build process groups that ignored SIGTERM', { forceKilled });
     sessions.flushAll(); // write any debounced session state before exiting
     process.exit(code);
   };
   process.once('SIGINT', () => void restoreThenExit(130, 'SIGINT'));
   process.once('SIGTERM', () => void restoreThenExit(143, 'SIGTERM'));
 
-  // Startup banner (P1.8): version + tool count on stderr so a stale build is obvious in logs.
-  log('info', 'swipium starting', { version: SWIPIUM_VERSION, tools: TOOL_COUNT });
+  // Startup banner: version + tool count on stderr so a stale build is obvious in logs.
+  const listedTools = TOOL_COUNT - hiddenToolNames().size; // SWIPIUM_TOOLS=core lists fewer
+  log('info', 'swipium starting', {
+    version: SWIPIUM_VERSION,
+    tools: listedTools,
+    ...(listedTools !== TOOL_COUNT ? { toolsTotal: TOOL_COUNT, toolsMode: 'core' } : {}),
+  });
+  // Unusable settings fall back to defaults; say so once instead of ignoring them silently.
+  for (const w of [maxWaitSettingWarning(), toolsSettingWarning(), logLevelSettingWarning()]) if (w) log('warn', w);
 
   // Dual-era stdio (spec 2026-07-28 basic/versioning): serveStdio answers `server/discover` for
   // protocol 2026-07-28 clients (per-request `_meta`, no handshake) and `initialize` for
@@ -1239,11 +1475,6 @@ export async function startServer(): Promise<void> {
     sdkOnClose?.();
     void restoreThenExit(0, 'transport-close');
   };
-  // stdin EOF = the client is gone. SDK v2's StdioServerTransport closes itself on EOF (onclose
-  // above); SDK 1.x never did, and an in-flight call (a 30 s qa_wait, a long job) kept the process
-  // alive. Listen ourselves too, so the cleanup never depends on the SDK version (restoreThenExit
-  // runs once).
-  process.stdin.once('end', () => void restoreThenExit(0, 'stdin-end'));
   log('info', 'swipium connected over stdio');
   // Reap long-lived children (Metro, managed WDA, recorders) left behind by a crashed previous
   // server run. Runs AFTER connect and in the background, so a slow sweep (lock wait, WDA /status
@@ -1251,7 +1482,9 @@ export async function startServer(): Promise<void> {
   // checks make this safe next to a live concurrent instance and against recycled PIDs. A managed
   // WDA < 12 h old whose /status is healthy is ADOPTED instead (re-owned by this server) so a
   // resumed iOS session keeps its WDA (shutdown intentionally leaves managed WDA running).
-  void startOrphanSweep();
+  // A `swipium verify` server lives for seconds: it would only take ownership and then exit.
+  if (opts.orphanSweep !== false) void startOrphanSweep();
+  else log('debug', 'orphaned-process sweep skipped (verify server)');
 }
 
 /** Shutdown: cancel (abort) every running job in every session. Returns how many were cancelled.

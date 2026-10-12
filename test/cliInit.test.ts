@@ -18,6 +18,7 @@ const {
   codexBlockHasEnvVars,
   codexCoreTools,
   findCodexServerBlock,
+  hasCodexDottedServer,
   stableNodePath,
   geminiAddArgs,
   geminiBlock,
@@ -39,10 +40,12 @@ describe('cli init cwd handling', () => {
     expect(block).not.toContain('<your repo>');
   });
 
-  it('geminiBlock embeds the resolved cwd, never the placeholder', () => {
-    const block = geminiBlock('/usr/bin/node', '/Users/me/my-app');
-    expect(block).toContain('"cwd": "/Users/me/my-app"');
+  it('geminiBlock pins no cwd (Gemini starts the server in its launch dir) and sets the timeout', () => {
+    const block = geminiBlock('/usr/bin/node', '/x/dist/index.js');
+    expect(block).not.toContain('"cwd"');
     expect(block).not.toContain('<your repo>');
+    expect(block).toContain('"command": "/usr/bin/node"');
+    expect(block).toContain('"timeout": 600000');
   });
 
   it('resolveTargetCwd defaults to process.cwd() and resolves --cwd', () => {
@@ -71,7 +74,7 @@ describe('cli init cwd handling', () => {
   });
 });
 
-// D3: team-shared project files must be portable; machine-local registrations may use absolute paths.
+// Team-shared project files must be portable; machine-local registrations may use absolute paths.
 describe('cli init portability + new clients', () => {
   const tmpRoot = mkdtempSync(join(tmpdir(), 'swipium-init-'));
 
@@ -120,6 +123,8 @@ describe('cli init portability + new clients', () => {
       'add',
       '--scope',
       'project',
+      '--timeout',
+      '600000',
       'swipium',
       'npx',
       '--',
@@ -131,6 +136,8 @@ describe('cli init portability + new clients', () => {
       'add',
       '--scope',
       'user',
+      '--timeout',
+      '600000',
       'swipium',
       '/opt/node',
       '/x/dist/index.js',
@@ -337,6 +344,52 @@ describe('codex existing-block detection', () => {
     expect(findCodexServerBlock('[mcp_servers.swipium-old]\n')).toBeNull();
     expect(findCodexServerBlock('[mcp_servers.swipium.env]\nA = "1"\n')).toBeNull();
     expect(findCodexServerBlock('x = "[mcp_servers.swipium]"\n')).toBeNull();
+  });
+
+  it('matches spaced and single/double-quoted headers, and dotted-key forms', () => {
+    expect(findCodexServerBlock('[mcp_servers.\'swipium\']\ncommand = "x"\n')).not.toBeNull();
+    expect(findCodexServerBlock('[ mcp_servers . swipium ]\ncommand = "x"\n')).not.toBeNull();
+    expect(findCodexServerBlock('[ mcp_servers."swipium" ]\n')).not.toBeNull();
+    expect(findCodexServerBlock("[mcp_servers.'swipium-old']\n")).toBeNull();
+    expect(hasCodexDottedServer('mcp_servers.swipium.command = "x"\n')).toBe(true);
+    expect(hasCodexDottedServer('mcp_servers . "swipium" . args = []\n')).toBe(true);
+    expect(hasCodexDottedServer('[mcp_servers]\nswipium.command = "x"\n')).toBe(true);
+    expect(hasCodexDottedServer('[ mcp_servers ]\n\'swipium\' = { command = "x" }\n')).toBe(true);
+    // Not the swipium server: another table's key, or another server.
+    expect(hasCodexDottedServer('[projects.x]\nmcp_servers.swipium.command = "x"\n')).toBe(false);
+    expect(hasCodexDottedServer('mcp_servers.other.command = "x"\n[mcp_servers]\nswipium_old = 1\n')).toBe(false);
+  });
+
+  it('init codex --apply never appends a second swipium entry (quoted, spaced, dotted)', async () => {
+    const cases = [
+      '[mcp_servers.\'swipium\']\ncommand = "old"\n',
+      '[ mcp_servers . swipium ]\ncommand = "old"\n',
+      'mcp_servers.swipium.command = "old"\n',
+      '[mcp_servers]\nswipium.command = "old"\n',
+    ];
+    for (const original of cases) {
+      const codexHome = mkdtempSync(join(tmpdir(), 'swipium-codex-home-'));
+      const app = mkdtempSync(join(tmpdir(), 'swipium-codex-app-'));
+      writeFileSync(join(codexHome, 'config.toml'), original);
+      const out: string[] = [];
+      const spy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+        out.push(String(chunk));
+        return true;
+      });
+      const saved = process.env.CODEX_HOME;
+      const savedCode = process.exitCode;
+      process.env.CODEX_HOME = codexHome;
+      try {
+        await runInit(['codex', '--apply', '--cwd', app]);
+      } finally {
+        if (saved === undefined) delete process.env.CODEX_HOME;
+        else process.env.CODEX_HOME = saved;
+        process.exitCode = savedCode;
+        spy.mockRestore();
+      }
+      expect(readFileSync(join(codexHome, 'config.toml'), 'utf8'), original).toBe(original);
+      expect(out.join(''), original).not.toContain('Appended to');
+    }
   });
 
   it('reports env_vars only inside the swipium table', () => {

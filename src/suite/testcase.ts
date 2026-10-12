@@ -22,7 +22,8 @@ export interface TestCase {
   actualResult: string[];
   cleanup: string[];
   risks: string[];
-  automation: { status: 'automated' | 'partial' | 'manual'; test?: string; pageObjects: string[] };
+  /** `candidate`: automatable, but no runnable test file exists yet (no `test`). */
+  automation: { status: 'automated' | 'partial' | 'manual' | 'candidate'; test?: string; pageObjects: string[] };
   /** Replay proof state for this case's suite (Deliverable 4). Honest default `not_replayed`. */
   replayStatus: 'not_replayed' | 'dry_run' | 'same_session' | 'fresh_state' | 'failed' | 'blocked';
   knownBlockers: string[];
@@ -53,6 +54,8 @@ function humanStep(s: PomTestStep): string {
       return `Verify "${s.text}" is visible on ${s.page}`;
     case 'visualCheck':
       return `MANUAL visual check on ${s.page}: ${s.text}`;
+    case 'restartApp':
+      return 'Relaunch the app';
   }
 }
 
@@ -65,6 +68,9 @@ export function generateTestCases(
     notes?: TestNote[];
     budgetProfile?: string;
     replayStatus?: TestCase['replayStatus'];
+    /** False when the caller writes no `tests/<name>.smoke.yaml` and none exists: the case is then
+     *  a `candidate` with no `test` link instead of pointing at a missing file. */
+    testExists?: boolean;
   },
 ): TestCaseResult {
   const platform = opts.platform ?? 'android+ios';
@@ -73,7 +79,8 @@ export function generateTestCases(
   const replayStatus = opts.replayStatus ?? 'not_replayed';
 
   // Automation status from the locator audit: any brittle locator > partial, else automated.
-  const status: TestCase['automation']['status'] = pom.audit.brittle > 0 ? 'partial' : 'automated';
+  const hasTest = opts.testExists !== false;
+  const status: TestCase['automation']['status'] = !hasTest ? 'candidate' : pom.audit.brittle > 0 ? 'partial' : 'automated';
 
   const knownBlockers = notes
     .filter((n) => n.outcome === 'blocked' || n.category === 'missing_test_data')
@@ -82,6 +89,8 @@ export function generateTestCases(
   const verifiedVisualOnly = notes.some((n) => n.method === 'visual' || n.verifiedVisually);
 
   const expected = pom.steps.filter((s) => s.action === 'assertVisible' && s.text).map((s) => `${s.text} is visible`);
+  // With no assertion, the recorded outcome (a passing qa_note's reason) is the expectation.
+  if (expected.length === 0) for (const n of notes) if (n.outcome === 'pass' && n.reason) expected.push(`${n.workflow}: ${n.reason}`);
   if (expected.length === 0) expected.push('App reaches the expected post-flow screen without an error surface');
 
   // Actual result = what THIS run observed (Deliverable 4). Kept separate from `expected` so a
@@ -92,7 +101,14 @@ export function generateTestCases(
     : ['Not executed as a discrete test in this run. Generated from recorded actions; replay to capture an actual result.'];
 
   const tc: TestCase = {
-    id: `TC-${(opts.appId ?? 'APP').split('.').pop()!.slice(0, 6).toUpperCase()}-001`,
+    // same prefix scheme as the canonical suite (testSuite/schema idPrefix: alphanumerics, up to 10)
+    id: `TC-${(
+      (opts.appId ?? 'APP')
+        .split('.')
+        .pop()!
+        .replace(/[^A-Za-z0-9]/g, '')
+        .slice(0, 10) || 'APP'
+    ).toUpperCase()}-001`,
     title: pom.testName.replace(/[-_]/g, ' '),
     purpose: `Verify the "${pom.testName}" flow end-to-end.`,
     priority: 'P0',
@@ -110,7 +126,7 @@ export function generateTestCases(
     ],
     automation: {
       status,
-      test: `tests/${kebab(pom.testName)}.smoke.yaml`,
+      ...(hasTest ? { test: `tests/${kebab(pom.testName)}.smoke.yaml` } : {}),
       pageObjects: pom.pages.map((p) => `pages/${kebab(p.name)}.page.yaml`),
     },
     replayStatus,

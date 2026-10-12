@@ -1,4 +1,4 @@
-// qa_doctor probes against MOCKED binary lookups (v1-mvp-plan P1 §6): every environment
+// qa_doctor probes against MOCKED binary lookups: every environment
 // probe funnels through lib/spawn.run(), so mocking that one seam simulates a machine with
 // adb/Xcode present or missing — the test passes identically on hosts with or without them.
 // WDA reachability (a fetch, not a spawn) is stubbed to "unreachable" for hermeticity.
@@ -59,6 +59,7 @@ interface Check {
   optional?: boolean;
   detail: string;
   fix?: string;
+  platform?: 'android' | 'ios';
 }
 
 interface DoctorPayload {
@@ -66,7 +67,6 @@ interface DoctorPayload {
   ready: boolean;
   platformReady: { android: boolean | null; ios: boolean | null };
   checks: Check[];
-  checksByPlatform: { android: Check[]; ios: Check[] };
   devicesOnline: string[];
   avds: string[];
 }
@@ -174,9 +174,9 @@ describe('qa_doctor against mocked binaries', () => {
     const simctl = check(p, 'simctl');
     expect(simctl.ok).toBe(false);
     expect(simctl.fix).toContain('Xcode');
-    // Both platform groups are present in the structured payload for platform:"both".
-    expect(p.checksByPlatform.android.length).toBeGreaterThan(0);
-    expect(p.checksByPlatform.ios.length).toBeGreaterThan(0);
+    // Both platform groups are present (rows tagged by platform) for platform:"both".
+    expect(p.checks.some((c) => c.platform === 'android')).toBe(true);
+    expect(p.checks.some((c) => c.platform === 'ios')).toBe(true);
   });
 
   it('with no platform, checks the host default (macOS → both) and passes the node check', async () => {
@@ -186,7 +186,7 @@ describe('qa_doctor against mocked binaries', () => {
     expect(p.platform).toBe(isDarwin ? 'both' : 'android');
     expect(check(p, 'node').ok).toBe(true);
     if (isDarwin) {
-      expect(p.checksByPlatform.ios.length).toBeGreaterThan(0);
+      expect(p.checks.some((c) => c.platform === 'ios')).toBe(true);
       expect(p.ready).toBe(true);
     }
   });

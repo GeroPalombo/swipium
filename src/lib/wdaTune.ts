@@ -2,6 +2,7 @@ import type { Session } from '../session/store.js';
 import type { SessionStore } from '../session/store.js';
 import type { WdaTimingKind } from '../drivers/WdaDriver.js';
 import type { WdaConfig } from './wdaConfig.js';
+import { WDA_DEFAULT_EXCLUDED_ATTRIBUTES } from './wda.js';
 
 export interface WdaRecommendation {
   setting: string;
@@ -69,7 +70,6 @@ export function wdaTimingSummary(session: Session): Record<string, number | null
 export function wdaRecommendations(config: WdaConfig, session?: Session): WdaRecommendation[] {
   const timings = session ? wdaTimingSummary(session) : {};
   const out: WdaRecommendation[] = [];
-  const hasPageSourceExcludedAttributes = 'pageSourceExcludedAttributes' in config.settings;
   if (timings.startupWaitMs != null && timings.startupWaitMs > 30_000)
     out.push({
       setting: 'reduceMotion',
@@ -87,15 +87,8 @@ export function wdaRecommendations(config: WdaConfig, session?: Session): WdaRec
   if (timings.findElementMs != null && timings.findElementMs > 10_000)
     out.push({
       setting: 'pageSourceExcludedAttributes',
-      value: config.settings.pageSourceExcludedAttributes ?? 'visible,accessible',
+      value: config.settings.pageSourceExcludedAttributes ?? WDA_DEFAULT_EXCLUDED_ATTRIBUTES,
       reason: 'Slow WDA element lookup detected; prefer accessibility id/predicate/class chain and keep page-source attributes lean.',
-      failureCode: 'WDA_SOURCE_SLOW',
-    });
-  else if (!hasPageSourceExcludedAttributes)
-    out.push({
-      setting: 'pageSourceExcludedAttributes',
-      value: 'visible,accessible',
-      reason: 'Avoid expensive page-source attributes unless a flow explicitly needs them.',
       failureCode: 'WDA_SOURCE_SLOW',
     });
   if (!('maxTypingFrequency' in config.settings))

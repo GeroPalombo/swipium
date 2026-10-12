@@ -113,7 +113,7 @@ describe('requestConsentDecision: mechanism tagging via elicitation provider', (
     expect(consumeConsent(id, true).approved).toBe(false); // burned
   });
 
-  // B4: a dismissed (MCP `cancel`) prompt is a refusal, NOT a fallback to model self-approval.
+  // A dismissed (MCP `cancel`) prompt is a refusal, NOT a fallback to model self-approval.
   it('cancelled provider → refusal (outcome cancelled), burned — no approve:true afterwards', async () => {
     setElicitationProvider(async () => 'cancelled');
     const id = mint();
@@ -188,7 +188,7 @@ describe('requestConsentDecision: mechanism tagging via elicitation provider', (
     expect(consumeConsent(id, true).approved).toBe(false); // burned — no self-approval afterwards
   });
 
-  // H10: the strict mode covers EVERY consent-gated action (builds, Metro, installs…), not only high.
+  // The strict mode covers EVERY consent-gated action (builds, Metro, installs...), not only high.
   it.each(['low', 'medium'] as const)('SWIPIUM_REQUIRE_ELICITATION=1: %s risk + unavailable → refused too', async (risk) => {
     process.env.SWIPIUM_REQUIRE_ELICITATION = '1';
     setElicitationProvider(async () => 'unavailable');
@@ -309,7 +309,7 @@ describe('elicitation-aware consent through the in-memory server (qa_network)', 
     expect(approved?.consent?.approvalMechanism).toBe('elicitation');
   });
 
-  it('a cancelled elicitation is a retry-safe refusal, ledgered, and never runs the action (B4)', async () => {
+  it('a cancelled elicitation is a retry-safe refusal, ledgered, and never runs the action', async () => {
     nextAnswer = { action: 'cancel' };
     const res = (await client.callTool({ name: 'qa_network', arguments: { sessionId, action: 'online' } })) as CallToolResult;
     const s = res.structuredContent as Record<string, unknown>;

@@ -17,6 +17,7 @@ import type { McpServer } from '@modelcontextprotocol/server';
 import type { SessionStore } from '../session/store.js';
 import { handleTestThis } from '../orchestration/testThis/plan.js';
 import { TEST_THIS_WAIT_DEFAULT_MS, TEST_THIS_WAIT_MAX_MS } from '../orchestration/testThis/execute.js';
+import { maxWaitMs, runWithWaitBudget } from './jobs.js';
 import { qaAnnotate } from '../lib/result.js';
 
 export function registerTestThis(server: McpServer, sessions: SessionStore): void {
@@ -25,9 +26,9 @@ export function registerTestThis(server: McpServer, sessions: SessionStore): voi
     {
       title: 'Test this app (autopilot)',
       description:
-        'Start here for "test this app": finds or builds the app, picks an emulator/simulator, then plans (mode:"plan", ' +
-        'default, no side effects) or runs prepare > smoke > explore > report > suite as a job (mode:"execute"; poll ' +
-        'qa_job_status). One consent covers boot/install/build; every terminal state has a report. iOS without WDA gets a ' +
+        'Start here to test a mobile app (Android/iOS): finds or builds the app, picks an emulator/simulator, runs prepare > smoke > ' +
+        'explore > report > suite as a job (mode:"execute", default; pass waitForCompletion:true or poll qa_job_status). mode:"plan" ' +
+        'only plans, no side effects. One consent covers boot/install/build; every terminal state has a report. iOS without WDA: ' +
         'visual-only smoke.',
       inputSchema: {
         sessionId: z.string().optional().describe('Reuse a session.'),
@@ -35,7 +36,7 @@ export function registerTestThis(server: McpServer, sessions: SessionStore): voi
         mode: z
           .enum(['plan', 'execute', 'interactive'])
           .optional()
-          .describe('plan (default) | execute (job) | interactive (until the first question).'),
+          .describe('execute (default, job) | plan (no side effects) | interactive (until the first question).'),
         goal: z
           .enum(['smoke', 'explore', 'create_automation_suite', 'release_gate', 'test_login', 'reproduce_bug'])
           .optional()
@@ -59,7 +60,7 @@ export function registerTestThis(server: McpServer, sessions: SessionStore): voi
           .min(0)
           .optional()
           .describe(
-            `waitForCompletion window (default ${TEST_THIS_WAIT_DEFAULT_MS}, max ${TEST_THIS_WAIT_MAX_MS}; larger values are clamped); still running after it > state:"running" + jobId, poll qa_job_status.`,
+            `waitForCompletion window (default ${TEST_THIS_WAIT_DEFAULT_MS}, max ${TEST_THIS_WAIT_MAX_MS}; SWIPIUM_MAX_WAIT_MS raises both; larger values are clamped); still running after it > state:"running" + jobId, poll qa_job_status.`,
           ),
         consentId: z.string().optional(),
         approve: z.boolean().optional(),
@@ -69,15 +70,24 @@ export function registerTestThis(server: McpServer, sessions: SessionStore): voi
           .describe('compact = summary + URIs only; kept as the session default for later calls.'),
       },
     },
-    async (input) => {
-      // Clamp (not reject) like qa_job_status waitMs: the window is bounded so the call returns
-      // well inside common client request timeouts; a longer job keeps running and is polled.
-      if (input.timeoutMs != null && input.timeoutMs > TEST_THIS_WAIT_MAX_MS) {
-        const asked = input.timeoutMs;
-        const res = await handleTestThis(server, sessions, { ...input, timeoutMs: TEST_THIS_WAIT_MAX_MS });
-        return qaAnnotate(res, [`timeoutMs ${asked} clamped to ${TEST_THIS_WAIT_MAX_MS}; poll qa_job_status for longer runs.`]);
-      }
-      return handleTestThis(server, sessions, input);
-    },
+    async (raw) =>
+      // The whole call (resolution, scan, planning AND the waitForCompletion window) counts
+      // against the SWIPIUM_MAX_WAIT_MS cap: execute.ts subtracts waitBudgetUsedMs().
+      runWithWaitBudget(async () => {
+        // mode defaults to execute (the plan-only pass is opt-in).
+        const input = { ...raw, mode: raw.mode ?? ('execute' as const) };
+        // Clamp (not reject) like qa_job_status waitMs: the window is bounded so the call returns
+        // well inside common client request timeouts; a longer job keeps running and is polled.
+        const cap = maxWaitMs();
+        if (input.timeoutMs != null && input.timeoutMs > cap) {
+          const asked = input.timeoutMs;
+          const res = await handleTestThis(server, sessions, { ...input, timeoutMs: cap });
+          // timeoutMs only bounds the waitForCompletion window: plan mode and a non-waiting call
+          // ignore it, so a clamp note there is noise.
+          if (input.mode === 'plan' || !input.waitForCompletion) return res;
+          return qaAnnotate(res, [`timeoutMs ${asked} clamped to ${cap}; poll qa_job_status for longer runs.`]);
+        }
+        return handleTestThis(server, sessions, input);
+      }),
   );
 }

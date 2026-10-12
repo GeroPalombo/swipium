@@ -10,12 +10,12 @@
 // Exit codes: 0 = written (gate passed or not checked), 1 = --fail-on-gate and the gate blocks,
 // 2 = usage error / no persisted report found. runReport() returns the code; it never exits.
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { reportPolicyVerdicts, toGithubSummary, toJUnit, toMarkdown, toSarif, type ReportData } from '../report/export.js';
-import { applyPolicy, loadPolicy as loadReleasePolicy } from '../report/policy.js';
+import { applyPolicy, loadPolicy as loadReleasePolicy, policyFileProblem, policyUnknownKeys } from '../report/policy.js';
 import { loadReport } from '../report/history.js';
 import { resolveSarifSources } from '../report/sarifSources.js';
 
@@ -34,10 +34,13 @@ Options:
   --latest           use the most recent session for the project that has a report (default)
   --report <file>    render this report JSON file directly (skips session lookup)
   --out <file>       write to a file instead of stdout (parent dirs are created)
+  --max-age <min>    refuse (exit 2) a report older than this many minutes, so CI never publishes a
+                     stale report from an earlier run when the agent step produced none
   --fail-on-gate     exit 1 when the release-gate policy (.swipium/policy.json) blocks
   -h, --help         show this help
 
-Exit codes: 0 ok · 1 release gate blocked (with --fail-on-gate) · 2 usage error / no report found.
+Exit codes: 0 ok · 1 release gate blocked (with --fail-on-gate) · 2 usage error / invalid
+.swipium/policy.json / no (fresh enough) report found.
 `;
 
 export interface ReportCliIo {
@@ -56,6 +59,7 @@ interface ParsedArgs {
   session?: string;
   report?: string;
   out?: string;
+  maxAge?: string;
   failOnGate: boolean;
   help: boolean;
   error?: string;
@@ -69,6 +73,7 @@ function parseArgs(args: string[]): ParsedArgs {
     '--session': 'session',
     '--report': 'report',
     '--out': 'out',
+    '--max-age': 'maxAge',
   };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -159,6 +164,17 @@ export function findProjectSessions(root: string, home = homedir()): SessionCand
   return out.sort((a, b) => a.createdAt - b.createdAt);
 }
 
+/** When a report JSON was saved: the `report-<ms>.json` timestamp, else the file's mtime. */
+function reportSavedAt(path: string): number | undefined {
+  const ms = Number(path.match(/report-(\d{12,})\.json$/)?.[1]);
+  if (Number.isFinite(ms) && ms > 0) return ms;
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Render one format from a (persisted, already-redacted) report. Exported for tests. */
 export function renderReport(data: ReportData, format: CliReportFormat, root: string): { body: string; block: boolean; reason: string } {
   const policy = applyPolicy(reportPolicyVerdicts(data), loadReleasePolicy(root));
@@ -190,6 +206,11 @@ export async function runReport(args: string[], io: ReportCliIo = defaultIo): Pr
     return 2;
   }
   const format = parsed.format as CliReportFormat;
+  const maxAgeMin = parsed.maxAge === undefined ? undefined : Number(parsed.maxAge);
+  if (maxAgeMin !== undefined && !(Number.isFinite(maxAgeMin) && maxAgeMin > 0)) {
+    io.stderr(`--max-age needs a positive number of minutes (got "${parsed.maxAge}")\n\n${REPORT_USAGE}`);
+    return 2;
+  }
   const cwd = process.cwd();
   const root = parsed.root ? (isAbsolute(parsed.root) ? parsed.root : join(cwd, parsed.root)) : cwd;
 
@@ -203,6 +224,17 @@ export async function runReport(args: string[], io: ReportCliIo = defaultIo): Pr
   } else {
     const sessions = findProjectSessions(root);
     const pick = parsed.session ? sessions.find((s) => s.id === parsed.session) : [...sessions].reverse().find((s) => s.reportPath);
+    // Say so when newer sessions exist that never saved a report (the latest agent step
+    // may have failed before qa_report), instead of silently rendering an older run.
+    const newerWithoutReport = pick && !parsed.session ? sessions.filter((s) => s.createdAt > pick.createdAt && !s.reportPath) : [];
+    if (newerWithoutReport.length) {
+      io.stderr(
+        `Warning: ${newerWithoutReport.length} newer session(s) (${newerWithoutReport
+          .map((s) => s.id)
+          .slice(-3)
+          .join(', ')}) saved no report; rendering the older session ${pick!.id}.\n`,
+      );
+    }
     if (!pick) {
       io.stderr(
         parsed.session
@@ -219,6 +251,32 @@ export async function runReport(args: string[], io: ReportCliIo = defaultIo): Pr
     reportPath = pick.reportPath;
   }
 
+  // Freshness. Every run prints when its report was saved; --max-age refuses a stale one.
+  const savedAt = reportSavedAt(reportPath);
+  if (maxAgeMin !== undefined && (savedAt === undefined || Date.now() - savedAt > maxAgeMin * 60_000)) {
+    io.stderr(
+      `Report ${reportPath} is older than --max-age ${maxAgeMin} min (saved ${savedAt ? new Date(savedAt).toISOString() : 'at an unknown time'}). ` +
+        'The agent step probably produced no report this run; make sure it calls qa_report.\n',
+    );
+    return 2;
+  }
+
+  // An invalid policy is a usage error (exit 2), never a crash read as "gate blocks" (exit 1).
+  const policyProblem = policyFileProblem(root);
+  if (policyProblem) {
+    io.stderr(
+      `❌ INVALID_ARGUMENT: ${join(root, '.swipium', 'policy.json')} ${policyProblem}. Fix it (see docs/ci-reports.md "Release-gate policy") or remove it.\n`,
+    );
+    return 2;
+  }
+  // A typo'd key is ignored by the gate; say so instead of silently gating without it.
+  const unknownPolicyKeys = policyUnknownKeys(root);
+  if (unknownPolicyKeys.length) {
+    io.stderr(
+      `⚠ ${join(root, '.swipium', 'policy.json')}: unknown key(s) ${unknownPolicyKeys.map((k) => JSON.stringify(k)).join(', ')} ignored. Known keys: blockOn, warnOn, ignoreKnown, ciAllowMutations.\n`,
+    );
+  }
+
   let data: ReportData;
   try {
     data = loadReport(reportPath);
@@ -231,7 +289,14 @@ export async function runReport(args: string[], io: ReportCliIo = defaultIo): Pr
     return 2;
   }
 
-  const { body, block, reason } = renderReport(data, format, root);
+  let rendered: ReturnType<typeof renderReport>;
+  try {
+    rendered = renderReport(data, format, root);
+  } catch (e) {
+    io.stderr(`Could not render ${format} from ${reportPath}: ${String((e as Error).message ?? e)}\n`);
+    return 2;
+  }
+  const { body, block, reason } = rendered;
   if (parsed.out) {
     const outPath = isAbsolute(parsed.out) ? parsed.out : join(cwd, parsed.out);
     mkdirSync(dirname(outPath), { recursive: true });
@@ -240,6 +305,8 @@ export async function runReport(args: string[], io: ReportCliIo = defaultIo): Pr
   } else {
     io.stdout(body.endsWith('\n') ? body : `${body}\n`);
   }
-  io.stderr(`Release gate: ${block ? 'BLOCK' : 'PASS'}: ${reason}\n`);
+  io.stderr(
+    `Release gate: ${block ? 'BLOCK' : 'PASS'}: ${reason} (session ${data.sessionId}, report saved ${savedAt ? new Date(savedAt).toISOString() : 'unknown'})\n`,
+  );
   return parsed.failOnGate && block ? 1 : 0;
 }

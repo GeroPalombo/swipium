@@ -4,7 +4,7 @@
 // re-joins them for the device-side sh, so app ids / permissions are validated AND quoted (M1).
 
 import { run } from './spawn.js';
-import { assertAndroidAppId, deviceShellQuote, shellAppId } from '../drivers/DirectDriver.js';
+import { deviceShellQuote, shellAppId } from '../drivers/DirectDriver.js';
 
 /** Android permission names (android.permission.CAMERA, com.example.permission.X). */
 const PERMISSION_RE = /^[A-Za-z][\w]*(\.[A-Za-z][\w]*)*$/;
@@ -63,10 +63,13 @@ export type Orientation = 'portrait' | 'landscape' | 'auto';
 /** Current rotation 0..3 (0/2 portrait, 1/3 landscape) and whether auto-rotate is on. */
 export async function getOrientation(serial: string): Promise<{ rotation: number; auto: boolean } | null> {
   try {
-    const rot = await run('adb', ['-s', serial, 'shell', 'settings', 'get', 'system', 'user_rotation'], { timeoutMs: 5000 });
-    const acc = await run('adb', ['-s', serial, 'shell', 'settings', 'get', 'system', 'accelerometer_rotation'], { timeoutMs: 5000 });
-    const rotation = Number(rot.stdout.trim());
-    return { rotation: Number.isFinite(rotation) ? rotation : 0, auto: acc.stdout.trim() === '1' };
+    // Both settings in ONE adb shell (one line each).
+    const r = await run('adb', ['-s', serial, 'shell', 'settings get system user_rotation; settings get system accelerometer_rotation'], {
+      timeoutMs: 5000,
+    });
+    const [rot = '', acc = ''] = r.stdout.trim().split(/\r?\n/);
+    const rotation = Number(rot.trim());
+    return { rotation: Number.isFinite(rotation) ? rotation : 0, auto: acc.trim() === '1' };
   } catch {
     return null;
   }
@@ -107,22 +110,6 @@ export async function listPackages(serial: string, opts: { thirdPartyOnly?: bool
   } catch {
     return [];
   }
-}
-
-/** Best-effort runtime-permission state for a package (parsed from dumpsys). */
-export async function listRuntimePermissions(serial: string, pkg: string): Promise<{ granted: string[]; denied: string[] }> {
-  const granted: string[] = [];
-  const denied: string[] = [];
-  assertAndroidAppId(pkg); // argument error, not "no permissions"
-  try {
-    const r = await run('adb', ['-s', serial, 'shell', 'dumpsys', 'package', shellAppId(pkg)], { timeoutMs: 8000 });
-    for (const m of r.stdout.matchAll(/(android\.permission\.[A-Z_]+):\s*granted=(true|false)/g)) {
-      (m[2] === 'true' ? granted : denied).push(m[1]);
-    }
-  } catch {
-    /* best-effort */
-  }
-  return { granted, denied };
 }
 
 export async function grantPermission(serial: string, pkg: string, perm: string): Promise<void> {

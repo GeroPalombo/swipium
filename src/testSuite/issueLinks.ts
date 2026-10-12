@@ -105,9 +105,3 @@ export function verifiedFixedIssuesForRun(
   }
   return [...out];
 }
-
-/** Render a compact "Linked issues" line for a case (suite markdown export). */
-export function issueRefsToMarkdown(testCase: CanonicalTestCase): string | undefined {
-  if (!testCase.issueRefs?.length) return undefined;
-  return testCase.issueRefs.map((r) => `${r.issueId} (${r.relationship}, ${r.lastIssueState})`).join(', ');
-}

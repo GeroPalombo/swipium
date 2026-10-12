@@ -3,18 +3,21 @@
 // mirror, and the `.swipium/test-runs/<runId>.json` ledger. Everything it persists is produced by the
 // pure modules (schema/merge/generator/history) so the on-disk format is deterministic and testable.
 
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, lstatSync } from 'node:fs';
+import { join, relative, resolve, sep } from 'node:path';
 import { stringify } from 'yaml';
 import {
   type TestSuiteFile,
   type CanonicalTestCase,
+  CASE_ID_RE,
   emptySuite,
-  functionalitySlug,
+  functionalityDirName,
+  isSafeCaseId,
   validateSuite,
   TEST_SUITE_SCHEMA_VERSION,
 } from './schema.js';
-import { mergeCases, type MergeOptions, type MergeResult } from './merge.js';
+import { allocateId, mergeCases, type MergeOptions, type MergeResult } from './merge.js';
+import { normalizeCase } from './generator.js';
 import { buildRunLedger, type RunLedger } from './history.js';
 
 export function suiteRoot(root: string): string {
@@ -42,47 +45,141 @@ export function runIdFromNow(now: string): string {
 
 /** Load the persistent suite, returning an empty suite when none exists yet. */
 export function loadSuite(root: string, appId?: string): TestSuiteFile {
-  const path = suiteJsonPath(root);
-  if (!existsSync(path)) return emptySuite(appId);
-  try {
-    const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<TestSuiteFile>;
-    return {
-      schemaVersion: TEST_SUITE_SCHEMA_VERSION,
-      updatedAt: parsed.updatedAt ?? new Date(0).toISOString(),
-      appId: parsed.appId ?? appId,
-      cases: Array.isArray(parsed.cases) ? (parsed.cases as CanonicalTestCase[]) : [],
-      retiredIds: Array.isArray(parsed.retiredIds) ? parsed.retiredIds : [],
-    };
-  } catch {
-    return emptySuite(appId);
+  return loadSuiteChecked(root, appId).suite;
+}
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+
+/** Fill a hand-written or legacy case to the canonical shape (missing featureId, arrays, result,
+ *  automation), keeping every well-typed field it has, so merge/export never crash on it. */
+function repairLoadedCase(raw: Record<string, unknown>, at: string): CanonicalTestCase {
+  const base = normalizeCase(
+    {
+      functionality: typeof raw.functionality === 'string' ? raw.functionality : undefined,
+      title: typeof raw.title === 'string' ? raw.title : undefined,
+      featureId: typeof raw.featureId === 'string' && raw.featureId.trim() ? raw.featureId : undefined,
+    },
+    at,
+  ) as unknown as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...base };
+  for (const [k, v] of Object.entries(raw)) {
+    if (v === undefined || v === null) continue;
+    const want = base[k];
+    if (Array.isArray(want) && !Array.isArray(v)) continue;
+    if (isPlainObject(want) && !isPlainObject(v)) continue;
+    if (typeof want === 'string' && typeof v !== 'string') continue;
+    out[k] = isPlainObject(want) ? { ...want, ...v } : v;
   }
+  out.steps = (out.steps as unknown[]).flatMap((s, i) => {
+    const step: Record<string, unknown> | null = typeof s === 'string' ? { action: s } : isPlainObject(s) ? { ...s } : null;
+    if (!step) return [];
+    step.action = typeof step.action === 'string' ? step.action : String(step.action ?? '');
+    if (step.target !== undefined && typeof step.target !== 'string') delete step.target;
+    if (typeof step.index !== 'number') step.index = i + 1;
+    return [step];
+  });
+  const ar = out.actualResult as Record<string, unknown>;
+  if (!Array.isArray(ar.evidence)) ar.evidence = [];
+  const au = out.automation as Record<string, unknown>;
+  for (const k of ['pageObjects', 'testFiles']) if (!Array.isArray(au[k])) au[k] = [];
+  return out as unknown as CanonicalTestCase;
+}
+
+/** loadSuite plus what it had to repair. A case id is a file name, so a stored id that is unsafe
+ *  (`../../x`, a hand edit or a cloned repo) or duplicated gets a fresh TC id on read; the rename
+ *  is persisted by the next save. Nothing downstream ever sees an unsafe id. */
+export function loadSuiteChecked(root: string, appId?: string): { suite: TestSuiteFile; repairs: string[] } {
+  const path = suiteJsonPath(root);
+  if (!existsSync(path)) return { suite: emptySuite(appId), repairs: [] };
+  let parsed: Partial<TestSuiteFile>;
+  try {
+    parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<TestSuiteFile>;
+  } catch {
+    return { suite: emptySuite(appId), repairs: [] };
+  }
+  const updatedAt = typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date(0).toISOString();
+  const retiredIds = Array.isArray(parsed.retiredIds) ? parsed.retiredIds.filter(isSafeCaseId) : [];
+  const repairs: string[] = [];
+  const rawCases = (Array.isArray(parsed.cases) ? (parsed.cases as unknown[]) : []).filter(isPlainObject);
+  const cases = rawCases.map((raw) => repairLoadedCase(raw, typeof raw.updatedAt === 'string' ? raw.updatedAt : updatedAt));
+  const used = new Set<string>([...retiredIds, ...cases.map((c) => c.id).filter(isSafeCaseId)]);
+  const kept = new Set<string>();
+  for (const c of cases) {
+    if (isSafeCaseId(c.id) && !kept.has(c.id)) {
+      kept.add(c.id);
+      continue;
+    }
+    const old = typeof c.id === 'string' ? c.id : String(c.id);
+    c.id = allocateId(c.functionality, used);
+    kept.add(c.id);
+    repairs.push(
+      `case id ${JSON.stringify(old.slice(0, 80))} ${isSafeCaseId(old) ? 'is a duplicate' : `is not a safe file name (must match ${CASE_ID_RE.source})`}; renamed to ${c.id}`,
+    );
+  }
+  return {
+    suite: { schemaVersion: TEST_SUITE_SCHEMA_VERSION, updatedAt, appId: parsed.appId ?? appId, cases, retiredIds },
+    repairs,
+  };
+}
+
+/**
+ * Write a file under `<root>/.swipium/` without following a symlink. A cloned repo can commit
+ * `.swipium/test-suite.json`, `test-suite-export/*` or one of their folders as a symlink to a file
+ * outside the project; a plain write would follow it. Every path component below the project root
+ * that exists is lstat'ed and a symlink is refused (an fs error with a code, so callers report it
+ * as an unwritable path). The project root itself may be a symlink (e.g. /tmp on macOS).
+ */
+export function writeFileNoFollow(root: string, path: string, content: string): void {
+  const absRoot = resolve(root);
+  const abs = resolve(path);
+  const rel = relative(absRoot, abs);
+  if (!rel || rel.startsWith('..') || resolve(absRoot, rel) !== abs) throw symlinkError(abs, 'is outside the project');
+  let cur = absRoot;
+  for (const part of rel.split(sep)) {
+    cur = join(cur, part);
+    let isLink = false;
+    try {
+      isLink = lstatSync(cur).isSymbolicLink();
+    } catch {
+      break; // does not exist yet: nothing below it can be a link
+    }
+    if (isLink) throw symlinkError(cur, 'is a symlink, refusing to write through it');
+  }
+  mkdirSync(join(abs, '..'), { recursive: true });
+  writeFileSync(abs, content);
+}
+
+function symlinkError(path: string, why: string): Error {
+  return Object.assign(new Error(`${path} ${why}`), { code: 'ELOOP' });
 }
 
 /** Persist the suite JSON + the per-functionality YAML mirror. Returns absolute paths written. */
 export function saveSuite(root: string, suite: TestSuiteFile): string[] {
   const written: string[] = [];
-  const base = suiteRoot(root);
-  mkdirSync(base, { recursive: true });
-  const jsonPath = suiteJsonPath(root);
-  writeFileSync(jsonPath, JSON.stringify(suite, null, 2));
-  written.push(jsonPath);
-
+  // Mirror first, JSON last: if a mirror write fails, test-suite.json still holds the previous
+  // good suite instead of a case that breaks every later save.
+  const casesRoot = resolve(suiteCasesDir(root));
   for (const c of suite.cases) {
-    const dir = join(suiteCasesDir(root), functionalitySlug(c.functionality));
-    mkdirSync(dir, { recursive: true });
-    const yamlPath = join(dir, `${c.id}.yaml`);
-    writeFileSync(yamlPath, stringify(c));
+    // The id is a file name: an unsafe one (a legacy or hand-edited suite) gets no mirror file
+    // rather than a write outside cases/ or an ENAMETOOLONG; the JSON still holds the case.
+    if (!isSafeCaseId(c.id)) continue;
+    const dir = join(casesRoot, functionalityDirName(c.functionality));
+    const yamlPath = resolve(dir, `${c.id}.yaml`);
+    if (!yamlPath.startsWith(casesRoot + sep)) continue;
+    writeFileNoFollow(root, yamlPath, stringify(c));
     written.push(yamlPath);
   }
+  const jsonPath = suiteJsonPath(root);
+  writeFileNoFollow(root, jsonPath, JSON.stringify(suite, null, 2));
+  written.unshift(jsonPath);
   return written;
 }
 
 /** Append a per-run ledger file. Returns the absolute path written. */
 export function recordRun(root: string, ledger: RunLedger): string {
   const dir = testRunsDir(root);
-  mkdirSync(dir, { recursive: true });
   const path = join(dir, `${runIdFromNow(ledger.at)}.json`);
-  writeFileSync(path, JSON.stringify(ledger, null, 2));
+  writeFileNoFollow(root, path, JSON.stringify(ledger, null, 2));
   return path;
 }
 
@@ -92,6 +189,8 @@ export interface ApplyMergeResult {
   validationErrors: string[];
   written: string[];
   runPath: string;
+  /** Load-time repairs (unsafe/duplicate stored ids renamed), persisted by this save. */
+  loadRepairs: string[];
 }
 
 /**
@@ -100,7 +199,7 @@ export interface ApplyMergeResult {
  * updated consistently from one place.
  */
 export function applyMerge(root: string, incoming: CanonicalTestCase[], opts: MergeOptions, appId?: string): ApplyMergeResult {
-  const suite = loadSuite(root, appId);
+  const { suite, repairs } = loadSuiteChecked(root, appId);
   const result = mergeCases(suite, incoming, opts);
   const validationErrors = validateSuite(result.suite);
   const written = saveSuite(root, result.suite);
@@ -114,7 +213,7 @@ export function applyMerge(root: string, incoming: CanonicalTestCase[], opts: Me
     deprecated: result.deprecated,
   });
   const runPath = recordRun(root, ledger);
-  return { result, ledger, validationErrors, written, runPath };
+  return { result, ledger, validationErrors, written, runPath, loadRepairs: repairs };
 }
 
 /** A compact delta summary for embedding in reports / terminal output. */

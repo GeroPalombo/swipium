@@ -1,4 +1,4 @@
-// Universal run test catalog (Developer-3 plan Deliverable 4 / review item #6). The POM test-case
+// Universal run test catalog. The POM test-case
 // catalog only exists when a suite is generated; this builds a catalog for EVERY run (executed,
 // skipped, blocked, and exploration-promoted workflows) straight from the session's observed state
 // (smoke notes, findings, exploration summary, suite status). Pure + deterministic so blocked and

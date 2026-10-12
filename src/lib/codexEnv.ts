@@ -35,6 +35,11 @@ export const CODEX_ENV_VARS: readonly string[] = [
   'SWIPIUM_VISUAL_MASK_CMD',
   'SWIPIUM_RETENTION_DAYS',
   'SWIPIUM_RETENTION_KEEP',
+  'SWIPIUM_MAX_WAIT_MS',
+  'SWIPIUM_TOOLS',
+  'SWIPIUM_ANDROID_DUMPER',
+  'SWIPIUM_EMULATOR_GPU',
+  'SWIPIUM_EMULATOR_COLD_BOOT',
   // Toolchain.
   'ANDROID_HOME',
   'ANDROID_SDK_ROOT',
@@ -119,7 +124,7 @@ export function codexEnvChecks(input: CodexEnvCheckInput): CodexEnvCheck[] {
       detail: `${custom}${base}${seen}`,
       fix:
         `Add under [mcp_servers.swipium] in ~/.codex/config.toml: ${codexEnvVarsLine()} (or set values in env = { ... }), then restart Codex. ` +
-        'Approval grants (SWIPIUM_CONSENT_PREAPPROVE, SWIPIUM_ALLOW_REMOTE_WDA) are never forwarded: set them literally in env = { ... }.',
+        'Approval grants (SWIPIUM_CONSENT_PREAPPROVE, SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE, SWIPIUM_ALLOW_REMOTE_WDA) are never forwarded: set them literally in env = { ... }.',
     },
     {
       name: 'codex-tool-timeout',

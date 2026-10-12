@@ -29,15 +29,15 @@
 //    shutdown either (only Metro and screen recorders are; see startServer), so the next server
 //    can resume the iOS session on the same WDA. At startup an orphaned WDA entry is ADOPTED when
 //    it is younger than WDA_ADOPT_MAX_AGE_MS (12 h) AND its recorded endpoint answers GET /status
-//    ready; adoption keeps the entry and re-owns it (serverPid = this server), so `qa_wda stop`
+//    ready (or keeps timing out: busy, see defaultWdaHealthy); adoption keeps the entry and re-owns it (serverPid = this server), so `qa_wda stop`
 //    can still stop it and a later crash/restart applies the same rule. An older, unhealthy, or
 //    endpoint-less WDA entry is reaped like any other orphan.
 
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { withFileLock, writeFileAtomicSync } from '../lib/lockfile.js';
+import { mkdirPrivateSync, PRIVATE_STATE_FILE_MODE, withFileLock, writeFileAtomicSync } from '../lib/lockfile.js';
 import { log } from '../lib/logger.js';
 import { checkWda } from '../lib/wda.js';
 
@@ -84,8 +84,8 @@ function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException)?.code === 'EPERM'; // exists, just not ours to signal
   }
 }
 
@@ -126,12 +126,13 @@ function readEntries(): ManagedProcessEntry[] {
 }
 
 function writeEntries(entries: ManagedProcessEntry[]): void {
-  writeFileAtomicSync(PROCESSES_FILE, JSON.stringify(entries.slice(-MAX_ENTRIES), null, 2)); // tmp + rename (Windows-retried)
+  // 0600: entries carry full child command lines. tmp + rename (Windows-retried).
+  writeFileAtomicSync(PROCESSES_FILE, JSON.stringify(entries.slice(-MAX_ENTRIES), null, 2), { mode: PRIVATE_STATE_FILE_MODE });
 }
 
 function mutateEntries(fn: (entries: ManagedProcessEntry[]) => ManagedProcessEntry[]): void {
   try {
-    mkdirSync(REGISTRY_DIR, { recursive: true });
+    mkdirPrivateSync(REGISTRY_DIR);
     withFileLock(PROCESSES_LOCK, () => writeEntries(fn(readEntries())));
   } catch (e) {
     log('error', 'failed to update managed-process registry; a crash may leave this child unreaped', {
@@ -178,24 +179,67 @@ export function registerManagedProcess(
     const spawned = norm(extra.spawnCommand);
     if (spawned) fp.command = spawned;
   }
+  // Round-4 note: a dead child's entry (its server lives on, so the startup sweep never runs) is
+  // dropped on the next registration; a dead pid can't be signalled, so no owner needs it.
   mutateEntries((entries) => [
-    ...entries.filter((e) => e.pid !== pid),
+    ...entries.filter((e) => e.pid !== pid && pidAlive(e.pid)),
     { pid, kind, serverPid: process.pid, sessionId, startedAt: Date.now(), ...(extra.endpoint ? { endpoint: extra.endpoint } : {}), ...fp },
   ]);
 }
 
 /** A managed WDA this server adopted at startup (or started itself) for `sessionId`, per the
- *  registry. Lets `qa_wda stop` stop a WDA started by a previous server run. */
-export function registeredWdaForSession(sessionId: string): ManagedProcessEntry | undefined {
+ *  registry. Lets `qa_wda stop` stop a WDA started by a previous server run. With `endpoint`, a
+ *  WDA this server owns at that URL also matches when its session is gone (sessions expire, an
+ *  adopted WDA outlives them; only one WDA can listen on a URL), but only when its recorded
+ *  `-destination id=<udid>` is `udid`: an endpoint alone never matches (a stop by port
+ *  must not kill another simulator's WDA). */
+export function registeredWdaForSession(sessionId: string, endpoint?: string, udid?: string): ManagedProcessEntry | undefined {
+  const owned = readEntries().filter((e) => e.kind === 'wda' && e.serverPid === process.pid);
+  return (
+    owned.filter((e) => e.sessionId === sessionId).pop() ??
+    (endpoint && udid ? owned.filter((e) => e.endpoint === endpoint && wdaEntryUdid(e) === udid.toUpperCase()).pop() : undefined)
+  );
+}
+
+/** The simulator UDID (upper case) in a WDA entry's recorded `-destination id=<udid>`. */
+export function wdaEntryUdid(e: Pick<ManagedProcessEntry, 'command'>): string | undefined {
+  const dest = wdaCommandIdentity(e.command ?? '').destination;
+  return dest?.startsWith('id=') ? dest.slice(3).toUpperCase() : undefined;
+}
+
+/** Managed WDAs recorded for simulator `udid` by ANY server (this one, a live concurrent one, or a
+ *  dead one not yet swept), newest first, whose pid still carries the recorded fingerprint. Lets
+ *  `qa_wda stop` in a new session stop that simulator's WDA and prepare / attach find
+ *  it on whatever port it was started. */
+export function registeredWdasForDevice(udid: string, ops: ProcessOps = REAL_OPS): ManagedProcessEntry[] {
+  const want = udid.toUpperCase();
   return readEntries()
-    .filter((e) => e.kind === 'wda' && e.sessionId === sessionId && e.serverPid === process.pid)
-    .pop();
+    .filter((e) => e.kind === 'wda' && wdaEntryUdid(e) === want && ops.pidAlive(e.pid) && fingerprintMatches(e, ops))
+    .sort((a, b) => b.startedAt - a.startedAt);
+}
+
+/** Ports recorded for live managed WDAs of OTHER simulators (any server). A WDA's xcodebuild takes
+ *  10-40 s to bind its port, so a port probe alone races a concurrent setup: these count
+ *  as taken. */
+export function reservedWdaPorts(udid: string, ops: Pick<ProcessOps, 'pidAlive'> = REAL_OPS): number[] {
+  const want = udid.toUpperCase();
+  const ports: number[] = [];
+  for (const e of readEntries()) {
+    if (e.kind !== 'wda' || !e.endpoint || wdaEntryUdid(e) === want || !ops.pidAlive(e.pid)) continue;
+    try {
+      const port = Number(new URL(e.endpoint).port);
+      if (port > 0) ports.push(port);
+    } catch {
+      /* unparsable endpoint: nothing to reserve */
+    }
+  }
+  return ports;
 }
 
 /** Remove a child we stopped (or that finished) from the registry. */
 export function unregisterManagedProcess(pid: number | undefined): void {
   if (!pid || pid <= 0) return;
-  mutateEntries((entries) => entries.filter((e) => e.pid !== pid));
+  mutateEntries((entries) => entries.filter((e) => e.pid !== pid && pidAlive(e.pid)));
 }
 
 /** OS primitives, injectable for tests (fake pids / `ps` / signals / WDA /status). */
@@ -233,14 +277,19 @@ const REAL_OPS: ProcessOps = { pidAlive, psCommand, psStartTime, psPgid, killTre
 /** True when `serverPid` is a live process that IS the server that registered the entry: its
  *  start time must equal the recorded one (any node process could have recycled the pid). Legacy
  *  entries without a recorded server start fall back to the old node/swipium command check.
- *  That errs toward "alive" (never touch), which is the safe direction. */
+ *  A live pid whose start time / command can't be read (a `ps` failure or timeout under load)
+ *  counts as alive: the startup sweep must never re-own or reap a live server's entry on a
+ *  failed read (round-3 note: another server's WDA entry got this server's serverPid). */
 function serverStillAlive(entry: Pick<ManagedProcessEntry, 'serverPid' | 'serverStart'>, ops: ProcessOps = REAL_OPS): boolean {
   const { serverPid } = entry;
   if (serverPid === process.pid) return false; // our pid at startup = a recycled dead server's
   if (!ops.pidAlive(serverPid)) return false;
-  if (entry.serverStart) return norm(ops.psStartTime(serverPid)) === entry.serverStart;
+  if (entry.serverStart) {
+    const start = norm(ops.psStartTime(serverPid));
+    return start == null || start === entry.serverStart; // unreadable > unknown > never touch
+  }
   const cmd = ops.psCommand(serverPid);
-  return cmd != null && /node|swipium/i.test(cmd);
+  return cmd == null || /node|swipium/i.test(cmd);
 }
 
 /** Is this child pid registered to a DIFFERENT, still-live server instance? (adopt, don't touch) */
@@ -368,8 +417,19 @@ export interface ReapOptions {
   wdaHealthy?: (endpoint: string) => Promise<boolean>;
 }
 
+/** A WDA busy serving a slow command (launching an app, setting up an automation session) does not
+ *  answer /status within the short probe (another server's startup sweep must not reap such a
+ *  WDA mid-command). A timed-out probe is retried with a longer budget, and one that times out
+ *  again counts as alive (busy, still bounded by the 12 h cap); only a refused connection or a
+ *  not-ready answer is unhealthy. */
+const WDA_ADOPT_BUSY_PROBE_TIMEOUT_MS = 8000;
+const isProbeTimeout = (s: { reachable: boolean; error?: string }) => !s.reachable && /abort|timeout|timed out/i.test(s.error ?? '');
+
 async function defaultWdaHealthy(endpoint: string): Promise<boolean> {
-  return (await checkWda(endpoint, WDA_ADOPT_PROBE_TIMEOUT_MS)).ready;
+  const first = await checkWda(endpoint, WDA_ADOPT_PROBE_TIMEOUT_MS);
+  if (first.ready || !isProbeTimeout(first)) return first.ready;
+  const second = await checkWda(endpoint, WDA_ADOPT_BUSY_PROBE_TIMEOUT_MS);
+  return second.ready || isProbeTimeout(second);
 }
 
 /** Orphaned WDA entries eligible for adoption: owner dead, < 12 h old, endpoint recorded, pid
@@ -405,8 +465,10 @@ export async function reapOrphanedProcesses(options: ReapOptions = {}): Promise<
         continue;
       }
       if (e.kind === 'wda' && adoptable.has(e.pid)) {
-        // Re-own it (startedAt kept, so the 12 h cap counts from the WDA's real start).
-        keep.push({ ...e, serverPid: process.pid });
+        // Re-own it (startedAt kept, so the 12 h cap counts from the WDA's real start). serverStart
+        // is ours too: with the old owner's, the next server would see this live owner as dead.
+        const serverStart = norm(opts.ops.psStartTime(process.pid));
+        keep.push({ ...e, serverPid: process.pid, serverStart: serverStart ?? undefined });
         log('info', 'adopted managed WDA from a previous server run (healthy, < 12 h old)', {
           pid: e.pid,
           endpoint: e.endpoint,

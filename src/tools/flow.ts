@@ -5,13 +5,13 @@
 // compile the flow against backend capabilities without touching a device.
 
 import { z } from 'zod';
-import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, qaStop, qaAnnotate, unknownSessionError } from '../lib/result.js';
 import {
   FLOW_ENV_PREFIX,
+  flowEnvAllowed,
   isMutatingFlowStep,
   lookupFlowVar,
   parseFlow,
@@ -24,13 +24,16 @@ import { withinRootOrNull } from '../flows/paths.js';
 import { makeRedactor } from '../lib/redact.js';
 import type { FixtureSeed } from '../session/store.js';
 import { lintFlowObjectWithOptions } from '../flows/lint.js';
-import { runFlow } from '../flows/run.js';
+import { runFlow, type FlowRunResult } from '../flows/run.js';
+import { classifyFlowFailure } from '../services/smoke.js';
 import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import { loadPolicy } from '../report/policy.js';
 import { classifyFlakeResults } from '../report/flake.js';
 import { validateCiMutationPolicy, validateCiVariables } from '../ci/preflight.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { displayArgv } from '../lib/commandTemplate.js';
+import { stableHash } from '../lib/stableHash.js';
+import { isToolListed } from '../core/capabilityGroups.js';
 import { GitScopeForbiddenError } from '../lib/spawn.js';
 import { configuredOcrCommand } from '../visual/ocr.js';
 import { resolveMaskProvider, resolveVisualProvider } from '../visual/provider.js';
@@ -38,16 +41,23 @@ import { backendCapabilities, backendForDriverKind, type AppiumSessionHints } fr
 import { compileAutomationPlan } from '../automation/plan.js';
 import { buildReadiness } from '../automation/report.js';
 import type { AutomationBackend } from '../automation/types.js';
-import type { SessionStore } from '../session/store.js';
+import type { Session, SessionStore } from '../session/store.js';
 import { resolveProjectRoot } from '../context/projectRoot.js';
 
 const ALL_BACKENDS: AutomationBackend[] = ['android-direct', 'ios-raw-simulator', 'ios-wda', 'appium-uiautomator2', 'appium-xcuitest'];
 
 const STATUS_ICON: Record<string, string> = { ready: '✅', candidate: '🟡', blocked: '⛔' };
 
-export type FlowSourceErrorCode = 'FLOW_NOT_FOUND' | 'INVALID_ARGUMENT' | 'INVALID_FLOW';
+export type FlowSourceErrorCode = 'FLOW_NOT_FOUND' | 'INVALID_ARGUMENT' | 'INVALID_FLOW' | 'UNSAFE_ACTION_REFUSED';
 
-/** Resolve a flow's YAML from explicit text, an absolute/relative path, or a name under .swipium/flows. */
+/** Flow files are YAML (JSON is valid YAML). Explicit paths must carry one of these extensions so a
+ *  read-only check/plan can't be pointed at `.env`, keys or other non-flow files. */
+const FLOW_FILE_EXT = /\.(ya?ml|json)$/i;
+
+/** Resolve a flow's YAML from explicit text, a path, or a name under .swipium/flows.
+ *  Paths are confined to the project root (after realpath, like templates/baselines and
+ *  qa_flow_repair targets): an absolute or `..` path outside it is refused with
+ *  UNSAFE_ACTION_REFUSED and never read. */
 export function loadFlowSource(
   root: string | undefined,
   flow?: string,
@@ -55,20 +65,53 @@ export function loadFlowSource(
 ): { yamlText?: string; source?: string; error?: string; errorCode?: FlowSourceErrorCode } {
   if (flowYaml && flowYaml.trim()) return { yamlText: flowYaml, source: 'inline' };
   if (!flow) return { error: 'Provide a flow name, a path, or flowYaml.', errorCode: 'INVALID_ARGUMENT' };
-  const candidates: string[] = [];
-  if (isAbsolute(flow)) candidates.push(flow);
-  else if (root) {
-    if (/[\\/]/.test(flow) || /\.ya?ml$/i.test(flow)) candidates.push(join(root, flow));
-    candidates.push(
+  if (!root) {
+    return {
+      error: `Flow "${flow}" can't be resolved without a project root (flow files are confined to the project root). Pass projectRoot or set SWIPIUM_PROJECT_ROOT, or pass inline flowYaml.`,
+      errorCode: isAbsolute(flow) ? 'UNSAFE_ACTION_REFUSED' : 'FLOW_NOT_FOUND',
+    };
+  }
+  const explicitPath = isAbsolute(flow) || /[\\/]/.test(flow) || FLOW_FILE_EXT.test(flow);
+  if (explicitPath && !FLOW_FILE_EXT.test(flow)) {
+    return {
+      error: `Refusing to read "${flow}": flow files must be .yaml, .yml or .json.`,
+      errorCode: 'UNSAFE_ACTION_REFUSED',
+    };
+  }
+  const raw: string[] = [];
+  if (explicitPath) raw.push(isAbsolute(flow) ? flow : join(root, flow));
+  if (!isAbsolute(flow)) {
+    raw.push(
       join(root, '.swipium', 'flows', `${flow}.yaml`),
       join(root, '.swipium', 'flows', `${flow}.yml`),
-      join(root, '.swipium', 'flows', flow),
+      join(root, '.swipium', 'flows', `${flow}.json`),
     );
+    if (FLOW_FILE_EXT.test(flow)) raw.push(join(root, '.swipium', 'flows', flow));
+  }
+  const candidates: string[] = [];
+  for (const p of raw) {
+    const confined = withinRootOrNull(root, p);
+    if (confined) candidates.push(confined);
+    else if (p === raw[0] && explicitPath) {
+      return {
+        error: `Refusing to read "${flow}": it resolves outside the project root (${root}). Flow files must live under the project root (normally .swipium/flows).`,
+        errorCode: 'UNSAFE_ACTION_REFUSED',
+      };
+    }
   }
   for (const p of candidates) {
     if (existsSync(p)) {
       try {
-        return { yamlText: readFileSync(p, 'utf8'), source: p };
+        const text = readFileSync(p, 'utf8');
+        // A POM test (page/element steps) is not a flow; point at its compiled flow.
+        if (/^#\s*Swipium test \(POM\)/m.test(text)) {
+          const slug = (text.match(/^name:\s*["']?([^"'\n]+)["']?\s*$/m)?.[1] ?? '').trim().replace(/[^\w.-]+/g, '-');
+          return {
+            error: `${p} is a POM test (page/element steps), not a runnable flow.${slug ? ` Run its compiled flow instead: qa_flow_run flow:"${slug}" (.swipium/flows/${slug}.yaml; regenerate with qa_flow_compile).` : ' Compile it with qa_flow_compile and run the flow under .swipium/flows.'}`,
+            errorCode: 'INVALID_FLOW',
+          };
+        }
+        return { yamlText: text, source: p };
       } catch (e) {
         return { error: `Could not read ${p}: ${String(e)}`, errorCode: 'INVALID_FLOW' };
       }
@@ -100,30 +143,15 @@ function flowSourceError(src: { error?: string; errorCode?: FlowSourceErrorCode 
     nextSteps: [
       src.errorCode === 'INVALID_ARGUMENT'
         ? 'Pass flow="<name>" (under .swipium/flows), a .yaml path, or inline flowYaml.'
-        : 'Pass an existing flow name/path or inline flowYaml; pass projectRoot (or set SWIPIUM_PROJECT_ROOT) if the flow lives in another project.',
+        : src.errorCode === 'UNSAFE_ACTION_REFUSED'
+          ? 'Move the flow under the project root (e.g. .swipium/flows/<name>.yaml) and pass its name, or pass the YAML inline as flowYaml.'
+          : 'Pass an existing flow name/path or inline flowYaml; pass projectRoot (or set SWIPIUM_PROJECT_ROOT) if the flow lives in another project.',
     ],
   });
 }
 
-function stable(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stable);
-  if (value && typeof value === 'object')
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([k, v]) => [k, stable(v)]),
-    );
-  return value;
-}
-
-function fullHash(value: unknown): string {
-  return createHash('sha256')
-    .update(JSON.stringify(stable(value)))
-    .digest('hex');
-}
-
 function hash(value: unknown): string {
-  return fullHash(value).slice(0, 16);
+  return stableHash(value).slice(0, 16);
 }
 
 function allFlowSteps(flow: Flow): FlowStep[] {
@@ -215,6 +243,32 @@ function ocrSteps(flow: Flow): Array<{ step: number; kind: 'tapOcrText' | 'asser
   return out;
 }
 
+/** Record a qa_flow_run result as the session's outcome for the flow (round-3 note: a failed run
+ *  left qa_report at SHIP / COVERED). Filed like a saved flow in qa_smoke (classifyFlowFailure):
+ *  locator drift of a generated flow > fail + other (CAUTION), an app failure > fail + app_bug
+ *  (BLOCK), missing data > blocked, a budget stop > skipped. A cancelled run records nothing.
+ *  Exported for tests. */
+export function recordFlowRunOutcome(sessions: SessionStore, session: Session, r: FlowRunResult, yamlText: string, suffix = ''): void {
+  if (!r.passed && r.failureCode === 'CANCELLED') return;
+  const failure = r.passed ? undefined : classifyFlowFailure(r, yamlText);
+  const shot = r.steps.find((st) => st.screenshotUri)?.screenshotUri;
+  sessions.addNote(session, {
+    at: Date.now(),
+    workflow: r.name,
+    outcome: r.passed ? 'pass' : failure!.outcome,
+    category: failure?.category,
+    reason:
+      (r.passed
+        ? `qa_flow_run: ${r.steps.length} steps in ${Math.round(r.durationMs / 100) / 10}s`
+        : `qa_flow_run ${failure!.outcome === 'skipped' ? 'stopped' : 'failed'} at step ${r.failedAtStep}: ${r.reason}${failure!.note ? ` (${failure!.note})` : ''}`) +
+      suffix,
+    ...(failure?.outcome === 'blocked'
+      ? { missingPrecondition: r.reason, ...(failure.recommendedSetup ? { recommendedSetup: failure.recommendedSetup } : {}) }
+      : {}),
+    artifactUris: shot ? [shot] : undefined,
+  });
+}
+
 const LOCATOR_FAILURES = new Set(['ELEMENT_NOT_FOUND', 'AMBIGUOUS_SELECTOR', 'STALE_REF', 'INVALID_SELECTOR', 'ASSERTION_FAILED']);
 
 /** nextSteps for a failed qa_flow_run: point at qa_flow_repair for the failing step. */
@@ -222,15 +276,21 @@ export function failedFlowNextSteps(name: string, flowArg: string | undefined, f
   const out: string[] = [];
   // A missing variable is not locator drift: qa_flow_repair cannot fix it (and a cancelled run is
   // not a failure to repair).
-  if (failedAtStep != null && failureCode !== 'MISSING_FIXTURE' && failureCode !== 'CANCELLED') {
+  if (failedAtStep != null && failureCode !== 'MISSING_FIXTURE' && failureCode !== 'CANCELLED' && failureCode !== 'BUNDLE_ID_NOT_FOUND') {
     const target = flowArg ? `flow:"${flowArg}"` : 'flowYaml:<same YAML>';
     out.push(
       `${failureCode && !LOCATOR_FAILURES.has(failureCode) ? 'If this is locator drift (renamed/moved control), ' : ''}call qa_flow_repair { ${target}, failedStep:${failedAtStep} } for a reviewable locator fix (review before apply).`,
     );
   }
+  if (failureCode === 'BUNDLE_ID_NOT_FOUND')
+    out.push(
+      `The flow's app is not installed: install it (qa_prepare_target / qa_prepare_ios_target) or fix the flow's appId, then re-run.`,
+    );
   if (failureCode === 'MISSING_FIXTURE')
     out.push(`Pass missing values via qa_flow_run { variables } (flows read process.env only for ${FLOW_ENV_PREFIX}* names).`);
-  out.push(`If the app itself is wrong, record it with qa_note { workflow:"${name}", outcome:"fail" } with the step evidence.`);
+  out.push(
+    `This failure is already recorded as "${name}"'s outcome for qa_report (locator drift > CAUTION, app failure > BLOCK). If it is really an app bug, confirm it with qa_note { workflow:"${name}", outcome:"fail", category:"app_bug" } with the step evidence.`,
+  );
   return out;
 }
 
@@ -272,7 +332,8 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
       const allSteps = [...parsed.setup, ...parsed.steps, ...parsed.teardown];
       const STRUCTURED_KINDS = new Set(['tap', 'assertVisible', 'assertNotVisible', 'scrollTo', 'waitForVisible', 'inputText']);
       const warnings: string[] = [];
-      if (!parsed.appId) warnings.push("No appId, so a prepareTarget step will rely on the session's prepared appId.");
+      if (!parsed.appId && allSteps.some((s) => s.kind === 'prepareTarget' || s.kind === 'restartApp'))
+        warnings.push("No appId, so prepareTarget/restartApp will rely on the session's prepared appId.");
       if (allSteps.some((s) => s.kind === 'tap' && s.selector.startsWith('@')))
         warnings.push('Uses @ref selectors. Refs are run-time only; prefer text/id selectors for durable flows.');
       if (src.yamlText!.includes('${'))
@@ -328,21 +389,31 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
       if (ci) {
         const policy = root ? loadPolicy(root) : null;
         const mutationViolations = validateCiMutationPolicy([parsed], policy).violations;
-        for (const v of mutationViolations)
+        // Other mutating kinds already come back as MUTATING_STEP_WITHOUT_POLICY lint errors below.
+        for (const v of mutationViolations.filter((m) => m.kind === 'openUrl'))
           warnings.push(
             `CI policy: ${v.flow} step ${v.step} ${v.kind} is mutating and is not allowed by .swipium/policy.json ciAllowMutations.`,
           );
         const missingVars = validateCiVariables([parsed]).missing;
+        // Only SWIPIUM_* env names reach flows: a ${HOME} is never read from the environment, so
+        // "not set in the environment" would be wrong for it.
         for (const v of missingVars)
-          warnings.push(`CI variable: ${v.variable} is required by ${v.flow} step ${v.step} but is not set in the environment.`);
+          warnings.push(
+            flowEnvAllowed(v.variable)
+              ? `CI variable: ${v.variable} is required by ${v.flow} step ${v.step} but is not set in the environment.`
+              : `CI variable: ${v.variable} is required by ${v.flow} step ${v.step}; flows never read it from the environment (only ${FLOW_ENV_PREFIX}* names), so pass it in variables.`,
+          );
       }
       const lintFindings = lintFlowObjectWithOptions(src.source ?? 'inline', parsed, {
         platform,
         policy: ci ? (root ? loadPolicy(root) : null) : undefined,
       });
+      // Lint errors are not warnings: they go to lintErrors and make the check invalid.
+      const lintErrors: string[] = [];
       for (const f of lintFindings) {
-        const prefix = f.severity === 'error' ? 'Lint error' : 'Lint warning';
-        warnings.push(`${prefix} ${f.code}${f.step ? ` step ${f.step}` : ''}: ${f.message}`);
+        const line = `${f.code}${f.step ? ` step ${f.step}` : ''}: ${f.message}`;
+        if (f.severity === 'error') lintErrors.push(line);
+        else warnings.push(`Lint warning ${line}`);
       }
       // Image-template steps: verify the referenced files exist (best-effort, when a root is known).
       if (root) {
@@ -355,6 +426,20 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
         }
       }
 
+      const uniqueWarnings = [...new Set(warnings)];
+      const uniqueLintErrors = [...new Set(lintErrors)];
+      if (uniqueLintErrors.length) {
+        return qaError(
+          {
+            what: `Flow "${parsed.name}" parses but fails lint (${uniqueLintErrors.length} error${uniqueLintErrors.length === 1 ? '' : 's'}): ${uniqueLintErrors.join('; ')}`,
+            changedState: false,
+            retrySafe: true,
+            failureCode: 'INVALID_FLOW',
+            nextSteps: ['Fix the lint errors (e.g. allow the mutating step in .swipium/policy.json ciAllowMutations) and re-check.'],
+          },
+          { valid: false, source: src.source, name: parsed.name, lintErrors: uniqueLintErrors, warnings: uniqueWarnings, lintFindings },
+        );
+      }
       return qaOk(
         {
           valid: true,
@@ -367,10 +452,10 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
           setupCount: parsed.setup.length,
           teardownCount: parsed.teardown.length,
           fixtures: parsed.fixtures,
-          warnings,
+          warnings: uniqueWarnings,
           lintFindings,
         },
-        `✅ flow "${parsed.name}" is valid: ${parsed.steps.length} steps (mode=${parsed.mode}${parsed.setup.length ? `, ${parsed.setup.length} setup` : ''}${parsed.teardown.length ? `, ${parsed.teardown.length} teardown` : ''})${warnings.length ? `\nwarnings:\n - ${warnings.join('\n - ')}` : ''}`,
+        `✅ flow "${parsed.name}" is valid: ${parsed.steps.length} steps (mode=${parsed.mode}${parsed.setup.length ? `, ${parsed.setup.length} setup` : ''}${parsed.teardown.length ? `, ${parsed.teardown.length} teardown` : ''})${uniqueWarnings.length ? `\nwarnings:\n - ${uniqueWarnings.join('\n - ')}` : ''}`,
       );
     },
   );
@@ -380,10 +465,10 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
     {
       title: 'Run a flow (or preview its execution plan)',
       description:
-        'Run a flow on the prepared app (mode:"run", default) or preview per-backend support without a device (mode:"plan"). ' +
-        'run is server-side and fail-fast with setup/teardown; mutating and OCR steps are consent-gated; a failure returns ' +
-        'the step, screenshot, failureCode, and health. Pass flow (name/path) or flowYaml, plus variables. Steps: ' +
-        'docs/tools.md#flow-steps.',
+        'Run a YAML flow (saved, or inline flowYaml to batch known steps) on the prepared app; mode:"plan" previews per-backend ' +
+        'support without a device. Server-side, fail-fast, with setup/teardown; mutating and OCR steps are consent-gated; a failure ' +
+        'returns the step, screenshot, failureCode, and health. Pass flow (name/path) or flowYaml, plus variables. Steps: ' +
+        'docs/flows.md#step-reference.',
       inputSchema: {
         mode: z.enum(['plan', 'run']).optional(),
         sessionId: z.string().optional().describe('Required for run.'),
@@ -436,7 +521,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
           return qaAnnotate(
             qaError(
               {
-                what: `Flow is invalid (${errors.length} error${errors.length === 1 ? '' : 's'}), run qa_flow_check`,
+                what: `Flow is invalid (${errors.length} error${errors.length === 1 ? '' : 's'})${isToolListed('qa_flow_check') ? ', run qa_flow_check' : ''}`,
                 changedState: false,
                 retrySafe: true,
                 failureCode: 'INVALID_FLOW',
@@ -516,6 +601,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
             what: sessionId
               ? 'No device attached to this session'
               : 'qa_flow_run mode:"run" needs a sessionId with a prepared device (mode:"plan" works without one)',
+            failureCode: sessionId ? 'NO_DEVICE' : 'INVALID_ARGUMENT',
             changedState: false,
             retrySafe: true,
             nextSteps: ['Call qa_prepare_target / qa_ios boot first, then qa_flow_run.'],
@@ -531,7 +617,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
         return qaAnnotate(
           qaError(
             {
-              what: `Flow is invalid. Run qa_flow_check first`,
+              what: `Flow is invalid. ${isToolListed('qa_flow_check') ? 'Run qa_flow_check first' : 'Validate it with qa_flow_run mode:"plan" first'}`,
               changedState: false,
               retrySafe: true,
               failureCode: 'INVALID_FLOW',
@@ -635,7 +721,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
       };
       const privileged = affects.mutations.length > 0 || affects.externalProviders.length > 0;
       if (privileged) {
-        const payloadHash = fullHash(affects);
+        const payloadHash = stableHash(affects);
         const gate = consumeConsent(consentId, approve, { action: 'flow_mutation_run', affects });
         if (!gate.approved) {
           sessions.recordMutation(session, {
@@ -689,6 +775,16 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
           results.push(await runFlow(sessions, session, driver, parsed, { variables: runVariables, mutationConsent }));
         }
         const flake = classifyFlakeResults(results, runs);
+        // One outcome for the batch: the first failure (a flaky flow is not a pass), else a pass.
+        const firstFail = results.find((r) => !r.passed);
+        if (results.length)
+          recordFlowRunOutcome(
+            sessions,
+            session,
+            firstFail ?? results[0],
+            src.yamlText!,
+            ` (${flake.passed}/${results.length} runs passed)`,
+          );
         return qaAnnotate(
           qaOk(
             {
@@ -713,6 +809,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
       }
 
       const result = await runFlow(sessions, session, driver, parsed, { variables: runVariables, mutationConsent });
+      recordFlowRunOutcome(sessions, session, result, src.yamlText!);
 
       const head =
         `flow "${result.name}" ${result.passed ? '✅ PASSED' : `❌ FAILED at step ${result.failedAtStep} (${result.reason})`} ` +

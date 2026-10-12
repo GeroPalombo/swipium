@@ -1,4 +1,4 @@
-// needs_input as a real terminal job state (P1 #7): a first-run login/OTP stop maps to ONE
+// needs_input as a real terminal job state: a first-run login/OTP stop maps to ONE
 // NeedsInput question bound to the session, and the finisher lands state:"needs_input" (job status
 // done — a pause, not a failure) with the question, a report, and nextRecommendedAction = the
 // qa_continue_from_blocker resume call. qa_status then recommends that same call.
@@ -110,7 +110,7 @@ describe('needs_input terminal state', () => {
     expect(nextBestAction(session).tool).toBe('qa_continue_from_blocker');
   });
 
-  it('a blocked run points at qa_explain_blocker WITH sessionId (so qa_status can see it was explained)', async () => {
+  it('a blocked run points at the blocker concrete fix (null when it is outside Swipium) and carries it in the text', async () => {
     const sessions = new SessionStore();
     const session = sessions.create(root);
     const job = sessions.createJob(session, 'test_this:execute');
@@ -126,10 +126,9 @@ describe('needs_input terminal state', () => {
     });
     await finish('blocked', 'INSTALL_FAILED', 'install failed');
     const r = session.jobs.get(job.jobId)!.result as Record<string, unknown>;
-    expect(r.nextRecommendedAction).toMatchObject({
-      tool: 'qa_explain_blocker',
-      args: { failureCode: 'INSTALL_FAILED', sessionId: session.id },
-    });
+    expect(r.nextRecommendedAction).toBeNull();
+    expect(r.blockers).toMatchObject([{ failureCode: 'INSTALL_FAILED' }]);
+    expect(session.jobs.get(job.jobId)!.resultText).toMatch(/fix \(INSTALL_FAILED\): /);
   });
 });
 

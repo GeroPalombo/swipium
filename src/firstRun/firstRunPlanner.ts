@@ -230,8 +230,3 @@ export function planFirstRun(obs: ScreenObservation, session: Session, ctx: Firs
     pathTaken: 'none',
   };
 }
-
-/** Convenience for tests/reporting: a one-line label of the path a plan would take. */
-export function describePlan(plan: FirstRunPlan): string {
-  return `${plan.classification.purpose} (conf ${plan.classification.confidence}) > ${plan.state}${plan.pathTaken ? ` [${plan.pathTaken}]` : ''}`;
-}

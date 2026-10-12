@@ -1,6 +1,6 @@
-// qa_test_this goal routing (Developer 1, Milestone C). A `goal` adjusts ORCHESTRATION
+// qa_test_this goal routing. A `goal` adjusts ORCHESTRATION
 // FLAGS and REQUIRED OUTPUTS only. It never duplicates suite/report/platform logic (those stay in
-// the services Developer 2/3 own). Keeping the mapping a pure, exported helper makes goal behavior
+// the services). Keeping the mapping a pure, exported helper makes goal behavior
 // unit-testable without a device, and keeps `qa_test_this` an orchestrator rather than a switchboard.
 
 export type TestGoal = 'smoke' | 'explore' | 'create_automation_suite' | 'release_gate' | 'test_login' | 'reproduce_bug';
@@ -16,7 +16,7 @@ export interface GoalFlags {
   generateSuite: boolean;
   /** Stop and ask (credentials/etc.) instead of testing pre-login. */
   stopOnNeedsInput: boolean;
-  /** Require the stricter report + readiness summary (Developer 3 service). */
+  /** Require the stricter report + readiness summary (report service). */
   releaseGate: boolean;
   /** Outputs the goal contractually requires in the terminal envelope. */
   requiredOutputs: string[];

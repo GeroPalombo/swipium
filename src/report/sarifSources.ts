@@ -1,10 +1,11 @@
-// Source anchors for SARIF results (B3). GitHub code scanning only displays a result that has
+// Source anchors for SARIF results. GitHub code scanning only displays a result that has
 // `locations[0].physicalLocation.artifactLocation.uri` pointing at a file in the repository
 // (https://docs.github.com/en/code-security/code-scanning/integrating-with-code-scanning/sarif-support-for-code-scanning).
 // Swipium's evidence lives on a device, not in the source tree, so we anchor each result to the
 // best REAL repo-relative file we can justify:
 //   1. the app-map source file of the screen / feature the result names (when a map exists), else
-//   2. the project manifest (app.json, package.json, Gradle app module, iOS Info.plist, pubspec).
+//   2. the project manifest (app.json, package.json, Gradle app module, iOS Info.plist, pubspec),
+//      else an `.xcodeproj/project.pbxproj`, else any existing file at the root.
 // Every candidate is checked to exist under the root; nothing outside the root is ever emitted.
 // URIs are relative to the REPOSITORY root (%SRCROOT% = the checkout root in CI), not the session
 // root: in a monorepo (repo/apps/mobile) an anchor must read `apps/mobile/app.json`, or code
@@ -67,11 +68,22 @@ export function repositoryPrefix(root: string): string {
   return `${toPosix(rel)}/`;
 }
 
+/** Build products and derived-data directories are usually not committed, so code scanning would
+ *  drop an alert anchored inside one (e.g. `MyApp.app/Info.plist`). */
+const BUILD_PRODUCT_DIR = /^(build|Build|DerivedData|\.build|dist|Pods)$|\.(app|xcarchive|framework|appex|bundle|dSYM)$/i;
+
+function insideBuildProduct(rel: string): boolean {
+  return rel
+    .split(/[\\/]/)
+    .slice(0, -1)
+    .some((segment) => BUILD_PRODUCT_DIR.test(segment));
+}
+
 /** A safe repo-relative path that exists as a file under root, or null. */
 function existingRelative(root: string, rel: string): string | null {
   if (!rel || isAbsolute(rel)) return null;
   const norm = normalize(rel);
-  if (norm.startsWith('..')) return null;
+  if (norm.startsWith('..') || insideBuildProduct(norm)) return null;
   try {
     return statSync(join(root, norm)).isFile() ? toPosix(norm) : null;
   } catch {
@@ -100,13 +112,46 @@ function expandCandidate(root: string, pattern: string): string | null {
   return null;
 }
 
-/** The project's manifest file (repo-relative), or `package.json` when nothing matches. */
+/** `<dir>/<Name>.xcodeproj/project.pbxproj` (native iOS project with no package.json/README). */
+function xcodeProjectFile(root: string, dir: string): string | null {
+  try {
+    const names = readdirSync(join(root, dir || '.'), { withFileTypes: true })
+      .filter((d) => d.isDirectory() && d.name.endsWith('.xcodeproj'))
+      .map((d) => d.name)
+      .sort();
+    for (const n of names) {
+      const hit = existingRelative(root, dir ? `${dir}/${n}/project.pbxproj` : `${n}/project.pbxproj`);
+      if (hit) return hit;
+    }
+  } catch {
+    /* unreadable dir */
+  }
+  return null;
+}
+
+/** Any regular, non-hidden file at the root (sorted), else `.gitignore`: a file that really exists. */
+function anyRootFile(root: string): string | null {
+  try {
+    const names = readdirSync(root, { withFileTypes: true })
+      .filter((d) => d.isFile() && !d.name.startsWith('.'))
+      .map((d) => d.name)
+      .sort();
+    if (names.length) return names[0];
+  } catch {
+    /* unreadable root */
+  }
+  return existingRelative(root, '.gitignore');
+}
+
+/** The project's manifest file (repo-relative). Falls back to an Xcode project or any
+ *  existing root file; `package.json` only when the root holds no file at all (an anchor to a
+ *  missing file is dropped by code scanning). */
 export function projectManifestUri(root: string): string {
   for (const c of MANIFEST_CANDIDATES) {
     const hit = expandCandidate(root, c);
     if (hit) return hit;
   }
-  return 'package.json';
+  return xcodeProjectFile(root, 'ios') ?? xcodeProjectFile(root, '') ?? anyRootFile(root) ?? 'package.json';
 }
 
 interface RawMap {

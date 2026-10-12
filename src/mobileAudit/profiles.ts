@@ -194,8 +194,7 @@ export interface AuditOptions {
 
 /**
  * Resolve the account-cycle safety contract for a profile. Logout is permitted ONLY in the
- * controlled account-cycle / release-gate profiles, never in broad exploration (spec §Account-cycle
- * safety). A real account is never deleted; OTP/MFA always returns needs_input.
+ * controlled account-cycle / release-gate profiles, never in broad exploration. A real account is never deleted; OTP/MFA always returns needs_input.
  */
 export function accountCycleSafety(profile: AuditProfile, opts: AuditOptions = {}): AccountCycleSafety {
   const controlled = profile === 'account_cycle' || profile === 'release_gate';

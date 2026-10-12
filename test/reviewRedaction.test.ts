@@ -1,4 +1,4 @@
-// Review round 2: short secrets must never corrupt JSON/XML artifacts or ordinary text.
+// Short secrets must never corrupt JSON/XML artifacts or ordinary text.
 import { afterAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

@@ -1,94 +1,11 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { basename, extname, join } from 'node:path';
-import { run, runBinary } from '../lib/spawn.js';
-
-export interface ParsedCodesign {
-  identifier: string | null;
-  teamIdentifier: string | null;
-  authorityCount: number;
-  signed: boolean;
-}
-
-export interface ParsedMobileProvision {
-  teamIds: string[];
-  applicationIdentifier: string | null;
-  bundleId: string | null;
-  expirationDate: string | null;
-  provisionedDevices: string[] | null;
-  entitlements: Record<string, string>;
-}
-
-export interface IosSigningInspection {
-  checked: boolean;
-  artifactPath: string;
-  artifactType: 'ipa' | 'iphoneos-app' | 'unknown';
-  appPath: string | null;
-  embeddedProvisionPresent: boolean;
-  /** A real iOS device build always embeds a provisioning profile; a simulator .app never does. */
-  simulatorBuildSuspected: boolean;
-  codesign: ParsedCodesign | null;
-  mobileProvision: ParsedMobileProvision | null;
-  requestedUdid: string | null;
-  ready: boolean;
-  missing: string[];
-  warnings: string[];
-}
-
-function firstMatch(text: string, re: RegExp): string | null {
-  return text.match(re)?.[1]?.trim() ?? null;
-}
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 function arrayValues(text: string, key: string): string[] {
   const keyIndex = text.indexOf(`<key>${key}</key>`);
   if (keyIndex < 0) return [];
   const array = text.slice(keyIndex).match(/<array>([\s\S]*?)<\/array>/)?.[1] ?? '';
   return [...array.matchAll(/<string>([^<]+)<\/string>/g)].map((m) => m[1].trim()).filter(Boolean);
-}
-
-function dictStringValue(text: string, key: string): string | null {
-  const idx = text.indexOf(`<key>${key}</key>`);
-  if (idx < 0) return null;
-  return (
-    text
-      .slice(idx)
-      .match(/<string>([^<]+)<\/string>/)?.[1]
-      ?.trim() ?? null
-  );
-}
-
-function entitlements(text: string): Record<string, string> {
-  const idx = text.indexOf('<key>Entitlements</key>');
-  if (idx < 0) return {};
-  const dict = text.slice(idx).match(/<dict>([\s\S]*?)<\/dict>/)?.[1] ?? '';
-  const out: Record<string, string> = {};
-  const re = /<key>([^<]+)<\/key>\s*<string>([^<]*)<\/string>/g;
-  for (const match of dict.matchAll(re)) out[match[1]] = match[2];
-  return out;
-}
-
-export function parseCodesignDetails(text: string): ParsedCodesign {
-  const authorityCount = [...text.matchAll(/^Authority=/gm)].length;
-  const signature = firstMatch(text, /^Signature=(.+)$/m);
-  return {
-    identifier: firstMatch(text, /^Identifier=(.+)$/m),
-    teamIdentifier: firstMatch(text, /^TeamIdentifier=(.+)$/m),
-    authorityCount,
-    signed: !!signature && !/adhoc/i.test(signature) && authorityCount > 0,
-  };
-}
-
-export function parseMobileProvisionPlist(text: string): ParsedMobileProvision {
-  const appIdentifier = entitlements(text)['application-identifier'] ?? dictStringValue(text, 'ApplicationIdentifierPrefix');
-  const bundleId = appIdentifier?.includes('.') ? appIdentifier.split('.').slice(1).join('.') : null;
-  return {
-    teamIds: arrayValues(text, 'TeamIdentifier'),
-    applicationIdentifier: appIdentifier ?? null,
-    bundleId,
-    expirationDate: firstMatch(text, /<key>ExpirationDate<\/key>\s*<date>([^<]+)<\/date>/),
-    provisionedDevices: text.includes('<key>ProvisionedDevices</key>') ? arrayValues(text, 'ProvisionedDevices') : null,
-    entitlements: entitlements(text),
-  };
 }
 
 /** PURE: the CFBundleSupportedPlatforms array from an Info.plist's XML text. */
@@ -107,142 +24,114 @@ export function destinationFromPlatforms(platforms: string[]): 'simulator' | 'de
   return 'unknown';
 }
 
-/** Read a .app bundle's build destination from Info.plist (best-effort; 'unknown' on any failure). */
-export function appBuildDestination(appPath: string): 'simulator' | 'device' | 'unknown' {
+/** PURE: parse a binary property list (`bplist00`, what Xcode writes into every built .app) into
+ *  plain JS values (dict > object, array > array, string/int/real/bool). Data, dates and UIDs come
+ *  back as null. Throws on a malformed file. */
+export function parseBinaryPlist(buf: Buffer): unknown {
+  if (buf.length < 40 || buf.toString('latin1', 0, 8) !== 'bplist00') throw new Error('not a binary plist');
+  const trailer = buf.length - 32;
+  const offsetSize = buf[trailer + 6];
+  const refSize = buf[trailer + 7];
+  const numObjects = Number(buf.readBigUInt64BE(trailer + 8));
+  const topObject = Number(buf.readBigUInt64BE(trailer + 16));
+  const tableOffset = Number(buf.readBigUInt64BE(trailer + 24));
+  const uint = (pos: number, size: number): number => {
+    let v = 0;
+    for (let i = 0; i < size; i++) v = v * 256 + buf[pos + i];
+    return v;
+  };
+  const offsetOf = (ref: number): number => {
+    if (ref >= numObjects) throw new Error('bad object ref');
+    return uint(tableOffset + ref * offsetSize, offsetSize);
+  };
+  const read = (ref: number, depth: number): unknown => {
+    if (depth > 64) throw new Error('plist too deep');
+    const pos = offsetOf(ref);
+    const marker = buf[pos];
+    const type = marker >> 4;
+    const info = marker & 0x0f;
+    // Length-carrying objects: a nibble of 0xF means the length follows as an int object.
+    const lengthAt = (): { len: number; start: number } => {
+      if (info !== 0x0f) return { len: info, start: pos + 1 };
+      const size = 1 << (buf[pos + 1] & 0x0f);
+      return { len: uint(pos + 2, size), start: pos + 2 + size };
+    };
+    switch (type) {
+      case 0x0:
+        return info === 0x09 ? true : info === 0x08 ? false : null;
+      case 0x1:
+        return uint(pos + 1, 1 << info);
+      case 0x2:
+        return info === 2 ? buf.readFloatBE(pos + 1) : buf.readDoubleBE(pos + 1);
+      case 0x5: {
+        const { len, start } = lengthAt();
+        return buf.toString('latin1', start, start + len);
+      }
+      case 0x6: {
+        const { len, start } = lengthAt();
+        const chars: number[] = [];
+        for (let i = 0; i < len; i++) chars.push(buf.readUInt16BE(start + i * 2));
+        return String.fromCharCode(...chars);
+      }
+      case 0xa: {
+        const { len, start } = lengthAt();
+        return Array.from({ length: len }, (_, i) => read(uint(start + i * refSize, refSize), depth + 1));
+      }
+      case 0xd: {
+        const { len, start } = lengthAt();
+        const out: Record<string, unknown> = {};
+        for (let i = 0; i < len; i++) {
+          const key = read(uint(start + i * refSize, refSize), depth + 1);
+          out[String(key)] = read(uint(start + (len + i) * refSize, refSize), depth + 1);
+        }
+        return out;
+      }
+      default:
+        return null; // data, date, UID, set: not needed for app identity
+    }
+  };
+  return read(topObject, 0);
+}
+
+function xmlEscape(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/** PURE: render a parsed plist dict's string / number / string-array values as the XML plist
+ *  fragments the regex readers here (and in artifacts/resolve.ts) understand. */
+export function plistDictToXml(dict: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const [key, value] of Object.entries(dict)) {
+    if (typeof value === 'string') parts.push(`<key>${xmlEscape(key)}</key><string>${xmlEscape(value)}</string>`);
+    else if (typeof value === 'number') parts.push(`<key>${xmlEscape(key)}</key><string>${value}</string>`);
+    else if (Array.isArray(value))
+      parts.push(
+        `<key>${xmlEscape(key)}</key><array>${value
+          .filter((v): v is string => typeof v === 'string')
+          .map((v) => `<string>${xmlEscape(v)}</string>`)
+          .join('')}</array>`,
+      );
+  }
+  return `<plist><dict>${parts.join('')}</dict></plist>`;
+}
+
+/** A .app's Info.plist as XML text, whether it is stored as XML or as a binary plist (Xcode
+ *  always writes binary). Null when missing or unreadable. */
+export function readInfoPlistText(appPath: string): string | null {
   try {
     const plist = join(appPath, 'Info.plist');
-    if (!existsSync(plist)) return 'unknown';
-    return destinationFromPlatforms(parseSupportedPlatforms(readFileSync(plist, 'utf8')));
+    if (!existsSync(plist)) return null;
+    const buf = readFileSync(plist);
+    if (buf.toString('latin1', 0, 8) !== 'bplist00') return buf.toString('utf8');
+    const parsed = parseBinaryPlist(buf);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? plistDictToXml(parsed as Record<string, unknown>) : null;
   } catch {
-    return 'unknown';
+    return null;
   }
 }
 
-function findExtractedApp(dir: string): string | null {
-  const payload = join(dir, 'Payload');
-  if (!existsSync(payload)) return null;
-  for (const name of readdirSync(payload)) {
-    const full = join(payload, name);
-    if (name.endsWith('.app') && statSync(full).isDirectory()) return full;
-  }
-  return null;
-}
-
-async function materializeApp(
-  path: string,
-): Promise<{ appPath: string | null; cleanup?: string; artifactType: IosSigningInspection['artifactType']; missing: string[] }> {
-  if (path.endsWith('.app')) return { appPath: path, artifactType: 'iphoneos-app', missing: [] };
-  if (extname(path).toLowerCase() !== '.ipa')
-    return { appPath: null, artifactType: 'unknown', missing: [`unsupported iOS artifact extension: ${basename(path)}`] };
-  const dir = mkdtempSync(join(tmpdir(), 'swipium-ipa-'));
-  const unzip = await run('unzip', ['-q', path, '-d', dir], { timeoutMs: 30000 });
-  if (unzip.code !== 0) {
-    rmSync(dir, { recursive: true, force: true });
-    return { appPath: null, artifactType: 'ipa', missing: [`could not extract ipa: ${unzip.stderr.trim() || `exit ${unzip.code}`}`] };
-  }
-  return { appPath: findExtractedApp(dir), cleanup: dir, artifactType: 'ipa', missing: [] };
-}
-
-export async function inspectIosSigningArtifact(
-  path: string,
-  opts: { requestedUdid?: string | null; expectedBundleId?: string | null } = {},
-): Promise<IosSigningInspection> {
-  const missing: string[] = [];
-  const warnings: string[] = [];
-  if (!existsSync(path)) {
-    return {
-      checked: true,
-      artifactPath: path,
-      artifactType: 'unknown',
-      appPath: null,
-      embeddedProvisionPresent: false,
-      simulatorBuildSuspected: false,
-      codesign: null,
-      mobileProvision: null,
-      requestedUdid: opts.requestedUdid ?? null,
-      ready: false,
-      missing: ['artifact path does not exist'],
-      warnings,
-    };
-  }
-  if (process.platform !== 'darwin') {
-    return {
-      checked: false,
-      artifactPath: path,
-      artifactType: path.endsWith('.ipa') ? 'ipa' : path.endsWith('.app') ? 'iphoneos-app' : 'unknown',
-      appPath: null,
-      embeddedProvisionPresent: false,
-      simulatorBuildSuspected: false,
-      codesign: null,
-      mobileProvision: null,
-      requestedUdid: opts.requestedUdid ?? null,
-      ready: false,
-      missing: ['iOS signing inspection requires macOS codesign/security tools'],
-      warnings,
-    };
-  }
-
-  const materialized = await materializeApp(path);
-  missing.push(...materialized.missing);
-  let codesign: ParsedCodesign | null = null;
-  let mobileProvision: ParsedMobileProvision | null = null;
-  let embeddedProvisionPresent = false;
-  try {
-    if (materialized.appPath) {
-      const provisionPath = join(materialized.appPath, 'embedded.mobileprovision');
-      embeddedProvisionPresent = existsSync(provisionPath);
-      const sign = await run('codesign', ['-dv', '--verbose=4', materialized.appPath], { timeoutMs: 15000 });
-      codesign = parseCodesignDetails(`${sign.stdout}\n${sign.stderr}`);
-      if (sign.code !== 0 || !codesign.signed) missing.push('codesign verification did not prove a non-ad-hoc signed app');
-      if (!embeddedProvisionPresent) {
-        missing.push('embedded.mobileprovision is missing');
-      } else {
-        const cms = await runBinary('security', ['cms', '-D', '-i', provisionPath], { timeoutMs: 15000 });
-        if (cms.code !== 0) missing.push('embedded.mobileprovision could not be decoded');
-        else mobileProvision = parseMobileProvisionPlist(cms.stdout.toString('utf8'));
-      }
-    } else if (!missing.length) {
-      missing.push('could not find .app inside artifact');
-    }
-  } finally {
-    if (materialized.cleanup) rmSync(materialized.cleanup, { recursive: true, force: true });
-  }
-
-  if (opts.expectedBundleId && mobileProvision?.bundleId && mobileProvision.bundleId !== opts.expectedBundleId) {
-    missing.push(`provisioned bundle id ${mobileProvision.bundleId} does not match expected ${opts.expectedBundleId}`);
-  }
-  if (codesign?.teamIdentifier && mobileProvision?.teamIds.length && !mobileProvision.teamIds.includes(codesign.teamIdentifier)) {
-    missing.push('codesign team identifier does not match provisioning profile team');
-  }
-  if (opts.requestedUdid && mobileProvision?.provisionedDevices && !mobileProvision.provisionedDevices.includes(opts.requestedUdid)) {
-    missing.push(`provisioning profile does not include requested device UDID ${opts.requestedUdid}`);
-  }
-  if (!opts.requestedUdid && mobileProvision?.provisionedDevices?.length)
-    warnings.push(
-      'provisioning profile has device UDIDs; pass a device UDID to verify this artifact is provisioned for the target hardware',
-    );
-  if (mobileProvision?.expirationDate) {
-    const expiresAt = Date.parse(mobileProvision.expirationDate);
-    if (!Number.isNaN(expiresAt) && expiresAt < Date.now()) {
-      missing.push(`embedded provisioning profile expired on ${mobileProvision.expirationDate}`);
-    }
-  }
-
-  const simulatorBuildSuspected = !!materialized.appPath && !embeddedProvisionPresent;
-  if (simulatorBuildSuspected) missing.push('no embedded.mobileprovision: this looks like a simulator .app, not a signed device build');
-
-  return {
-    checked: true,
-    artifactPath: path,
-    artifactType: materialized.artifactType,
-    appPath: materialized.appPath,
-    embeddedProvisionPresent,
-    simulatorBuildSuspected,
-    codesign,
-    mobileProvision,
-    requestedUdid: opts.requestedUdid ?? null,
-    ready: missing.length === 0,
-    missing,
-    warnings,
-  };
+/** Read a .app bundle's build destination from Info.plist, XML or binary (best-effort; 'unknown' on any failure). */
+export function appBuildDestination(appPath: string): 'simulator' | 'device' | 'unknown' {
+  const text = readInfoPlistText(appPath);
+  return text ? destinationFromPlatforms(parseSupportedPlatforms(text)) : 'unknown';
 }

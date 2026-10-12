@@ -7,6 +7,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseSnapshot } from '../snapshot/parse.js';
 import { settle } from '../snapshot/settle.js';
+import { waitForAppRender } from '../snapshot/renderWait.js';
+import { iosAlertCancel, permissionDeniedNote } from '../snapshot/overlays.js';
 import { structuredSignature } from '../explore/signatures.js';
 import { resolveFixtureValue, hasDisposableState } from '../fixtures/catalog.js';
 import type { Driver } from '../drivers/Driver.js';
@@ -91,6 +93,8 @@ export interface Observation {
   screenSignature: string;
   screenshotUri?: string;
   appError: boolean;
+  /** An iOS alert over the screen and its cancel button (null: no alert). */
+  alert: ReturnType<typeof iosAlertCancel>;
 }
 
 const APP_ERROR_RE = /(redbox|render error|unhandled (js )?exception|com\.facebook\.react.*Exception|ReactNativeJS.*Error)/i;
@@ -101,9 +105,12 @@ export async function observeScreen(sessions: SessionStore, session: Session, dr
   const foreground = await driver.foregroundOwner().catch(() => 'unknown');
   let xml = '';
   let elements: Observation['elements'] = [];
+  let alert: Observation['alert'] = null;
   try {
     xml = await driver.dumpXml();
-    elements = parseSnapshot(xml).elements;
+    const parsed = parseSnapshot(xml);
+    elements = parsed.elements;
+    alert = iosAlertCancel(parsed.allNodes);
   } catch {
     /* visual-only / no tree */
   }
@@ -122,7 +129,7 @@ export async function observeScreen(sessions: SessionStore, session: Session, dr
     .join(' ')
     .trim();
   const screenSignature = elements.length ? structuredSignature(elements, { foreground, keyboardShown: false }) : `visual:${foreground}`;
-  return { elements, foreground, visibleText, screenSignature, screenshotUri, appError: APP_ERROR_RE.test(xml) };
+  return { elements, foreground, visibleText, screenSignature, screenshotUri, appError: APP_ERROR_RE.test(xml), alert };
 }
 
 /** Resolve policy + environment + the generated-account decision for a session (read-only). */
@@ -198,8 +205,15 @@ export async function runFirstRun(
   let usedProvidedCreds = false;
   let reachedVerification = false;
   let refusedUnsafe = false;
+  let alertCloses = 0;
 
   const observe = () => observeScreen(sessions, session, driver);
+  // Don't classify the RN splash / "Bundling 47%" screen. Bounded, best-effort (a
+  // cancelled wait surfaces on the next observe).
+  await waitForAppRender(driver, {
+    visualOnly: session.mode === 'visual-fallback' || driver.kind === 'simulator',
+    timeoutMs: 20_000,
+  }).catch(() => undefined);
 
   const recordGenerated = (varName: string, field: FieldKind, value: string, secret: boolean, generator?: string) => {
     if (generatedVariables.some((g) => g.varName === varName)) return;
@@ -241,6 +255,9 @@ export async function runFirstRun(
   };
 
   const executeAction = async (action: PlannedAction, screen: string): Promise<'done' | 'blocked' | 'no_change'> => {
+    // `screen` is the foreground owner the action was planned on. qa_report counts a recorded
+    // action as evidence only when the app under test was in front.
+    const appForeground = !!session.appId && screen.split('/')[0].startsWith(session.appId) ? { appForeground: true } : {};
     const cx = Math.round((action.bounds?.[0] ?? 0) + ((action.bounds?.[2] ?? 0) - (action.bounds?.[0] ?? 0)) / 2);
     const cy = Math.round((action.bounds?.[1] ?? 0) + ((action.bounds?.[3] ?? 0) - (action.bounds?.[1] ?? 0)) / 2);
     if (action.type === 'type') {
@@ -263,6 +280,7 @@ export async function runFirstRun(
           secret: action.value.secret,
           exportability: action.value.secret ? 'needs-human-data' : 'semantic',
           screen,
+          ...appForeground,
         } as RecordedAction);
       }
       return 'done';
@@ -282,6 +300,7 @@ export async function runFirstRun(
         selectorKind: selectorKind(action.locator.strategy),
         exportability: 'semantic',
         screen,
+        ...appForeground,
       } as RecordedAction);
     }
     return 'done';
@@ -305,6 +324,37 @@ export async function runFirstRun(
     }
 
     const obs = await observe();
+    // An alert covers the screen ("Sign in to your Apple Account" with Close /
+    // Settings). Close it with its cancel button and look again; never classify or act on the screen
+    // behind it (that sign-up screen was reported as "home").
+    if (obs.alert) {
+      if (obs.alert.cancel && alertCloses < 3) {
+        alertCloses++;
+        progress(`first-run: closing the alert "${obs.alert.title}" with "${obs.alert.cancel.label}"`);
+        sessions.addWorkaround(
+          session,
+          `first run closed the alert "${obs.alert.title}" with "${obs.alert.cancel.label}"${permissionDeniedNote(obs.alert.cancel.label)}`,
+        );
+        await driver.tapXY(obs.alert.cancel.x, obs.alert.cancel.y).catch(() => {});
+        sessions.bump(session, 'actions');
+        await settle(driver, { timeoutMs: 4000 }).catch(() => {});
+        i--; // closing an alert is not a first-run step (bounded by alertCloses)
+        continue;
+      }
+      if (obs.screenshotUri) evidenceUris.push(obs.screenshotUri);
+      finalState = 'blocked';
+      stoppedReason = obs.alert.cancel
+        ? `the alert "${obs.alert.title}" kept coming back after ${alertCloses} closes`
+        : `an alert ("${obs.alert.title}") covers the app and has no cancel / close button`;
+      sessions.addNote(session, {
+        at: Date.now(),
+        workflow: 'first_run',
+        outcome: 'blocked',
+        reason: stoppedReason,
+        artifactUris: obs.screenshotUri ? [obs.screenshotUri] : undefined,
+      });
+      break;
+    }
     const staticCandidates = opts.appMap
       ? staticCandidatesForObservation(opts.appMap, { foreground: obs.foreground, visibleText: obs.visibleText })
       : undefined;

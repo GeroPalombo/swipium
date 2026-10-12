@@ -34,16 +34,3 @@ export function buildEvidence(uris: Array<string | EvidenceRef | undefined | nul
   }
   return out;
 }
-
-/** Pull ticket-like and requirement-like tokens out of a free-text label (tickets like "JIRA-123"; requirements shaped "<PROJECT>-REQ-<n>"). */
-export function extractRefs(text: string | undefined): { ticketRefs: string[]; requirementRefs: string[] } {
-  const ticketRefs: string[] = [];
-  const requirementRefs: string[] = [];
-  if (!text) return { ticketRefs, requirementRefs };
-  for (const m of text.matchAll(/\b([A-Z][A-Z0-9]+-(?:REQ-)?\d+)\b/g)) {
-    const token = m[1];
-    if (/-REQ-/.test(token)) requirementRefs.push(token);
-    else ticketRefs.push(token);
-  }
-  return { ticketRefs: Array.from(new Set(ticketRefs)), requirementRefs: Array.from(new Set(requirementRefs)) };
-}

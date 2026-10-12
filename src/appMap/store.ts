@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ensureGitignored } from '../lib/gitignore.js';
-import { cleanupOrphanTmpFiles, withFileLock, withFileLockAsync, writeFileAtomicSync } from '../lib/lockfile.js';
+import { cleanupOrphanTmpFiles, withFileLock, writeFileAtomicSync } from '../lib/lockfile.js';
 import { migrateAppMap, type MigrationResult } from './migrations.js';
 import type { AppKnowledgeMap, ProjectIdentity } from './schema.js';
 import type { CodeIndex } from './codeIndex.js';
@@ -41,13 +41,6 @@ export function appMapResourceUri(root: string): string {
 export function withAppMapLock<T>(root: string, fn: () => T): T {
   mkdirSync(join(root, SWIPIUM), { recursive: true }); // the lock dir's parent must exist before mkdir(lock)
   return withFileLock(join(root, SWIPIUM, 'app-map.lock'), fn);
-}
-
-/** Async twin of withAppMapLock for async critical sections: the lock is heartbeated while `fn`
- *  runs, so a long holder is never judged stale and taken over (H8). */
-export function withAppMapLockAsync<T>(root: string, fn: () => Promise<T>): Promise<T> {
-  mkdirSync(join(root, SWIPIUM), { recursive: true });
-  return withFileLockAsync(join(root, SWIPIUM, 'app-map.lock'), fn);
 }
 
 export interface LoadResult {

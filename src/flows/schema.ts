@@ -101,6 +101,8 @@ function normalizeStep(raw: unknown, i: number, errors: string[]): FlowStep | nu
     case 'clearOverlay':
       return { kind: 'clearOverlay' };
     case 'waitForIdle':
+      if (v != null && (typeof v !== 'number' || !Number.isFinite(v) || v < 0))
+        return err('waitForIdle takes an optional non-negative timeout in ms (or no value).');
       return { kind: 'waitForIdle', timeoutMs: typeof v === 'number' ? v : undefined };
     case 'tap':
       return str(v) ? { kind: 'tap', selector: v } : err('tap needs a string selector.');
@@ -165,6 +167,8 @@ function normalizeStep(raw: unknown, i: number, errors: string[]): FlowStep | nu
       return str(v) ? { kind: 'openUrl', url: v } : err('openUrl needs a string url.');
     case 'waitForVisible':
       if (str(v)) return { kind: 'waitForVisible', query: v };
+      if (obj(v) && v.timeoutMs != null && (typeof v.timeoutMs !== 'number' || !(v.timeoutMs >= 0)))
+        return err('waitForVisible timeoutMs must be a non-negative number of ms.');
       if (obj(v) && (str(v.text) || str(v.id) || str(v['accessibility id'])))
         return {
           kind: 'waitForVisible',
@@ -173,7 +177,8 @@ function normalizeStep(raw: unknown, i: number, errors: string[]): FlowStep | nu
         };
       return err('waitForVisible needs a string (or { text|id|"accessibility id", timeoutMs }).');
     case 'wait':
-      if (typeof v === 'number') return { kind: 'wait', ms: v };
+      if (typeof v === 'number')
+        return Number.isFinite(v) && v >= 0 ? { kind: 'wait', ms: v } : err('wait ms must be a non-negative number.');
       if (obj(v) && (str(v.text) || str(v.id))) return { kind: 'wait', query: (v.text ?? v.id) as string };
       return err('wait needs ms (number) or { text|id }.');
     case 'networkOffline':
@@ -324,11 +329,14 @@ export function flowEnvAllowed(name: string): boolean {
   return FLOW_ENV_NAME.test(name);
 }
 
-/** Value of `${name}`: explicit vars first, then process.env for SWIPIUM_* names only. */
+/** Value of `${name}`: explicit vars first, then process.env for SWIPIUM_* names only. An empty env
+ *  value counts as missing: MCP configs often carry a blank placeholder ("SWIPIUM_TEST_PASSWORD": ""),
+ *  which must block as missing test data rather than type "" and pass. */
 export function lookupFlowVar(name: string, vars: Record<string, string>): string | undefined {
   const v = vars[name];
   if (v != null) return v;
-  return flowEnvAllowed(name) ? process.env[name] : undefined;
+  const env = flowEnvAllowed(name) ? process.env[name] : undefined;
+  return env === '' ? undefined : env;
 }
 
 /** True when a string references at least one `${VAR}`. */

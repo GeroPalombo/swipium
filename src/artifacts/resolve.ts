@@ -9,11 +9,11 @@
 // enrichment (aapt2 app id / native ABIs, Info.plist bundle id) is an optional async pass so
 // the core resolution works (and is unit-testable) without any Android/Xcode toolchain.
 
-import { existsSync, readdirSync, statSync, readFileSync } from 'node:fs';
-import { join, basename, sep } from 'node:path';
+import { existsSync, readdirSync, statSync } from 'node:fs';
+import { join, basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { apkBadging } from '../lib/android.js';
-import { parseSupportedPlatforms } from '../ios/signing.js';
+import { appBuildDestination, parseSupportedPlatforms, readInfoPlistText } from '../ios/signing.js';
 import type { FailureCode } from '../oracle/failures.js';
 
 export type ArtifactType = 'apk' | 'aab' | 'ipa' | 'app';
@@ -69,6 +69,8 @@ export interface ResolveOptions {
   requireInstallableOn?: InstallTarget;
   /** Bounded recursion depth for the project walk (default 7). */
   maxDepth?: number;
+  /** Only these artifact paths may be picked (a prebuilt-only root's near-root set). */
+  onlyPaths?: string[];
 }
 
 export interface ResolveResult {
@@ -100,6 +102,14 @@ function iosAppInstallTargets(path: string): { targets: InstallTarget[]; warning
   if (p.includes('iphoneos') || p.includes('-iphoneos')) {
     return { targets: ['ios-real'], warnings: ['device build (.app): installing on a real device requires signing'] };
   }
+  // Neutral path: the bundle's own Info.plist (CFBundleSupportedPlatforms, XML or binary) decides.
+  const fromPlist = appBuildDestination(path);
+  if (fromPlist === 'simulator') return { targets: ['ios-simulator'], warnings: [] };
+  if (fromPlist === 'device')
+    return {
+      targets: ['ios-real'],
+      warnings: ['device build (.app, CFBundleSupportedPlatforms=iPhoneOS): installing on a real device requires signing'],
+    };
   // Unknown destination: assume simulator (the common QA-first case) but warn.
   return { targets: ['ios-simulator'], warnings: ['could not infer simulator vs device from path, assuming simulator'] };
 }
@@ -130,6 +140,19 @@ function baseInstallTargets(
   }
 }
 
+/** Compare normalized paths, so a root spelled `/x/` or `/x/a/..` still contains `/x/b.app`. */
+export function isOutsideRoot(path: string, projectRoot: string): boolean {
+  const rel = relative(resolve(projectRoot), resolve(path));
+  return rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+}
+
+/** XCTest / WebDriverAgent runner bundles (WebDriverAgentRunner-Runner.app, FooUITests-Runner.app):
+ *  test harnesses, never the app under test. Flutter's own `Runner.app` is kept. */
+export function isTestRunnerBundle(path: string): boolean {
+  const name = basename(path);
+  return /^WebDriverAgent/i.test(name) || /.-Runner\.app$/i.test(name) || /\.xctrunner$/i.test(name);
+}
+
 function makeCandidate(path: string, type: ArtifactType, source: string, projectRoot: string): ArtifactCandidate | null {
   let st;
   try {
@@ -151,7 +174,7 @@ function makeCandidate(path: string, type: ArtifactType, source: string, project
     sizeBytes,
     mtimeMs: st.mtimeMs,
     buildType: classifyBuildType(path),
-    outsideRoot: !path.startsWith(projectRoot + sep) && path !== projectRoot,
+    outsideRoot: isOutsideRoot(path, projectRoot),
     source,
     installableOn: targets,
     convertibleTo,
@@ -185,7 +208,7 @@ function artifactType(name: string): ArtifactType | null {
   return m ? (m[1] as ArtifactType) : null;
 }
 
-/** Label the search location a hit came from, for the "exactly where I looked" report (§3.4). */
+/** Label the search location a hit came from, for the "exactly where I looked" report. */
 function sourceLabel(relDir: string, type: ArtifactType): string {
   const r = relDir.toLowerCase();
   if (r.includes('build/app/outputs/flutter-apk')) return 'flutter apk output';
@@ -203,8 +226,29 @@ function sourceLabel(relDir: string, type: ArtifactType): string {
  * directory it descends into so the caller can report exact search locations. `.app` is a
  * directory: we record it as a hit and do NOT descend into it.
  */
-function walk(root: string, projectRoot: string, maxDepth: number, out: ArtifactCandidate[], searched: Set<string>, depth = 0): void {
+/** Hard bounds on one artifact walk, on top of maxDepth (a walk of a disk-sized tree ran
+ * for minutes). Real app trees (node_modules/build dirs skipped) stay far below both. */
+export const MAX_WALK_DIRS = 20_000;
+export const MAX_WALK_MS = 10_000;
+interface WalkBudget {
+  deadline: number;
+  truncated: boolean;
+}
+
+function walk(
+  root: string,
+  projectRoot: string,
+  maxDepth: number,
+  out: ArtifactCandidate[],
+  searched: Set<string>,
+  depth = 0,
+  budget?: WalkBudget,
+): void {
   if (depth > maxDepth) return;
+  if (budget && (searched.size >= MAX_WALK_DIRS || Date.now() > budget.deadline)) {
+    budget.truncated = true;
+    return;
+  }
   let entries;
   try {
     entries = readdirSync(root, { withFileTypes: true });
@@ -213,8 +257,15 @@ function walk(root: string, projectRoot: string, maxDepth: number, out: Artifact
   }
   searched.add(root);
   for (const e of entries) {
+    // Bound per entry too; classifying hundreds of .app bundles (Info.plist reads)
+    // in one folder ran far past the deadline.
+    if (budget && Date.now() > budget.deadline) {
+      budget.truncated = true;
+      return;
+    }
     const full = join(root, e.name);
     const type = artifactType(e.name);
+    if (type === 'app' && e.isDirectory() && isTestRunnerBundle(full)) continue;
     if (type === 'app' && e.isDirectory()) {
       const c = makeCandidate(full, 'app', sourceLabel(root.slice(projectRoot.length + 1), 'app'), projectRoot);
       if (c) out.push(c);
@@ -222,7 +273,7 @@ function walk(root: string, projectRoot: string, maxDepth: number, out: Artifact
     }
     if (e.isDirectory()) {
       if (SKIP_DIRS.has(e.name) || e.name.startsWith('.')) continue;
-      walk(full, projectRoot, maxDepth, out, searched, depth + 1);
+      walk(full, projectRoot, maxDepth, out, searched, depth + 1, budget);
     } else if (type && type !== 'app') {
       const c = makeCandidate(full, type, sourceLabel(root.slice(projectRoot.length + 1), type), projectRoot);
       if (c) out.push(c);
@@ -293,17 +344,16 @@ export async function enrichCandidates(candidates: ArtifactCandidate[], limit = 
   return candidates;
 }
 
-/** Read identity + version + supported platforms from a .app's Info.plist (XML plists only). */
+/** Read identity + version + supported platforms from a .app's Info.plist (XML or binary). */
 export function appInfoPlistMeta(appDir: string): {
   bundleId: string | null;
   versionName: string | null;
   versionCode: string | null;
   supportedPlatforms: string[];
 } {
-  const plist = join(appDir, 'Info.plist');
-  if (!existsSync(plist)) return { bundleId: null, versionName: null, versionCode: null, supportedPlatforms: [] };
+  const raw = readInfoPlistText(appDir);
+  if (raw === null) return { bundleId: null, versionName: null, versionCode: null, supportedPlatforms: [] };
   try {
-    const raw = readFileSync(plist, 'utf8');
     const str = (key: string): string | null => raw.match(new RegExp(`<key>${key}</key>\\s*<string>([^<]+)</string>`))?.[1]?.trim() ?? null;
     return {
       bundleId: str('CFBundleIdentifier'),
@@ -316,12 +366,11 @@ export function appInfoPlistMeta(appDir: string): {
   }
 }
 
-/** Read CFBundleIdentifier from a .app's Info.plist (XML plists only; binary plists are skipped). */
+/** Read CFBundleIdentifier from a .app's Info.plist (XML or binary). */
 export function bundleIdFromApp(appDir: string): string | null {
-  const plist = join(appDir, 'Info.plist');
-  if (!existsSync(plist)) return null;
+  const raw = readInfoPlistText(appDir);
+  if (raw === null) return null;
   try {
-    const raw = readFileSync(plist, 'utf8');
     const m = raw.match(/<key>CFBundleIdentifier<\/key>\s*<string>([^<]+)<\/string>/);
     return m ? m[1].trim() : null;
   } catch {
@@ -364,7 +413,7 @@ function validateExplicit(path: string, projectRoot: string): ArtifactCandidate 
  * filesystem reads + (when enriching) aapt2/Info.plist; never installs or builds.
  */
 export async function resolveArtifact(opts: ResolveOptions, enrich = true): Promise<ResolveResult> {
-  const { projectRoot } = opts;
+  const projectRoot = resolve(opts.projectRoot);
   const maxDepth = opts.maxDepth ?? 7;
   const warnings: string[] = [];
 
@@ -394,7 +443,12 @@ export async function resolveArtifact(opts: ResolveOptions, enrich = true): Prom
 
   const found: ArtifactCandidate[] = [];
   const searched = new Set<string>();
-  walk(projectRoot, projectRoot, maxDepth, found, searched);
+  const budget: WalkBudget = { deadline: Date.now() + MAX_WALK_MS, truncated: false };
+  walk(projectRoot, projectRoot, maxDepth, found, searched, 0, budget);
+  if (budget.truncated)
+    warnings.push(
+      `artifact search stopped early (over ${MAX_WALK_DIRS} directories or ${MAX_WALK_MS / 1000} s under ${projectRoot}); pass the app directory as projectRoot, or an explicit artifact path`,
+    );
 
   // Opt-in: scan Xcode DerivedData (always outside the project root).
   if (opts.allowOutsideRoot && (opts.platform === 'ios' || opts.platform === 'any' || opts.platform == null)) {
@@ -403,6 +457,11 @@ export async function resolveArtifact(opts: ResolveOptions, enrich = true): Prom
   }
 
   const searchedLocations = [...searched].sort();
+  if (opts.onlyPaths) {
+    // A prebuilt-only root installs one of ITS near-root artifacts, never a deeper hit.
+    const allowed = new Set(opts.onlyPaths.map((p) => resolve(p)));
+    for (let i = found.length - 1; i >= 0; i--) if (!allowed.has(resolve(found[i].path))) found.splice(i, 1);
+  }
   if (found.length === 0) {
     return {
       candidates: [],

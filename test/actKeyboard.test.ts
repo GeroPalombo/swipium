@@ -1,10 +1,10 @@
 // qa_act handler-level coverage (fake driver) for the execution-layer fixes:
-//  H5  keyboard obstruction — hide the IME (known frame only), re-resolve, tap; else
-//      KEYBOARD_OBSTRUCTION; unknown/oversized frames tap with a warning; and the
-//      no-change press retry never re-taps while the IME is up.
-//  #8  awaitIme field-hop floor.
-//  #10 scroll untilVisible checks visibility first and stops at the end of the list.
-//  H2  driver error text is redacted before it reaches `what`.
+//  - keyboard obstruction: hide the IME (known frame only), re-resolve, tap; else
+//    KEYBOARD_OBSTRUCTION; unknown/oversized frames tap with a warning; and the
+//    no-change press retry never re-taps while the IME is up.
+//  - awaitIme field-hop floor.
+//  - scroll untilVisible checks visibility first and stops at the end of the list.
+//  - driver error text is redacted before it reaches `what`.
 
 import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -176,7 +176,7 @@ describe('qa_act execution-layer fixes (fake driver)', () => {
     rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  it('H5: hides the keyboard, re-resolves the moved button, and taps its NEW position', async () => {
+  it('hides the keyboard, re-resolves the moved button, and taps its NEW position', async () => {
     const fake = new KbFake(screen(1700));
     const sessionId = await start(fake);
     const ref = await refOf(sessionId, 'Sign in');
@@ -189,7 +189,7 @@ describe('qa_act execution-layer fixes (fake driver)', () => {
     expect(fake.got('pressKey')).toHaveLength(0); // no blind BACK
   }, 20_000);
 
-  it('H5: returns KEYBOARD_OBSTRUCTION without tapping when the keyboard cannot be hidden', async () => {
+  it('returns KEYBOARD_OBSTRUCTION without tapping when the keyboard cannot be hidden', async () => {
     const fake = new KbFake(screen(1700));
     const sessionId = await start(fake);
     const ref = await refOf(sessionId, 'Sign in');
@@ -202,7 +202,7 @@ describe('qa_act execution-layer fixes (fake driver)', () => {
     expect(fake.got('pressXY')).toHaveLength(0);
   }, 20_000);
 
-  it('H5: unknown IME frame + target in the bottom 40% → tapped with a warning, keyboard NOT hidden', async () => {
+  it('unknown IME frame + target in the bottom 40%: tapped with a warning, keyboard NOT hidden', async () => {
     const fake = new KbFake(screen(1300)); // center y=1350, inside the old bottom-40% guess
     fake.imeRect = null;
     const sessionId = await start(fake);
@@ -215,7 +215,7 @@ describe('qa_act execution-layer fixes (fake driver)', () => {
     expect((s.warnings as string[]).join(' ')).toContain('keyboard is up; could not determine its area');
   }, 20_000);
 
-  it('H5: accessory toolbar / suggestion chip just ABOVE a known keyboard frame → tapped, no hide', async () => {
+  it('accessory toolbar / suggestion chip just ABOVE a known keyboard frame: tapped, no hide', async () => {
     const fake = new KbFake(screen(1300)); // chip at y 1300..1400, keyboard starts at 1450
     fake.imeRect = [0, 1450, 1080, 1920];
     const sessionId = await start(fake);
@@ -228,7 +228,7 @@ describe('qa_act execution-layer fixes (fake driver)', () => {
     expect(fake.got('tapXY').map((c) => c.a)).toEqual([[540, 1350]]);
   }, 20_000);
 
-  it('H5: an oversized IME frame (> 55% of the screen) is treated as unknown — no hide, warning', async () => {
+  it('an oversized IME frame (> 55% of the screen) is treated as unknown: no hide, warning', async () => {
     const fake = new KbFake(screen(1300));
     fake.imeRect = [0, 200, 1080, 1920]; // near-full-screen IME window, not a keyboard rect
     const sessionId = await start(fake);
@@ -241,7 +241,7 @@ describe('qa_act execution-layer fixes (fake driver)', () => {
     expect((s.warnings as string[]).join(' ')).toContain('could not determine its area');
   }, 20_000);
 
-  it('H5: a KEYBOARD_OBSTRUCTION after actually hiding the keyboard says so (changedState:true)', async () => {
+  it('a KEYBOARD_OBSTRUCTION after actually hiding the keyboard says so (changedState:true)', async () => {
     const fake = new KbFake(screen(1700));
     const sessionId = await start(fake);
     const ref = await refOf(sessionId, 'Sign in');
@@ -274,7 +274,7 @@ describe('qa_act execution-layer fixes (fake driver)', () => {
     expect(s2.warnings).toBeUndefined();
   }, 20_000);
 
-  it('H5: with the IME up, an unchanged-screen tap is NOT retried as a press', async () => {
+  it('with the IME up, an unchanged-screen tap is NOT retried as a press', async () => {
     const fake = new KbFake(screen(600)); // well above the keyboard
     const sessionId = await start(fake);
     const ref = await refOf(sessionId, 'Sign in');
@@ -287,7 +287,7 @@ describe('qa_act execution-layer fixes (fake driver)', () => {
     expect(fake.got('pressXY')).toHaveLength(0);
   }, 20_000);
 
-  it('#8: typing after a field hop (IME already up) waits at least the 250ms floor', async () => {
+  it('typing after a field hop (IME already up) waits at least the 250ms floor', async () => {
     const fake = new KbFake(screen(600));
     const sessionId = await start(fake);
     fake.ime = true;
@@ -298,7 +298,7 @@ describe('qa_act execution-layer fixes (fake driver)', () => {
     expect(typed.t - tap.t).toBeGreaterThanOrEqual(240);
   }, 20_000);
 
-  it('#10: scroll untilVisible does not swipe when the target is already visible', async () => {
+  it('scroll untilVisible does not swipe when the target is already visible', async () => {
     const fake = new KbFake(screen(600));
     const sessionId = await start(fake);
     const s = await act(sessionId, { action: 'scroll', direction: 'down', untilVisible: { text: 'Sign in' } });
@@ -307,7 +307,7 @@ describe('qa_act execution-layer fixes (fake driver)', () => {
     expect(fake.got('swipe')).toHaveLength(0);
   }, 20_000);
 
-  it('#10: scroll untilVisible stops at the end of the list and reports it', async () => {
+  it('scroll untilVisible stops at the end of the list and reports it', async () => {
     const fake = new KbFake(screen(600));
     const sessionId = await start(fake);
     const s = await act(sessionId, { action: 'scroll', direction: 'down', untilVisible: { text: 'Nowhere' }, maxScrolls: 8 });
@@ -316,7 +316,7 @@ describe('qa_act execution-layer fixes (fake driver)', () => {
     expect(fake.got('swipe')).toHaveLength(1);
   }, 20_000);
 
-  it('#10: a list that moved but shows the same labels is not treated as the end (device regression)', async () => {
+  it('a list that moved but shows the same labels is not treated as the end (device regression)', async () => {
     // Swipe 1 moves the content (same labels, new positions); swipe 2 reveals the target. A
     // label-only comparison stopped after swipe 1 with endOfList mid-list on a real emulator.
     const screens = [screen(700), screen(800, ' more')];
@@ -331,7 +331,7 @@ describe('qa_act execution-layer fixes (fake driver)', () => {
     expect(fake.got('swipe')).toHaveLength(2);
   }, 20_000);
 
-  it('H2: a driver error echoing the typed secret is redacted in `what`', async () => {
+  it('a driver error echoing the typed secret is redacted in `what`', async () => {
     const fake = new KbFake(screen(600));
     const sessionId = await start(fake);
     fake.inputError = new Error('`adb -s x shell input text Hunter2\\!Secret` exited 1: boom Hunter2!Secret');

@@ -1,4 +1,4 @@
-// I1: MCP conformance over REAL stdio. Every other MCP test uses InMemoryTransport, which never
+// MCP conformance over REAL stdio. Every other MCP test uses InMemoryTransport, which never
 // exercises the binary's stdout framing, stderr logging, stdin EOF handling or process exit.
 // Here the project is compiled into a temp outDir (never ./dist, which other tests and the
 // release build use) and spawned as `node <tmp>/dist/index.js` with the SDK's

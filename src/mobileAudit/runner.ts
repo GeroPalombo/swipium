@@ -12,7 +12,7 @@ import { runWithSignal, throwIfCancelled } from '../lib/abortScope.js';
 import { runFirstRun } from '../firstRun/firstRunRunner.js';
 import type { Driver } from '../drivers/Driver.js';
 import type { Session, SessionStore } from '../session/store.js';
-import { checksForProfile, type AuditProfile } from './profiles.js';
+import type { AuditProfile } from './profiles.js';
 import * as C from './checks.js';
 import type { RawCheckResult } from './checks.js';
 import { snapshotText, foreground, type AuditEvidenceCtx } from './evidence.js';
@@ -32,9 +32,15 @@ export interface MobileAuditRunOptions {
   networkChangeApproved?: boolean;
 }
 
-/** True when a profile's execution toggles airplane mode (needs network_change consent). */
-export function auditChangesNetwork(profile: AuditProfile): boolean {
+/** True when a profile's execution toggles airplane mode (needs network_change consent). An iOS
+ *  backend can't toggle the network (qa_network is Android-only), so it never asks. */
+export function auditChangesNetwork(profile: AuditProfile, driverKind?: Driver['kind']): boolean {
+  if (driverKind && isIosKind(driverKind)) return false;
   return profile === 'resilience' || profile === 'release_gate';
+}
+
+function isIosKind(kind: Driver['kind']): boolean {
+  return kind === 'wda' || kind === 'simulator';
 }
 
 /** The consent request a caller should raise before executing a network-changing audit. Same
@@ -120,6 +126,7 @@ export async function runMobileAudit(
       workflow: raw.workflow,
       screenId: raw.screenId,
       nextStep: raw.nextStep,
+      ...(raw.failureCode ? { failureCode: raw.failureCode } : {}),
     });
   };
 
@@ -140,11 +147,25 @@ export async function runMobileAudit(
       await finalize('paywall', 'Paywall classification', await C.checkPaywall(ev, text));
       await finalize('external_links', 'External links', C.checkExternalLinks());
     } else if (prof === 'resilience') {
-      const networkApproved = opts.networkChangeApproved === true;
+      const networkUnsupported = isIosKind(driver.kind);
+      const networkApproved = opts.networkChangeApproved === true && !networkUnsupported;
       let preAudit: boolean | undefined;
       let auditOwnsRestore = false;
       try {
-        if (!networkApproved) {
+        if (networkUnsupported) {
+          // iOS can't toggle the network; skip without touching (or recording) network state.
+          await finalize('offline_entry', 'Offline entry', {
+            status: 'skipped',
+            reason:
+              'network manipulation is not available on iOS simulators (qa_network is Android-only); verify offline behavior manually',
+            evidenceUris: [],
+          });
+          await finalize('network_restoration', 'Network restoration', {
+            status: 'skipped',
+            reason: 'network was not changed (not available on this backend)',
+            evidenceUris: [],
+          });
+        } else if (!networkApproved) {
           await finalize('offline_entry', 'Offline entry', {
             status: 'blocked',
             reason: 'airplane-mode toggle needs network_change consent; the device network was not touched',
@@ -161,7 +182,7 @@ export async function runMobileAudit(
           // restores it (not a blind "airplane OFF" that would flip a device that started offline).
           preAudit = await driver.airplaneOn().catch(() => undefined);
           if (!session.network?.changed) {
-            session.network = { changed: true, originalAirplane: preAudit ?? false };
+            session.network = { changed: true, originalAirplane: preAudit ?? false, ownerPid: process.pid };
             auditOwnsRestore = true;
             sessions.persist(session);
           }
@@ -444,9 +465,4 @@ async function runAccountCycle(
     }
   }
   return runState;
-}
-
-/** Plan-only: the profile checklist + account-cycle safety, without driving the device. */
-export function planMobileAudit(profile: AuditProfile): { checks: ReturnType<typeof checksForProfile> } {
-  return { checks: checksForProfile(profile) };
 }

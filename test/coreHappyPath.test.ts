@@ -1,4 +1,4 @@
-// Handler-level happy-path coverage (v1-mvp-plan P1 §6): drive the real server through an
+// Handler-level happy-path coverage: drive the real server through an
 // in-memory MCP client with a FakeDriver injected via the attach.ts test seam —
 // qa_start_session → qa_snapshot → qa_act → qa_screenshot → qa_report — asserting the
 // public contracts (element refs, resolved actions, swipium:// artifact URIs) without

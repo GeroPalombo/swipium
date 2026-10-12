@@ -1,4 +1,4 @@
-// Overlay detection + tap-obstruction analysis (Phase 2 CR4). Works from a single-window
+// Overlay detection + tap-obstruction analysis. Works from a single-window
 // uiautomator dump (allNodes, DFS-ordered). Toasts are NOT in the dump (separate windows);
 // keyboard + foreground-owner are detected by the caller via the driver and merged in.
 
@@ -25,7 +25,8 @@ export interface Overlay {
 }
 
 const LOGBOX_RE = /open debugger|view warnings|LogBox|\b\d+ (warning|error)s?\b/i;
-const REDBOX_RE = /unhandled (js|javascript) exception|render error|reload\b.*\bdismiss/i;
+const REDBOX_RE =
+  /unhandled (js|javascript) exception|render error|reload\b.*\bdismiss|EarlyJsError|\[runtime not ready\]|cannot find native module|app entry not found|entry point named .{1,40} (?:was|has) not (?:been )?registered/i;
 
 /** Overlays visible in the current window's UI tree (not toasts/IME/foreign; see callers). */
 const DISMISS_RE = /close|dismiss|got it|\bok\b|minimize|×|✕|✖/i;
@@ -132,6 +133,20 @@ export function detectTreeOverlays(allNodes: RawNode[], screen?: [number, number
   const dlg = allNodes.find((n) => /AlertDialog|android:id\/(button1|alertTitle)/.test(`${n.cls} ${n.id}`));
   if (dlg) out.push({ type: 'native_dialog', detail: `native dialog (${dlg.cls.split('.').pop()})`, bounds: dlg.bounds });
 
+  // iOS alert (WDA source). A SpringBoard permission prompt is in the source when WDA's
+  // respectSystemAlerts is on (lib/wda.ts WDA_DEFAULT_SETTINGS); its buttons say Allow / Don't Allow.
+  const iosAlert = allNodes.find((n) => n.cls === 'XCUIElementTypeAlert');
+  if (iosAlert) {
+    const inAlert = allNodes.filter((m) => m.dfs > iosAlert.dfs && m.dfs <= iosAlert.subtreeEnd);
+    const permission = inAlert.some((m) => /\ballow\b|permitir|autoriser|zulassen|consentire/i.test(`${m.text} ${m.desc}`));
+    const title = (iosAlert.desc || iosAlert.text || inAlert.find((m) => m.text)?.text || '').slice(0, 60);
+    out.push({
+      type: permission ? 'permission_dialog' : 'native_dialog',
+      detail: `iOS alert${title ? `: "${title}"` : ''}`,
+      bounds: iosAlert.bounds,
+    });
+  }
+
   // Material Snackbar (in-tree, by id).
   const snack = allNodes.find((n) => /snackbar_text|snackbar_action/.test(n.id));
   if (snack) out.push({ type: 'snackbar', detail: 'Material snackbar', bounds: snack.bounds });
@@ -149,7 +164,45 @@ export function detectTreeOverlays(allNodes: RawNode[], screen?: [number, number
   return out;
 }
 
-const UNABLE_TO_LOAD_RE = /unable to load script|loadJSBundleFromAssets|index\.android\.bundle|could not connect to development server/i;
+// The cancel side of an alert, most specific first. "OK" only dismisses a single-button alert.
+const ALERT_CANCEL_RE = /^(cancel|close|not now|dismiss|don.?t allow|no(,? thanks)?|maybe later|later|skip)$/i;
+const ALERT_ACK_RE = /^(ok|okay|got it)$/i;
+
+/**
+ * The iOS alert in this tree (XCUIElementTypeAlert) and its cancel-style button, so
+ * first-run and exploration close it ("Close" on "Sign in to your Apple Account") instead of
+ * following its other button ("Settings" opened iOS Settings). `cancel` is undefined when the alert
+ * has no recognizable cancel; null when there is no alert. PURE.
+ */
+export function iosAlertCancel(allNodes: RawNode[]): { title: string; cancel?: { label: string; x: number; y: number } } | null {
+  const alert = allNodes.find((n) => n.cls === 'XCUIElementTypeAlert');
+  if (!alert) return null;
+  const inAlert = allNodes.filter((m) => m.dfs > alert.dfs && m.dfs <= alert.subtreeEnd);
+  const title = (alert.desc || alert.text || inAlert.find((m) => m.text)?.text || '').slice(0, 60);
+  const buttons = inAlert.filter((m) => /XCUIElementTypeButton$/.test(m.cls) && m.bounds[2] > m.bounds[0] && m.bounds[3] > m.bounds[1]);
+  const name = (m: RawNode) => (m.text || m.desc || m.id || '').trim();
+  const btn =
+    buttons.find((m) => ALERT_CANCEL_RE.test(name(m))) ??
+    (buttons.length === 1 && ALERT_ACK_RE.test(name(buttons[0])) ? buttons[0] : undefined);
+  if (!btn) return { title };
+  return {
+    title,
+    cancel: { label: name(btn), x: Math.round((btn.bounds[0] + btn.bounds[2]) / 2), y: Math.round((btn.bounds[1] + btn.bounds[3]) / 2) },
+  };
+}
+
+/** Closing an iOS permission prompt with "Don't Allow" denies the permission, and the denial
+ *  persists on the simulator. Text to append to the "closed the alert" note so the result says so
+ *  ('' for any other cancel button). PURE. */
+export function permissionDeniedNote(cancelLabel: string): string {
+  return /^don.?t allow$/i.test(cancelLabel.trim())
+    ? ' (this DENIED the permission; the denial persists: undo with qa_ios { action:"privacy_reset", bundleId } before flows that need it)'
+    : '';
+}
+
+// Android + iOS wording (iOS: "No script URL provided. Make sure the packager is running…").
+const UNABLE_TO_LOAD_RE =
+  /unable to load script|loadJSBundleFromAssets|index\.android\.bundle|could not connect to development server|no script url provided|unsanitizedScriptURLString/i;
 
 /** Detect the RN red-box and whether it's the fatal "unable to load JS bundle" variant. */
 export function detectRedBox(allNodes: RawNode[]): { present: boolean; unableToLoadScript: boolean } {
@@ -158,9 +211,15 @@ export function detectRedBox(allNodes: RawNode[]): { present: boolean; unableToL
   return { present, unableToLoadScript: UNABLE_TO_LOAD_RE.test(joined) };
 }
 
+/** True when the foreground owner (`pkg/activity`, `pkg:process` or a bundle id) is exactly the app under test. */
+export function ownsForeground(appId: string, foreground: string): boolean {
+  const owner = foreground.split('/')[0];
+  return owner === appId || owner.startsWith(`${appId}:`);
+}
+
 /** Classify the foreground owner string into an overlay class (system/foreign surfaces). */
 export function classifyForeground(appId: string | undefined, foreground: string): Overlay | null {
-  if (appId && foreground.startsWith(appId)) return null;
+  if (appId && ownsForeground(appId, foreground)) return null;
   if (/permissioncontroller/i.test(foreground)) return { type: 'permission_dialog', detail: foreground };
   if (/accountpicker|account\.|gms/i.test(foreground)) return { type: 'account_picker', detail: foreground };
   if (/launcher/i.test(foreground)) return null; // not an overlay; handled by health
@@ -172,6 +231,15 @@ export function classifyForeground(appId: string | undefined, foreground: string
 export interface Obstruction {
   obstructed: boolean;
   by?: { cls: string; id?: string; text?: string; bounds: [number, number, number, number] };
+}
+
+const DIALOG_CLS_RE = /XCUIElementType(?:Alert|Sheet)$/;
+
+/** Do both nodes sit inside the same alert / action sheet? */
+function sameDialog(allNodes: RawNode[], a: RawNode, b: RawNode): boolean {
+  return allNodes.some(
+    (n) => DIALOG_CLS_RE.test(n.cls) && n.dfs < a.dfs && n.subtreeEnd >= a.dfs && n.dfs < b.dfs && n.subtreeEnd >= b.dfs,
+  );
 }
 
 /**
@@ -198,6 +266,9 @@ export function obstructionAt(allNodes: RawNode[], target: RawNode | undefined, 
   // topmost is outside the target subtree and on top: it's only an obstruction if it's real content
   const realContent = !!(topmost.text || topmost.desc) || topmost.clickable;
   if (!realContent) return { obstructed: false };
+  // A non-interactive part of the same alert / sheet as the target (its scroll indicator, a
+  // separator) is drawn over the buttons but doesn't block them.
+  if (!topmost.clickable && sameDialog(allNodes, target, topmost)) return { obstructed: false };
   return {
     obstructed: true,
     by: { cls: topmost.cls, id: topmost.id || undefined, text: topmost.text || topmost.desc || undefined, bounds: topmost.bounds },

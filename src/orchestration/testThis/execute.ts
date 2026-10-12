@@ -1,5 +1,5 @@
 // qa_test_this execute/interactive mode gate. Handles the synchronous half of execution:
-// the auth question, the unified consent preflight (Milestone A), job creation, and the
+// the auth question, the unified consent preflight, job creation, and the
 // optional waitForCompletion window. The heavy pipeline itself runs in ./pipeline.js.
 
 import type { McpServer, CallToolResult } from '@modelcontextprotocol/server';
@@ -8,6 +8,7 @@ import { qaNeedsInput, NeedsInput } from '../../lib/needsInput.js';
 import { buildPlan, type BuildPlatform } from '../../build/plan.js';
 import { requireConsent, consumeConsent } from '../../consent/consent.js';
 import { buildTestThisPreflight } from '../../services/preflight.js';
+import { androidTargetAvd } from '../../session/attach.js';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -15,13 +16,17 @@ import type { SessionStore } from '../../session/store.js';
 import type { Session } from '../../session/store.js';
 import type { ExecuteArgs } from './types.js';
 import { runExecutePipeline } from './pipeline.js';
-import { hasUsableCredentials, credentialsLostOnRestart, isLoginDeclined } from './sessionIntent.js';
+import { hasUsableCredentials, credentialsLostOnRestart, isLoginDeclined, seedEnvCredentials } from './sessionIntent.js';
 import { currentSignal, runWithSignal, sleepOrCancel } from '../../lib/abortScope.js';
+import { jobProgressReporter } from '../../lib/progressNotify.js';
+import { defaultWaitMs, maxWaitMs, waitBudgetUsedMs } from '../../tools/jobs.js';
 
-/** waitForCompletion window: default and cap. Kept under common client tool timeouts (Codex: 60 s);
+/** waitForCompletion window: default and cap when SWIPIUM_MAX_WAIT_MS is unset (it raises or
+ *  lowers both, see tools/jobs.ts maxWaitMs). Kept under common client tool timeouts (Codex: 60 s);
  *  a job still running after it comes back as state:"running" + jobId for qa_job_status polling. */
 export const TEST_THIS_WAIT_DEFAULT_MS = 45_000;
 export const TEST_THIS_WAIT_MAX_MS = 50_000;
+const WAIT_POLL_MS = 500;
 
 function realOrResolved(p: string): string {
   try {
@@ -42,6 +47,8 @@ export function isWithinRoot(p: string, root: string): boolean {
  *  build/convert > prepare > smoke > report pipeline as a job. */
 export async function runExecuteMode(server: McpServer, sessions: SessionStore, session: Session, a: ExecuteArgs): Promise<CallToolResult> {
   // 1. Auth question: interactive (or stopOnNeedsInput / goal:test_login) asks; execute proceeds pre-login.
+  //    Credentials in the server env answer it without a prompt.
+  seedEnvCredentials(sessions, session);
   if (
     a.scan.likelyAuth &&
     !isLoginDeclined(session) &&
@@ -72,13 +79,17 @@ export async function runExecuteMode(server: McpServer, sessions: SessionStore, 
     );
   }
 
-  // 2. Unified execution preflight (Milestone A): execute mode must request the SAME consent the
+  // 2. Unified execution preflight: execute mode must request the SAME consent the
   //    lower-level tools would for boot / external-APK / iOS .app install / build-from-source.
   const buildPlatform: BuildPlatform = (a.platform ?? (a.scan.framework === 'native-ios' ? 'ios' : 'android')) as BuildPlatform;
   // Resolve the EXACT build command so the consent shows what will run (not just "build_from_source").
   let buildCommand: string | undefined;
   if (a.needBuild) {
-    const bp = await buildPlan({ projectRoot: session.root, platform: buildPlatform });
+    const bp = await buildPlan({
+      projectRoot: session.root,
+      platform: buildPlatform,
+      device: a.isAndroid ? await androidTargetAvd(a.target) : undefined,
+    });
     buildCommand = bp.build?.command;
   }
   // Hash an external (outside-root) APK so the consent shows what is being installed.
@@ -98,6 +109,7 @@ export async function runExecuteMode(server: McpServer, sessions: SessionStore, 
     buildCommand,
     willBoot: a.target.willBoot,
     bootTarget: a.target.bootTarget,
+    device: a.target.device,
     isAab: a.isAab,
     apkPath: a.isAndroid ? a.effectiveApk : undefined,
     externalApk,
@@ -170,17 +182,33 @@ export async function runExecuteMode(server: McpServer, sessions: SessionStore, 
   // the shared driver keep their own signal.
   const run = runWithSignal(sessions.abortSignal(session, job.jobId), () => runExecutePipeline(sessions, session, job, execArgs));
 
-  // Optional blocking mode for short paths (Milestone D). Default = return the running job.
+  // Optional blocking mode for short paths. Default = return the running job.
   if (a.waitForCompletion) {
-    const windowMs = Math.min(Math.max(0, a.timeoutMs ?? TEST_THIS_WAIT_DEFAULT_MS), TEST_THIS_WAIT_MAX_MS);
+    // The cap bounds the WHOLE call: time already spent resolving/scanning/planning is deducted, and
+    // a tail reserve (10% of the cap, at most 2 s) covers building the response and a late timer on a
+    // busy event loop, so the call returns at or under the cap. Pre-window work longer than
+    // a tiny cap still overruns it: nothing can be given back.
+    const cap = maxWaitMs();
+    const tailReserveMs = Math.min(2_000, Math.round(cap * 0.1));
+    const windowMs = Math.max(0, Math.min(Math.max(0, a.timeoutMs ?? defaultWaitMs()), cap - tailReserveMs - waitBudgetUsedMs()));
     // The window wakes early when THIS call is cancelled (the job keeps running in its own scope).
     const windowCtl = new AbortController();
     const callSignal = currentSignal();
     const onCallAbort = () => windowCtl.abort();
     callSignal?.addEventListener('abort', onCallAbort, { once: true });
     if (callSignal?.aborted) windowCtl.abort();
+    // notifications/progress while waiting, when the request sent a progressToken.
+    const report = jobProgressReporter();
+    const deadline = Date.now() + windowMs;
+    let finished = false;
+    void run.finally(() => (finished = true)).catch(() => {});
     try {
-      await Promise.race([run, sleepOrCancel(windowMs, windowCtl.signal).catch(() => {})]);
+      while (!finished && !windowCtl.signal.aborted && Date.now() < deadline) {
+        const cur = session.jobs.get(job.jobId);
+        if (cur) report?.(cur);
+        const step = Math.min(report ? WAIT_POLL_MS : windowMs, deadline - Date.now());
+        await Promise.race([run, sleepOrCancel(step, windowCtl.signal)]).catch(() => {});
+      }
     } finally {
       windowCtl.abort(); // clears the window timer once the job finished first
       callSignal?.removeEventListener('abort', onCallAbort);
@@ -191,7 +219,9 @@ export async function runExecuteMode(server: McpServer, sessions: SessionStore, 
       return qaOk(
         { sessionId: session.id, mode: a.mode, jobId: job.jobId, appMapUri: a.appMapUri, ...res },
         cur.resultText ?? `test-this ${a.mode} ${res.state ?? cur.status}.`,
-        { structuredSummary: 'full' }, // the job's resultText is not a payload field
+        // The job's resultText is not a payload field; when it carries the inline report head, that
+        // head is already a payload field (reportHead), so only the headline is copied.
+        { structuredSummary: res.reportHead ? 'headline' : 'full' },
       );
     }
     // Timed out: leave the job running and tell the agent to poll.

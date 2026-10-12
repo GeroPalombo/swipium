@@ -4,6 +4,7 @@
 
 import type { SnapshotElement } from '../drivers/Driver.js';
 import type { Session } from '../session/store.js';
+import { isThirdPartySignIn } from '../explore/policy.js';
 import type { InputPlan } from './inputPlanner.js';
 import type { ScreenClassification, PlannedAction, ScreenPurpose, InputRequirement } from './types.js';
 
@@ -32,11 +33,47 @@ export function chooseAuthIntent(purpose: ScreenPurpose, session: Session, gener
 
 function findSubmit(elements: SnapshotElement[], intent: AuthIntent): SnapshotElement | undefined {
   const re = intent === 'create_account' ? SUBMIT_CREATE : SUBMIT_LOGIN;
-  // Prefer a non-field clickable button matching the verb; exclude editable fields.
-  const buttons = elements.filter((e) => e.clickable && !/EditText|TextField|TextInput|text-field/i.test(e.role));
+  // Prefer a non-field clickable button matching the verb; exclude editable fields. Never a
+  // third-party / OS sign-in ("Sign up with Apple" opened the iOS Apple Account alert).
+  const buttons = elements.filter(
+    (e) =>
+      e.clickable &&
+      !/EditText|TextField|TextInput|text-field/i.test(e.role) &&
+      !isThirdPartySignIn({ label: e.label ?? e.text, id: e.id }) &&
+      !isThirdPartySignIn({ label: e.text, id: e.id }),
+  );
   return (
     buttons.find((e) => re.test(`${e.label ?? ''} ${e.text ?? ''} ${e.id ?? ''}`)) ??
     buttons.find((e) => /\b(continue|next|done|submit)\b/i.test(`${e.label ?? ''} ${e.text ?? ''}`))
+  );
+}
+
+const SIGN_IN_LINK_EXACT = /^\s*(sign\s?in|log\s?in)\s*[.!>]?\s*$/i;
+const SIGN_IN_LINK = /\b(sign\s?in|log\s?in)\b/i;
+const EMAIL_LINK = /\b(by|with|use|via)\s+(e-?mail)\b|^\s*e-?mail\s*$/i;
+
+/**
+ * On a sign-up / login chooser (no fields: "Sign up with Apple / Google / Or by email / Already have
+ * an account? Sign In"), find the in-app control that opens the email sign-in form.
+ * "Sign In" first, then "by email". Third-party / OS sign-in stays excluded. A link may be plain
+ * text (an RN <Text onPress>), so non-clickable elements count too, after clickable ones.
+ */
+export function findSignInLink(elements: SnapshotElement[]): SnapshotElement | undefined {
+  const text = (e: SnapshotElement) => (e.label || e.text || '').trim();
+  const candidates = elements
+    .filter(
+      (e) =>
+        !/EditText|TextField|TextInput|text-field/i.test(e.role) &&
+        !isThirdPartySignIn({ label: e.label ?? e.text, id: e.id }) &&
+        !isThirdPartySignIn({ label: e.text, id: e.id }) &&
+        text(e).length > 0 &&
+        text(e).length <= 60,
+    )
+    .sort((a, b) => Number(b.clickable) - Number(a.clickable));
+  return (
+    candidates.find((e) => SIGN_IN_LINK_EXACT.test(text(e))) ??
+    candidates.find((e) => SIGN_IN_LINK.test(text(e))) ??
+    candidates.find((e) => EMAIL_LINK.test(text(e)))
   );
 }
 
@@ -83,8 +120,24 @@ export function planAuthActions(
     });
   }
 
-  // Only add the submit step if every required field could be filled (no outstanding NeedsInput).
-  if (needsInput.length === 0) {
+  // A chooser with no fields: open the in-app sign-in form instead of looking for a submit button.
+  if (intent === 'login' && classification.requiredInputs.length === 0) {
+    const link = findSignInLink(elements);
+    if (link) {
+      actions.push({
+        type: 'tap',
+        targetRef: link.ref,
+        label: link.label ?? link.text,
+        locator: { strategy: link.id ? 'id' : link.label ? 'accessibility' : 'text', value: link.id ?? link.label ?? link.text },
+        bounds: link.bounds,
+        reason: 'open the email sign-in form',
+        risk: 'safe',
+      });
+    } else {
+      blockedReasons.push('sign-up chooser: no email login form reached (no in-app "Sign In" or "by email" control found)');
+    }
+  } else if (needsInput.length === 0) {
+    // Only add the submit step if every required field could be filled (no outstanding NeedsInput).
     const submit = findSubmit(elements, intent);
     if (submit) {
       actions.push({
@@ -102,9 +155,11 @@ export function planAuthActions(
   }
 
   const expectedNextPurposes: ScreenPurpose[] =
-    intent === 'create_account'
-      ? ['otp_or_email_verification', 'onboarding', 'permissions_prompt', 'paywall', 'home', 'feature']
-      : ['onboarding', 'permissions_prompt', 'paywall', 'home', 'feature', 'otp_or_email_verification'];
+    intent === 'login' && classification.requiredInputs.length === 0
+      ? ['login', 'login_or_create_account', 'home', 'feature']
+      : intent === 'create_account'
+        ? ['otp_or_email_verification', 'onboarding', 'permissions_prompt', 'paywall', 'home', 'feature']
+        : ['onboarding', 'permissions_prompt', 'paywall', 'home', 'feature', 'otp_or_email_verification'];
 
   return { intent, actions, needsInput, blockedReasons, expectedNextPurposes };
 }

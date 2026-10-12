@@ -28,6 +28,8 @@ export interface BridgeFinding {
   evidence?: string;
   screen?: string;
   screenshotUri?: string;
+  /** Crash/ANR log excerpt captured with the finding (oracle/record.ts). */
+  logUri?: string;
   failureCode?: string;
 }
 
@@ -82,12 +84,45 @@ function detectSubsystem(text: string): string | undefined {
   return undefined;
 }
 
-function findingToObservation(f: BridgeFinding): IssueObservation {
+const FINDING_TITLES: Record<string, string> = {
+  native_crash: 'Native crash',
+  anr: 'App not responding (ANR)',
+  wrong_foreground_app: 'App left the foreground',
+  rn_redbox: 'React Native RedBox',
+  expo_dev_launcher: 'Expo dev launcher instead of the app',
+  app_error_boundary: 'Error boundary fallback screen',
+  webview_error: 'WebView error page',
+  rn_logbox_error: 'React Native LogBox error',
+  unknown_error_surface: 'Error message on screen',
+};
+
+/** A readable ledger title: what happened, where (app + activity/screen), not "anr on unknown". */
+function findingTitle(f: BridgeFinding, appId?: string): string {
+  const what = FINDING_TITLES[f.kind] ?? f.kind;
+  const hint = f.kind === 'wrong_foreground_app' && /possible crash/i.test(f.detail) ? ' (possible crash)' : '';
+  // For a foreground loss the screen is whatever replaced the app (the launcher): name the app
+  // that left, not the launcher.
+  if (f.kind === 'wrong_foreground_app' && appId) return `${what}${hint}: ${appId}`;
+  const where = f.screen && f.screen !== 'unknown' ? f.screen : appId;
+  const ev = f.evidence ? `: "${f.evidence.slice(0, 60)}"` : '';
+  return `${what}${hint}${where ? ` in ${where}` : ''}${ev}`;
+}
+
+/** Evidence the finding carries (screenshot, crash log), as ledger evidence refs. */
+function findingEvidenceRefs(f: BridgeFinding): Array<{ kind: string; uri: string }> {
+  const refs: Array<{ kind: string; uri: string }> = [];
+  if (f.screenshotUri) refs.push({ kind: 'screenshot', uri: f.screenshotUri });
+  if (f.logUri) refs.push({ kind: 'log', uri: f.logUri });
+  return refs;
+}
+
+function findingToObservation(f: BridgeFinding, appId?: string): IssueObservation {
   const subsystem = detectSubsystem(`${f.detail} ${f.evidence ?? ''}`);
   return {
-    title: `${f.kind}${f.screen ? ` on ${f.screen}` : ''}`,
+    title: findingTitle(f, appId),
     summary: f.detail.slice(0, 200),
-    failureCode: f.failureCode,
+    // A hung WDA carries no code of its own; name it so the classifier files it as a tool failure.
+    failureCode: f.failureCode ?? (f.kind === 'wda_unreachable' ? 'WDA_UNREACHABLE' : undefined),
     screenPurpose: f.screen,
     visibleText: f.evidence,
     subsystem,
@@ -158,13 +193,31 @@ export function foldRunIntoLedger(
   const recorded: BridgeRecorded[] = [];
   const run = { sessionId: meta.sessionId, reportPath: meta.reportPath, reportUri: meta.reportUri };
 
+  // One observation per issue per run: qa_act re-runs health after every action, so the same
+  // crash dialog / RedBox is often recorded several times in one session.
+  const seenFindings = new Set<string>();
   for (const f of findings) {
     if (f.severity === 'info') continue; // info findings are not issues
+    const key = `${f.kind}|${f.failureCode ?? ''}|${f.screen ?? ''}|${f.detail}|${f.evidence ?? ''}`;
+    if (seenFindings.has(key)) continue;
+    seenFindings.add(key);
+    const evidenceRefs = findingEvidenceRefs(f);
+    // A high-severity health finding is an app-owned defect unless a built-in rule says otherwise
+    // (e.g. "app left to the launcher (possible crash)" used to land as an unclassified low).
+    // A different app in front is the app's behaviour (or the crash's first sign under load), never a
+    // Swipium limitation: without this it fell to the mcp_limitation default and shared an issue id
+    // with the later app_bug "possible crash" observation.
+    const highHint =
+      f.severity === 'high'
+        ? { categoryHint: 'app_bug' as IssueCategory, severityHint: 'high' as const }
+        : f.kind === 'wrong_foreground_app'
+          ? { categoryHint: 'app_bug' as IssueCategory, severityHint: 'medium' as const }
+          : {};
     const res = recordObservation(
       root,
-      findingToObservation(f),
+      findingToObservation(f, meta.appId),
       now,
-      { environment: meta.environment },
+      { environment: meta.environment, ...highHint },
       {
         appId: meta.appId,
         appName: meta.appName,
@@ -172,6 +225,7 @@ export function foldRunIntoLedger(
         environment: meta.environment,
         sourceRevision: meta.sourceRevision,
         run,
+        ...(evidenceRefs.length ? { links: { evidenceRefs } } : {}),
       },
     );
     recordedIssueIds.push(res.issueId);
@@ -204,6 +258,7 @@ export function foldRunIntoLedger(
         environment: meta.environment,
         sourceRevision: meta.sourceRevision,
         run: { ...run, testCaseId: n.workflow },
+        ...(n.artifactUris?.length ? { links: { evidenceRefs: n.artifactUris.map((uri) => ({ kind: 'evidence', uri })) } } : {}),
       },
     );
     recordedIssueIds.push(res.issueId);

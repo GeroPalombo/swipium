@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
 import { qaError, qaOk, unknownSessionError } from '../lib/result.js';
-import { parseSnapshot, signature } from '../snapshot/parse.js';
+import { parseSnapshot } from '../snapshot/parse.js';
+import { adoptSnapshot } from '../snapshot/fresh.js';
 import { repairFlow } from '../flows/repair.js';
 import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import type { LocatorPlatform } from '../oracle/locator.js';
@@ -13,8 +14,8 @@ export function registerFlowRepair(server: McpServer, sessions: SessionStore): v
     {
       title: 'Repair a failed flow step',
       description:
-        'For a failed flow step, suggest a stronger locator and app changes (testID/accessibilityIdentifier); apply:true ' +
-        'patches simple selector steps at high/medium confidence (low confidence: refused, applied:false + a note).',
+        'Repair a failed flow step: suggest a stronger locator and app changes (testID/accessibilityIdentifier); apply:true patches ' +
+        'simple selector steps at high/medium confidence (low confidence: refused, applied:false + a note).',
       inputSchema: {
         sessionId: z.string(),
         flow: z.string().optional().describe('Flow name/path under .swipium/flows.'),
@@ -32,6 +33,7 @@ export function registerFlowRepair(server: McpServer, sessions: SessionStore): v
           blockedDeviceResult(blocked) ??
           qaError({
             what: 'No device attached to this session',
+            failureCode: 'NO_DEVICE',
             changedState: false,
             retrySafe: true,
             nextSteps: ['Call qa_prepare_target / qa_ios + qa_wda first.'],
@@ -58,12 +60,7 @@ export function registerFlowRepair(server: McpServer, sessions: SessionStore): v
           nextSteps: ['Settle the app and retry qa_flow_repair.'],
         });
       }
-      const parsed = parseSnapshot(xml, { interactiveOnly: false });
-      session.lastSnapshot = {
-        fullByRef: parsed.fullByRef,
-        signatures: new Set(parsed.elements.map(signature)),
-        allNodes: parsed.allNodes,
-      };
+      const parsed = adoptSnapshot(session, parseSnapshot(xml, { interactiveOnly: false }));
       const platform: LocatorPlatform =
         driver.kind === 'wda' ? 'ios' : driver.kind === 'direct' || driver.kind === 'remote' ? 'android' : 'generic';
       const repaired = repairFlow({ root: session.root, flow, flowYaml, failedStep, elements: parsed.elements, apply, platform });

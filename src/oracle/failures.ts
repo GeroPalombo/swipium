@@ -41,7 +41,9 @@ export type FailureCode =
   | 'SIMULATOR_BOOT_TIMEOUT'
   | 'EMULATOR_BOOT_FAILED'
   | 'DEVICE_NOT_READY'
+  | 'DEVICE_UNRESPONSIVE'
   | 'MULTIPLE_DEVICES'
+  | 'DEVICE_PINNED'
   | 'DEV_SERVER_DOWN'
   | 'NETWORK_SERVICE_UNAVAILABLE'
   | 'NETWORK_OFFLINE'
@@ -88,6 +90,7 @@ export type FailureCode =
   | 'KEYBOARD_OBSTRUCTION'
   | 'KEYBOARD_NOT_DISMISSIBLE'
   | 'TEXT_INPUT_UNSUPPORTED'
+  | 'TEXT_INPUT_MISMATCH'
   | 'WEBVIEW_UNAVAILABLE'
   | 'ANIMATION_IDLE_BLOCKED'
   | 'NO_CHANGE_LOOP'
@@ -131,7 +134,7 @@ export type FailureCode =
   | 'IPA_SIGNING_REQUIRED'
   | 'IOS_APP_WRONG_ARCH'
   | 'IOS_SIMULATOR_APP_MISSING'
-  // --- Dev2 plan §6: iOS real-device lane ---
+  // --- iOS real-device lane ---
   | 'REAL_DEVICE_NOT_CONNECTED'
   | 'REAL_DEVICE_UDID_NOT_PROVISIONED'
   | 'REAL_DEVICE_BUNDLE_ID_MISMATCH'
@@ -149,6 +152,7 @@ export type FailureCode =
   // --- runtime ---
   | 'METRO_REQUIRED'
   | 'METRO_FAILED'
+  | 'METRO_WRONG_PROJECT'
   | 'DEVICE_BOOT_FAILED'
   | 'APP_LAUNCH_FAILED'
   // --- automation / durability ---
@@ -164,6 +168,8 @@ export type FailureCode =
   | 'ISSUE_EVIDENCE_REQUIRED'
   | 'NO_APP_MAP'
   | 'NO_RECORDED_ACTIONS'
+  | 'NOT_TESTED'
+  | 'BUDGET_EXHAUSTED'
   | 'UNEMITTABLE_STEP'
   | 'INVALID_ARGUMENT'
   // fallback
@@ -232,7 +238,8 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     severity: 'high',
     retrySafe: false,
     summary: 'Blank/empty screen',
-    recovery: 'Nothing rendered. Check for a failed initial fetch, missing data state, or a swallowed error.',
+    recovery:
+      'Nothing rendered, or only a splash / loading screen. For a debug RN/Expo build, wait until Metro finished bundling (qa_wait { for:"metro_ready" }) and re-run; otherwise check for a failed initial fetch, missing data state, or a swallowed error.',
   },
   INFINITE_SPINNER: {
     bucket: 'app_bug',
@@ -336,12 +343,27 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     summary: 'Device exists but is not ready for automation',
     recovery: 'Wait for the device to finish booting/unlocking, then rerun the preflight or select a ready device explicitly.',
   },
+  DEVICE_UNRESPONSIVE: {
+    bucket: 'environment',
+    severity: 'high',
+    retrySafe: true,
+    summary: 'The Android device did not answer adb in time (a stalled or overloaded emulator)',
+    recovery:
+      'An adb input or UI dump timed out, so an input may have partly landed. Run qa_screenshot to see the screen; if the device stays slow, restart the app, or the emulator, and retry.',
+  },
   MULTIPLE_DEVICES: {
     bucket: 'environment',
     severity: 'medium',
     retrySafe: true,
     summary: 'More than one device is online',
     recovery: 'Pass an explicit device to qa_prepare_target so the target is unambiguous.',
+  },
+  DEVICE_PINNED: {
+    bucket: 'environment',
+    severity: 'medium',
+    retrySafe: false,
+    summary: 'The requested device is not the device the operator pinned (SWIPIUM_DEVICE)',
+    recovery: 'Omit device (the pinned device is used), or have the operator change SWIPIUM_DEVICE in the MCP server env.',
   },
   DEV_SERVER_DOWN: {
     bucket: 'environment',
@@ -670,6 +692,14 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     summary: 'Backend cannot safely type this text value',
     recovery: 'Use ASCII-safe fixture data, configure a Unicode-safe backend, or tune WDA/Appium typing settings before replay.',
   },
+  TEXT_INPUT_MISMATCH: {
+    bucket: 'mcp_limitation',
+    severity: 'medium',
+    retrySafe: true,
+    summary: 'The field does not read back the text that was typed',
+    recovery:
+      'The field holds other text (reordered, characters dropped, or old text not cleared). Re-snapshot, then retry the whole value in replace mode; never repeat a failed append (it types the landed part twice). For long text, type it in shorter parts. A max length or input mask that only cuts or reformats the text gives a warning, not this code.',
+  },
   WEBVIEW_UNAVAILABLE: {
     bucket: 'mcp_limitation',
     severity: 'medium',
@@ -973,7 +1003,7 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     retrySafe: false,
     owner: 'user',
     summary: 'A .ipa targets a real device, not the simulator',
-    recovery: 'Connect a provisioned real device, or build a simulator .app for simulator testing.',
+    recovery: "Build a simulator .app (xcodebuild -sdk iphonesimulator) and pass that instead; real devices are outside Swipium's scope.",
   },
   IPA_SIGNING_REQUIRED: {
     bucket: 'environment',
@@ -989,7 +1019,8 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     retrySafe: true,
     owner: 'environment',
     summary: 'iOS .app was built for the wrong destination',
-    recovery: 'Provide a simulator-SDK .app for the simulator (iphonesimulator), or a device build for a real device.',
+    recovery:
+      'Rebuild for the simulator SDK (xcodebuild -sdk iphonesimulator) and pass that .app; device (iphoneos) builds cannot run on a simulator.',
   },
   IOS_SIMULATOR_APP_MISSING: {
     bucket: 'environment',
@@ -1001,7 +1032,7 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     recovery: 'Build an iOS simulator app, or pass an explicit simulator .app path.',
   },
 
-  // --- Dev2 plan §6: iOS real-device lane ---
+  // --- iOS real-device lane ---
   REAL_DEVICE_NOT_CONNECTED: {
     bucket: 'environment',
     severity: 'high',
@@ -1122,7 +1153,8 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     owner: 'swipium',
     selfFixable: true,
     summary: 'A debug RN/Expo build needs Metro running',
-    recovery: 'Start the bundler so the debug build can fetch its JS bundle.',
+    recovery:
+      'Start the bundler so the debug build can fetch its JS bundle: qa_metro {action:"start"} (consent-gated), then qa_wait {for:"metro_ready"}, then retry.',
   },
   METRO_FAILED: {
     bucket: 'environment',
@@ -1131,6 +1163,15 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     owner: 'environment',
     summary: 'Metro/dev server failed to start or stay healthy',
     recovery: 'Check the Metro log artifact (port in use, dependency error), free the port, then restart.',
+  },
+  METRO_WRONG_PROJECT: {
+    bucket: 'environment',
+    severity: 'high',
+    retrySafe: true,
+    owner: 'environment',
+    summary: "The Metro on the dev-server port serves another project's bundle",
+    recovery:
+      "Stop the other project's Metro (it is not Swipium's), or run that project elsewhere, then start this project's Metro and retry.",
   },
   DEVICE_BOOT_FAILED: {
     bucket: 'environment',
@@ -1245,6 +1286,24 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     summary: 'The session has no recorded actions to generate assets from',
     recovery: 'Drive the app first (qa_smoke / qa_explore / qa_act), or let qa_generate target:"appium" bootstrap from projectRoot.',
   },
+  NOT_TESTED: {
+    bucket: 'environment',
+    severity: 'high',
+    retrySafe: true,
+    owner: 'user',
+    summary: 'The run never reached or exercised the app, so nothing was tested (not a pass)',
+    recovery:
+      'Fix what stopped the run (see the report next action: build, Metro, device, setup), then re-run qa_test_this. A report with no evidence never gates as SHIP.',
+  },
+  BUDGET_EXHAUSTED: {
+    bucket: 'mcp_limitation',
+    severity: 'medium',
+    retrySafe: false,
+    owner: 'user',
+    summary: 'The session budget (screenshots, actions, minutes or no-change actions) is used up; the call did nothing',
+    recovery:
+      'Call qa_report to summarize, or start a new session with a larger budget (qa_start_session { budget: { maxScreenshots, maxActions, maxMinutes } }) and pass its sessionId.',
+  },
   UNEMITTABLE_STEP: {
     bucket: 'mcp_limitation',
     severity: 'medium',
@@ -1270,7 +1329,7 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
   },
 };
 
-/** Default owner derived from the failure bucket, unless the entry sets one explicitly (§10). */
+/** Default owner derived from the failure bucket, unless the entry sets one explicitly. */
 const OWNER_BY_BUCKET: Record<FailureBucket, FailureOwner> = {
   app_bug: 'app',
   environment: 'environment',
@@ -1307,6 +1366,8 @@ export function failureForFindingKind(kind: string): FailureCode {
       return 'NATIVE_ALERT';
     case 'rn_redbox':
       return 'REDBOX';
+    case 'expo_dev_launcher':
+      return 'METRO_REQUIRED';
     case 'rn_logbox_error':
       return 'LOGBOX';
     case 'app_error_boundary':
@@ -1321,8 +1382,23 @@ export function failureForFindingKind(kind: string): FailureCode {
 }
 
 /** Map a qa_note category to a bucket (for outcomes recorded by the agent). */
-export function bucketForNoteCategory(category?: string): FailureBucket {
+/** The note smoke attaches to a Swipium-generated flow that failed on a locator step.
+ *  Such a fail (category 'other') is automation drift, not an app defect: reports must not count
+ *  it as an app failure. */
+export const AUTOMATION_DRIFT_NOTE =
+  'generated-flow locator or starting-state drift (automation), not proof of an app defect; repair with qa_flow_repair';
+
+/** A failed note that is automation drift (see AUTOMATION_DRIFT_NOTE), not an app-owned failure. */
+export function isAutomationDriftNote(n: { outcome?: string; category?: string; reason?: string }): boolean {
+  return n.outcome === 'fail' && n.category === 'other' && !!n.reason?.includes(AUTOMATION_DRIFT_NOTE);
+}
+
+export function bucketForNoteCategory(category?: string, outcome?: string): FailureBucket {
   switch (category) {
+    case 'other':
+      // A blocked "other" note is a setup / precondition gap (Metro not serving, a refused
+      // consent, a blank launch), not a Swipium limitation.
+      return outcome === 'blocked' ? 'environment' : 'mcp_limitation';
     case 'app_bug':
       return 'app_bug';
     case 'missing_test_data':
@@ -1356,7 +1432,7 @@ export function qaFail(
       nextSteps: opts.nextSteps ?? [info.recovery],
       failureCode: code,
     },
-    // owner + bucket + canSwipiumFix travel with every typed failure (§3.4 / §10) so an agent
+    // owner + bucket + canSwipiumFix travel with every typed failure so an agent
     // can route the blocker (app dev vs environment vs user input) without a second lookup.
     { bucket: info.bucket, owner: failureOwner(code), canSwipiumFix: isSelfFixable(code), ...(opts.extra ?? {}) },
   );

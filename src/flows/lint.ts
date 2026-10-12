@@ -1,7 +1,5 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
-import { parseFlow, type Flow, type FlowStep } from './schema.js';
-import { ciMutationAllowed, loadPolicy, type Policy } from '../report/policy.js';
+import type { Flow, FlowStep } from './schema.js';
+import { ciMutationAllowed, type Policy } from '../report/policy.js';
 
 export type FlowLintSeverity = 'warn' | 'error';
 
@@ -12,11 +10,6 @@ export interface FlowLintFinding {
   severity: FlowLintSeverity;
   code: string;
   message: string;
-}
-
-export interface FlowLintResult {
-  files: number;
-  findings: FlowLintFinding[];
 }
 
 export type FlowLintPlatform = 'android' | 'ios' | 'cross-platform';
@@ -54,10 +47,6 @@ function mutatingPolicyMessage(step: FlowStep, policy: Policy | null | undefined
     : `${step.kind} changes device/app/test state but no .swipium/policy.json ciAllowMutations policy was found.`;
 }
 
-export function lintFlowObject(file: string, flow: Flow, policy?: Policy | null): FlowLintFinding[] {
-  return lintFlowObjectWithOptions(file, flow, { policy });
-}
-
 export function lintFlowObjectWithOptions(
   file: string,
   flow: Flow,
@@ -65,7 +54,7 @@ export function lintFlowObjectWithOptions(
 ): FlowLintFinding[] {
   const findings: FlowLintFinding[] = [];
   const all = [...flow.setup, ...flow.steps, ...flow.teardown];
-  const setupHasMutation = flow.setup.some((step) => MUTATING.has(step.kind));
+  const setupHasMutation = flow.setup.some((step) => MUTATING.has(step.kind) && step.kind !== 'restartApp'); // a relaunch needs no teardown
   if (setupHasMutation && !flow.teardown.length) {
     findings.push({
       file,
@@ -158,7 +147,8 @@ export function lintFlowObjectWithOptions(
         });
       }
     }
-    if (MUTATING.has(step.kind)) {
+    // restartApp is allowed in CI by default (ciMutationAllowed), so it carries no policy warning.
+    if (MUTATING.has(step.kind) && step.kind !== 'restartApp') {
       findings.push({
         file,
         flow: flow.name,
@@ -181,24 +171,4 @@ export function lintFlowObjectWithOptions(
     }
   }
   return findings;
-}
-
-export function lintFlowFiles(root: string, opts: FlowLintOptions = {}): FlowLintResult {
-  const dir = join(root, '.swipium', 'flows');
-  if (!existsSync(dir))
-    return { files: 0, findings: [{ file: dir, severity: 'error', code: 'NO_FLOWS_DIR', message: 'No .swipium/flows directory found.' }] };
-  const policy = loadPolicy(root);
-  const files = readdirSync(dir)
-    .filter((f) => /\.ya?ml$/i.test(f))
-    .map((f) => join(dir, f));
-  const findings: FlowLintFinding[] = [];
-  for (const file of files) {
-    const { flow, errors } = parseFlow(readFileSync(file, 'utf8'));
-    if (errors.length || !flow) {
-      findings.push({ file, severity: 'error', code: 'INVALID_FLOW', message: errors.join('; ') || 'Invalid flow.' });
-      continue;
-    }
-    findings.push(...lintFlowObjectWithOptions(file, flow, { ...opts, policy }));
-  }
-  return { files: files.length, findings };
 }

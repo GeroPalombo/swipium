@@ -1,4 +1,4 @@
-// qa_explore (Phase 3.3): bounded, safe-by-default guided exploration as a background job. Drives
+// qa_explore: bounded, safe-by-default guided exploration as a background job. Drives
 // the runExplore service: observe > rank safe candidates > act > health > graph, writing a screen
 // graph artifact (JSON + Markdown) and recording qa_note outcomes. Returns a running jobId; the
 // terminal state + graphUri land in the job result (poll qa_job_status). Thin wrapper; all logic
@@ -70,10 +70,9 @@ export function registerExplore(server: McpServer, sessions: SessionStore): void
     {
       title: 'Guided exploration',
       description:
-        'Bounded, safe exploration of the prepared app as a job (poll qa_job_status): taps ranked safe actions, checks ' +
-        'health, builds a screen graph, updates the app map, and records taps for qa_generate. Destructive actions ' +
-        '(delete/pay/send/logout) are skipped unless one candidate is approved; an auth wall without credentials returns ' +
-        'needs_input.',
+        'Explore the prepared app automatically as a job (poll qa_job_status): taps ranked safe actions, checks health, builds a ' +
+        'screen graph, updates the app map, and records taps for qa_generate. Destructive actions (delete/pay/send/logout) are skipped ' +
+        'unless one candidate is approved; an auth wall without credentials returns needs_input.',
       inputSchema: {
         sessionId: z.string(),
         goal: z.string().optional().describe('Focus, e.g. "exercise the main tabs".'),
@@ -138,6 +137,7 @@ export function registerExplore(server: McpServer, sessions: SessionStore): void
           blockedDeviceResult(blocked) ??
           qaError({
             what: 'No device attached to this session',
+            failureCode: 'NO_DEVICE',
             changedState: false,
             retrySafe: true,
             nextSteps: ['Prepare a device first: qa_test_this { mode:"execute" } or qa_prepare_target, then qa_explore.'],
@@ -377,13 +377,21 @@ async function runExploreJob(
     });
     prog.done(`explored ${res.summary.screensVisited} screens`);
 
+    // The session budget stopped the exploration (runner state "blocked").
+    const budgetStopped = res.stoppedReason.startsWith('session budget:');
     const nextRecommendedAction = res.needsInput
       ? {
           tool: 'qa_continue_from_blocker',
           args: { sessionId: session.id, kind: 'credentials' },
           why: 'Provide credentials to explore authenticated screens',
         }
-      : { tool: 'qa_report', args: { sessionId: session.id }, why: 'Summarize the exploration with the screen graph' };
+      : budgetStopped
+        ? {
+            tool: 'qa_start_session',
+            args: { projectRoot: session.root, budget: { maxActions: 120, maxScreenshots: 80, maxMinutes: 60 } },
+            why: `The session budget is used up (${res.stoppedReason.replace(/^session budget: /, '')}). Start a session with a larger budget, then re-run qa_explore.`,
+          }
+        : { tool: 'qa_report', args: { sessionId: session.id }, why: 'Summarize the exploration with the screen graph' };
 
     upd({
       status: 'done',
@@ -391,6 +399,7 @@ async function runExploreJob(
       result: {
         state: res.state,
         stoppedReason: res.stoppedReason,
+        ...(budgetStopped ? { failureCode: 'BUDGET_EXHAUSTED' } : {}),
         summary: res.summary,
         destructiveCandidates: res.destructiveCandidates,
         graphUri,

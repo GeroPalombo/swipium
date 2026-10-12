@@ -5,7 +5,7 @@
 //
 // Design rules baked into the shape:
 //  - Every fact carries PROVENANCE (which source it came from) and CONFIDENCE (with reason codes).
-//  - Low-confidence inference is a HYPOTHESIS, never asserted as fact (Non-Goals §).
+//  - Low-confidence inference is a HYPOTHESIS, never asserted as fact.
 //  - Contradictory runtime observations are preserved as versioned facts, not overwritten blindly.
 //  - Large arrays are returned by resource URI by the tools, not flooded into a text result.
 

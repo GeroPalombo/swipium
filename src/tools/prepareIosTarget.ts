@@ -1,4 +1,4 @@
-// qa_prepare_ios_target (hardening P0.3): one high-level iOS prepare: boot simulator > install
+// qa_prepare_ios_target: one high-level iOS prepare: boot simulator > install
 // .app > launch bundle > verify > report WDA/visual mode. The cross-platform counterpart to
 // qa_prepare_target's Android path, so qa_test_this can complete iOS first-runs end-to-end.
 
@@ -13,6 +13,22 @@ import { qaFail, type FailureCode } from '../oracle/failures.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { prepareIos, type PrepareIosArgs, type PrepareIosResult } from '../services/prepareIos.js';
 import type { JobRecord, Session, SessionStore } from '../session/store.js';
+import {
+  devicePinConflict,
+  isSimulatorUdid,
+  operatorDevicePin,
+  pinAmbiguousMessage,
+  pinFixStep,
+  pinNoSimulatorMessage,
+  simulatorsForPin,
+} from '../session/attach.js';
+import { listSimulators } from '../lib/simctl.js';
+import { appBuildDestination } from '../ios/signing.js';
+import { isOutsideRoot, resolveArtifact } from '../artifacts/resolve.js';
+import { waitForAppRender } from '../snapshot/renderWait.js';
+import { metroListening } from '../lib/metroState.js';
+import { isMetroRequiredFinding, type Finding } from '../oracle/health.js';
+import { checkLaunchErrorSurface, launchErrorText } from '../oracle/record.js';
 
 /** How long one qa_prepare_ios_target call waits for a simulator boot. Lower than qa_ios boot's
  *  wait because install/launch/WDA still run in the same call after a boot that made it in time.
@@ -35,7 +51,8 @@ function appSignature(appPath: string): string {
 
 function externalToRoot(session: Session, appPath: string): boolean {
   const abs = isAbsolute(appPath) ? appPath : join(session.root, appPath);
-  return !abs.startsWith(session.root);
+  // A sibling folder (`/work/app-other` next to root `/work/app`) is outside the root.
+  return isOutsideRoot(abs, session.root);
 }
 
 export function registerPrepareIosTarget(server: McpServer, sessions: SessionStore): void {
@@ -56,19 +73,69 @@ export function registerPrepareIosTarget(server: McpServer, sessions: SessionSto
           .enum(['auto', 'required', 'skip'])
           .optional()
           .describe('auto (default): attach WDA if reachable, else visual-only; required: fail if it cannot attach; skip: visual-only.'),
+        allowLaunchWithoutMetro: z
+          .boolean()
+          .optional()
+          .describe('Launch a debug RN/Expo .app (no embedded main.jsbundle) without a serving Metro (it will RedBox).'),
         consentId: z.string().optional(),
         approve: z.boolean().optional(),
       },
     },
-    async ({ sessionId, app, bundleId, device, launch, attachWda, consentId, approve }) => {
+    async ({ sessionId, app, bundleId, device, launch, attachWda, allowLaunchWithoutMetro, consentId, approve }) => {
       const session = sessions.get(sessionId);
       if (!session) return unknownSessionError(sessionId);
+      // No app / bundleId (none on the session either): use the project's own simulator .app, as
+      // qa_prepare_target does with the project's APK. The install below is still consent-gated.
+      if (!app && !bundleId && !session.appId) {
+        const art = await resolveArtifact(
+          { projectRoot: session.root, platform: 'ios', requireInstallableOn: 'ios-simulator' },
+          false,
+        ).catch(() => null);
+        const best = art?.best;
+        if (best && !best.outsideRoot && best.installableOn.includes('ios-simulator')) app = best.path;
+      }
 
       // Installing app code is privileged, so consent (mirrors qa_ios install).
       let mutationConsent: { required: boolean; consentId?: string; approved: boolean; payloadHash?: string } | undefined;
       let installAffects: { appPath: string; sig: string; external: boolean } | undefined;
       if (app) {
         const abs = isAbsolute(app) ? app : join(session.root, app);
+        // Validate the artifact BEFORE asking for consent: never ask to approve an install that cannot run.
+        if (/\.ipa$/i.test(abs))
+          return qaFail('IPA_NEEDS_REAL_DEVICE', {
+            what: `${abs} is an .ipa; the simulator needs a simulator-SDK .app.`,
+            nextSteps: ['Build for the simulator (xcodebuild -sdk iphonesimulator) and pass that .app.'],
+          });
+        // An explicit path that does not exist is the caller's input error, not something Swipium fixes.
+        if (!existsSync(abs))
+          return qaFail('IOS_SIMULATOR_APP_MISSING', {
+            what: `.app not found: ${abs}`,
+            nextSteps: ['Check the app path, or omit app to use the installed bundle (bundleId).'],
+            extra: { owner: 'user', canSwipiumFix: false },
+          });
+        if (appBuildDestination(abs) === 'device')
+          return qaFail('IOS_APP_WRONG_ARCH', {
+            what: `${abs} is a device build (iphoneos). The simulator needs a simulator-SDK .app (iphonesimulator).`,
+            nextSteps: ['Build for the simulator (xcodebuild -sdk iphonesimulator) and pass that .app.'],
+          });
+        // Name the simulator the install will target (explicit device > the session's simulator > operator pin).
+        const sessionSim = isSimulatorUdid(session.device) ? session.device : undefined;
+        const targetSim = device ?? sessionSim ?? operatorDevicePin();
+        // Check the pin BEFORE asking consent: never ask to install on a device that the
+        // pin can't reach, or that isn't the pinned one.
+        const pin = operatorDevicePin();
+        if (pin && !sessionSim) {
+          const sims = await listSimulators().catch(() => undefined);
+          if (sims) {
+            const conflict = device ? await devicePinConflict(device, [], sims) : undefined;
+            if (conflict)
+              return qaFail('DEVICE_PINNED', { what: conflict, nextSteps: ['Omit device to use the pinned simulator.', pinFixStep()] });
+            // Same resolver as prepare and qa_test_this: none > NO_DEVICE, several > MULTIPLE_DEVICES.
+            const pinned = device ? [] : simulatorsForPin(pin, sims);
+            if (!device && !pinned.length) return qaFail('NO_DEVICE', { what: pinNoSimulatorMessage(pin), nextSteps: [pinFixStep()] });
+            if (pinned.length > 1) return qaFail('MULTIPLE_DEVICES', { what: pinAmbiguousMessage(pin, pinned), nextSteps: [pinFixStep()] });
+          }
+        }
         const sig = appSignature(abs);
         const affects = { appPath: abs, sig, external: externalToRoot(session, app) };
         installAffects = affects;
@@ -85,9 +152,9 @@ export function registerPrepareIosTarget(server: McpServer, sessions: SessionSto
           return requireConsent({
             action: 'install_app',
             risk: affects.external ? 'medium' : 'low',
-            exactCommand: `xcrun simctl install <booted> ${abs}`,
+            exactCommand: `xcrun simctl install ${targetSim ?? '<booted simulator>'} ${abs}`,
             affects,
-            explain: `Boot a simulator and install ${abs}${affects.external ? ' (outside the project root)' : ''}? It runs third-party app code.`,
+            explain: `Install ${abs}${affects.external ? ' (outside the project root)' : ''} on ${targetSim ? `simulator ${targetSim}` : 'the booted (or first available) simulator'}, booting it if needed? It runs third-party app code.`,
           });
         }
         mutationConsent = { required: true, consentId, approved: true, payloadHash: sig };
@@ -101,7 +168,7 @@ export function registerPrepareIosTarget(server: McpServer, sessions: SessionSto
         });
       }
 
-      const prepArgs: PrepareIosArgs = { app, bundleId, simulator: device, launch, attachWda, mutationConsent };
+      const prepArgs: PrepareIosArgs = { app, bundleId, simulator: device, launch, attachWda, mutationConsent, allowLaunchWithoutMetro };
       let res: PrepareIosResult;
       try {
         // Bounded boot wait: a cold boot that is still running hands the rest to a background job.
@@ -131,12 +198,46 @@ export function registerPrepareIosTarget(server: McpServer, sessions: SessionSto
             `Next: qa_job_status { sessionId:"${session.id}", jobId:"${job.jobId}", waitMs:45000 } (repeat while running).`,
         );
       }
-      return prepareResultToTool(sessions, session, res, installAffects, mutationConsent);
+      const rendered = await settleLaunch(session, res);
+      const screen = { ...(await launchErrorCheck(sessions, session, res)), ...rendered };
+      return prepareResultToTool(sessions, session, res, installAffects, mutationConsent, screen);
     },
   );
 }
 
+type LaunchScreen = { appError?: Finding; alert?: string; notRendered?: string };
 type InstallAffects = { appPath: string; sig: string; external: boolean } | undefined;
+
+/** Prepare used to answer "ready" while the app still showed its splash / "Downloading
+ *  100%..." banner. Before "ready", the same bounded render wait qa_smoke uses: structured = a tree
+ *  with content and no loading marker (up to 30 s); visual-only = two identical frames (~1-4 s, no
+ *  verdict). A structured screen still not rendered at the bound is reported, not called ready. */
+async function settleLaunch(session: Session, res: PrepareIosResult): Promise<Pick<LaunchScreen, 'notRendered'>> {
+  if (!res.ok || res.booting || !res.launched || !session.driver) return {};
+  const visualOnly = res.mode !== 'structured';
+  try {
+    const r = await waitForAppRender(session.driver, {
+      visualOnly,
+      ...(visualOnly ? { timeoutMs: 4000 } : { metroProbe: () => metroListening() }),
+    });
+    if (visualOnly || r.ready || r.reason === 'no_tree') return {};
+    return {
+      notRendered: r.loadingText
+        ? `"${r.loadingText}" still visible after ${Math.round(r.waitedMs / 1000)} s`
+        : `only a blank / splash screen after ${Math.round(r.waitedMs / 1000)} s`,
+    };
+  } catch (e) {
+    if (isAbortError(e)) throw e;
+    return {};
+  }
+}
+
+/** A structured launch is checked once (one WDA source, ~0.3 s) for a RedBox / the
+ *  Expo dev launcher, so prepare never answers plain "ready" on one. Visual-only: no tree, skipped. */
+async function launchErrorCheck(sessions: SessionStore, session: Session, res: PrepareIosResult): Promise<LaunchScreen> {
+  if (!res.ok || res.booting || !res.launched || res.mode !== 'structured' || !session.driver) return {};
+  return checkLaunchErrorSurface(sessions, session, session.driver);
+}
 
 /** Map a finished prepareIos result to the tool result (also the job's result payload). */
 function prepareResultToTool(
@@ -145,7 +246,9 @@ function prepareResultToTool(
   res: PrepareIosResult,
   installAffects: InstallAffects,
   mutationConsent: PrepareIosArgs['mutationConsent'],
+  screen: LaunchScreen = {},
 ): CallToolResult {
+  const { appError, alert, notRendered } = screen;
   if (!res.ok) {
     if (installAffects) {
       sessions.recordMutation(session, {
@@ -160,9 +263,21 @@ function prepareResultToTool(
     }
     return qaFail((res.failureCode as FailureCode) ?? 'APP_LAUNCH_FAILED', {
       what: res.error ?? 'iOS prepare failed',
+      ...(res.nextSteps?.length ? { nextSteps: res.nextSteps } : {}),
       extra: { udid: res.udid ?? null, name: res.name ?? null },
     });
   }
+  const target = `iOS ${res.name}${res.bundleId ? ` / ${res.bundleId}` : ''}`;
+  if (appError && isMetroRequiredFinding(appError))
+    return qaFail('METRO_REQUIRED', {
+      what: `${target} launched, but ${launchErrorText(appError)}: the debug build has no JS bundle, so it is not ready to test.`,
+      changedState: true,
+      nextSteps: [
+        'Start Metro for this project (qa_metro { action:"start" }), wait until it is serving (qa_wait { for:"metro_ready" }), then re-run qa_prepare_ios_target.',
+      ],
+      extra: { udid: res.udid ?? null, name: res.name ?? null, launched: true, mode: res.mode, appError },
+    });
+  const errorLine = appError ? `launched, but ${launchErrorText(appError)}: recorded as an app finding, not ready to test.` : undefined;
   return qaOk(
     {
       udid: res.udid,
@@ -172,8 +287,15 @@ function prepareResultToTool(
       launched: res.launched,
       mode: res.mode,
       wda: res.wda ?? null,
+      ...(appError ? { ready: false, appError } : notRendered ? { ready: false, notRendered } : {}),
+      ...(alert ? { alert } : {}),
     },
-    res.resultText ?? 'iOS target prepared.',
+    (errorLine
+      ? `${target}: ${errorLine}`
+      : notRendered
+        ? `${target}: launched, but not rendered yet (${notRendered}); not ready to test. Wait (qa_wait { for:"metro_ready" } if Metro is bundling) and check qa_screenshot.`
+        : (res.resultText ?? 'iOS target prepared.')) +
+      (alert ? `\n⚠ An iOS alert is on top of the app: "${alert}". Close it (qa_clear_overlay) before testing.` : ''),
   );
 }
 
@@ -198,13 +320,19 @@ export async function runPrepareIosJob(
     return;
   }
   if (signal?.aborted) return;
-  const out = prepareResultToTool(sessions, session, res, installAffects, args.mutationConsent);
+  const rendered = await settleLaunch(session, res).catch(() => ({})); // cancelled: checked below
+  if (signal?.aborted) return;
+  const screen = { ...(await launchErrorCheck(sessions, session, res).catch(() => ({}))), ...rendered }; // cancelled: checked below
+  if (signal?.aborted) return;
+  const out = prepareResultToTool(sessions, session, res, installAffects, args.mutationConsent, screen);
   const result = (out.structuredContent ?? {}) as Record<string, unknown>;
   const resultText = (out.content?.[0] as { text?: string } | undefined)?.text ?? res.resultText;
-  if (!res.ok) {
+  if (out.isError) {
     upd({
       status: 'failed',
-      error: `${res.failureCode ?? 'APP_LAUNCH_FAILED'}: ${res.error ?? 'iOS prepare failed'}`,
+      error: res.ok
+        ? `${String(result.failureCode)}: ${String(result.what)}`
+        : `${res.failureCode ?? 'APP_LAUNCH_FAILED'}: ${res.error ?? 'iOS prepare failed'}`,
       result,
       resultText,
       endedAt: Date.now(),

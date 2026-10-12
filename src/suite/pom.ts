@@ -2,15 +2,16 @@
 // MAINTAINABLE suite where selectors live in page objects and tests reference them by name,
 // instead of duplicating raw selectors. PURE: no filesystem, no device. Callers serialize the
 // returned files. Also produces a locator audit (durable vs brittle) with app-code remediation,
-// because durable automation is the point (§2.4 / §6 locator policy).
+// because durable automation is the point.
 
-import { stringify } from 'yaml';
+import { parse as parseYaml, stringify } from 'yaml';
 import type { RecordedAction } from '../session/store.js';
 import { secretSafeActions, secretVarName, type InputBinding } from './secretGuard.js';
 import { asciiFold } from '../automationGen/identifiers.js';
+import { capSlug } from '../lib/stableHash.js';
 
 export type Durability = 'durable' | 'semi' | 'brittle';
-export type LocatorAuditCode = 'IOS_MISSING_ACCESSIBILITY_IDENTIFIER' | 'COORDINATE_ONLY';
+export type LocatorAuditCode = 'IOS_MISSING_ACCESSIBILITY_IDENTIFIER' | 'ANDROID_MISSING_RESOURCE_ID' | 'COORDINATE_ONLY';
 
 export interface PomElement {
   name: string;
@@ -22,7 +23,7 @@ export interface PomElement {
   secure?: boolean;
   durability: Durability;
   readinessCode?: LocatorAuditCode;
-  /** App-code change that would make this element durably testable (§6 locator policy). */
+  /** App-code change that would make this element durably testable. */
   remediation?: string;
 }
 
@@ -36,8 +37,9 @@ export interface PomTestStep {
   page: string;
   element?: string;
   /** `visualCheck` = a qa_visual mode:"assert" judgement (free-form prose verified by eye). It is a
-   *  MANUAL checkpoint in generated code, never a text assertion (the prose is not on-screen text). */
-  action: 'tap' | 'inputText' | 'press' | 'swipe' | 'scrollTo' | 'openUrl' | 'assertVisible' | 'visualCheck';
+   *  MANUAL checkpoint in generated code, never a text assertion (the prose is not on-screen text).
+   *  `restartApp` = the recording relaunched the app here (terminate + launch). */
+  action: 'tap' | 'inputText' | 'press' | 'swipe' | 'scrollTo' | 'openUrl' | 'assertVisible' | 'visualCheck' | 'restartApp';
   text?: string;
   secret?: boolean;
   key?: string;
@@ -104,7 +106,8 @@ function camel(s: string): string {
     .trim()
     .split(/\s+/)
     .filter(Boolean)
-    .map((w) => w[0].toUpperCase() + w.slice(1))
+    // An all-caps word is an acronym ("OK" > "Ok"), so names read ok / tapOk / tap_ok, not oK / tap_o_k.
+    .map((w) => (/^[A-Z][A-Z0-9]+$/.test(w) ? w[0] + w.slice(1).toLowerCase() : w[0].toUpperCase() + w.slice(1)))
     .join('');
   if (!p) return 'element';
   const c = p[0].toLowerCase() + p.slice(1);
@@ -136,8 +139,10 @@ function remediationFor(el: { selectorKind: string; selector?: string; screen?: 
   return undefined;
 }
 
-function auditCodeFor(el: { selectorKind: string }): LocatorAuditCode | undefined {
+function auditCodeFor(el: { selectorKind: string }, platform?: 'android' | 'ios'): LocatorAuditCode | undefined {
   if (el.selectorKind === 'coords') return 'COORDINATE_ONLY';
+  // An Android-only recording gets the Android readiness code, not the iOS one.
+  if (platform === 'android' && el.selectorKind === 'text') return 'ANDROID_MISSING_RESOURCE_ID';
   if (el.selectorKind === 'text' || el.selectorKind === 'name' || el.selectorKind === 'predicate' || el.selectorKind === 'class_chain')
     return 'IOS_MISSING_ACCESSIBILITY_IDENTIFIER';
   return undefined;
@@ -162,6 +167,8 @@ export function generatePom(
     secrets?: Iterable<string>;
     /** Stored session inputs (secretGuard.inputBindings): typed text equal to one becomes its ${VAR}. */
     inputs?: InputBinding[];
+    /** The recorded platform, when known: page objects then claim only it. */
+    platform?: 'android' | 'ios';
   },
 ): PomResult {
   // Defense in depth: a registered secret typed into a field the UI did not flag as secure was
@@ -192,6 +199,13 @@ export function generatePom(
     if (existing) return existing;
     const staticLabel = opts.screenLabels?.[key];
     let name = staticLabel ? `${pascal(staticLabel)}Page` : pageNameFromScreen(a.screen, pages.length);
+    // Same screen title, new signature (the Alarms list after adding an alarm): one page object
+    // with merged elements, not an `Alarms2Page`.
+    const sameScreen = a.screen?.trim() && pages.find((p) => p.name === name && p.screen?.trim() === a.screen?.trim());
+    if (sameScreen) {
+      pageByKey.set(key, sameScreen);
+      return sameScreen;
+    }
     let n = 2;
     const baseName = name;
     while (usedPageNames.has(name)) name = `${baseName.replace(/Page$/, '')}${n++}Page`;
@@ -217,7 +231,7 @@ export function generatePom(
     let n = 2;
     while (page.elements.some((e) => e.name === name)) name = `${baseName}${n++}`;
     const durability = durabilityOf(a.selectorKind ?? 'text');
-    const readinessCode = auditCodeFor({ selectorKind: a.selectorKind ?? 'text' });
+    const readinessCode = auditCodeFor({ selectorKind: a.selectorKind ?? 'text' }, opts.platform);
     const el: PomElement = {
       name,
       selector: a.selector,
@@ -234,6 +248,12 @@ export function generatePom(
   };
 
   for (const a of actions) {
+    if (a.action === 'restart_app') {
+      // No screen of its own: it belongs to the page it leaves. A leading one is the flow's launch.
+      const prev = steps.at(-1);
+      if (prev && prev.action !== 'restartApp') steps.push({ page: prev.page, action: 'restartApp' });
+      continue;
+    }
     const page = pageFor(a);
     switch (a.action) {
       case 'tap':
@@ -253,7 +273,7 @@ export function generatePom(
         const element = ensureElement(page, a);
         let text = a.text ?? '';
         if (a.secret) {
-          // Secret values become ${SWIPIUM_TEST_*} variables, never the raw value (P0.5).
+          // Secret values become ${SWIPIUM_TEST_*} variables, never the raw value.
           const v = secretVarName(a, ++secretCount);
           text = `\${${v}}`;
           variables.push(v);
@@ -339,7 +359,12 @@ export function generatePom(
       if (e.remediation) ev.remediation = e.remediation;
       elementsYaml[e.name] = ev;
     }
-    const pageObj = { name: p.name, platforms: ['android', 'ios'], screen: p.screen ?? undefined, elements: elementsYaml };
+    const pageObj = {
+      name: p.name,
+      platforms: opts.platform ? [opts.platform] : ['android', 'ios'],
+      screen: p.screen ?? undefined,
+      elements: elementsYaml,
+    };
     files.push({
       path: `pages/${kebab(p.name)}.page.yaml`,
       content: `# Swipium page object. Review before committing.\n${stringify(pageObj)}`,
@@ -353,6 +378,7 @@ export function generatePom(
   testObj.steps = steps.map(serializeStep);
   const testHeader = [
     '# Swipium test (POM). Selectors live in page objects; this test references them by name.',
+    `# Not a flow: run the compiled flow with qa_flow_run flow:"${opts.name.replace(/[^\w.-]+/g, '-')}" (.swipium/flows/; regenerate with swipium suite compile).`,
     ...(variables.length ? [`# variables (provide via qa_flow_run { variables }): ${variables.join(', ')}`] : []),
     `# locator durability: ${durable} durable / ${semi} semi / ${brittle} brittle (${audit.brittlePct}% brittle)`,
   ].join('\n');
@@ -364,6 +390,42 @@ export function generatePom(
   files.push({ path: 'locators/locator-audit.json', content: JSON.stringify(audit, null, 2) });
 
   return { pages, testName: opts.name, steps, variables: [...new Set(variables)], audit, files };
+}
+
+/**
+ * Merge a generated POM file into the copy already on disk, so a second generation in the same
+ * project never drops what an earlier suite references: page objects keep existing elements (new
+ * ones are added, same-named ones refreshed) and suite files keep their existing tests. Anything
+ * else, or an unparsable existing file, is replaced by the new content.
+ */
+export function mergePomFile(path: string, existing: string | undefined, incoming: string): string {
+  if (existing === undefined || existing === incoming) return incoming;
+  const isPage = /^pages\/.+\.page\.yaml$/.test(path);
+  const isSuite = /^suites\/.+\.yaml$/.test(path);
+  if (!isPage && !isSuite) return incoming;
+  let oldDoc: Record<string, unknown>;
+  let newDoc: Record<string, unknown>;
+  try {
+    oldDoc = parseYaml(existing) as Record<string, unknown>;
+    newDoc = parseYaml(incoming) as Record<string, unknown>;
+  } catch {
+    return incoming;
+  }
+  if (!oldDoc || typeof oldDoc !== 'object' || !newDoc || typeof newDoc !== 'object') return incoming;
+  const header = incoming.match(/^(#[^\n]*\n)*/)?.[0] ?? '';
+  if (isPage) {
+    const oldEls = oldDoc.elements && typeof oldDoc.elements === 'object' ? (oldDoc.elements as Record<string, unknown>) : {};
+    const newEls = newDoc.elements && typeof newDoc.elements === 'object' ? (newDoc.elements as Record<string, unknown>) : {};
+    const platforms = [
+      ...new Set([
+        ...(Array.isArray(oldDoc.platforms) ? oldDoc.platforms : []),
+        ...(Array.isArray(newDoc.platforms) ? newDoc.platforms : []),
+      ]),
+    ];
+    return `${header}${stringify({ ...newDoc, ...(platforms.length ? { platforms } : {}), elements: { ...oldEls, ...newEls } })}`;
+  }
+  const tests = [...new Set([...(Array.isArray(oldDoc.tests) ? oldDoc.tests : []), ...(Array.isArray(newDoc.tests) ? newDoc.tests : [])])];
+  return `${header}${stringify({ ...newDoc, tests })}`;
 }
 
 function serializeStep(s: PomTestStep): Record<string, unknown> {
@@ -385,6 +447,8 @@ function serializeStep(s: PomTestStep): Record<string, unknown> {
       return { ...ref, action: 'assertVisible', text: s.text };
     case 'visualCheck':
       return { ...ref, action: 'visualCheck', text: s.text, manual: true };
+    case 'restartApp':
+      return { page: s.page, action: 'restartApp' };
   }
 }
 
@@ -392,9 +456,11 @@ function serializeStep(s: PomTestStep): Record<string, unknown> {
 const SCROLL_FINGER: Record<string, string> = { down: 'up', up: 'down', left: 'left', right: 'right' };
 
 function kebab(s: string): string {
-  return asciiFold(s)
-    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
-    .replace(/[^A-Za-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .toLowerCase();
+  return capSlug(
+    asciiFold(s)
+      .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+      .replace(/[^A-Za-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .toLowerCase(),
+  );
 }

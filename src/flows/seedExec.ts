@@ -42,13 +42,6 @@ export function outsideRoot(argv: string[], root: string): string | null {
   return null;
 }
 
-export function seedGitScopeViolation(seed: FixtureSeedAction): string | null {
-  if (seed.type !== 'script') return null;
-  const { argv, parseError } = normalizeCommand(seed.command);
-  if (parseError || !argv.length) return null;
-  return gitScopeViolation(argv);
-}
-
 export interface SeedExecResult {
   ok: boolean;
   detail?: string;

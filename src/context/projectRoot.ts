@@ -17,7 +17,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { isAbsolute, join, parse, resolve } from 'node:path';
+import { dirname, isAbsolute, join, parse, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import type { McpServer, CallToolResult } from '@modelcontextprotocol/server';
 import { qaError } from '../lib/result.js';
@@ -82,20 +82,73 @@ export function isUsableCwd(cwd: string, home: string = homedir()): boolean {
   return isDir(abs) && hasProjectMarker(abs);
 }
 
+/** `/` (or a drive root) and $HOME are never a project root, whoever names them: discovery and the
+ * artifact walk would crawl the whole disk. Same rule as MCP roots and the cwd guess. */
+export function isOverlyBroadRoot(p: string, home: string = homedir()): boolean {
+  const abs = resolve(p);
+  return abs === parse(abs).root || (!!home && abs === resolve(home));
+}
+
+/** Directories that hold other people's files, never one app: a prebuilt .app/.apk found under them
+ *  is not "this project's build" (for example a stray app under /private),
+ *  and walking them takes minutes. */
+const BROAD_SYSTEM_DIRS = [
+  '/tmp',
+  '/private',
+  '/private/tmp',
+  '/private/var',
+  '/var',
+  '/var/tmp',
+  '/Users',
+  '/home',
+  '/Volumes',
+  '/opt',
+  '/usr',
+  '/Library',
+  '/Applications',
+  '/System',
+];
+/** Per-user folders that hold caches, downloads and loose files rather than one app (a scan of
+ *  ~/Library once planned WebDriverAgentRunner-Runner.app as the app under test). */
+const BROAD_HOME_DIRS = ['Library', 'Downloads', 'Desktop'];
+
+/** True for `/`, $HOME, its parent, ~/Library and friends, and the shared system directories above. */
+export function isBroadSystemDir(root: string, home: string = homedir()): boolean {
+  const abs = resolve(root);
+  if (abs === parse(abs).root) return true;
+  if (home) {
+    const h = resolve(home);
+    if (abs === h || abs === dirname(h) || BROAD_HOME_DIRS.some((d) => abs === join(h, d))) return true;
+  }
+  return BROAD_SYSTEM_DIRS.includes(abs);
+}
+
+const ROOT_ENV_KEYS = ['SWIPIUM_PROJECT_ROOT', 'CLAUDE_PROJECT_DIR'] as const;
+
+/** Why a SET root env var is unusable (not absolute, missing, or `/` / $HOME), else undefined. */
+function envRootProblem(key: (typeof ROOT_ENV_KEYS)[number], v: string, home: string): string | undefined {
+  if (!isAbsolute(v)) return `${key}=${JSON.stringify(v)} is not an absolute path`;
+  if (!isDir(v)) return `${key}=${JSON.stringify(v)} does not exist or is not a directory`;
+  if (isOverlyBroadRoot(v, home)) return `${key}=${JSON.stringify(v)} is the filesystem root or the home directory, not an app`;
+  return undefined;
+}
+
 /** Steps 3-5 of the chain (env vars, then cwd). Exported for tests and CLI reuse. Env values are
- * explicit user/client configuration and are trusted as-is; only the cwd guess needs a marker. */
+ * explicit user/client configuration and are trusted as-is (only `/` and $HOME are refused);
+ * only the cwd guess needs a marker. */
 export function resolveFallbackRoot(opts: RootEnv = {}): ResolvedRoot | null {
   const env = opts.env ?? process.env;
-  for (const key of ['SWIPIUM_PROJECT_ROOT', 'CLAUDE_PROJECT_DIR'] as const) {
+  const home = opts.home ?? homedir();
+  for (const key of ROOT_ENV_KEYS) {
     const v = env[key]?.trim();
-    if (v && isAbsolute(v) && isDir(v)) return { root: v, source: `env:${key}` };
+    if (v && !envRootProblem(key, v, home)) return { root: resolve(v), source: `env:${key}` };
   }
   const cwd = opts.cwd ?? process.cwd();
   if (isUsableCwd(cwd, opts.home ?? homedir())) return { root: resolve(cwd), source: 'cwd' };
   return null;
 }
 
-/** Choose among the client's MCP roots (review P2): the first existing file:// root that has a
+/** Choose among the client's MCP roots: the first existing file:// root that has a
  * project marker; else the first one that is neither `/` nor $HOME. A client exposing
  * [$HOME, app] must land on the app, not on the home directory. Exported for tests. */
 export function pickMcpRoot(uris: unknown[], home: string = homedir()): string | undefined {
@@ -116,9 +169,27 @@ export function pickMcpRoot(uris: unknown[], home: string = homedir()): string |
   return dirs.find((p) => !unsafe(p) && hasProjectMarker(p)) ?? dirs.find((p) => !unsafe(p));
 }
 
-const UNRESOLVED_HINT =
-  'No project root: the client exposed no MCP roots, SWIPIUM_PROJECT_ROOT / CLAUDE_PROJECT_DIR are unset, and the server cwd is not an app directory (no package.json / app.json / pubspec.yaml / Gradle files / android/ / ios/ / *.xcodeproj / Podfile). ' +
-  'Pass projectRoot="/absolute/path/to/app", or set SWIPIUM_PROJECT_ROOT in the MCP server "env" (or a "cwd" where the client supports it).';
+/** The PROJECT_ROOT_UNRESOLVED hint. Says precisely why a SET env var was skipped: a typo
+ * in the fix the README recommends must not read as "unset". */
+export function unresolvedRootHint(opts: RootEnv = {}): string {
+  const env = opts.env ?? process.env;
+  const home = opts.home ?? homedir();
+  const unset: string[] = [];
+  const skipped: string[] = [];
+  for (const key of ROOT_ENV_KEYS) {
+    const v = env[key]?.trim();
+    if (!v) unset.push(key);
+    else {
+      const problem = envRootProblem(key, v, home);
+      if (problem) skipped.push(`${problem} (skipped)`);
+    }
+  }
+  const envPart = [...skipped, ...(unset.length ? [`${unset.join(' / ')} ${unset.length === 1 ? 'is' : 'are'} unset`] : [])].join(', ');
+  return (
+    `No project root: the client exposed no MCP roots, ${envPart}, and the server cwd is not an app directory (no package.json / app.json / pubspec.yaml / Gradle files / android/ / ios/ / *.xcodeproj / Podfile). ` +
+    'Pass projectRoot="/absolute/path/to/app", or set SWIPIUM_PROJECT_ROOT in the MCP server "env" to the absolute app directory (or a "cwd" where the client supports it).'
+  );
+}
 
 /** Per-tool-call record of the first project root resolveProjectRoot() found (AsyncLocalStorage,
  * like the response mode). Lets the server wrapper surface `rootSource` on EVERY tool that
@@ -160,6 +231,36 @@ export function annotateRootSource(result: unknown, resolved: { root: string; so
   return { ...r, content, structuredContent };
 }
 
+/** The client's MCP roots per server instance (keyed on the low-level Server, which test fakes
+ *  provide too). Cleared by notifications/roots/list_changed (src/server.ts). */
+const clientRootsCache = new WeakMap<object, string[]>();
+
+export function clearClientRootsCache(server: McpServer): void {
+  clientRootsCache.delete(server.server);
+}
+
+/**
+ * The root URIs the connected client exposes (MCP roots), asked once per server instance and
+ * cached until the client sends notifications/roots/list_changed. [] when the client does not
+ * advertise roots, on a 2026-07-28 instance (listRoots() throws there: no server-to-client
+ * requests, and roots are deprecated in that revision), or when the call fails (not cached).
+ */
+export async function clientRootUris(server: McpServer): Promise<string[]> {
+  const hit = clientRootsCache.get(server.server);
+  if (hit) return hit;
+  try {
+    const caps = servesModernEra(server) ? undefined : server.server.getClientCapabilities?.();
+    if (!caps?.roots) return [];
+    // 5 s cap; the SDK default is 60 s.
+    const res = await server.server.listRoots(undefined, { timeout: 5_000 });
+    const uris = (res.roots ?? []).map((r) => r.uri).filter((u): u is string => typeof u === 'string');
+    clientRootsCache.set(server.server, uris);
+    return uris;
+  } catch {
+    return []; // client doesn't support roots, or the call failed
+  }
+}
+
 export async function resolveProjectRoot(server: McpServer, explicit?: string, opts: RootEnv = {}): Promise<ResolvedRoot> {
   const resolved = await resolveProjectRootUnrecorded(server, explicit, opts);
   const slot = rootResolutionStore.getStore();
@@ -170,9 +271,26 @@ export async function resolveProjectRoot(server: McpServer, explicit?: string, o
 async function resolveProjectRootUnrecorded(server: McpServer, explicit?: string, opts: RootEnv = {}): Promise<ResolvedRoot> {
   // 1) explicit arg wins (must be an absolute, existing directory)
   if (explicit && explicit.trim()) {
-    const p = explicit.trim();
-    if (!isAbsolute(p)) {
-      return { source: 'none', hint: `projectRoot must be an absolute path, got "${p}".` };
+    const raw = explicit.trim();
+    if (!isAbsolute(raw)) {
+      return { source: 'none', hint: `projectRoot must be an absolute path, got "${raw}".` };
+    }
+    // Normalize once here (trailing "/", "..", "."), so the session root, project
+    // hash, artifact search and outside-root checks all see one spelling of the directory.
+    const p = resolve(raw);
+    // Refused fast: app discovery + the artifact walk under `/` or $HOME took minutes.
+    if (isOverlyBroadRoot(p, opts.home ?? homedir())) {
+      return {
+        source: 'none',
+        hint: `projectRoot "${p}" is the filesystem root or the home directory, which is never an app project. Pass the app's own directory.`,
+      };
+    }
+    // Shared system folders (/Applications, /Users, ~/Library…) too, before any walk.
+    if (isBroadSystemDir(p, opts.home ?? homedir())) {
+      return {
+        source: 'none',
+        hint: `projectRoot "${p}" is a shared system or user folder (other apps, caches, downloads), not one app project. Pass the app's own directory.`,
+      };
     }
     if (isDir(p)) {
       return { root: p, source: 'arg' };
@@ -180,28 +298,15 @@ async function resolveProjectRootUnrecorded(server: McpServer, explicit?: string
     return { source: 'none', hint: `Path not found or not a directory: ${p}` };
   }
 
-  // 2) MCP roots (workspace the client exposed). Never on a 2026-07-28 instance: listRoots()
-  // throws there (no server-to-client requests), and roots are deprecated in that revision.
-  try {
-    const caps = servesModernEra(server) ? undefined : server.server.getClientCapabilities?.();
-    if (caps?.roots) {
-      // Same 5 s cap as currentProjectRoots (src/server.ts); the SDK default is 60 s.
-      const res = await server.server.listRoots(undefined, { timeout: 5_000 });
-      const picked = pickMcpRoot(
-        (res.roots ?? []).map((r) => r.uri),
-        opts.home ?? homedir(),
-      );
-      if (picked) return { root: picked, source: 'mcp-roots' };
-    }
-  } catch {
-    // client doesn't support roots, or the call failed; fall through
-  }
+  // 2) MCP roots (workspace the client exposed; never on a 2026-07-28 instance), cached per instance.
+  const picked = pickMcpRoot(await clientRootUris(server), opts.home ?? homedir());
+  if (picked) return { root: picked, source: 'mcp-roots' };
 
   // 3-5) env vars, then a meaningful cwd
   const fallback = resolveFallbackRoot(opts);
   if (fallback) return fallback;
 
-  return { source: 'none', hint: UNRESOLVED_HINT };
+  return { source: 'none', hint: unresolvedRootHint(opts) };
 }
 
 /**
@@ -215,7 +320,7 @@ export function unresolvedProjectRootError(resolved: ResolvedRoot, opts: { what?
     retrySafe: true,
     failureCode: PROJECT_ROOT_UNRESOLVED,
     nextSteps: opts.nextSteps ?? [
-      'Pass projectRoot="/absolute/path/to/app" (or call qa_start_session with it first).',
+      'Pass projectRoot="/absolute/path/to/app" (or call qa_start_session with it first, then pass the sessionId it returns).',
       'Or set SWIPIUM_PROJECT_ROOT in the MCP server config "env".',
     ],
     clientHint: resolved.hint,

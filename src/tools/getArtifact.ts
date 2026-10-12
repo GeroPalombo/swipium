@@ -7,7 +7,11 @@ import { z } from 'zod';
 import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 import type { McpServer, CallToolResult, ReadResourceResult } from '@modelcontextprotocol/server';
 import { qaError } from '../lib/result.js';
-import type { ArtifactRecord, SessionStore } from '../session/store.js';
+import { INLINE_IMAGE_META, inlineScaleLine, prepareInlineImage } from '../lib/image.js';
+import { pngSize } from '../lib/png.js';
+import { decodeUriSegment, type ArtifactRecord, type SessionStore } from '../session/store.js';
+import { readAppMapResource, resolveAppMapRoot } from './appMap.js';
+import { appMapPath } from '../appMap/store.js';
 
 /** resources/read size caps. Binary (images, recordings) over the cap is not inlined at all
  * (base64 would be ~1.33x on top); text over the cap returns the head (or the tail, for logs)
@@ -127,13 +131,52 @@ export function registerGetArtifact(server: McpServer, sessions: SessionStore): 
     {
       title: 'Get an artifact',
       description:
-        'Fetch a session artifact by swipium://session/<id>/<kind>/<name> URI (screenshots, reports, dumps, logs) when the ' +
-        'client lacks MCP resources. Text is inline (over 1 MB: the head, or the tail for logs). Images and other ' +
-        'binaries (recordings) return metadata by default; mode:"inline" returns the bytes.',
+        'Fetch a session artifact (screenshot, report, dump, log, recording) by its swipium://session/<id>/<kind>/<name> URI when the ' +
+        'client lacks MCP resources. Text is inline (over 1 MB: the head, or the tail for logs). Binaries return metadata; ' +
+        'mode:"inline" returns the bytes (images as JPEG, long edge 1568 px, scale in the text).',
       inputSchema: { uri: z.string(), mode: z.enum(['metadata', 'inline']).optional() },
     },
     async ({ uri, mode }): Promise<CallToolResult> => {
       const found = sessions.findArtifact(uri);
+      // The project app-map URIs qa_test_this hands out (appMapUri) are not session
+      // artifacts; read them the same way resources/read does.
+      const mapUri = !found ? /^swipium:\/\/project\/([^/]+)\/app-map(?:\/([^/]+)\/(.+))?$/.exec(uri) : null;
+      if (mapUri) {
+        const projectId = decodeUriSegment(mapUri[1]);
+        const root = resolveAppMapRoot(projectId, sessions);
+        const res = root
+          ? readAppMapResource(root, {
+              kind: mapUri[2] ? decodeUriSegment(mapUri[2]) : undefined,
+              id: mapUri[3] ? decodeUriSegment(mapUri[3]) : undefined,
+            })
+          : null;
+        if (!res)
+          return qaError({
+            what: root ? `No app-map data at ${uri}` : `Unknown project ${projectId} in ${uri}`,
+            changedState: false,
+            retrySafe: true,
+            failureCode: 'NO_APP_MAP',
+            nextSteps: ['Build the map with qa_app_map_build, or list sections with qa_app_map_read.'],
+          });
+        const bytes = Buffer.byteLength(res.text, 'utf8');
+        // Metadata mode describes the map instead of returning it (as for session artifacts).
+        if (mode === 'metadata') {
+          const meta = {
+            uri,
+            mime: res.mimeType,
+            kind: 'app-map',
+            bytes,
+            path: mapUri[2] || !root ? null : appMapPath(root),
+            hint: 'pass mode:"inline" (or omit mode) to fetch contents; qa_app_map_read returns one compact section',
+          };
+          return { content: [{ type: 'text', text: `${uri}\n${JSON.stringify(meta, null, 2)}` }], structuredContent: meta };
+        }
+        const text =
+          bytes > RESOURCE_TEXT_MAX_BYTES
+            ? `${trimUtf8End(Buffer.from(res.text, 'utf8').subarray(0, RESOURCE_TEXT_MAX_BYTES)).toString('utf8')}\n… [truncated: ${bytes} bytes; use qa_app_map_read for a section]`
+            : res.text;
+        return { content: [{ type: 'text', text }] };
+      }
       if (!found) {
         return qaError({
           what: `Unknown artifact ${uri}`,
@@ -175,9 +218,23 @@ export function registerGetArtifact(server: McpServer, sessions: SessionStore): 
             return {
               content: [{ type: 'text', text: binaryOverCapNote(rec.uri, rec, size, RESOURCE_BINARY_MAX_BYTES, 'qa_get_artifact') }],
             };
-          const data = readFileSync(rec.path).toString('base64');
-          if (rec.mime.startsWith('image/')) return { content: [{ type: 'image', data, mimeType: rec.mime }] };
+          if (rec.mime.startsWith('image/')) {
+            // Downscaled (long edge 1568 px JPEG, macOS sips) with the scale in the text so
+            // coordinates map back; never with structuredContent (Codex would drop the image).
+            const original = readFileSync(rec.path);
+            const img = await prepareInlineImage(original, rec.mime);
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `${rec.uri}${partialNote}\n${inlineScaleLine(img, rec.mime === 'image/png' ? pngSize(original) : null)}`,
+                },
+                { type: 'image', data: img.data.toString('base64'), mimeType: img.mime, _meta: INLINE_IMAGE_META },
+              ],
+            };
+          }
           // Not an image (video/mp4, zip...): an embedded blob resource, never a UTF-8 decode of the bytes.
+          const data = readFileSync(rec.path).toString('base64');
           return { content: [{ type: 'resource', resource: { uri: rec.uri, mimeType: rec.mime, blob: data } }] };
         }
         const { text } = readCappedText(rec, RESOURCE_TEXT_MAX_BYTES, 'qa_get_artifact');

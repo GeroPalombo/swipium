@@ -1,8 +1,8 @@
 // The failure catalog (src/oracle/failures.ts) is what qa_explain_blocker explains and what
 // reports classify by. Every failureCode a tool can return must be in it — otherwise an agent that
 // follows the "relay the failureCode, call qa_explain_blocker" rule hits "Unknown failure code".
-// Static scan: every `failureCode: 'X'` and `qaFail('X'` literal under src/ (deferred modules
-// excluded), plus the ledger / generator error codes that tools forward as failureCode.
+// Static scan: every `failureCode: 'X'` and `qaFail('X'` literal under src/, plus the ledger /
+// generator error codes that tools forward as failureCode.
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -13,7 +13,7 @@ const SRC = join(import.meta.dirname, '..', 'src');
 
 function tsFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
-    if (e.isDirectory()) return e.name === 'deferred' ? [] : tsFiles(join(dir, e.name));
+    if (e.isDirectory()) return tsFiles(join(dir, e.name));
     return e.name.endsWith('.ts') ? [join(dir, e.name)] : [];
   });
 }

@@ -1,8 +1,7 @@
 // Feature-NODE inference (FeatureNode). Complements featureIndex.ts (the lightweight
 // code symbol/route index): this maps the static topology + library signals into candidate
 // FeatureNodes for the AppKnowledgeMap. Inference is conservative: a feature backed by a single
-// weak signal is a HYPOTHESIS, not a fact (Non-Goals § "Do not treat low-confidence feature
-// inference as fact"). Runtime merge later enriches testCoverage + runtimeScreens; tickets scope.
+// weak signal is a HYPOTHESIS, not a fact. Runtime merge later enriches testCoverage + runtimeScreens; tickets scope.
 
 import { combineConfidence } from './provenance.js';
 import type { AuthModel, FeatureNode, FeatureRisk, FlowModel, StaticTopology } from './schema.js';

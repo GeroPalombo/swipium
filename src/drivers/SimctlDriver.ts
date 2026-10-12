@@ -164,11 +164,13 @@ export class SimctlDriver implements Driver {
   }
   /** Screen size in POINTS (B6), the unit `idb ui tap` and WebDriverAgent use, so
    * captureCoordinateSpace derives scale = screenshot px / points and every devicePoint a
-   * visual tool returns is directly tappable, consistent with the WDA backend. */
-  async screenSize(): Promise<{ width: number; height: number } | null> {
+   * visual tool returns is directly tappable, consistent with the WDA backend. `knownPx` skips
+   * the extra screenshot when the caller already has one. */
+  async screenSize(knownPx?: { width: number; height: number } | null): Promise<{ width: number; height: number } | null> {
     if (this.size) return this.size;
     try {
-      const dims = pngSize(await sim.screenshot(this.udid));
+      // knownPx: dims of a screenshot the caller already took (captureCoordinateSpace).
+      const dims = knownPx?.width && knownPx.height ? knownPx : pngSize(await sim.screenshot(this.udid));
       if (!dims) return null;
       const { scale } = await this.pointScale(dims);
       this.size = { width: Math.round(dims.width / scale), height: Math.round(dims.height / scale) };

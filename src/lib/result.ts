@@ -230,20 +230,50 @@ export function qaError(input: QaErrorInput, extra?: Record<string, unknown>): C
       extraDroppedNote: `extra error fields were dropped: the envelope exceeded ${MAX_ERROR_PAYLOAD_CHARS} chars`,
     };
   }
-  const mode = currentResponseMode();
-  const head = [
-    `❌ ${p.what}`,
-    p.commandAttempted ? `command: ${p.commandAttempted}` : '',
-    `changedState=${p.changedState} retrySafe=${p.retrySafe}`,
-    p.nextSteps.length ? `next: ${p.nextSteps.join(' | ')}` : '',
-    p.clientHint ? `hint: ${p.clientHint}` : '',
-  ]
-    .filter(Boolean)
-    .join('\n');
-  // Errors keep their actionable head in every mode; only the fenced JSON duplicate is
-  // dropped in compact (structuredContent still carries the full payload).
-  const text = mode === 'compact' ? head : `${head}\n${fence(payload)}`;
+  const text = errorText(payload);
   return { isError: true, content: [{ type: 'text', text }], structuredContent: payload };
+}
+
+/** Payload keys the error text head renders; the text fence carries only the rest. */
+const ERROR_HEAD_KEYS = new Set(['ok', 'failureCode', 'what', 'commandAttempted', 'changedState', 'retrySafe', 'nextSteps', 'clientHint']);
+/** Head of an error's text block, and the whole block: Claude Code shows the model only the TEXT of an
+ * isError result and truncates past ~11k chars (to the first/last 5k), so the head (code, what
+ * happened, the fix) stays under 5k and the whole block under 10k. */
+export const ERROR_TEXT_HEAD_MAX_CHARS = 5000;
+export const ERROR_TEXT_MAX_CHARS = 10_000;
+
+/**
+ * The text block of an error. Complete in every response mode (Claude Code reads only this channel
+ * for errors, Codex only structuredContent, so both carry everything): a head with the failure code,
+ * what happened, the retry facts and the next steps, then a compact fence with the remaining fields
+ * only. The fence never repeats a head field, and a string list whose every entry the head already
+ * shows (e.g. acceptedParameters named in a next step) is left out of it.
+ */
+function errorText(payload: Record<string, unknown> & QaErrorInput): string {
+  const steps = payload.nextSteps;
+  const head = capMiddle(
+    [
+      `❌ ${String(payload.failureCode ?? 'UNKNOWN')}: ${payload.what}`,
+      payload.commandAttempted ? `command: ${payload.commandAttempted}` : '',
+      `changedState=${payload.changedState} retrySafe=${payload.retrySafe}`,
+      steps.length === 1 ? `next: ${steps[0]}` : steps.length ? `next:\n${steps.map((n) => `- ${n}`).join('\n')}` : '',
+      payload.clientHint ? `hint: ${payload.clientHint}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n'),
+    ERROR_TEXT_HEAD_MAX_CHARS,
+  );
+  const rest: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(payload)) {
+    if (ERROR_HEAD_KEYS.has(k) || v === undefined) continue;
+    if (Array.isArray(v) && v.length && v.every((x) => typeof x === 'string' && head.includes(x))) continue;
+    rest[k] = v;
+  }
+  if (!Object.keys(rest).length) return head;
+  const budget = ERROR_TEXT_MAX_CHARS - head.length - 20;
+  let body = JSON.stringify(rest);
+  if (body.length > budget) body = `${capMiddle(body, Math.max(200, budget - 80))} (cut; structuredContent has every field)`;
+  return `${head}\n\`\`\`json\n${body}\n\`\`\``;
 }
 
 /** Cap for the summary copy in structuredContent: it duplicates data that is already structured,
@@ -344,8 +374,22 @@ function withSummary(base: Record<string, unknown>, summary: string, opts?: QaTe
   return out;
 }
 
+/** Longest caller-supplied string a SUCCESS result echoes back (a note's workflow/reason, a query).
+ * Tools cap echoed input with capEchoed() so a multi-MB argument cannot inflate the response (it is
+ * repeated in the summary, the JSON fence and structuredContent) past a client's read buffer. */
+export const MAX_ECHOED_INPUT_CHARS = 2000;
+
+/** capMiddle at MAX_ECHOED_INPUT_CHARS, passing undefined through. */
+export function capEchoed<T extends string | undefined>(s: T): T {
+  return (typeof s === 'string' ? capMiddle(s, MAX_ECHOED_INPUT_CHARS) : s) as T;
+}
+
+/** Backstop for success summaries (the human text line): head + tail kept past this length. */
+export const MAX_SUCCESS_SUMMARY_CHARS = 20_000;
+
 export function qaOk(payload: Record<string, unknown>, summary: string, opts?: QaTextOptions): CallToolResult {
   const base = { ok: true, ...payload };
+  summary = capMiddle(summary, MAX_SUCCESS_SUMMARY_CHARS);
   return {
     // The fence renders `base`, not the summary/next copies: the text block already IS the summary.
     content: [{ type: 'text', text: renderText(summary, base, currentResponseMode(), opts) }],
@@ -362,17 +406,27 @@ export function qaAnnotate(result: CallToolResult, notes: string[]): CallToolRes
   const first = content[0];
   if (first && first.type === 'text') content[0] = { ...first, text: `${String(first.text)}${noteText}` };
   else content.unshift({ type: 'text', text: noteText.trim() });
-  const sc = { ...((result.structuredContent ?? {}) as Record<string, unknown>), notes };
-  return { ...result, content, structuredContent: sc };
+  // A result without structuredContent (an inline image) stays without it: Codex drops image
+  // blocks when structuredContent is present, and the notes are in the text block anyway.
+  if (!result.structuredContent) return { ...result, content };
+  return { ...result, content, structuredContent: { ...(result.structuredContent as Record<string, unknown>), notes } };
 }
 
-/** A deliberate, budgeted stop (not an error). The agent should call qa_report next. */
+/** A deliberate, budgeted stop: the requested action was NOT performed. Not a tool error (no
+ *  isError), but never `ok:true` either: an agent checking `ok` must not read a skipped
+ *  tap/type/screenshot as done. Typed BUDGET_EXHAUSTED; the agent should call qa_report next. */
 export function qaStop(reason: string, payload: Record<string, unknown>): CallToolResult {
-  const base = { ok: true, stopped: true, reason, ...payload };
-  const summary = `⏹ Stopped: ${reason}\nCall qa_report to summarize what was verified.`;
+  const base = { ok: false, stopped: true, performed: false, failureCode: 'BUDGET_EXHAUSTED', reason, ...payload };
+  const summary =
+    `⏹ BUDGET_EXHAUSTED: ${reason}. This call did nothing.\n` +
+    'Call qa_report to summarize what was verified, or start a session with a larger budget ' +
+    '(qa_start_session { budget: { maxScreenshots, maxActions, maxMinutes } }) and pass its sessionId.';
   return {
     content: [{ type: 'text', text: renderText(summary, base, currentResponseMode()) }],
-    structuredContent: withSummary(base, summary, undefined, ['qa_report to summarize what was verified']),
+    structuredContent: withSummary(base, summary, undefined, [
+      'qa_report to summarize what was verified',
+      'qa_start_session { budget: {...} } for a larger budget',
+    ]),
   };
 }
 

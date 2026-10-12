@@ -67,7 +67,7 @@ describe('planTarget physical-device policy', () => {
   });
 });
 
-describe('planTarget property-verified emulators (H6)', () => {
+describe('planTarget property-verified emulators', () => {
   it('treats a non-`emulator-N` serial listed in android.emulators as an emulator', () => {
     const plan = planTarget(base({ android: { online: ['localhost:5555'], avds: [], emulators: ['localhost:5555'] } }));
     expect(plan.selected).toBe('android-emulator');

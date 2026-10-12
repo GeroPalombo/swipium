@@ -1,18 +1,19 @@
-// Suite generation service (Phase 3.2 Milestone C): generate POM files + test cases from a
+// Suite generation service: generate POM files + test cases from a
 // session's recorded actions, write them under .swipium/, and (optionally) compile them to runnable
 // Flow V2. Shared by qa_generate target:"suite" and qa_test_this execute so the autopilot
 // produces REAL files (not a note). Honest: when there are no recorded actions it returns a typed
 // `skipped` result rather than pretending a suite was created.
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { generatePom, type GeneratedFile, type PomResult } from '../suite/pom.js';
+import { generatePom, mergePomFile, type GeneratedFile, type PomResult } from '../suite/pom.js';
 import { generateTestCases } from '../suite/testcase.js';
-import { compileSuite } from '../suite/compile.js';
+import { compileSuite, flowSlug, writeCompiledFlow } from '../suite/compile.js';
 import { parseFlow } from '../flows/schema.js';
 import { loadProjectConfig } from '../cli/scan.js';
 import { readinessForSession, type ReadinessLabel } from '../report/readiness.js';
 import type { RecordedAction, Session, SessionStore } from '../session/store.js';
+import { recordedPlatform } from '../testSuite/generator.js';
 import { assertNoSecretLeaks, findSecretLeaks, inputBindings, secretSafeNotes, structuralLiterals } from '../suite/secretGuard.js';
 
 export interface CompiledFlowInfo {
@@ -22,6 +23,9 @@ export interface CompiledFlowInfo {
   flowPath?: string;
   compiledPath?: string;
   errors: string[];
+  /** The flows/ copy had hand edits and was kept; the new output is at newOutputPath. */
+  keptEditedFlow?: boolean;
+  newOutputPath?: string;
 }
 
 export interface SuiteGenerationResult {
@@ -55,26 +59,55 @@ export function writeSuiteFiles(session: Session, files: GeneratedFile[]): strin
   for (const f of files) {
     const abs = join(base, f.path);
     mkdirSync(dirname(abs), { recursive: true });
-    writeFileSync(abs, f.content);
+    // merge into existing page objects / suite files instead of dropping what earlier suites use
+    writeFileSync(abs, mergePomFile(f.path, existsSync(abs) ? readFileSync(abs, 'utf8') : undefined, f.content));
     written.push(abs);
   }
   return written;
+}
+
+/** The explorer's "back did not leave X; relaunching <appId> …" note (src/explore/runner.ts). */
+const EXPLORER_RELAUNCH = /\brelaunching \S+ to continue from its first screen/;
+
+/**
+ * The session's recorded actions with the explorer's mid-run relaunches put back in as
+ * `restart_app` steps. The explorer relaunches the app when back does not leave a
+ * screen and records only its taps, so a generated flow ran the next tap against the wrong screen.
+ * A relaunch before the first action (the flow starts with a launch anyway) or after the last one
+ * adds nothing and is dropped.
+ */
+export function actionsWithRelaunches(session: Pick<Session, 'recordedActions' | 'notes'>): RecordedAction[] {
+  const actions = session.recordedActions;
+  if (!actions.length) return actions;
+  const relaunches = session.notes
+    .filter((n) => n.workflow === 'guided_exploration' && EXPLORER_RELAUNCH.test(n.reason ?? ''))
+    .map((n) => n.at);
+  if (!relaunches.length) return actions;
+  const out: RecordedAction[] = [];
+  for (const a of actions) {
+    const prev = out.at(-1);
+    if (prev && prev.action !== 'restart_app' && relaunches.some((t) => t >= prev.at && t <= a.at))
+      out.push({ at: a.at, action: 'restart_app', exportability: 'semantic' });
+    out.push(a);
+  }
+  return out;
 }
 
 /** Build the POM (+ flowName) for a session's recorded actions. */
 export function pomForSession(
   session: Session,
   name?: string,
-  actions: RecordedAction[] = session.recordedActions,
+  actions: RecordedAction[] = actionsWithRelaunches(session),
 ): { pom: PomResult; flowName: string } {
   const appId = appIdOf(session);
-  const flowName = (name ?? `${(appId ?? 'app').split('.').pop()}-smoke`).replace(/[^\w.-]+/g, '-');
+  const flowName = flowSlug(name ?? `${(appId ?? 'app').split('.').pop()}-smoke`);
   const pom = generatePom(actions, {
     name: flowName,
     appId,
     budgetProfile: session.budgetProfile,
     secrets: session.secrets,
     inputs: inputBindings(session), // typed text equal to a stored input maps to its ${SWIPIUM_TEST_*} placeholder
+    platform: recordedPlatform(session),
   });
   return { pom, flowName };
 }
@@ -91,7 +124,7 @@ export interface GenerateSuiteOptions {
  * Returns `skipped:true` honestly when there is nothing to record.
  */
 export function generateAndCompileSuite(sessions: SessionStore, session: Session, opts: GenerateSuiteOptions = {}): SuiteGenerationResult {
-  const actions = opts.actions ?? session.recordedActions;
+  const actions = opts.actions ?? actionsWithRelaunches(session);
   if (!actions.length) {
     return {
       skipped: true,
@@ -112,6 +145,7 @@ export function generateAndCompileSuite(sessions: SessionStore, session: Session
     fixtures: session.fixtures,
     notes: secretSafeNotes(session.notes, session.secrets),
     budgetProfile: session.budgetProfile,
+    platform: recordedPlatform(session),
   });
 
   const files: GeneratedFile[] = [
@@ -141,24 +175,30 @@ export function generateAndCompileSuite(sessions: SessionStore, session: Session
   const compiledFlows: CompiledFlowInfo[] = [];
   if (save && compile) {
     const result = compileSuite(session.root, 'suites/smoke.yaml');
-    const flowsDir = join(session.root, '.swipium', 'flows');
-    const compiledDir = join(session.root, '.swipium', 'compiled');
-    mkdirSync(flowsDir, { recursive: true });
-    mkdirSync(compiledDir, { recursive: true });
     for (const f of result.flows) {
-      const slug = f.name.replace(/[^\w.-]+/g, '-');
+      const slug = flowSlug(f.name);
       const parse = f.yaml ? parseFlow(f.yaml) : { errors: ['empty'] as string[] };
       const ok = !!f.yaml && parse.errors.length === 0 && f.errors.length === 0;
       let flowPath: string | undefined;
       let compiledPath: string | undefined;
+      let kept: string | undefined;
       if (ok) {
-        flowPath = join(flowsDir, `${slug}.yaml`);
-        compiledPath = join(compiledDir, `${slug}.flow.yaml`);
-        writeFileSync(flowPath, f.yaml);
-        writeFileSync(compiledPath, f.yaml);
-        written.push(flowPath, compiledPath);
+        // A hand-edited .swipium/flows/<slug>.yaml is kept; the new output goes to <slug>.yaml.new.
+        const w = writeCompiledFlow(session.root, slug, f.yaml);
+        flowPath = w.flowPath;
+        compiledPath = w.compiledPath;
+        if (w.kept && w.newPath) kept = w.newPath;
+        written.push(w.kept && w.newPath ? w.newPath : flowPath, compiledPath);
       }
-      compiledFlows.push({ name: f.name, slug, ok, flowPath, compiledPath, errors: [...f.errors, ...parse.errors] });
+      compiledFlows.push({
+        name: f.name,
+        slug,
+        ok,
+        flowPath,
+        compiledPath,
+        errors: [...f.errors, ...parse.errors],
+        ...(kept ? { keptEditedFlow: true, newOutputPath: kept } : {}),
+      });
     }
   }
 

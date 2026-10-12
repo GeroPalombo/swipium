@@ -1,5 +1,5 @@
-// D9: `swipium scan` must not write .swipium/ on --help or when the project is BLOCKED; the
-// help text documents --check/--dry-run. D2: no references to a nonexistent `swipium plan`.
+// `swipium scan` must not write .swipium/ on --help or when the project is BLOCKED; the
+// help text documents --check/--dry-run, and has no references to a nonexistent `swipium plan`.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync } from 'node:fs';
