@@ -161,31 +161,44 @@ function crashBlock(log: string, appId?: string, appOnly = false): string | unde
 // One log capture per session per class (crash / ANR) and window: qa_act re-runs health after every
 // action while a crash dialog stays up, and each would otherwise pull logcat again. A repeat inside
 // the window reuses the captured excerpt, so the later finding (a qa_act after qa_check_health, or
-// "process gone" after the crash dialog) still links it (LOG NEW-2).
-const lastLogCapture = new WeakMap<Session, Map<string, { at: number; uri?: string }>>();
+// "process gone" after the crash dialog) still links it (LOG NEW-2). A crash reuses it only while
+// the crash buffer's newest FATAL block is the same one: a second crash (new pid / time) inside the
+// window gets its own excerpt (R5 must-fix 4). The crash-buffer read is small; the wide main-buffer
+// read is what the window saves.
+const lastLogCapture = new WeakMap<Session, Map<string, { at: number; uri?: string; block?: string }>>();
 const LOG_CAPTURE_WINDOW_MS = 30_000;
 
 async function captureCrashLog(sessions: SessionStore, session: Session, driver: Driver, kind: string): Promise<string | undefined> {
   if (session.sensitive) return undefined; // sensitive mode persists no device output beyond findings
   if (driver.kind !== 'direct' && driver.kind !== 'remote') return undefined; // logcat is Android-only
-  const seen = lastLogCapture.get(session) ?? new Map<string, { at: number; uri?: string }>();
-  const key = /\banr\b/i.test(kind) ? 'anr' : 'crash';
+  const seen = lastLogCapture.get(session) ?? new Map<string, { at: number; uri?: string; block?: string }>();
+  const anr = /\banr\b/i.test(kind);
+  const key = anr ? 'anr' : 'crash';
+  const block = anr
+    ? undefined
+    : await driver.logcat(400, undefined, { buffer: 'crash' }).then(
+        (log) => crashBlock(log, session.appId, true),
+        () => undefined,
+      );
   const last = seen.get(key);
-  if (last && Date.now() - last.at < LOG_CAPTURE_WINDOW_MS) return last.uri;
-  const entry: { at: number; uri?: string } = { at: Date.now() };
+  if (last && Date.now() - last.at < LOG_CAPTURE_WINDOW_MS && last.block === block) return last.uri;
+  const entry: { at: number; uri?: string; block?: string } = { at: Date.now(), block };
   seen.set(key, entry);
   lastLogCapture.set(session, seen);
-  entry.uri = await readCrashLog(sessions, session, driver, kind);
+  entry.uri = await readCrashLog(sessions, session, driver, kind, block);
   return entry.uri;
 }
 
-async function readCrashLog(sessions: SessionStore, session: Session, driver: Driver, kind: string): Promise<string | undefined> {
+async function readCrashLog(
+  sessions: SessionStore,
+  session: Session,
+  driver: Driver,
+  kind: string,
+  fromCrash?: string,
+): Promise<string | undefined> {
   try {
-    // The crash buffer first (it keeps the FATAL stack however much the app logs after crashing),
-    // then a wide window of the default buffers (ANR blocks live there).
-    const fromCrash = /\banr\b/i.test(kind)
-      ? undefined
-      : crashBlock(await driver.logcat(400, undefined, { buffer: 'crash' }), session.appId, true);
+    // The crash buffer's block (read by the caller: it keeps the FATAL stack however much the app
+    // logs after crashing), else a wide window of the default buffers (ANR blocks live there).
     const main = fromCrash ? undefined : withoutSwipiumNoise(await driver.logcat(3000));
     let excerpt = fromCrash ?? (main ? crashBlock(main.join('\n'), session.appId) : undefined);
     if (!excerpt && main)

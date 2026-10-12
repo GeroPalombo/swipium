@@ -138,8 +138,8 @@ describe('qa_act type at x,y: leftover text in the focused field (CR P5 M4, AND 
     constructor(private failClears: number) {
       super(screen());
     }
-    async clearFocusedText() {
-      this.rec('clearFocusedText');
+    async clearFocusedText(len?: number, opts?: { byLength?: boolean }) {
+      this.rec('clearFocusedText', len, opts);
       if (this.failClears-- > 0) return;
       this.xml = fillTextField(this.xml, 500, 350, '');
     }
@@ -166,6 +166,9 @@ describe('qa_act type at x,y: leftover text in the focused field (CR P5 M4, AND 
     expect(res.failureCode).toBe('TEXT_INPUT_MISMATCH');
     expect(res.retrySafe).toBe(true);
     expect(d.got('clearFocusedText')).toHaveLength(2);
+    // R5-2: the retry clears by length, not with the select-all that just failed.
+    expect(d.got('clearFocusedText')[0].a[1]).toBeUndefined();
+    expect(d.got('clearFocusedText')[1].a[1]).toEqual({ byLength: true });
     expect(d.inputs).toEqual([
       { text: 'hello', opts: undefined },
       { text: 'hello', opts: { careful: true } },

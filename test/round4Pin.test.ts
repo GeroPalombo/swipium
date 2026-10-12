@@ -70,16 +70,16 @@ describe('SWIPIUM_DEVICE refusals (CR P5)', () => {
   it('qa_wda setup with another simulator by NAME is DEVICE_PINNED before any consent', async () => {
     process.env.SWIPIUM_DEVICE = A.udid;
     const sessionId = (await call('qa_start_session', { projectRoot: root })).sessionId as string;
-    const res = await call('qa_wda', { sessionId, action: 'setup', device: 'iPhone SE', wdaProjectPath: 'WDA.xcodeproj' });
+    const res = await call('qa_wda', { sessionId, action: 'setup', device: 'iphone se (3rd generation)', wdaProjectPath: 'WDA.xcodeproj' });
     expect(res.failureCode).toBe('DEVICE_PINNED');
     expect(res.requiresConsent).toBeUndefined();
   });
 
-  it('qa_wda with an ambiguous or unknown simulator name is INVALID_ARGUMENT', async () => {
+  it('qa_wda with a partial or unknown simulator name is INVALID_ARGUMENT', async () => {
     const sessionId = (await call('qa_start_session', { projectRoot: root })).sessionId as string;
     const ambiguous = await call('qa_wda', { sessionId, action: 'setup', device: 'iPhone', wdaProjectPath: 'WDA.xcodeproj' });
-    expect(ambiguous.failureCode).toBe('INVALID_ARGUMENT');
-    expect(String(ambiguous.what)).toMatch(/matches 2 simulators/);
+    expect(ambiguous.failureCode).toBe('INVALID_ARGUMENT'); // a substring is not a match
+    expect(String(ambiguous.what)).toMatch(/matches no available simulator/);
     const unknown = await call('qa_wda', { sessionId, action: 'setup', device: 'Pixel 9', wdaProjectPath: 'WDA.xcodeproj' });
     expect(unknown.failureCode).toBe('INVALID_ARGUMENT');
   });

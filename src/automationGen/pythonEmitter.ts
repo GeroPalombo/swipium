@@ -423,6 +423,14 @@ class BaseScreen:
 
     def open_url(self, url):
         self.driver.get(url)
+
+    def restart_app(self):
+        caps = self.driver.capabilities or {}
+        app_id = caps.get("appium:bundleId") or caps.get("bundleId") or caps.get("appium:appPackage") or caps.get("appPackage")
+        if not app_id:
+            raise RuntimeError("restart_app: no bundleId / appPackage capability to relaunch")
+        self.driver.terminate_app(app_id)
+        self.driver.activate_app(app_id)
 `;
 }
 
@@ -542,6 +550,8 @@ function stepCall(n: PyScreenNames, s: AppiumStep): string {
     case 'assertVisible':
       if (!s.text) throw new UnemittableStepError('cannot emit a text assertion without text');
       return `${v}.assert_text_visible(${pyStr(s.text)})`;
+    case 'restartApp':
+      return `${v}.restart_app()  # the recording relaunched the app here`;
     case 'visualCheck':
       // Visual judgement prose is not on-screen text. It's a manual checkpoint, never a failing text check.
       // A comment line is safe here: the test body always instantiates the step's screen first.

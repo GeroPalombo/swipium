@@ -191,6 +191,15 @@ export function iosAlertCancel(allNodes: RawNode[]): { title: string; cancel?: {
   };
 }
 
+/** R5 N13: closing an iOS permission prompt with "Don't Allow" denies the permission, and the denial
+ *  persists on the simulator. Text to append to the "closed the alert" note so the result says so
+ *  ('' for any other cancel button). PURE. */
+export function permissionDeniedNote(cancelLabel: string): string {
+  return /^don.?t allow$/i.test(cancelLabel.trim())
+    ? ' (this DENIED the permission; the denial persists: undo with qa_ios { action:"privacy_reset", bundleId } before flows that need it)'
+    : '';
+}
+
 // Android + iOS wording (iOS: "No script URL provided. Make sure the packager is running…").
 const UNABLE_TO_LOAD_RE =
   /unable to load script|loadJSBundleFromAssets|index\.android\.bundle|could not connect to development server|no script url provided|unsanitizedScriptURLString/i;
@@ -202,9 +211,15 @@ export function detectRedBox(allNodes: RawNode[]): { present: boolean; unableToL
   return { present, unableToLoadScript: UNABLE_TO_LOAD_RE.test(joined) };
 }
 
+/** True when the foreground owner (`pkg/activity`, `pkg:process` or a bundle id) is exactly the app under test. */
+export function ownsForeground(appId: string, foreground: string): boolean {
+  const owner = foreground.split('/')[0];
+  return owner === appId || owner.startsWith(`${appId}:`);
+}
+
 /** Classify the foreground owner string into an overlay class (system/foreign surfaces). */
 export function classifyForeground(appId: string | undefined, foreground: string): Overlay | null {
-  if (appId && foreground.startsWith(appId)) return null;
+  if (appId && ownsForeground(appId, foreground)) return null;
   if (/permissioncontroller/i.test(foreground)) return { type: 'permission_dialog', detail: foreground };
   if (/accountpicker|account\.|gms/i.test(foreground)) return { type: 'account_picker', detail: foreground };
   if (/launcher/i.test(foreground)) return null; // not an overlay; handled by health

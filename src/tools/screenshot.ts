@@ -16,6 +16,7 @@ import { diagnoseIosOutage, isIosSession } from '../lib/iosOutage.js';
 import { isMetroRequiredFinding, launchErrorSurface, type Finding } from '../oracle/health.js';
 import { launchErrorText } from '../oracle/record.js';
 import type { RawNode } from '../snapshot/parse.js';
+import { ownsForeground } from '../snapshot/overlays.js';
 
 /** The qa_screenshot line for a RedBox / Expo dev launcher on screen (E2E NEW-17). */
 function redBoxWarning(f: Finding): string {
@@ -96,7 +97,7 @@ export function registerScreenshot(server: McpServer, sessions: SessionStore): v
         const rec = sessions.findArtifact(uri)!.rec;
         const fgPkg = (await foreground).split('/')[0];
         // A RedBox screenshot shows the app was not usable: never "reached the app" evidence.
-        if (appId && fgPkg && fgPkg.startsWith(appId) && !appError) rec.appForeground = true;
+        if (appId && fgPkg && ownsForeground(appId, fgPkg) && !appError) rec.appForeground = true;
         sessions.bump(session, 'screenshots');
         const coordinateSpace = await captureCoordinateSpace(driver, png);
         const budgetReached = sessions.budgetStop(session);

@@ -66,11 +66,38 @@ export function writeSuiteFiles(session: Session, files: GeneratedFile[]): strin
   return written;
 }
 
+/** The explorer's "back did not leave X; relaunching <appId> …" note (src/explore/runner.ts). */
+const EXPLORER_RELAUNCH = /\brelaunching \S+ to continue from its first screen/;
+
+/**
+ * The session's recorded actions with the explorer's mid-run relaunches put back in as
+ * `restart_app` steps (GOAL NEW-R5-3). The explorer relaunches the app when back does not leave a
+ * screen and records only its taps, so a generated flow ran the next tap against the wrong screen.
+ * A relaunch before the first action (the flow starts with a launch anyway) or after the last one
+ * adds nothing and is dropped.
+ */
+export function actionsWithRelaunches(session: Pick<Session, 'recordedActions' | 'notes'>): RecordedAction[] {
+  const actions = session.recordedActions;
+  if (!actions.length) return actions;
+  const relaunches = session.notes
+    .filter((n) => n.workflow === 'guided_exploration' && EXPLORER_RELAUNCH.test(n.reason ?? ''))
+    .map((n) => n.at);
+  if (!relaunches.length) return actions;
+  const out: RecordedAction[] = [];
+  for (const a of actions) {
+    const prev = out.at(-1);
+    if (prev && prev.action !== 'restart_app' && relaunches.some((t) => t >= prev.at && t <= a.at))
+      out.push({ at: a.at, action: 'restart_app', exportability: 'semantic' });
+    out.push(a);
+  }
+  return out;
+}
+
 /** Build the POM (+ flowName) for a session's recorded actions. */
 export function pomForSession(
   session: Session,
   name?: string,
-  actions: RecordedAction[] = session.recordedActions,
+  actions: RecordedAction[] = actionsWithRelaunches(session),
 ): { pom: PomResult; flowName: string } {
   const appId = appIdOf(session);
   const flowName = flowSlug(name ?? `${(appId ?? 'app').split('.').pop()}-smoke`);
@@ -97,7 +124,7 @@ export interface GenerateSuiteOptions {
  * Returns `skipped:true` honestly when there is nothing to record.
  */
 export function generateAndCompileSuite(sessions: SessionStore, session: Session, opts: GenerateSuiteOptions = {}): SuiteGenerationResult {
-  const actions = opts.actions ?? session.recordedActions;
+  const actions = opts.actions ?? actionsWithRelaunches(session);
   if (!actions.length) {
     return {
       skipped: true,

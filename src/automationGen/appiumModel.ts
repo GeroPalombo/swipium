@@ -38,7 +38,8 @@ export interface CrossPlatformElement {
 
 /** `visualCheck` is a manual visual checkpoint (qa_visual assert prose), emitted as a clearly-marked
  *  TODO comment, never as a text assertion. */
-export type AppiumActionKind = 'tap' | 'tapAt' | 'inputText' | 'press' | 'swipe' | 'scrollTo' | 'openUrl' | 'assertVisible' | 'visualCheck';
+export type AppiumActionKind =
+  'tap' | 'tapAt' | 'inputText' | 'press' | 'swipe' | 'scrollTo' | 'openUrl' | 'assertVisible' | 'visualCheck' | 'restartApp';
 
 export interface AppiumStep {
   /** Screen CLASS name (e.g. LoginScreen) the step targets. */

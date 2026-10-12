@@ -19,7 +19,7 @@ import {
   type WdaStatus,
 } from '../lib/wda.js';
 import { loadWdaConfig } from '../lib/wdaConfig.js';
-import { findOwnSimulatorWda, wdaDeviceOwnership, type WdaOwnership } from '../lib/wdaDevice.js';
+import { findOwnSimulatorWda, ownButUnresponsive, wdaDeviceOwnership, type WdaOwnership } from '../lib/wdaDevice.js';
 import { appBuildDestination } from '../ios/signing.js';
 import * as sim from '../lib/simctl.js';
 import { isAbortError } from '../lib/abortScope.js';
@@ -122,11 +122,17 @@ export async function prepareIos(
   const pinnedSims = !explicit && pin ? simulatorsForPin(pin, sims) : [];
   if (pinnedSims.length > 1)
     return { ok: false, failureCode: 'MULTIPLE_DEVICES', error: pinAmbiguousMessage(pin!, pinnedSims), nextSteps: [pinFixStep()] };
-  // CR-PIN: the pin matches a UDID or an exact name (ignoring case), never a name substring.
+  // A requested simulator (pin or explicit) matches a UDID or an exact name (ignoring case), never a
+  // substring; an exact name several simulators share is ambiguous.
+  const explicitSims = explicit && !sims.some((s) => pinMatches(explicit, s.udid)) ? sims.filter((s) => pinMatches(explicit, s.name)) : [];
+  if (explicitSims.length > 1)
+    return {
+      ok: false,
+      failureCode: 'MULTIPLE_DEVICES',
+      error: `Requested simulator "${explicit}" matches ${explicitSims.length} simulators (${explicitSims.map((s) => `${s.name} ${s.udid}`).join(', ')}); nothing was done. Pass the UDID.`,
+    };
   const pick = wanted
-    ? sims.find((s) => pinMatches(wanted, s.udid)) ||
-      sims.find((s) => pinMatches(wanted, s.name)) ||
-      (explicit ? sims.find((s) => s.name.toLowerCase().includes(wanted.toLowerCase())) : undefined)
+    ? sims.find((s) => pinMatches(wanted, s.udid)) || sims.find((s) => pinMatches(wanted, s.name))
     : sims.find((s) => s.state === 'Booted') || sims.find((s) => /iphone/i.test(s.name));
   if (!pick && wanted)
     return {
@@ -366,6 +372,37 @@ export async function prepareIos(
   let wdaSessionId: string | undefined;
   let requiresAttach = false;
   let wdaHung: string | undefined;
+  // IOS NEW-A: WDA hung (session create timed out, or this simulator's own WDA listens but does not
+  // answer /status): never a visual-only launch pass. 'required' fails; else blocked + ledger entry.
+  const markHung = (hung: string): PrepareIosResult | undefined => {
+    if (attach === 'required')
+      return {
+        ok: false,
+        failureCode: 'WDA_UNREACHABLE',
+        error: `${hung}. Restart it (qa_wda { action:"stop" }, then qa_wda { action:"setup" } and qa_wda attach), then retry.`,
+        udid: pick.udid,
+        name: pick.name,
+        bundleId,
+        installed,
+        launched,
+        wda,
+      };
+    wdaHung = hung;
+    wda = { reachable: false, url: wdaUrl };
+    // Ledger: later visual-only tool calls name this WDA as the cause (lostWdaResult).
+    sessions.recordMutation(session, {
+      tool: 'qa_prepare_ios_target',
+      action: 'wda_attach',
+      risk: 'low',
+      target: { webDriverAgentUrl: wdaUrl, udid: pick.udid, bundleId: bundleId ?? null },
+      consent: { required: false, approved: true },
+      status: 'blocked',
+      detail: hung,
+    });
+    wdaHint = ` (${hung}: restart it with qa_wda { action:"stop" }, then qa_wda { action:"setup" } and qa_wda attach)`;
+    sessions.addWorkaround(session, `${hung}. iOS verification is NOT possible until WDA is restarted (qa_wda stop, setup, attach)`);
+    return undefined;
+  };
   // Same rule as qa_wda: a non-loopback WDA URL (e.g. ios.wda.url from the repository's
   // .swipium/config.json) is never contacted automatically: screens and typed text would go to
   // another machine. Only the user's SWIPIUM_ALLOW_REMOTE_WDA pre-approves it; otherwise the
@@ -391,13 +428,26 @@ export async function prepareIos(
     // unverified (lsof / ps timed out on a loaded host): may be another simulator's WDA on the same
     // runtime, so it is not attached unless it is this session's own WDA for the simulator.
     if (owner?.owner === 'other' || (owner?.owner === 'unverified' && !ownWda)) foreign = owner;
+    // IOS NEW-A: this simulator's own WDA that listens but did not answer /status (already hung
+    // before prepare): the same hang detection qa_test_this's plan uses.
+    const unresponsive: string[] = [];
+    if (!status.reachable && (await ownButUnresponsive(wdaUrl, status, pick.udid).catch(() => false)))
+      unresponsive.push(wdaUrl.replace(/\/+$/, ''));
     if (owner?.owner !== 'match') {
-      const own = await findOwnSimulatorWda(wdaUrl, pick.udid, async () => pick.runtime);
+      const own = await findOwnSimulatorWda(wdaUrl, pick.udid, async () => pick.runtime, unresponsive);
       if (own) {
         wdaUrl = own.url;
         status = own.status;
         foreign = undefined;
       }
+    }
+    let hungOwn: string | undefined;
+    if (!status.reachable && !foreign && unresponsive.length) {
+      // One short re-probe: a WDA that was only busy for a moment is attached normally.
+      const again = await checkWda(unresponsive[0]!, 1500).catch((): WdaStatus => ({ reachable: false, ready: false }));
+      wdaUrl = unresponsive[0]!;
+      if (again.reachable) status = again;
+      else hungOwn = `this simulator's own WDA at ${wdaUrl} is listening but did not answer /status within 1.5 s (hung)`;
     }
     wda = { reachable: !!status.reachable && !foreign, url: wdaUrl };
     if (foreign) {
@@ -419,6 +469,9 @@ export async function prepareIos(
       }
       wdaHint = ` (${why} Run qa_wda { action:"setup" } to start one for this simulator, then qa_wda attach)`;
       sessions.addWorkaround(session, `${why} iOS verification is visual-only until qa_wda setup + attach`);
+    } else if (hungOwn) {
+      const failed = markHung(hungOwn);
+      if (failed) return failed;
     } else if (status.reachable) {
       try {
         const sessionOptions = {
@@ -452,32 +505,8 @@ export async function prepareIos(
             ? `WebDriverAgent at ${wdaUrl} hung: it did not create a session within ${WDA_SESSION_CREATE_MS / 1000} s and stopped answering /status`
             : undefined;
         if (hung) {
-          if (attach === 'required')
-            return {
-              ok: false,
-              failureCode: 'WDA_UNREACHABLE',
-              error: `${hung}. Restart it (qa_wda { action:"stop" }, then qa_wda { action:"setup" } and qa_wda attach), then retry.`,
-              udid: pick.udid,
-              name: pick.name,
-              bundleId,
-              installed,
-              launched,
-              wda,
-            };
-          wdaHung = hung;
-          wda = { reachable: false, url: wdaUrl };
-          // Ledger: later visual-only tool calls name this WDA as the cause (lostWdaResult).
-          sessions.recordMutation(session, {
-            tool: 'qa_prepare_ios_target',
-            action: 'wda_attach',
-            risk: 'low',
-            target: { webDriverAgentUrl: wdaUrl, udid: pick.udid, bundleId: bundleId ?? null },
-            consent: { required: false, approved: true },
-            status: 'blocked',
-            detail: hung,
-          });
-          wdaHint = ` (${hung}: restart it with qa_wda { action:"stop" }, then qa_wda { action:"setup" } and qa_wda attach)`;
-          sessions.addWorkaround(session, `${hung}. iOS verification is NOT possible until WDA is restarted (qa_wda stop, setup, attach)`);
+          const failed = markHung(hung);
+          if (failed) return failed;
         } else if (attach === 'required') {
           return {
             ok: false,

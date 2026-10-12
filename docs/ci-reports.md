@@ -405,29 +405,31 @@ finding:
   reached the app but exercised no workflow (for example a launch that ended `blocked` on
   `BLANK_SCREEN`, or only a launch and a screenshot plus blocked notes): its risk is `caution`, but
   `notTested` is `{reachedApp:true, exercised:false}` and the gate adds the same failed workflow
-  with the blocked note's code (`BLANK_SCREEN`, `METRO_REQUIRED`, ...) or `NOT_TESTED`. A run with
-  at least one passing outcome, such as a `launch_smoke` pass, is not affected. To only warn
-  instead, list the code in `warnOn` (for example `"not_tested"`, `"blank_screen"` or
+  with the blocked note's code (`BLANK_SCREEN`, `METRO_REQUIRED`, ...) or `NOT_TESTED`. To only
+  warn instead, list the code in `warnOn` (for example `"not_tested"`, `"blank_screen"` or
   `"build_failed"`). Reports saved before this change carry no `exercised` field and gate as before.
-- **Notes never upgrade an untested run.** A launch or a screenshot only shows the app was
-  reached. "A launch" means a launch of the app under test that reached the foreground (a prepare
-  call, `qa_smoke`, or `qa_ios launch` of the session's own app; launching Safari or Settings, or a
-  launch that failed, doesn't count), and a screenshot or recording counts only when the app under
-  test was in front (the home screen or another app is not evidence). Exercising the app takes
-  more: a pass or fail outcome from Swipium (smoke, flows, explore, audit), an exploration, an
-  action taken while the app under test was in front (a tap on SpringBoard or another app, a press
-  home, or a `qa_visual` tap doesn't count, and first-run actions count only with the app in
-  front), or a finding. An agent's `qa_note` pass counts only on top of that. A pass note on top of
-  only a launch or a screenshot is an unverified claim: risk `caution`, app `UNVERIFIED`, and the
-  gate fails with `NOT_TESTED` ("only an unverified qa_note pass claim on a launched app ... run
-  qa_smoke or a flow"); a pass note with no evidence at all leaves the run not tested (`block`). A
-  `blocked` or `skipped` note alone, or a fail note under `mcp_limitation` (such as "baseline
-  failed: device offline"), doesn't count, and the report's own exports are not evidence.
+- **Only a healthy Swipium check counts as testing.** A run is exercised only by a check Swipium
+  ran itself that read the app's UI and found it healthy:
+  - a `launch_smoke` pass whose oracle read the UI tree and ruled out a RedBox or blank screen
+    (`app=ok` in its reason; a visual-only smoke reads `app=unverified` and doesn't count);
+  - a saved-flow, `qa_flow_run`, first-run or mobile-audit pass;
+  - an exploration that reached at least one structured (not visual-only) app screen without an app
+    error.
+
+  A Swipium failure also counts, since it can only block. Nothing else counts, however many there
+  are: an agent's `qa_note` pass, a `qa_visual` `mode:"assert"` pass (the verdict is the agent's,
+  not Swipium's), a launch, a screenshot, a `qa_act` action with the app in front (tapping
+  "Dismiss" on a RedBox leaves an empty app view), any finding, or an exploration of a blank or
+  visual-only screen. These only show that the app was reached (risk `caution` instead of `block`),
+  and the gate fails with `NOT_TESTED` (for an unverified pass claim: "only an unverified qa_note
+  pass claim on a launched app ... run qa_smoke or a flow"). A pass claim with no evidence at all
+  leaves the run not tested (`block`). An agent's fail note counts as exercised (it can only
+  block); a `blocked` or `skipped` note, a fail note under `mcp_limitation` (such as "baseline
+  failed: device offline") and the report's own exports don't count.
 - **The verdict sticks.** A not-tested verdict is saved on the session, so every later `qa_report`
   call keeps its reason and code (a Metro-blocked run stays `METRO_REQUIRED`, not `NOT_TESTED`)
-  until the app is retested after it: a Swipium outcome (smoke, flows, explore) or an exploration,
-  or an agent outcome note together with an action taken with the app in front after the marker. A
-  recorded action alone, a finding, a launch, or a screenshot plus a note don't clear it.
+  until one of the healthy Swipium checks above is recorded after it. An agent note, a `qa_visual`
+  assert, an action, a finding, a launch or a screenshot never clear it, in any combination.
   Without a `qa_test_this` marker, the code comes from the first blocked note whose reason starts
   with a failure code (`METRO_REQUIRED: …`), else `NOT_TESTED`.
 - **Refused consent.** A run that tested nothing after a refused consent gates with the refusal's
@@ -448,7 +450,8 @@ finding:
   failure, but it was not covered: the risk is at least `caution`, coverage is `PARTIAL` (or
   `BLOCKED` when something else blocked too), and the report names the flows and says to re-run
   with a larger `qa_start_session { budget }`. A blocked exploration (blockers, only unsafe actions
-  left, a session-budget stop, or `time budget reached` on `maxDurationMs`) is also at least `caution`: coverage `BLOCKED` never comes with `ship`.
+  left, a session-budget stop, `time budget reached` on `maxDurationMs`, or an alert with no close
+  button, leaving the app 3 times or no way back when nothing was explored) is also at least `caution`: coverage `BLOCKED` never comes with `ship`.
 - A `qa_flow_run` result is recorded as that flow's outcome, like a saved flow in `qa_smoke`.
 - A Swipium-generated flow that fails on a locator step is reported as automation drift (coverage
   `BLOCKED`, risk `caution`), not an app failure, but the gate still counts it as a failed workflow

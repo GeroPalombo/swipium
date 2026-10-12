@@ -15,7 +15,16 @@ import { sensitiveRefusal } from '../lib/sensitive.js';
 import { SimctlDriver } from '../drivers/SimctlDriver.js';
 import * as sim from '../lib/simctl.js';
 import { WdaDriver, invalidateWdaPageSource } from '../drivers/WdaDriver.js';
-import { DEVICE_PIN_ENV, devicePinConflict, isSimulatorUdid, operatorDevicePin } from '../session/attach.js';
+import {
+  DEVICE_PIN_ENV,
+  devicePinConflict,
+  isSimulatorUdid,
+  operatorDevicePin,
+  pinAmbiguousMessage,
+  pinFixStep,
+  pinMatches,
+  simulatorsForPin,
+} from '../session/attach.js';
 import { appBuildDestination } from '../ios/signing.js';
 import { noteScreenMutation } from '../snapshot/fresh.js';
 import type { Session, SessionStore } from '../session/store.js';
@@ -46,8 +55,18 @@ function bind(sessions: SessionStore, session: Session, udid: string): SimctlDri
  *  one (boot / install / privacy_reset / erase; erase can be pre-approved, so the pin is the only
  *  guard for a bystander simulator). Undefined when allowed. Exported for qa_wda. */
 export async function simulatorPinRefusal(udid: string, sims?: sim.Simulator[]): Promise<ReturnType<typeof qaError> | undefined> {
-  if (!operatorDevicePin()) return undefined;
+  const pin = operatorDevicePin();
+  if (!pin) return undefined;
   const list = sims ?? (await sim.listSimulators().catch(() => [] as sim.Simulator[]));
+  const pinnedSims = simulatorsForPin(pin, list);
+  if (pinnedSims.length > 1)
+    return qaError({
+      what: pinAmbiguousMessage(pin, pinnedSims),
+      changedState: false,
+      retrySafe: false,
+      failureCode: 'MULTIPLE_DEVICES',
+      nextSteps: [pinFixStep()],
+    });
   const conflict = await devicePinConflict(udid, [], list);
   if (!conflict) return undefined;
   return qaError({
@@ -59,27 +78,25 @@ export async function simulatorPinRefusal(udid: string, sims?: sim.Simulator[]):
   });
 }
 
-/** IOS NEW-B / NEW-C: a `device` argument (UDID, exact name or name substring, ignoring case) as one
- *  simulator. A UDID-shaped value is returned as is; a name several simulators match is refused
- *  (never "the first one"). Exported for qa_wda. */
+/** The one resolver for a simulator `device` argument: an available simulator's UDID (ignoring
+ *  case) or a unique exact name (ignoring case). Anything else is refused: no match INVALID_ARGUMENT,
+ *  a shared name MULTIPLE_DEVICES. Never a substring, never "the first booted". Exported for qa_wda. */
 export async function resolveSimulatorArg(
   device: string,
   sims?: sim.Simulator[],
 ): Promise<{ udid: string; name?: string } | { error: ReturnType<typeof qaError> }> {
-  if (isSimulatorUdid(device)) return { udid: device };
   const list = sims ?? (await sim.listSimulators().catch(() => [] as sim.Simulator[]));
-  const want = device.toLowerCase();
-  const exact = list.filter((s) => s.name.toLowerCase() === want);
-  const matches = exact.length ? exact : list.filter((s) => s.name.toLowerCase().includes(want));
+  const byUdid = list.filter((s) => pinMatches(device, s.udid));
+  const matches = byUdid.length ? byUdid : list.filter((s) => pinMatches(device, s.name));
   if (matches.length === 1) return { udid: matches[0].udid, name: matches[0].name };
   return {
     error: qaError({
       what: matches.length
         ? `device "${device}" matches ${matches.length} simulators (${matches.map((s) => `${s.name} ${s.udid}`).join(', ')}); nothing was done`
-        : `device "${device}" matches no available simulator (UDID or name); nothing was done`,
+        : `device "${device}" matches no available simulator (UDID or exact name); nothing was done`,
       changedState: false,
       retrySafe: true,
-      failureCode: 'INVALID_ARGUMENT',
+      failureCode: matches.length ? 'MULTIPLE_DEVICES' : 'INVALID_ARGUMENT',
       nextSteps: ['Pass the simulator UDID (qa_ios { action:"list" } lists them).'],
     }),
   };
@@ -97,7 +114,7 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
       inputSchema: {
         sessionId: z.string(),
         action: z.enum(['list', 'boot', 'install', 'launch', 'terminate', 'openurl', 'logs', 'privacy_reset', 'erase']),
-        device: z.string().optional().describe('boot/erase: simulator udid or name substring (other actions: the bound one only).'),
+        device: z.string().optional().describe('boot/erase: simulator UDID or exact name (other actions: the bound one only).'),
         app: z.string().optional().describe('install: .app path (absolute or project-relative).'),
         bundleId: z.string().optional().describe('launch/terminate/privacy_reset: bundle id.'),
         url: z.string().optional().describe('openurl: deep link.'),
@@ -148,14 +165,27 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
         // CR-PIN: with SWIPIUM_DEVICE set, boot defaults to the pinned simulator (never "the first
         // Booted", which can be a bystander) and refuses any other one.
         const pin = operatorDevicePin();
-        const pinned = pin
-          ? sims.find((s) => s.udid.toUpperCase() === pin.toUpperCase() || s.name.toLowerCase() === pin.toLowerCase())
-          : undefined;
-        const pick =
-          (args.device && sims.find((s) => s.udid === args.device || s.name.toLowerCase().includes(args.device!.toLowerCase()))) ||
-          (pin && !args.device ? pinned : undefined) ||
-          (pin ? undefined : sims.find((s) => s.state === 'Booted')) ||
-          (pin ? undefined : sims.find((s) => /iphone/i.test(s.name)));
+        let pick: sim.Simulator | undefined;
+        if (args.device) {
+          // Exact UDID or unique exact name only: an unknown or shared name is refused, never "first booted".
+          const r = await resolveSimulatorArg(args.device, sims);
+          if ('error' in r) return r.error;
+          pick = sims.find((s) => s.udid === r.udid);
+        } else if (pin) {
+          pick = simulatorsForPin(pin, sims)[0];
+        } else {
+          // No device, no pin: the one booted simulator (several booted = ask), else the first iPhone.
+          const booted = sims.filter((s) => s.state === 'Booted');
+          if (booted.length > 1)
+            return qaError({
+              what: `${booted.length} simulators are booted (${booted.map((s) => `${s.name} ${s.udid}`).join(', ')}); none was picked`,
+              changedState: false,
+              retrySafe: true,
+              failureCode: 'MULTIPLE_DEVICES',
+              nextSteps: ['Pass device:"<udid>" (qa_ios { action:"list" } lists them).'],
+            });
+          pick = booted[0] ?? sims.find((s) => /iphone/i.test(s.name));
+        }
         const pinRefusal = pick ? await simulatorPinRefusal(pick.udid, sims) : undefined;
         if (pinRefusal) return pinRefusal;
         if (!pick && pin && !args.device)
@@ -265,9 +295,16 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
           });
         }
       }
+      // erase gets a resolved UDID (never a name, substring or "booted" straight to simctl).
+      let eraseUdid = udid;
+      if (action === 'erase' && args.device) {
+        const r = await resolveSimulatorArg(args.device);
+        if ('error' in r) return r.error;
+        eraseUdid = r.udid;
+      }
       // CR-PIN: the consent-gated simulator changes never touch a simulator other than the pinned one.
       if (action === 'install' || action === 'privacy_reset' || action === 'erase') {
-        const refusal = await simulatorPinRefusal(action === 'erase' ? (args.device ?? udid) : udid);
+        const refusal = await simulatorPinRefusal(action === 'erase' ? eraseUdid : udid);
         if (refusal) return refusal;
       }
 
@@ -550,7 +587,7 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
 
       // action === 'erase'
       {
-        const target = args.device ?? udid;
+        const target = eraseUdid;
         const gate = consumeConsent(args.consentId, args.approve, { action: 'erase_device', affects: { udid: target } });
         if (!gate.approved) {
           sessions.recordMutation(session, {

@@ -392,8 +392,8 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
           nextSteps: ['Use the session-bound UDID, or start a separate session for the other simulator/device.'],
         });
       }
-      // CR-PIN: a pinned server never starts, reuses or attaches a WDA on another simulator.
-      if (targetUdid && isSimulatorUdid(targetUdid) && (isWdaXcodebuildAction(action) || action === 'attach')) {
+      // CR-PIN: a pinned server never starts, reuses, attaches or stops a WDA on another simulator.
+      if (targetUdid && isSimulatorUdid(targetUdid) && (isWdaXcodebuildAction(action) || action === 'attach' || action === 'stop')) {
         const refusal = await simulatorPinRefusal(targetUdid);
         if (refusal) return refusal;
       }

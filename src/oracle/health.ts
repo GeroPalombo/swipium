@@ -8,6 +8,7 @@ import type { Driver } from '../drivers/Driver.js';
 import { parseSnapshot, type RawNode } from '../snapshot/parse.js';
 import { isAbortError } from '../lib/abortScope.js';
 import { isDeviceGoneError } from '../lib/deviceGone.js';
+import { ownsForeground } from '../snapshot/overlays.js';
 
 export type HealthLayer = 'native' | 'app';
 
@@ -277,7 +278,7 @@ export async function checkHealth(driver: Driver, appId?: string, xml?: string, 
     }
   }
 
-  if (appId && !foreground.startsWith(appId) && foreground !== 'unknown') {
+  if (appId && !ownsForeground(appId, foreground) && foreground !== 'unknown') {
     if (/launcher/i.test(foreground)) {
       findings.push({
         severity: 'high',
@@ -331,7 +332,7 @@ export async function checkHealth(driver: Driver, appId?: string, xml?: string, 
   }
 
   // ---- APP layer (only meaningful while OUR app owns the foreground) ----
-  const appInForeground = !appId || foreground.startsWith(appId) || driver.kind === 'wda';
+  const appInForeground = !appId || ownsForeground(appId, foreground) || driver.kind === 'wda';
   let appStatus: AppStatus = 'ok';
   if (appInForeground) {
     let matched = false;

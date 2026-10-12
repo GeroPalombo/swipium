@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { parseSnapshot } from '../snapshot/parse.js';
 import { settle } from '../snapshot/settle.js';
 import { waitForAppRender } from '../snapshot/renderWait.js';
-import { iosAlertCancel } from '../snapshot/overlays.js';
+import { iosAlertCancel, permissionDeniedNote } from '../snapshot/overlays.js';
 import { structuredSignature } from '../explore/signatures.js';
 import { resolveFixtureValue, hasDisposableState } from '../fixtures/catalog.js';
 import type { Driver } from '../drivers/Driver.js';
@@ -331,7 +331,10 @@ export async function runFirstRun(
       if (obs.alert.cancel && alertCloses < 3) {
         alertCloses++;
         progress(`first-run: closing the alert "${obs.alert.title}" with "${obs.alert.cancel.label}"`);
-        sessions.addWorkaround(session, `first run closed the alert "${obs.alert.title}" with "${obs.alert.cancel.label}"`);
+        sessions.addWorkaround(
+          session,
+          `first run closed the alert "${obs.alert.title}" with "${obs.alert.cancel.label}"${permissionDeniedNote(obs.alert.cancel.label)}`,
+        );
         await driver.tapXY(obs.alert.cancel.x, obs.alert.cancel.y).catch(() => {});
         sessions.bump(session, 'actions');
         await settle(driver, { timeoutMs: 4000 }).catch(() => {});

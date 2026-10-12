@@ -509,6 +509,17 @@ export class BaseScreen {
     // @ts-ignore wdio global
     await driver.url(url);
   }
+
+  async restartApp() {
+    // @ts-ignore wdio global
+    const caps = driver.capabilities || {};
+    const appId = caps['appium:bundleId'] || caps.bundleId || caps['appium:appPackage'] || caps.appPackage;
+    if (!appId) throw new Error('restartApp: no bundleId / appPackage capability to relaunch');
+    // @ts-ignore wdio global
+    await driver.terminateApp(appId);
+    // @ts-ignore wdio global
+    await driver.activateApp(appId);
+  }
 }
 `;
 }
@@ -659,6 +670,8 @@ function stepCall(n: JsScreenNames, s: AppiumStep): string {
     case 'assertVisible':
       if (!s.text) throw new UnemittableStepError('cannot emit a text assertion without text');
       return `await ${v}.assertTextVisible(${JSON.stringify(s.text)});`;
+    case 'restartApp':
+      return `await ${v}.restartApp(); // the recording relaunched the app here`;
     case 'visualCheck':
       // Visual judgement prose is not on-screen text. It's a manual checkpoint, never a failing text check.
       return `// TODO(manual visual check, not automated): ${commentSafe(s.text ?? 'visual checkpoint')}`;

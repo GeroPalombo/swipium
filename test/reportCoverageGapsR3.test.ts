@@ -31,7 +31,7 @@ function launched(): { store: InstanceType<typeof SessionStore>; s: Session } {
   const s = store.create(root);
   s.appId = 'com.example.app';
   store.milestone(s, 'app_launch_end');
-  store.addNote(s, { at: Date.now(), workflow: 'launch_smoke', outcome: 'pass', reason: 'app rendered' });
+  store.addNote(s, { at: Date.now(), workflow: 'launch_smoke', outcome: 'pass', reason: 'native=ok app=ok quality=good' });
   return { store, s };
 }
 

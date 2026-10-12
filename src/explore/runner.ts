@@ -7,7 +7,7 @@
 import { parseSnapshot } from '../snapshot/parse.js';
 import { settle } from '../snapshot/settle.js';
 import { waitForAppRender } from '../snapshot/renderWait.js';
-import { iosAlertCancel } from '../snapshot/overlays.js';
+import { iosAlertCancel, ownsForeground, permissionDeniedNote } from '../snapshot/overlays.js';
 import { noteScreenMutation } from '../snapshot/fresh.js';
 import { checkHealth } from '../oracle/health.js';
 import { recordHealthFindings } from '../oracle/record.js';
@@ -442,7 +442,7 @@ export async function runExplore(
       !!session.appId &&
       !!fgPkg &&
       fgPkg !== 'unknown' &&
-      !fgPkg.startsWith(session.appId) &&
+      !ownsForeground(session.appId, fgPkg) &&
       !(
         systemHost && health.findings.some((f) => ['foreign_activity_in_app_task', 'permission_dialog', 'system_surface'].includes(f.kind))
       );
@@ -614,7 +614,7 @@ export async function runExplore(
           workflow: 'guided_exploration',
           outcome: 'skipped',
           category: 'other',
-          reason: `closed the alert "${obs.alert.title}" with "${cancel.label}"; alert buttons are not explored`,
+          reason: `closed the alert "${obs.alert.title}" with "${cancel.label}"${permissionDeniedNote(cancel.label)}; alert buttons are not explored`,
         });
         await settleAndKeep(4000);
         continue;
@@ -1066,7 +1066,11 @@ export async function runExplore(
       summary.appErrors > 0 ||
       summary.blockers > 0 ||
       stoppedReason.startsWith('session budget:') ||
-      stoppedReason.startsWith('time budget reached')
+      stoppedReason.startsWith('time budget reached') ||
+      // R5 N4: an alert with no way to close it, leaving the app again and again, or no way back is
+      // not a completed exploration when it tested nothing (no action, or no real app screen).
+      (/^(an alert \(|exploration left the app|no way back)/.test(stoppedReason) &&
+        (summary.actionsTried === 0 || summary.screensVisited - summary.visualOnlyScreens === 0))
         ? 'blocked'
         : 'completed',
     stoppedReason,

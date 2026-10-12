@@ -209,7 +209,7 @@ export async function findOwnSimulatorWda(
 
 /** A /status probe that timed out (not refused) on a port whose listener runs inside `udid`: this
  *  simulator's own WDA is up but hung (lsof / ps name the listener without WDA answering). */
-async function ownButUnresponsive(url: string, status: WdaStatus, udid: string): Promise<boolean> {
+export async function ownButUnresponsive(url: string, status: WdaStatus, udid: string): Promise<boolean> {
   if (!/abort|timed? ?out/i.test(status.error ?? '')) return false;
   const seen = await inspectWdaListener(url).catch(() => ({ inspected: false }) as { udid?: string; inspected: boolean });
   return !!seen.udid && seen.udid.toUpperCase() === udid.toUpperCase();

@@ -27,8 +27,8 @@ function rotationLabel(rotation: number, auto: boolean): string {
   return auto ? 'auto' : rotation === 1 || rotation === 3 ? 'landscape' : 'portrait';
 }
 
-/** logs.since > a logcat -T time: a relative age ("90s", "5m", "1h") becomes host epoch seconds
- *  (emulators share the host clock); a logcat "MM-DD hh:mm:ss[.mmm]" / "YYYY-MM-DD …" passes through. */
+/** logs.since > a logcat -T time: a relative age ("90s", "5m", "1h") becomes epoch seconds before
+ *  `now` (the device clock when the caller read it, else the host clock); a logcat "MM-DD hh:mm:ss[.mmm]" / "YYYY-MM-DD …" passes through. */
 export function logcatSince(v: string, now = Date.now()): string | undefined {
   const rel = v.trim().match(/^(\d{1,6})\s*(s|m|h)$/i);
   if (rel) {
@@ -149,7 +149,15 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
         const level = logs.level ?? 'V';
         let since: string | undefined;
         if (logs.since) {
-          since = logcatSince(logs.since);
+          // NEW-B: a relative age is measured on the DEVICE clock (an emulator can boot hours off the
+          // host clock, and -T <host epoch> then selects nothing). Host clock only if date fails.
+          let deviceNow: number | undefined;
+          if (/^\s*\d+\s*[smh]\s*$/i.test(logs.since)) {
+            const d = await run('adb', ['-s', serial, 'shell', 'date', '+%s'], { timeoutMs: 5000 }).catch(() => null);
+            const sec = Number(d?.stdout.trim());
+            if (Number.isFinite(sec) && sec > 0) deviceNow = sec * 1000;
+          }
+          since = logcatSince(logs.since, deviceNow);
           if (!since)
             return qaError({
               what: `Invalid logs.since "${logs.since}"`,

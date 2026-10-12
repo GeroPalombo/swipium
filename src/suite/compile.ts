@@ -138,6 +138,9 @@ export function compileTest(
       case 'assertVisible':
         if (s.text) steps.push(waitForVisibleGuard(s.text), { assertVisible: s.text });
         break;
+      case 'restartApp':
+        steps.push('restartApp');
+        break;
       case 'visualCheck':
         // Visual judgement > evidence-capturing checkpoint (flow assertVisual), never a text assertion.
         steps.push({ assertVisual: s.text ?? 'visual checkpoint' });

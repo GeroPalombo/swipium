@@ -574,6 +574,18 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
 
         // ---- wait is its own path (no settle/health afterward) ----
         if (action === 'wait') {
+          // A wait takes its element in `for`; a `target` would be ignored and the wait would return
+          // ok:true for an element that is not there (android R5-3).
+          if (args.target && !args.for)
+            return qaError({
+              what: 'wait takes the element to wait for in `for`, not `target`',
+              changedState: false,
+              retrySafe: true,
+              failureCode: 'INVALID_ARGUMENT',
+              nextSteps: [
+                'Retry with for:{text|id|ref|selector} (gone:true to wait until it disappears), or omit target to wait for the screen to settle.',
+              ],
+            });
           // A cancelled wait (notifications/cancelled) stops polling at once and is not a failure.
           try {
             const timeoutMs = args.timeoutMs ?? 8000;
@@ -1331,7 +1343,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
             ) {
               if (back.verdict === 'truncated') firstCut = back.valueLength;
               try {
-                await d.clearFocusedText(Math.max(back.node.text.length, back.valueLength) + 2);
+                await d.clearFocusedText(Math.max(back.node.text.length, back.valueLength) + 2, { byLength: true });
                 await d.inputText(typedText, { careful: back.verdict === 'mismatch' });
               } catch (e) {
                 // A careful retype that still scrambles leaves the field as it is: the read-back fails it.
@@ -1378,7 +1390,10 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
             return cancelledResult(`Action "${action}" ran, but the call was cancelled before its result was observed`, true);
           // CR P1: qa_report counts a recorded action as device evidence only when the app under test
           // was in front after it (not a tap on SpringBoard / another app, not a press home).
-          if (recorded && session.appId && !health.deviceGone && health.foreground.split('/')[0].startsWith(session.appId)) {
+          // Exact package / bundle id (an Android ":process" suffix allowed): `com.example.app` must not
+          // match `com.example.app2`.
+          const fgOwner = health.foreground.split('/')[0];
+          if (recorded && session.appId && !health.deviceGone && (fgOwner === session.appId || fgOwner.startsWith(`${session.appId}:`))) {
             recorded.appForeground = true;
             sessions.persist(session);
           }

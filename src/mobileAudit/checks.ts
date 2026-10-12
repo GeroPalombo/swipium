@@ -275,25 +275,46 @@ export async function checkProcessRelaunch(ctx: AuditEvidenceCtx): Promise<RawCh
     await ctx.driver.terminateApp(ctx.appId);
     await ctx.driver.launchApp(ctx.appId);
   } catch (e) {
-    return {
-      status: 'fail',
-      category: 'app_bug',
-      severity: 'high',
-      reason: `relaunch failed: ${String((e as Error).message ?? e)}`,
-      evidenceUris: [],
-    };
+    const msg = String((e as Error).message ?? e);
+    // A WDA / transport timeout is a tool or environment failure, not an app bug (R5 must-fix 3).
+    if (isAbortError(e)) throw e;
+    if (TOOL_ERROR_RE.test(msg)) return toolBlocked(`relaunch could not be driven: ${msg}`);
+    return { status: 'fail', category: 'app_bug', severity: 'high', reason: `relaunch failed: ${msg}`, evidenceUris: [] };
   }
-  const h = await health(ctx);
+  // Same render wait as the smoke's launch check: judging the splash right after a relaunch read a
+  // WDA hiccup or an empty tree as an unhealthy app. The wait's last tree feeds the health check, so
+  // a rendered app costs one dump, not two.
+  const render = await renderWait(ctx);
+  const h = await health(ctx, render?.xml);
   const shot = await captureScreenshot(ctx, 'audit relaunch');
+  const evidence = shot ? [shot] : [];
+  if (h.deviceGone || h.nativeStatus === 'wda_unreachable')
+    return toolBlocked(
+      h.deviceGone ? 'the device went offline after the relaunch' : 'WebDriverAgent did not return a UI source after the relaunch',
+      evidence,
+    );
   if (!h.healthy)
     return {
       status: 'fail',
       category: 'app_bug',
       severity: 'high',
       reason: `app unhealthy after relaunch (${h.nativeStatus}/${h.appStatus})`,
-      evidenceUris: shot ? [shot] : [],
+      evidenceUris: evidence,
     };
-  return ok('app returned to a sane state after kill/relaunch', shot ? [shot] : []);
+  return ok('app returned to a sane state after kill/relaunch', evidence);
+}
+
+/** A driver / WDA transport failure, not something the app did. */
+const TOOL_ERROR_RE = /timed? ?out|timeout|ECONNREFUSED|ECONNRESET|socket hang up|WebDriverAgent|\bWDA\b/i;
+
+/** Blocked with no category: the runner records no issue and the release impact is at most WARN. */
+function toolBlocked(reason: string, evidenceUris: string[] = []): RawCheckResult {
+  return {
+    status: 'blocked',
+    reason: `${reason} (tool / environment, not an app bug)`,
+    evidenceUris,
+    nextStep: 'Check the device connection (and WebDriverAgent on iOS), then re-run the audit.',
+  };
 }
 
 export function checkRotation(): RawCheckResult {

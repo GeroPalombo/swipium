@@ -209,6 +209,22 @@ export function pinAmbiguousMessage(pin: string, matches: Array<{ udid: string; 
   return `${DEVICE_PIN_ENV}=${pin} (server env) names ${matches.length} simulators (${matches.map((s) => `${s.name} ${s.udid}`).join(', ')}), so none was used. Pin one by its UDID.`;
 }
 
+/** The device the pin names among what is present: an online adb serial, an AVD, else the ONE
+ *  simulator it names (UDID or exact name). Several simulators sharing the pinned name is
+ *  `ambiguous`. Undefined fields when the pin names nothing present (the caller refuses then). */
+export function pinnedTarget<T extends { udid: string; name: string }>(
+  pin: string,
+  online: string[],
+  avds: string[],
+  sims: T[],
+): { device?: string; platform?: 'android' | 'ios'; ambiguous?: T[] } {
+  const serial = online.find((s) => pinMatches(pin, s)) ?? avds.find((a) => pinMatches(pin, a));
+  if (serial) return { device: serial, platform: 'android' };
+  const pinnedSims = simulatorsForPin(pin, sims);
+  if (pinnedSims.length > 1) return { ambiguous: pinnedSims };
+  return pinnedSims[0] ? { device: pinnedSims[0].udid, platform: 'ios' } : {};
+}
+
 /** With SWIPIUM_DEVICE set, the refusal text for an explicitly requested device that is NOT the
  *  pinned one (else undefined). Same device by another name passes: the pinned AVD running as the
  *  requested serial (or vice versa), or a simulator's UDID vs its name (`sims`). */
@@ -218,9 +234,13 @@ export async function devicePinConflict(
   sims: Array<{ udid: string; name: string }> = [],
 ): Promise<string | undefined> {
   const pin = operatorDevicePin();
-  if (!pin || !requested || pinMatches(pin, requested)) return undefined;
+  if (!pin || !requested) return undefined;
+  // A pinned simulator name that several simulators share pins none of them (never "either one").
+  const pinnedSims = simulatorsForPin(pin, sims);
+  if (pinnedSims.length > 1) return pinAmbiguousMessage(pin, pinnedSims);
+  if (pinMatches(pin, requested)) return undefined;
   const sameSim = (s: { udid: string; name: string }, v: string) => pinMatches(v, s.udid) || pinMatches(v, s.name);
-  if (sims.some((s) => sameSim(s, pin) && sameSim(s, requested))) return undefined;
+  if (pinnedSims.some((s) => sameSim(s, requested))) return undefined;
   const reqSerial = online.find((s) => pinMatches(requested, s));
   const pinSerial = online.find((s) => pinMatches(pin, s));
   const [reqAvd, pinAvd] = await Promise.all([

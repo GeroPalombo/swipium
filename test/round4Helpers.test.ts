@@ -336,12 +336,16 @@ describe('simulator pin and device-name resolution (E2E NEW-5, IOS NEW-B)', () =
     expect(simulatorsForPin('iPhone 16', [...sims, { ...sims[0], udid: 'AAAAAAAA-0000-4000-8000-000000000009' }])).toHaveLength(2);
   });
 
-  it('resolveSimulatorArg: a UDID as is, an exact name before a substring, ambiguous / unknown refused', async () => {
-    expect(await resolveSimulatorArg(sims[2].udid, sims)).toEqual({ udid: sims[2].udid });
+  it('resolveSimulatorArg: a listed UDID or a unique exact name (ignoring case); substring / ambiguous / unknown refused', async () => {
+    expect(await resolveSimulatorArg(sims[2].udid.toLowerCase(), sims)).toMatchObject({ udid: sims[2].udid });
     expect(await resolveSimulatorArg('iPhone 16', sims)).toMatchObject({ udid: sims[0].udid });
-    expect(await resolveSimulatorArg('iphone se', sims)).toMatchObject({ udid: sims[1].udid });
+    expect(await resolveSimulatorArg('iphone se (3rd generation)', sims)).toMatchObject({ udid: sims[1].udid });
+    const substring = await resolveSimulatorArg('iphone se', sims);
+    expect('error' in substring && JSON.stringify(substring.error)).toMatch(/INVALID_ARGUMENT/);
     const ambiguous = await resolveSimulatorArg('iPhone 16', [...sims, { ...sims[0], udid: 'AAAAAAAA-0000-4000-8000-000000000009' }]);
-    expect('error' in ambiguous).toBe(true);
+    expect('error' in ambiguous && JSON.stringify(ambiguous.error)).toMatch(/MULTIPLE_DEVICES/);
+    const unlisted = await resolveSimulatorArg('AAAAAAAA-0000-4000-8000-0000000000FF', sims);
+    expect('error' in unlisted && JSON.stringify(unlisted.error)).toMatch(/INVALID_ARGUMENT/);
     const unknown = await resolveSimulatorArg('Pixel', sims);
     expect('error' in unknown && JSON.stringify(unknown.error)).toMatch(/INVALID_ARGUMENT/);
   });

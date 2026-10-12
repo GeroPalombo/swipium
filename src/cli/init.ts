@@ -108,7 +108,26 @@ export function geminiBlock(node: string, self: string = SELF): string {
 // so the server does not load this CLI module (and the MCP client SDK it pulls in) at startup.
 export { CODEX_CORE_GROUPS, CODEX_CORE_EXTRA_TOOLS, codexCoreTools } from '../core/capabilityGroups.js';
 
-const CODEX_BLOCK_HEADER = /^[ \t]*\[mcp_servers\.(?:"swipium"|swipium)\][ \t]*(?:#.*)?$/m;
+// `[mcp_servers.swipium]`, also spaced (`[ mcp_servers . swipium ]`) or quoted (`"swipium"`, `'swipium'`).
+const SWIPIUM_KEY = `(?:"swipium"|'swipium'|swipium)`;
+const CODEX_BLOCK_HEADER = new RegExp(`^[ \\t]*\\[[ \\t]*mcp_servers[ \\t]*\\.[ \\t]*${SWIPIUM_KEY}[ \\t]*\\][ \\t]*(?:#.*)?$`, 'm');
+
+/** NEW-R5-1: a swipium server written with dotted keys instead of its own table:
+ *  `mcp_servers.swipium.command = …` at the top level, or `swipium.command = …` / `swipium = {…}`
+ *  under `[mcp_servers]`. Appending a table then makes Codex fail with "duplicate key". */
+export function hasCodexDottedServer(toml: string): boolean {
+  let table = '';
+  for (const line of toml.split(/\r?\n/)) {
+    const h = /^[ \t]*\[([^[\]]*)\][ \t]*(?:#.*)?$/.exec(line);
+    if (h) {
+      table = h[1].replace(/[ \t]/g, '');
+      continue;
+    }
+    if (table === '' && new RegExp(`^[ \\t]*mcp_servers[ \\t]*\\.[ \\t]*${SWIPIUM_KEY}[ \\t]*[.=]`).test(line)) return true;
+    if (table === 'mcp_servers' && new RegExp(`^[ \\t]*${SWIPIUM_KEY}[ \\t]*[.=]`).test(line)) return true;
+  }
+  return false;
+}
 
 /** The existing [mcp_servers.swipium] table in a config.toml (header to the next table), or null. */
 export function findCodexServerBlock(toml: string): string | null {
@@ -823,6 +842,15 @@ export async function runInit(args: string[]): Promise<void> {
                 '\nEdit those lines by hand (Codex has no command to update a server).\n'
             : `Already present in ${cfg} (left unchanged); it matches the expected settings.\n`,
         );
+      } else if (hasCodexDottedServer(cur) || tomlSanityError(`${cur}\n${block}\n`)) {
+        // NEW-R5-1: a swipium entry written another way (dotted keys), or anything else that would
+        // make the appended file invalid: never leave Codex unable to start.
+        const why = hasCodexDottedServer(cur)
+          ? 'it already defines a swipium server with dotted keys'
+          : `appending would make it invalid TOML (${tomlSanityError(`${cur}\n${block}\n`)})`;
+        process.stdout.write(`Refusing to modify ${cfg}: ${why}.\nCompare it by hand with:\n${block}\n`);
+        process.exitCode = 2;
+        return;
       } else {
         appendFileSync(cfg, `\n${block}\n`);
         process.stdout.write(`Appended to ${cfg}\n`);

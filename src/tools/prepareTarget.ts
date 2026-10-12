@@ -27,6 +27,10 @@ import {
   sessionAvdFor,
   devicePinConflict,
   rememberBoundAvd,
+  DEVICE_PIN_ENV,
+  operatorDevicePin,
+  pinFixStep,
+  pinMatches,
 } from '../session/attach.js';
 import { launchFailureCode, prepareAndroid } from '../services/prepareAndroid.js';
 import { planTarget } from '../core/targetPlan.js';
@@ -140,6 +144,22 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
       const avdSerial = avdRequested ? await onlineSerialForAvd(avd!, await adbDevices()) : undefined;
       const resolved = await resolveDevice(session, device ?? avdSerial);
       const res = avdRequested && !avdSerial ? { ...resolved, effective: undefined, needSelection: false } : resolved;
+      // With the pin set and nothing named, the pin is the only candidate: its online emulator, else
+      // its AVD (booted). A pin that names no Android device (an iOS simulator) is refused, never
+      // replaced by whatever emulator is online or the first AVD.
+      const pin = operatorDevicePin();
+      let pinnedAvd: string | undefined;
+      if (pin && !device && !avd && !session.device && !res.effective) {
+        pinnedAvd = (await listAvds()).find((a) => pinMatches(pin, a));
+        if (!pinnedAvd)
+          return qaError({
+            what: `${DEVICE_PIN_ENV}=${pin} pins this server to a device that is not an online Android device or AVD, so no other device was used.`,
+            changedState: false,
+            retrySafe: false,
+            failureCode: 'DEVICE_PINNED',
+            nextSteps: ['qa_prepare_target is the Android path; for a pinned iOS simulator use qa_prepare_ios_target.', pinFixStep()],
+          });
+      }
       if (device && !res.effective) {
         return qaError({
           what: `Device "${device}" is not online`,
@@ -217,7 +237,7 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
       // Boot the requested AVD, else the AVD of this session's own (offline) emulator. A session bound
       // to a device is never moved to some other AVD implicitly.
       const sessionAvd = sessionAvdFor(session, session.device);
-      const bootTarget = avd ?? sessionAvd ?? (session.device ? undefined : avds[0]);
+      const bootTarget = avd ?? sessionAvd ?? pinnedAvd ?? (session.device ? undefined : avds[0]);
       if (needBoot && avd && avds.length && !avds.includes(avd)) {
         return qaError({
           what: `AVD "${avd}" not found`,

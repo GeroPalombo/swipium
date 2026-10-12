@@ -42,9 +42,9 @@ export async function snapshotText(ctx: AuditEvidenceCtx): Promise<string> {
   }
 }
 
-/** Run a health check on the current screen. */
-export async function health(ctx: AuditEvidenceCtx): Promise<HealthResult> {
-  return checkHealth(ctx.driver, ctx.appId);
+/** Run a health check on the current screen (on `xml` when the caller already dumped it). */
+export async function health(ctx: AuditEvidenceCtx, xml?: string): Promise<HealthResult> {
+  return checkHealth(ctx.driver, ctx.appId, xml || undefined);
 }
 
 /** Current foreground app/owner. Best-effort: 'unknown'. */

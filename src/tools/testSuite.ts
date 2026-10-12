@@ -7,15 +7,14 @@
 // when .swipium/pages exists, so one call audits both the durable suite and generated pages.
 
 import { z } from 'zod';
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { join, dirname, resolve, sep } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import type { CallToolResult, McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError } from '../lib/result.js';
 import { resolveProjectRoot, unresolvedProjectRootError } from '../context/projectRoot.js';
 import { loadProjectConfig } from '../cli/scan.js';
 import { pomForSession } from '../services/suiteGenerate.js';
 import { casePlatformsFor, generateCanonicalCases, normalizeCase } from '../testSuite/generator.js';
-import { applyMerge, loadSuiteChecked, runIdFromNow, suiteJsonPath, suiteRoot } from '../testSuite/store.js';
+import { applyMerge, loadSuiteChecked, runIdFromNow, suiteJsonPath, suiteRoot, writeFileNoFollow } from '../testSuite/store.js';
 import { exportSuite, type ExportFormat } from '../testSuite/exporter.js';
 import { lintSuite } from '../testSuite/lint.js';
 import { lintSuitePages } from '../suite/lint.js';
@@ -449,15 +448,13 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
               const abs = resolve(yamlBase, f.path);
               // A path built from stored data never leaves the export folder.
               if (!abs.startsWith(yamlBase + sep)) continue;
-              mkdirSync(dirname(abs), { recursive: true });
-              writeFileSync(abs, f.content);
+              writeFileNoFollow(r.root, abs, f.content);
               written.push(abs);
             }
           } else if (result.content) {
             const ext = format === 'junit' ? 'xml' : format === 'markdown' ? 'md' : format;
             const abs = join(base, `test-suite.${ext}`);
-            mkdirSync(dirname(abs), { recursive: true });
-            writeFileSync(abs, result.content);
+            writeFileNoFollow(r.root, abs, result.content);
             written.push(abs);
           }
         } catch (e) {

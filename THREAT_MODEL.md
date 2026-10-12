@@ -116,11 +116,13 @@ Swipium.
     auto-binding use only that device and an explicit request for another is refused
     (`DEVICE_PINNED`), so the pre-approval can only ever act on the pinned device. That includes
     the low-level `qa_ios` (`boot`, `install`, `privacy_reset`, `erase`) and `qa_wda` (`build`,
-    `start`, `setup`, `attach`) actions and `qa_bundletool` installs, checked before consent, so a
-    pre-approved `erase_device` can't reach a bystander simulator. A `qa_wda` `device` given as a
-    simulator name is resolved to its UDID before the check, other `qa_ios` actions refuse a
-    `device` that isn't the session's simulator, and a pinned simulator name that several
-    simulators share is refused (`MULTIPLE_DEVICES`) instead of picking the first one.
+    `start`, `setup`, `attach`, `stop`) actions and `qa_bundletool` installs, checked before
+    consent, so a pre-approved `erase_device` can't reach a bystander simulator. A `device` is
+    resolved to one simulator UDID first (exact UDID or unique exact name; never a substring or
+    `booted`), `erase` runs and prompts with that UDID, other `qa_ios` actions refuse a `device`
+    that isn't the session's simulator, and a pinned simulator name that several simulators share
+    pins none of them (`MULTIPLE_DEVICES`) instead of passing either. A tool for the other
+    platform (`qa_prepare_target` under an iOS pin) refuses instead of picking a device.
   - It is checked before any prompt on both eras and wins over `SWIPIUM_REQUIRE_ELICITATION=1`
     (an explicit operator decision).
 
@@ -214,10 +216,13 @@ A developer clones an untrusted repository and points Swipium at it.
   read, reported as `loadRepairs` and flagged by `qa_suite_lint` (`unsafe_id`), and
   `qa_suite_export` skips any YAML path that would resolve outside
   `.swipium/test-suite-export/yaml/`. Ids given to `qa_suite_update` are validated as before.
-  Not yet covered: these checks compare paths without following symlinks, so a committed symlink at
-  `.swipium/test-suite.json`, under `.swipium/test-suite-export/`, or at `.swipium/issues-log.jsonl`
-  makes `qa_suite_update`, `qa_suite_export {save:true}` and the issue log write through it, outside
-  the project. Check a cloned repo's `.swipium/` for symlinks before running Swipium on it.
+  Suite writes (`test-suite.json`, the `test-suite/` mirror, `test-runs/` and
+  `test-suite-export/`) refuse to write through a symlink: every path component below the project
+  root is checked with `lstat`, and a symlinked file or folder fails the write with
+  `ARTIFACT_PATH_UNWRITABLE` instead of following it out of the project.
+  Not yet covered: a committed symlink at `.swipium/issues-log.jsonl` makes the issue log append
+  through it, outside the project. Check a cloned repo's `.swipium/` for symlinks before running
+  Swipium on it.
 - **git refusal**. Swipium refuses to spawn `git` itself or through `sh -c`-style payloads
   (`src/lib/spawn.ts`). This is a speed bump against accidental repository changes, not a security
   boundary: a consented script or build can run anything the user can, git included.

@@ -81,7 +81,7 @@ describe('persisted notTested marker (E2E NEW-10 / NEW-13)', () => {
     const { store, s } = fresh();
     await report(store, s, { notTested: { reason: 'Metro down', failureCode: 'METRO_REQUIRED', reachedApp: false } });
     store.milestone(s, 'app_launch_end');
-    store.addNote(s, { at: Date.now() + 5, workflow: 'launch_smoke', outcome: 'pass' });
+    store.addNote(s, { at: Date.now() + 5, workflow: 'launch_smoke', outcome: 'pass', reason: 'native=ok app=ok quality=good' });
     const { r, notTestedVerdict } = await report(store, s);
     expect(s.notTested).toBeUndefined();
     expect(r.notTested).toBeUndefined();
@@ -113,21 +113,21 @@ describe('agent pass claims (E2E NEW-11)', () => {
     expect(notTestedVerdict).toMatchObject({ passed: false, failureCode: 'NOT_TESTED' });
   });
 
-  it('the same pass after a launch plus an action with the app in front is SHIP', async () => {
+  it('the same pass after a launch plus an action with the app in front is still not tested (R5 must-fix 1)', async () => {
     const { store, s } = fresh();
     store.milestone(s, 'app_launch_end');
     store.addRecordedAction(s, { at: Date.now() + 1, action: 'tap', selector: 'Login', exportability: 'semantic', appForeground: true });
     store.addNote(s, { at: Date.now() + 5, workflow: 'login', outcome: 'pass', source: 'qa_note' });
     const { r, notTestedVerdict } = await report(store, s);
-    expect(r.notTested).toBeUndefined();
-    expect(r.executiveSummary.risk).toBe('ship');
-    expect(notTestedVerdict).toBeUndefined();
+    expect(r.notTested).toMatchObject({ reachedApp: true, exercised: false, failureCode: 'NOT_TESTED' });
+    expect(r.executiveSummary.risk).not.toBe('ship');
+    expect(notTestedVerdict).toMatchObject({ passed: false });
   });
 
   it('the same pass after a launch plus a Swipium launch_smoke pass is SHIP', async () => {
     const { store, s } = fresh();
     store.milestone(s, 'app_launch_end');
-    store.addNote(s, { at: Date.now(), workflow: 'launch_smoke', outcome: 'pass' });
+    store.addNote(s, { at: Date.now(), workflow: 'launch_smoke', outcome: 'pass', reason: 'native=ok app=ok quality=good' });
     store.addNote(s, { at: Date.now() + 5, workflow: 'login', outcome: 'pass', source: 'qa_note' });
     const { r, notTestedVerdict } = await report(store, s);
     expect(r.notTested).toBeUndefined();

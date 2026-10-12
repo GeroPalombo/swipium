@@ -3,8 +3,8 @@
 // mirror, and the `.swipium/test-runs/<runId>.json` ledger. Everything it persists is produced by the
 // pure modules (schema/merge/generator/history) so the on-disk format is deterministic and testable.
 
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, lstatSync } from 'node:fs';
+import { join, relative, resolve, sep } from 'node:path';
 import { stringify } from 'yaml';
 import {
   type TestSuiteFile,
@@ -122,11 +122,40 @@ export function loadSuiteChecked(root: string, appId?: string): { suite: TestSui
   };
 }
 
+/**
+ * Write a file under `<root>/.swipium/` without following a symlink. A cloned repo can commit
+ * `.swipium/test-suite.json`, `test-suite-export/*` or one of their folders as a symlink to a file
+ * outside the project; a plain write would follow it. Every path component below the project root
+ * that exists is lstat'ed and a symlink is refused (an fs error with a code, so callers report it
+ * as an unwritable path). The project root itself may be a symlink (e.g. /tmp on macOS).
+ */
+export function writeFileNoFollow(root: string, path: string, content: string): void {
+  const absRoot = resolve(root);
+  const abs = resolve(path);
+  const rel = relative(absRoot, abs);
+  if (!rel || rel.startsWith('..') || resolve(absRoot, rel) !== abs) throw symlinkError(abs, 'is outside the project');
+  let cur = absRoot;
+  for (const part of rel.split(sep)) {
+    cur = join(cur, part);
+    let isLink = false;
+    try {
+      isLink = lstatSync(cur).isSymbolicLink();
+    } catch {
+      break; // does not exist yet: nothing below it can be a link
+    }
+    if (isLink) throw symlinkError(cur, 'is a symlink, refusing to write through it');
+  }
+  mkdirSync(join(abs, '..'), { recursive: true });
+  writeFileSync(abs, content);
+}
+
+function symlinkError(path: string, why: string): Error {
+  return Object.assign(new Error(`${path} ${why}`), { code: 'ELOOP' });
+}
+
 /** Persist the suite JSON + the per-functionality YAML mirror. Returns absolute paths written. */
 export function saveSuite(root: string, suite: TestSuiteFile): string[] {
   const written: string[] = [];
-  const base = suiteRoot(root);
-  mkdirSync(base, { recursive: true });
   // Mirror first, JSON last: if a mirror write fails, test-suite.json still holds the previous
   // good suite instead of a case that breaks every later save (TOOL NEW-1).
   const casesRoot = resolve(suiteCasesDir(root));
@@ -137,12 +166,11 @@ export function saveSuite(root: string, suite: TestSuiteFile): string[] {
     const dir = join(casesRoot, functionalityDirName(c.functionality));
     const yamlPath = resolve(dir, `${c.id}.yaml`);
     if (!yamlPath.startsWith(casesRoot + sep)) continue;
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(yamlPath, stringify(c));
+    writeFileNoFollow(root, yamlPath, stringify(c));
     written.push(yamlPath);
   }
   const jsonPath = suiteJsonPath(root);
-  writeFileSync(jsonPath, JSON.stringify(suite, null, 2));
+  writeFileNoFollow(root, jsonPath, JSON.stringify(suite, null, 2));
   written.unshift(jsonPath);
   return written;
 }
@@ -150,9 +178,8 @@ export function saveSuite(root: string, suite: TestSuiteFile): string[] {
 /** Append a per-run ledger file. Returns the absolute path written. */
 export function recordRun(root: string, ledger: RunLedger): string {
   const dir = testRunsDir(root);
-  mkdirSync(dir, { recursive: true });
   const path = join(dir, `${runIdFromNow(ledger.at)}.json`);
-  writeFileSync(path, JSON.stringify(ledger, null, 2));
+  writeFileNoFollow(root, path, JSON.stringify(ledger, null, 2));
   return path;
 }
 

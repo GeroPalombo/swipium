@@ -107,8 +107,9 @@ export interface Driver {
    * focus tap / clear so a refused value leaves the device untouched. Optional: absent means the
    * backend has no known character restriction. */
   canDeliverText?(text: string): TextDeliverability;
-  /** Clear the focused field (move to end, delete ~n chars in one keyevent batch). */
-  clearFocusedText(approxLen?: number): Promise<void>;
+  /** Clear the focused field (move to end, delete ~n chars in one keyevent batch). byLength: a retry
+   * after a clear that left text; clear by the field's length instead of a select-all (Android). */
+  clearFocusedText(approxLen?: number, opts?: { byLength?: boolean }): Promise<void>;
   pressKey(key: 'back' | 'home' | 'enter'): Promise<void>;
   swipe(x1: number, y1: number, x2: number, y2: number, ms?: number): Promise<void>;
   /** `adb reverse tcp:8081 tcp:8081` so a debug RN/Expo build can reach Metro. */

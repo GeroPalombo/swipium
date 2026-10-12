@@ -11,6 +11,7 @@ import { generateFlow } from '../flows/generate.js';
 import { capSlug } from '../lib/stableHash.js';
 import { loadProjectConfig } from '../cli/scan.js';
 import type { Session, SessionStore } from '../session/store.js';
+import { actionsWithRelaunches } from './suiteGenerate.js';
 import { findSecretLeaks, inputBindings, secretSafeNotes, structuralLiterals } from '../suite/secretGuard.js';
 
 export interface FlowGenerateArgs {
@@ -77,7 +78,7 @@ export async function runFlowGenerate(
 
   const appId = session.appId ?? (loadProjectConfig(session.root)?.appId as string | undefined) ?? undefined;
   const flowName = capSlug((name ?? `${(appId ?? 'app').split('.').pop()}-smoke`).replace(/[^\w.-]+/g, '-'));
-  const gen = generateFlow(session.recordedActions, {
+  const gen = generateFlow(actionsWithRelaunches(session), {
     name: flowName,
     appId,
     budgetProfile,

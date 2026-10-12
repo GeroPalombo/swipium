@@ -82,7 +82,7 @@ Items tagged **You** need an action from you. Items tagged **Automatic** happen 
 ### Agent workflow
 
 - **`qa_test_this` and `qa_test_feature` default to `mode:"execute"`.** The server instructions, `qa_status` and the prompts now lead with `qa_test_this {waitForCompletion:true}`, poll `qa_job_status` only while the state is `running`, then read `report.md`. The "read the app map, then `qa_test_feature`" detour was removed from the instructions.
-- **`SWIPIUM_MAX_WAIT_MS`** sets how long one `qa_job_status` long-poll or `qa_test_this {waitForCompletion:true}` may block: 1000 to 230000 ms, default 50000. The default `waitForCompletion` window is that cap minus 5 s. `swipium init claude` writes `110000`. `qa_wait` and `qa_act` keep their 50000 ms cap.
+- **`SWIPIUM_MAX_WAIT_MS`** sets how long one `qa_job_status` long-poll or `qa_test_this {waitForCompletion:true}` may block: 1000 to 230000 ms, default 50000. The default `waitForCompletion` window is that cap minus 5 s. `swipium init claude` writes `110000`. `qa_wait` follows the same cap; `qa_act` keeps its 50000 ms cap.
 - **Progress notifications.** `qa_job_status` and `qa_test_this {waitForCompletion:true}` send MCP `notifications/progress` while a job runs, when the request carries a `progressToken` (at most one per second, only when the progress line changes).
 - **`qa_continue_from_blocker` resumes the run itself** on a prepared session when the re-run needs no new consent, and returns `resumed:true` with the new `jobId`. A re-run that needs consent still returns the `qa_test_this` call as `nextAction`. Credential answers include a tip to set `SWIPIUM_TEST_EMAIL` and `SWIPIUM_TEST_PASSWORD` in the server env, and the login question recommends the same, so the password never enters the chat.
 - **`qa_wda {action:"setup"}`**: one consent and one background job (`wda_setup`) that reuses a running WebDriverAgent, or builds it if needed, and starts it (iPhone SE simulator: about 50 s with a build, 5 s from an existing build, 0.1 s when one is running). A build and start runs without a prompt only when `SWIPIUM_CONSENT_PREAPPROVE` lists both `wda_build` and `wda_start`. `qa_wda build` reuses an existing build (a matching `.xctestrun` under the derived data folder) with no consent and no xcodebuild (`reused:true`); `rebuild:true` forces build-for-testing.
@@ -287,6 +287,16 @@ Five pre-release end-user test passes found the following, all fixed in 2.3.0 un
 - `qa_doctor`'s structured `summary` now includes the readiness sentence. `qa_test_this {waitForCompletion:true}` could return 1 to 2 s past the cap on a loaded machine; it keeps 10% of the cap (at most 2 s) for building the response.
 - `STALE_CLIENT` said old tools were removed in the running version; it says 2.0.0.
 
+- Round-5 test pass:
+  - **Release gate:** only Swipium checks that read the UI and found it healthy count as testing the app (a smoke whose oracle ruled out RedBox and blank screens, a flow pass, or an exploration that reached a real app screen). `qa_note` and `qa_visual` assert verdicts, launches, raw actions and findings never count, and never clear a not-tested marker such as `METRO_REQUIRED`. App-in-front checks match the exact package or bundle id (`com.example.app` no longer matches `com.example.app2`).
+  - **Device selection:** every device argument is an exact UDID or a unique exact name; anything else is `INVALID_ARGUMENT`, a shared name `MULTIPLE_DEVICES`, never the first booted simulator. With `SWIPIUM_DEVICE` set, only the pinned device is a candidate on every platform (`qa_prepare_target`, `qa_test_feature`, `qa_wda stop`), and a pinned name shared by several simulators pins none. `qa_ios erase` resolves to a UDID and the consent prompt shows it. `qa_ios boot` with no device and several booted simulators is `MULTIPLE_DEVICES`.
+  - **release_gate relaunch audit:** waits for render before the health check; a WDA timeout there is a tool block (WARN at most), not a high app bug.
+  - **Android crash logs:** a second crash within 30 s links its own log excerpt, not the first one's.
+  - **Android typing:** one UI dump timeout no longer switches off read-back verification of long text; a Compose replace retry clears by length instead of repeating Ctrl+A.
+  - **iOS prepare:** a WDA already hung before prepare is detected (no visual-only pass, no flow replay); `qa_prepare_ios_target` waits for render before `ready`; a native-selector miss is `ELEMENT_NOT_FOUND`.
+  - **Suites:** suite writes under `.swipium/` refuse symlinks; a generated suite records the explorer's relaunch as `restartApp`.
+  - **Other:** `test_login` on a sign-up chooser taps "Sign In"; explorer stops that tested nothing end `blocked`, not `completed`; `qa_act wait` with `target` instead of `for` is `INVALID_ARGUMENT`; `logs.since` uses the device clock; `init codex` recognizes quoted, spaced and dotted swipium tables.
+
 ### Known issues
 
 - An interactive `qa_act` on an Android ref from a snapshot older than 1.5 s first takes one raw screenshot (about 0.15 s). It pays one extra UI dump (about 2 s on a slow emulator) only when the screen changed since the snapshot, the snapshot is older than 60 s, or the screenshot fails.
@@ -317,21 +327,10 @@ Five pre-release end-user test passes found the following, all fixed in 2.3.0 un
 - A network change left by a Swipium server that crashed is not restored automatically; `qa_status` and `qa_network status` warn about it, and `qa_network restore` takes it back. Changes recorded before this version have no owner and are neither restored on shutdown nor flagged.
 - A `qa_wda setup` job can move to another free port after consent when the approved one was taken while it built; `portMovedFrom` and the ledger say so, but the consent named the old port.
 - A render wait on a visual-only iOS screen (no WDA) still never returns a verdict, so a blank visual-only launch is not reported as `BLANK_SCREEN`.
-- `restartApp` still needs the `flow_mutation_run` consent in `qa_flow_run`, so `qa_smoke` skips generated flows that start with it (`flowsSkipped`).
+- `restartApp` still needs the `flow_mutation_run` consent in `qa_flow_run`, so `qa_smoke` skips generated flows that contain it (`flowsSkipped`), including a flow generated from an exploration that relaunched the app.
 - A non-secret value typed with `qa_act` (including a non-secret `${SWIPIUM_*}` value such as `SWIPIUM_TEST_EMAIL`) shows up in the field's element line in the response, as screen state. Use secret-named variables for credentials.
 
-- The release gate can still pass a run that didn't test the app. Agent-supplied evidence counts in a few cases it shouldn't: a `qa_visual {mode:"assert", pass:true}`, a `qa_explore` of a blank screen (even one that reached no screen), or a `qa_note` pass after dismissing a RedBox, after a visual-only smoke of a RedBox, or after any recorded finding. Read the run's `report.md` evidence before trusting a pass in CI.
-- Device selection still has gaps. With no pin, `qa_ios boot {device}` that matches no simulator (an unknown name, or a mistyped or lowercase UDID) binds the first booted one, and a name shared by several simulators takes the first match. With an iOS `SWIPIUM_DEVICE`, `qa_prepare_target` without `device` binds a running Android emulator, and `qa_test_feature` without `device` picks another booted simulator and then refuses it. A pinned name shared by several simulators matches all of them. `qa_wda {action:"stop", device}` is not checked against the pin, and `qa_ios erase` passes a name to `simctl` without resolving it to a UDID. Pass exact UDIDs and pin each server.
-- The release_gate audit's relaunch check reads health right after the relaunch, without a render wait; a brief WDA timeout there is filed as a high app bug and the report says BLOCK. Re-run the audit before acting on that finding.
-- On Android, a second crash within 30 s of the first links the first crash's log excerpt. Use `qa_device_info {logs:{buffer:"crash"}}` for the second one.
-- Replacing a long value that Swipium typed into a Compose field still fails about 1 time in 4 (always with `TEXT_INPUT_MISMATCH`, never silently); the retry repeats the same select all and delete.
-- A WDA that is already hung when `qa_prepare_ios_target` first checks it (rather than hanging at session creation) still gives a visual-only launch pass, and the saved flows are replayed. Run `qa_wda {action:"stop"}` and set it up again when a run looks visual-only unexpectedly.
-- `qa_prepare_ios_target` returns `ready` before the app has drawn, so a screenshot right after can show the splash. `qa_smoke` and `qa_test_this` wait for render.
-- A native-selector miss on iOS returns `WDA_SESSION_FAILED` instead of `ELEMENT_NOT_FOUND`, so a selector typo counts against tool health.
-- On a sign-up screen, `test_login` with credentials set doesn't go to "Sign In" and asks for the credentials it already has. A suite generated from an exploration that relaunched the app doesn't record the relaunch, so it can fail on its first replay. An exploration that stops on an alert with no cancel button, after leaving the app 3 times, or with no way back still ends `completed`.
-- First run and exploration answer iOS permission prompts with "Don't Allow"; the denial stays on the simulator and the result doesn't name it.
-- `init codex --apply` appends a second swipium table when the existing one is spelled `[mcp_servers.'swipium']`, with spaces, or with dotted keys; Codex then fails with "duplicate key". Remove the duplicate by hand.
-- `qa_act {action:"wait"}` ignores `target` (the field is `for`) and returns `ok:true`. `logs.since` ages use the host clock, so a device whose clock is behind returns no lines; use `lines` instead.
+- First run and exploration still answer iOS permission prompts with "Don't Allow"; the result now says so and how to undo it (`qa_ios privacy_reset`).
 
 ## 2.2.0 - 2026-10-05
 

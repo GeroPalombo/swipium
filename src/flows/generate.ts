@@ -330,6 +330,10 @@ export function generateFlow(
         steps.push({ openUrl: a.url ?? '' });
         semantic++;
         break;
+      case 'restart_app':
+        // The recording relaunched the app here (the explorer's recovery when back did nothing).
+        steps.push('restartApp');
+        break;
       case 'assert_visual':
         addProvenance(
           provenanceEntries,

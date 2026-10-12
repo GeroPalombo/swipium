@@ -27,9 +27,8 @@ import {
   operatorDevicePin,
   pinAmbiguousMessage,
   pinFixStep,
-  pinMatches,
+  pinnedTarget,
   sessionAvdFor,
-  simulatorsForPin,
   verifiedEmulatorSerials,
 } from '../../session/attach.js';
 import { universalApkCachePath } from '../../artifacts/bundletool.js';
@@ -354,15 +353,14 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
   if (pinUsed) {
     // E2E NEW-5: the pin resolves the way qa_prepare_ios_target resolves it (pinMatches: exact,
     // ignoring case), and a simulator name several simulators share is refused as ambiguous.
-    const pinnedSims = simulatorsForPin(pinUsed, sims);
-    if (pinnedSims.length > 1)
+    const pinned = pinnedTarget(pinUsed, onlineAll, avds, sims);
+    if (pinned.ambiguous)
       return qaFail('MULTIPLE_DEVICES', {
-        what: pinAmbiguousMessage(pinUsed, pinnedSims),
+        what: pinAmbiguousMessage(pinUsed, pinned.ambiguous),
         nextSteps: [pinFixStep()],
         extra: { sessionId: session.id, appMapUri, state: 'blocked' as State },
       });
-    requestedDevice =
-      onlineAll.find((s) => pinMatches(pinUsed, s)) ?? avds.find((a) => pinMatches(pinUsed, a)) ?? pinnedSims[0]?.udid ?? pinUsed;
+    requestedDevice = pinned.device ?? pinUsed;
   }
   // A requested AVD that is already running is bound as its serial, not booted a second time.
   if (requestedDevice && !onlineAll.includes(requestedDevice) && avds.includes(requestedDevice))

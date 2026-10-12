@@ -26,6 +26,7 @@ import { listSimulators } from '../lib/simctl.js';
 import { appBuildDestination } from '../ios/signing.js';
 import { isOutsideRoot, resolveArtifact } from '../artifacts/resolve.js';
 import { waitForAppRender } from '../snapshot/renderWait.js';
+import { metroListening } from '../lib/metroState.js';
 import { isMetroRequiredFinding, type Finding } from '../oracle/health.js';
 import { checkLaunchErrorSurface, launchErrorText } from '../oracle/record.js';
 
@@ -197,25 +198,37 @@ export function registerPrepareIosTarget(server: McpServer, sessions: SessionSto
             `Next: qa_job_status { sessionId:"${session.id}", jobId:"${job.jobId}", waitMs:45000 } (repeat while running).`,
         );
       }
-      await settleVisualOnlyLaunch(session, res);
-      const screen = await launchErrorCheck(sessions, session, res);
+      const rendered = await settleLaunch(session, res);
+      const screen = { ...(await launchErrorCheck(sessions, session, res)), ...rendered };
       return prepareResultToTool(sessions, session, res, installAffects, mutationConsent, screen);
     },
   );
 }
 
-type LaunchScreen = { appError?: Finding; alert?: string };
+type LaunchScreen = { appError?: Finding; alert?: string; notRendered?: string };
 type InstallAffects = { appPath: string; sig: string; external: boolean } | undefined;
 
-/** E2E NEW-19: a visual-only launch used to answer "ready" during the iOS app-open animation, so a
- *  qa_screenshot right after it showed a blank card. Wait (bounded, ~1-4 s) for two identical frames,
- *  as qa_smoke's render wait does. No verdict either way; cancellation still propagates. */
-async function settleVisualOnlyLaunch(session: Session, res: PrepareIosResult): Promise<void> {
-  if (!res.ok || res.booting || !res.launched || res.mode !== 'visual-fallback' || !session.driver) return;
+/** E2E NEW-19: prepare used to answer "ready" while the app still showed its splash / "Downloading
+ *  100%..." banner. Before "ready", the same bounded render wait qa_smoke uses: structured = a tree
+ *  with content and no loading marker (up to 30 s); visual-only = two identical frames (~1-4 s, no
+ *  verdict). A structured screen still not rendered at the bound is reported, not called ready. */
+async function settleLaunch(session: Session, res: PrepareIosResult): Promise<Pick<LaunchScreen, 'notRendered'>> {
+  if (!res.ok || res.booting || !res.launched || !session.driver) return {};
+  const visualOnly = res.mode !== 'structured';
   try {
-    await waitForAppRender(session.driver, { visualOnly: true, timeoutMs: 4000 });
+    const r = await waitForAppRender(session.driver, {
+      visualOnly,
+      ...(visualOnly ? { timeoutMs: 4000 } : { metroProbe: () => metroListening() }),
+    });
+    if (visualOnly || r.ready || r.reason === 'no_tree') return {};
+    return {
+      notRendered: r.loadingText
+        ? `"${r.loadingText}" still visible after ${Math.round(r.waitedMs / 1000)} s`
+        : `only a blank / splash screen after ${Math.round(r.waitedMs / 1000)} s`,
+    };
   } catch (e) {
     if (isAbortError(e)) throw e;
+    return {};
   }
 }
 
@@ -235,7 +248,7 @@ function prepareResultToTool(
   mutationConsent: PrepareIosArgs['mutationConsent'],
   screen: LaunchScreen = {},
 ): CallToolResult {
-  const { appError, alert } = screen;
+  const { appError, alert, notRendered } = screen;
   if (!res.ok) {
     if (installAffects) {
       sessions.recordMutation(session, {
@@ -274,10 +287,14 @@ function prepareResultToTool(
       launched: res.launched,
       mode: res.mode,
       wda: res.wda ?? null,
-      ...(appError ? { ready: false, appError } : {}),
+      ...(appError ? { ready: false, appError } : notRendered ? { ready: false, notRendered } : {}),
       ...(alert ? { alert } : {}),
     },
-    (errorLine ? `${target}: ${errorLine}` : (res.resultText ?? 'iOS target prepared.')) +
+    (errorLine
+      ? `${target}: ${errorLine}`
+      : notRendered
+        ? `${target}: launched, but not rendered yet (${notRendered}); not ready to test. Wait (qa_wait { for:"metro_ready" } if Metro is bundling) and check qa_screenshot.`
+        : (res.resultText ?? 'iOS target prepared.')) +
       (alert ? `\n⚠ An iOS alert is on top of the app: "${alert}". Close it (qa_clear_overlay) before testing.` : ''),
   );
 }
@@ -303,9 +320,9 @@ export async function runPrepareIosJob(
     return;
   }
   if (signal?.aborted) return;
-  await settleVisualOnlyLaunch(session, res);
+  const rendered = await settleLaunch(session, res).catch(() => ({})); // cancelled: checked below
   if (signal?.aborted) return;
-  const screen = await launchErrorCheck(sessions, session, res).catch(() => ({})); // cancelled: checked below
+  const screen = { ...(await launchErrorCheck(sessions, session, res).catch(() => ({}))), ...rendered }; // cancelled: checked below
   if (signal?.aborted) return;
   const out = prepareResultToTool(sessions, session, res, installAffects, args.mutationConsent, screen);
   const result = (out.structuredContent ?? {}) as Record<string, unknown>;

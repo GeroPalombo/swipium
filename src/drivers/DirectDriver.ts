@@ -63,6 +63,9 @@ const TEXT_PIECE_SETTLE_MS = 4000;
 /** Long text is read back after this many pieces (and after the last one), not after each (AND-14). */
 const TEXT_PIECES_PER_CHECK = 2;
 
+/** Read-backs in a row that may fail to dump the screen before long text stops checking (R5-1). */
+const DUMP_MISSES_BEFORE_OFF = 3;
+
 /** Careful typing (the retry after a scramble, AND-14): a labeled Compose field jumps its caret to
  * the start and drops keys in the middle of one burst, so the retry sends bursts this short, paced,
  * and reads back every CAREFUL_PIECES_PER_CHECK of them. */
@@ -651,6 +654,9 @@ export class DirectDriver implements Driver {
     // pieces sent since then.
     let prev: string | undefined;
     let unchecked: string[] = [];
+    // Read-backs in a row that could not dump the screen (R5-1): one is skipped (the pieces stay
+    // unchecked for the next read-back), only DUMP_MISSES_BEFORE_OFF in a row turn checking off.
+    let dumpMisses = 0;
     const send = async (piece: string) => {
       const escaped = escapeAdbInputText(piece);
       try {
@@ -683,6 +689,13 @@ export class DirectDriver implements Driver {
       let held = await this.awaitFieldEndsWith(typed);
       // What was sent since the last read-back landed at the end but lost characters: delete what
       // it added and send it once more.
+      if (held === undefined) {
+        // Could not dump the screen: skip this check, keep the pieces for the next one.
+        if (++dumpMisses >= DUMP_MISSES_BEFORE_OFF) verify = false;
+        await sleepOrCancel(pace);
+        continue;
+      }
+      dumpMisses = 0;
       if (held && !held.ok && prev !== undefined && held.text.startsWith(prev) && held.text.length > prev.length) {
         const before = held.text;
         await this.adb(['shell', ...this.moveEndArgs(), ';', 'input', 'keyevent', ...Array(held.text.length - prev.length).fill('67')]);
@@ -690,7 +703,10 @@ export class DirectDriver implements Driver {
           if (k) await sleepOrCancel(pace);
           await send(p);
         }
-        held = await this.awaitFieldEndsWith(typed);
+        const again = await this.awaitFieldEndsWith(typed);
+        // Unreadable after the resend: the resent pieces stay unchecked for the next read-back.
+        if (again === undefined) continue;
+        held = again;
         // Cut at the same place twice: the field has a max length. Stop typing; the caller's
         // read-back reports the cut-short value (CR-TYPING).
         if (held && !held.ok && held.text === before && fieldIsCutTyped(held.text, typed)) return;
@@ -719,8 +735,8 @@ export class DirectDriver implements Driver {
 
   /** Poll the focused field until its value ends with `want` (fieldEndsWithTyped), up to
    * TEXT_PIECE_SETTLE_MS. Returns the last value read and whether it matched. null when no
-   * readable field has focus. */
-  private async awaitFieldEndsWith(want: string): Promise<{ ok: boolean; text: string } | null> {
+   * readable field has focus; undefined when the screen could not be dumped (a timeout). */
+  private async awaitFieldEndsWith(want: string): Promise<{ ok: boolean; text: string } | null | undefined> {
     const deadline = Date.now() + TEXT_PIECE_SETTLE_MS;
     for (;;) {
       const left = deadline - Date.now();
@@ -729,7 +745,7 @@ export class DirectDriver implements Driver {
         field = focusedFieldValue(await this.dumpXml({ timeoutMs: Math.max(left, 1500), attempts: 2 }));
       } catch (e) {
         if (isAbortError(e)) throw e;
-        return null; // can't read the screen: don't fail the typing on that
+        return undefined; // can't read the screen: don't fail the typing on that
       }
       if (!field || field.password) return null;
       const hit = field.readings.find((r) => fieldEndsWithTyped(r, want));
@@ -748,7 +764,10 @@ export class DirectDriver implements Driver {
     return this.keyCombo.get(this.serial ?? '') ? ['input', 'keycombination', '113', '123'] : ['input', 'keyevent', '123'];
   }
 
-  async clearFocusedText(approxLen = 40): Promise<void> {
+  async clearFocusedText(approxLen = 40, opts: { byLength?: boolean } = {}): Promise<void> {
+    // R5-2: a retry after a clear that left text uses the by-length clear below, not the same
+    // select-all again.
+    if (opts.byLength) return this.clearByLength(approxLen);
     // CR-TYPING / AND NEW-2: select all (CTRL+A) then DEL clears the whole field wherever the caret
     // is, whatever the target kind and however long or multi-line the field. Needs Android 13
     // (`input keycombination`); the first clear on a device probes it.
@@ -777,6 +796,11 @@ export class DirectDriver implements Driver {
         return;
       }
     }
+    await this.clearByLength(approxLen);
+  }
+
+  /** Clear by the field's length: move to the end, then DEL and FORWARD_DEL that many times. */
+  private async clearByLength(approxLen: number): Promise<void> {
     // Older Android: read the field's real length (the snapshot's or the caller's guess can be
     // short or stale), then DEL before the caret and FORWARD_DEL (112) after it, so text after
     // the caret's line in a multi-line field goes too. No upper cap. qa_act reads the field back.
@@ -789,7 +813,9 @@ export class DirectDriver implements Driver {
       if (isAbortError(e)) throw e;
     }
     const n = Math.max(len + 2, 1);
-    await this.adb(['shell', 'input', 'keyevent', '123', ...Array(n).fill('67'), ...Array(n).fill('112')], {
+    // CTRL+MOVE_END first where key combinations work (the end of the text, not of the caret's line).
+    const toEnd = this.keyCombo.get(this.serial ?? '') ? ['input', 'keycombination', '113', '123', ';'] : [];
+    await this.adb(['shell', ...toEnd, 'input', 'keyevent', '123', ...Array(n).fill('67'), ...Array(n).fill('112')], {
       timeoutMs: 20000 + n * 100,
     });
   }

@@ -3,7 +3,7 @@
 //  - qa_act records appForeground only when the post-action foreground is the app under test;
 //  - after a blocked run, an action on another app (SpringBoard / launcher) plus a qa_note pass keeps
 //    the marker: BLOCK, gate fails with the original code;
-//  - an app-in-front action alone keeps it too; with an agent outcome note after it, it clears.
+//  - an app-in-front action alone keeps it too, and so does an agent outcome note after it (R5).
 // Hermetic: in-memory server with a fake driver (test/actFixFake.ts), temp HOME, no device.
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -78,16 +78,15 @@ describe('the not-tested marker needs app evidence (round 4 must-fix 1 / CR P1)'
     expect(notTestedVerdict).toMatchObject({ passed: false, failureCode: 'METRO_REQUIRED' });
   });
 
-  it('an app-in-front action plus an agent outcome note after the marker clears it', async () => {
+  it('an app-in-front action plus an agent outcome note after the marker keeps it (R5 must-fix 1)', async () => {
     const sessionId = await h.start(new FakeDriver(buttonScreen('A', 2)));
     await report(sessionId, metroBlocked);
     await new Promise((r) => setTimeout(r, 5));
     await tap(sessionId);
     await passNote(sessionId);
-    const { r, s, notTestedVerdict } = await report(sessionId);
-    expect(s.notTested).toBeUndefined();
-    expect(r.notTested).toBeUndefined();
-    expect(r.executiveSummary.risk).not.toBe('block');
-    expect(notTestedVerdict).toBeUndefined();
+    const { s, verdicts, notTestedVerdict } = await report(sessionId);
+    expect(s.notTested).toMatchObject({ failureCode: 'METRO_REQUIRED' });
+    expect(notTestedVerdict).toMatchObject({ passed: false, failureCode: 'METRO_REQUIRED' });
+    expect(applyPolicy(verdicts, null).block).toBe(true);
   });
 });

@@ -350,7 +350,7 @@ export function classifyFlowDriverError(error: unknown, fallback: FailureCode = 
   if (/DEVICE_UNRESPONSIVE|`adb [^`]*` exited \S+ \(timed out\)/.test(msg)) return 'DEVICE_UNRESPONSIVE';
   if (/not hittable|not hit.?point|not visible.*hittable|is not enabled|element.*obscured|other element.*would receive/i.test(msg))
     return 'ELEMENT_NOT_HITTABLE';
-  if (/stale element|stale.*reference|element.*no longer|invalid element/i.test(msg)) return 'STALE_REF';
+  if (/stale element|stale.*reference|element.*no longer|invalid element|not present in the current view/i.test(msg)) return 'STALE_REF';
   if (
     /invalid selector|invalid locator|unsupported locator|unsupported selector|locator strategy.*(invalid|unsupported)|selector strategy.*(invalid|unsupported)|predicate.*parse|class chain.*parse/i.test(
       msg,
@@ -369,7 +369,8 @@ export function classifyFlowDriverError(error: unknown, fallback: FailureCode = 
   if (/source.*slow|page source.*slow/i.test(msg)) return 'WDA_SOURCE_SLOW';
   if (/snapshot|source|dump|hierarchy/i.test(msg)) return 'SNAPSHOT_FAILED';
   if (/webview|web view|context unavailable/i.test(msg)) return 'WEBVIEW_UNAVAILABLE';
-  if (/no such element|element.*not found|could not resolve element|unable to locate|not visible/i.test(msg)) return 'ELEMENT_NOT_FOUND';
+  if (/no such element|element.*not found|could not resolve element|unable to locate|unable to find an element|not visible/i.test(msg))
+    return 'ELEMENT_NOT_FOUND';
   if (/WDA HTTP|session not created|invalid session|did not return a sessionId|failed to create.*session/i.test(msg))
     return 'WDA_SESSION_FAILED';
   if (/ECONNREFUSED|fetch failed|timed out|aborted|network|socket|unreachable/i.test(msg)) return 'WDA_UNREACHABLE';
@@ -657,7 +658,7 @@ export async function runFlow(
         let retried = false;
         const retype = async (len: number) => {
           retried = true;
-          await d.clearFocusedText(len);
+          await d.clearFocusedText(len, { byLength: true });
           try {
             await d.inputText(out, { careful: true });
           } catch (e) {

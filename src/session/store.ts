@@ -174,7 +174,7 @@ export interface SelectorProvenance {
 }
 export interface RecordedAction {
   at: number;
-  action: string; // tap | type | clear | swipe | scroll | press | open_url | assert_visual
+  action: string; // tap | type | clear | swipe | scroll | press | open_url | assert_visual | restart_app
   selector?: string; // replayable text/label (taps/scrollTo)
   selectorKind?: 'text' | 'accessibility_id' | 'resource_id' | 'name' | 'predicate' | 'class_chain' | 'coords';
   x?: number;

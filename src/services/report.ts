@@ -275,37 +275,47 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   const topHigh = high.find((f) => !isToolFinding(f)) ?? high[0];
   const topAppFailNote = appFailNotes[0];
   const topBlockedNote = notes.find((n) => n.outcome === 'blocked');
-  // No evidence => never SHIP. "Exercised" = a Swipium pass/fail outcome, exploration, an action taken
-  // with the app in front or a health finding. The report's own UI dump (captured above) is NOT evidence that the app ran, and
-  // neither is a Swipium-side failure (mcp_limitation: "baseline failed: device offline").
+  // No evidence => never SHIP. R5 must-fix 1: the rule is inverted. Only a Swipium-run check that
+  // looked at the app's UI and found it healthy counts as exercising the app: a smoke or flow pass
+  // whose oracle read the UI (a launch smoke with app=ok, so RedBox / blank were ruled out), or an
+  // exploration that reached at least one structured (non visual-only) app screen. Agent verdicts
+  // (qa_note, qa_visual assert), launches, screenshots, raw actions and findings never count, and
+  // never clear a persisted not-tested marker. A failure still counts (it can only block).
   const isOutcome = (n: TestNote) => n.outcome === 'pass' || (n.outcome === 'fail' && n.category !== 'mcp_limitation');
-  // Swipium's own outcomes (smoke, flows, explore) or an exploration recorded after `t`.
+  // Swipium ran the check and judged it itself: not an agent note, not a qa_visual assert verdict
+  // (manual_review) and not a screenshot-only pass (method visual: nothing ruled out a RedBox).
+  const swipiumJudged = (n: TestNote) => n.source !== 'qa_note' && n.evidenceKind !== 'manual_review' && n.method !== 'visual';
+  const healthyPass = (n: TestNote) => n.outcome === 'pass' && (n.workflow !== 'launch_smoke' || /\bapp=ok\b/.test(n.reason ?? ''));
+  const ex = session.exploration;
+  const exploredRealScreenAt = ex && ex.summary.screensVisited - ex.summary.visualOnlyScreens > ex.summary.appErrors ? ex.at : 0;
+  // Swipium's own healthy pass (or failure) or a real-screen exploration recorded after `t`.
   const swipiumOutcomeSince = (t: number) =>
-    notes.some((n) => n.at > t && n.source !== 'qa_note' && isOutcome(n)) || (session.exploration?.at ?? 0) > t;
-  // CR P1: a recorded action counts only when it ran with the app under test in front (qa_act sets
-  // appForeground from its post-action check). A press home or a tap on SpringBoard proves nothing.
+    notes.some((n) => n.at > t && swipiumJudged(n) && isOutcome(n) && (n.outcome === 'fail' || healthyPass(n))) || exploredRealScreenAt > t;
+  // An action with the app under test in front (qa_act's post-action check): proves the app was
+  // reached, never that it was tested.
   const appActionSince = (t: number) => session.recordedActions.some((ra) => ra.at > t && ra.appForeground);
-  // Device evidence recorded after `t`: the above, an app-in-front action, or a health finding.
-  const deviceEvidenceSince = (t: number) => swipiumOutcomeSince(t) || appActionSince(t) || healthFindings.some((f) => f.at > t);
   const appShotSince = (t: number) =>
     session.artifacts.some((art) => (art.kind === 'screenshot' || art.kind === 'recording') && art.appForeground && art.createdAt > t);
   // E2E NEW-1 / NEW-10: reaching the app takes real evidence: a launch of the app under test, a
-  // screenshot taken while it was in front, or the above. A home-screen qa_screenshot of a blocked run,
-  // a blocked/skipped qa_note and Swipium's own report exports are NOT evidence.
-  const appSeen = !!session.milestones?.app_launch_end || !!session.milestones?.smoke_launch || appShotSince(0);
-  // E2E NEW-11 / NEW-17: an agent's qa_note pass is a claim; it counts only once the session holds
-  // device evidence that the app was exercised. A launch or an app-in-front screenshot only proves the
-  // app was reached (it may sit on a RedBox): a pass claim on top of that is unverified (CAUTION, the
-  // gate fails NOT_TESTED). A claimed failure always counts (it can only block).
+  // screenshot taken while it was in front, an action with it in front, a health finding, or the above.
+  // A home-screen qa_screenshot of a blocked run, a blocked/skipped qa_note and Swipium's own report
+  // exports are NOT evidence.
+  const appSeen =
+    !!session.milestones?.app_launch_end ||
+    !!session.milestones?.smoke_launch ||
+    appShotSince(0) ||
+    appActionSince(0) ||
+    healthFindings.length > 0 ||
+    (ex?.summary.screensVisited ?? 0) > 0;
+  // An agent's pass claim never counts; a claimed failure always counts (it can only block).
   const exercised =
-    deviceEvidenceSince(0) || notes.some((n) => n.source === 'qa_note' && n.outcome === 'fail' && n.category !== 'mcp_limitation');
-  const unverifiedPassClaim = !exercised && notes.some((n) => n.source === 'qa_note' && n.outcome === 'pass');
+    swipiumOutcomeSince(0) || notes.some((n) => !swipiumJudged(n) && n.outcome === 'fail' && n.category !== 'mcp_limitation');
+  const unverifiedPassClaim =
+    !exercised && notes.some((n) => (n.source === 'qa_note' || n.evidenceKind === 'manual_review') && n.outcome === 'pass');
   const unbackedPassClaim = unverifiedPassClaim && !appSeen;
   const reachedApp = exercised || appSeen;
   // E2E NEW-10/13: a not-tested run stays not tested for every later qa_report (same verdict, same
-  // blocker code) until new test evidence arrives after it: a Swipium outcome or an exploration, or an
-  // agent's outcome note together with an app-in-front action after the marker (CR P1: an action
-  // alone, a finding, a launch or a screenshot plus a note do not clear it).
+  // blocker code) until a Swipium-run healthy check (above) is recorded after it.
   if (options.notTested) {
     session.notTested = {
       reason: options.notTested.reason,
@@ -315,9 +325,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     };
     sessions.persist(session);
   } else if (session.notTested) {
-    const t = session.notTested.at;
-    const retested = swipiumOutcomeSince(t) || (appActionSince(t) && notes.some((n) => n.at > t && n.source === 'qa_note' && isOutcome(n)));
-    if (retested) {
+    if (swipiumOutcomeSince(session.notTested.at)) {
       session.notTested = undefined;
       sessions.persist(session);
     }

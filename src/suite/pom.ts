@@ -37,8 +37,9 @@ export interface PomTestStep {
   page: string;
   element?: string;
   /** `visualCheck` = a qa_visual mode:"assert" judgement (free-form prose verified by eye). It is a
-   *  MANUAL checkpoint in generated code, never a text assertion (the prose is not on-screen text). */
-  action: 'tap' | 'inputText' | 'press' | 'swipe' | 'scrollTo' | 'openUrl' | 'assertVisible' | 'visualCheck';
+   *  MANUAL checkpoint in generated code, never a text assertion (the prose is not on-screen text).
+   *  `restartApp` = the recording relaunched the app here (terminate + launch). */
+  action: 'tap' | 'inputText' | 'press' | 'swipe' | 'scrollTo' | 'openUrl' | 'assertVisible' | 'visualCheck' | 'restartApp';
   text?: string;
   secret?: boolean;
   key?: string;
@@ -247,6 +248,12 @@ export function generatePom(
   };
 
   for (const a of actions) {
+    if (a.action === 'restart_app') {
+      // No screen of its own: it belongs to the page it leaves. A leading one is the flow's launch.
+      const prev = steps.at(-1);
+      if (prev && prev.action !== 'restartApp') steps.push({ page: prev.page, action: 'restartApp' });
+      continue;
+    }
     const page = pageFor(a);
     switch (a.action) {
       case 'tap':
@@ -440,6 +447,8 @@ function serializeStep(s: PomTestStep): Record<string, unknown> {
       return { ...ref, action: 'assertVisible', text: s.text };
     case 'visualCheck':
       return { ...ref, action: 'visualCheck', text: s.text, manual: true };
+    case 'restartApp':
+      return { page: s.page, action: 'restartApp' };
   }
 }
 
