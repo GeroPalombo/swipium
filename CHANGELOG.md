@@ -2,7 +2,7 @@
 
 All notable public changes to Swipium are documented here.
 
-## 2.3.0 - 2026-10-10
+## 2.3.0 - 2026-10-12
 
 Swipium 2.3.0 makes the core loop faster, more precise and cheaper in tokens. `qa_test_this` now runs by default, so a typical session is three calls: `qa_test_this {waitForCompletion:true}`, `qa_job_status` if the run is still going, and a read of the new `report.md`. Android actions settle about one UI dump sooner, app launches no longer sleep a fixed 2.5 s, iOS page source is about 14x faster, element refs stay stable across snapshots, and results, errors and reports are about half their 2.2.0 size. It ships an agent skill, two new prompts, a Claude Code plugin skeleton and an MCP Registry entry, and needs Node.js 22.12 or newer. No tools were added or removed (still 55). Work through the upgrade checklist before upgrading.
 
