@@ -1,4 +1,4 @@
-// D1: `swipium --help`, `--version`, and unknown subcommands must not start (and hang) the
+// `swipium --help`, `--version`, and unknown subcommands must not start (and hang) the
 // stdio server. Only no subcommand / `serve` starts it.
 
 import { describe, expect, it } from 'vitest';

@@ -1,4 +1,4 @@
-// qa_clear_overlay: clear common overlays so a covered CTA becomes tappable (Phase 2 CR5).
+// qa_clear_overlay: clear common overlays so a covered CTA becomes tappable.
 // Strategies: auto | hide_keyboard | press_back | tap_outside | minimize_logbox |
 // dismiss_logbox | allow_permission | deny_permission | dismiss_toast_if_possible.
 
@@ -36,7 +36,7 @@ async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
 }
 
 /** Tap the best node matching `re`: a node whose whole text/desc matches `exact` (or whose id
- *  matches `idRe`) first, clickable before static text (AND-13: "allow" picked the dialog's
+ *  matches `idRe`) first, clickable before static text ("allow" once picked the dialog's
  *  message "Allow Contacts to send you notifications?" over the Allow button). */
 async function tapByText(d: Driver, nodes: RawNode[], re: RegExp, exact?: RegExp, idRe?: RegExp): Promise<boolean> {
   const matches = nodes.filter((x) => re.test(x.text) || re.test(x.desc) || (!!idRe && idRe.test(x.id)));
@@ -102,7 +102,7 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
         );
       }
 
-      // IOS-15: the visual-only iOS simulator backend can't press, tap or read the tree. Same
+      // The visual-only iOS simulator backend can't press, tap or read the tree. Same
       // contract as qa_snapshot / qa_act: BACKEND_UNSUPPORTED, nothing changed.
       if (d.kind === 'simulator') {
         return qaError({
@@ -130,7 +130,7 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
         const c = center(node.bounds);
         // re-resolve the target in the FRESH tree by id, structural key or exact bounds. The first
         // node containing the center is usually the window, an ancestor of everything, which
-        // would never count as obstructed and disagree with qa_act (IOS R3 NEW-8).
+        // would never count as obstructed and disagree with qa_act.
         const sameBounds = (x: RawNode) => x.bounds.every((v, i) => v === node.bounds[i]);
         const fresh =
           parsed.allNodes.find((x) => x.id && node.id && x.id === node.id) ??
@@ -152,7 +152,7 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
       const treeOverlays = detectTreeOverlays(nodes, parsedBefore?.screen);
       const fgOverlay = classifyForeground(session.appId, fg);
       // What blocks the screen before acting: tree overlays plus the keyboard and a system surface in
-      // front (AND-13/AND-18: a permission dialog / keyboard the strategy then acted on was missing).
+      // front (otherwise a permission dialog / keyboard the strategy then acted on was missing).
       const overlaysBefore = overlayTypes(treeOverlays, ime, fgOverlay);
 
       // Set when the keyboard is up and could not be dismissed: typed KEYBOARD_NOT_DISMISSIBLE.
@@ -300,14 +300,14 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
         /* keep undefined */
       }
       const afterOverlays = parsedAfter ? detectTreeOverlays(parsedAfter.allNodes, parsedAfter.screen) : [];
-      // Verify, don't assume (AND-13): the keyboard / a foreground permission dialog count when still there.
+      // Verify, don't assume: the keyboard / a foreground permission dialog count when still there.
       const [imeAfter, fgAfter] = await Promise.all([safe(() => d.imeShown(), false), safe(() => d.foregroundOwner(), 'unknown')]);
       const remaining = overlayTypes(afterOverlays, imeAfter, classifyForeground(session.appId, fgAfter));
 
-      // Outcome (Phase 2.2): distinguish cleared / reappeared (persistent) / not_dismissible /
+      // Outcome: distinguish cleared / reappeared (persistent) / not_dismissible /
       // still_obstructing_target so the agent (and report) know whether the overlay is real noise.
       // Only the overlay types this call acted on decide it: an unrelated banner that was there
-      // before and stays (IOS-4) does not make a dismissed alert "reappeared".
+      // before and stays does not make a dismissed alert "reappeared".
       const attemptedTypes = new Set(cleared.map((c) => c.type));
       const sameTypeRemains = remaining.some((t) => attemptedTypes.has(t));
       const triedDismiss = cleared.some((c) => /minimized|dismissed|hidden|allowed|denied|tap_outside|press_back/.test(c.action));
@@ -315,7 +315,7 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
       if (targetRef && after) outcome = 'still_obstructing_target';
       // auto only reported a dialog it leaves for the caller to answer (allow vs deny): nothing was cleared.
       else if (cleared.length && cleared.every((c) => c.action.startsWith('present;'))) outcome = 'needs_decision';
-      // A hide_keyboard with no keyboard up acted on nothing (AND-18).
+      // A hide_keyboard with no keyboard up acted on nothing.
       else if (!cleared.some((c) => c.action !== 'not_visible_or_unsupported')) outcome = 'nothing_to_clear';
       else if (sameTypeRemains && triedDismiss)
         outcome = overlaysBefore.length && remaining.length >= overlaysBefore.length ? 'reappeared' : 'not_dismissible';

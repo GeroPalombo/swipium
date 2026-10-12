@@ -1,4 +1,4 @@
-// D9: qa_doctor's default platform follows the host (macOS → both, else android) and the node
+// qa_doctor's default platform follows the host (macOS: both, else android) and the node
 // check is a real comparison against package.json engines (>=22.12), not always ok.
 
 import { describe, expect, it } from 'vitest';

@@ -1,7 +1,7 @@
-// B1 quick boot: `-no-snapshot-save` never creates the AVD's quick-boot snapshot, so after a cold
+// Quick boot: `-no-snapshot-save` never creates the AVD's quick-boot snapshot, so after a cold
 // boot Swipium saves `default_boot` once (ensureQuickbootSnapshot); a snapshot restore is detected
 // from the guest uptime. Also: prepareAndroid marks the session snapshot stale after the boot and
-// the launch (R2). adb is faked.
+// the launch. adb is faked.
 
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';

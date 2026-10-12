@@ -36,7 +36,7 @@ export function registerCheckHealth(server: McpServer, sessions: SessionStore): 
         );
       }
       const health = await checkHealth(driver, session.appId);
-      // A dead device is "unknown", never OK (AND-12). Nothing is recorded against the app.
+      // A dead device is "unknown", never OK. Nothing is recorded against the app.
       if (health.deviceGone)
         return qaError({
           what: `Health unknown: the session's device${session.device ? ` (${session.device})` : ''} is offline.`,

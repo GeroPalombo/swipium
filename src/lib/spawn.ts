@@ -34,7 +34,7 @@ export interface RunOptions {
   input?: string;
   /** Treat a non-zero exit as a thrown error instead of a resolved RunResult. */
   rejectOnNonZero?: boolean;
-  /** Sensitive argv (H2): keep these args out of thrown error messages. `true` redacts every
+  /** Sensitive argv: keep these args out of thrown error messages. `true` redacts every
    * arg; a number[] redacts those arg indexes. Redacted values are also scrubbed from the
    * stderr echoed into the message (a failing tool may print its own argv back). */
   redactArgs?: boolean | number[];
@@ -146,7 +146,7 @@ export function assertNoGitScope(command: string, args: string[] = []): void {
 }
 
 /** Process groups (leader pids) whose run was aborted and that got SIGTERM. The 2 s SIGKILL timer is
- *  unref'd, so it never fires when the server exits right after cancelling (TOOL NEW-R3-3). */
+ *  unref'd, so it never fires when the server exits right after cancelling. */
 const abortedGroups = new Set<number>();
 
 function groupAlive(pgid: number): boolean {

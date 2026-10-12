@@ -1,10 +1,8 @@
-// Automation Kernel V2 shared types (Developer 3 lane). A backend-neutral automation model that
+// Automation Kernel V2 shared types. A backend-neutral automation model that
 // lets a Flow V2 file be compiled into a deterministic, capability-checked plan *before* a device
 // is touched. Everything here is pure data: no I/O, no driver calls. The runner, the planning
 // tools, Maestro interop, and the Appium audit all share these types so "the same flow means the
 // same thing" regardless of backend.
-//
-// See SWIPIUM-DEVELOPER-3-AUTOMATION-KERNEL-V2-PLAN-2026-05-29.md (Workstreams 1-5, 9).
 
 export type AutomationBackend = 'android-direct' | 'ios-raw-simulator' | 'ios-wda' | 'appium-uiautomator2' | 'appium-xcuitest' | 'unknown';
 

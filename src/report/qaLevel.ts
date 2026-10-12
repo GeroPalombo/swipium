@@ -1,4 +1,4 @@
-// QA level (Developer-3 plan Deliverable 6): the single, deterministic, product-facing
+// QA level: the single, deterministic, product-facing
 // QA verdict label every Swipium run earns. This is DISTINCT from the automation `ReadinessLabel`
 // (which scores the *generated suite*): the QA level answers "how far did QA actually get on this app?"
 // It's the rung a developer, QA engineer, reviewer, and CI all read straight off the report.
@@ -15,7 +15,7 @@ export const QA_LEVELS: readonly QaLevel[] = ['observed', 'smoke_tested', 'autom
 export const QA_LEVEL_MEANING: Record<QaLevel, string> = {
   observed: 'Swipium launched the app and captured evidence.',
   smoke_tested: 'Launch + health guardrails passed (no native crash or fatal app-error surface).',
-  // The signal is "actions were recorded", not "a suite was written" (AND-18): say what it means.
+  // The signal is "actions were recorded", not "a suite was written": say what it means.
   automation_candidate: 'Recorded actions are enough to generate a POM automation suite (qa_suite_generate / qa_generate).',
   automation_runnable: 'The generated suite compiled and dry-run validated.',
   ci_ready: 'The suite replayed from a declared state profile. Safe to gate CI on.',

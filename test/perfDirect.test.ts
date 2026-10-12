@@ -46,7 +46,7 @@ describe('#3 dumpXml budget', () => {
     for (const c of dumps) expect((c[2] as { timeoutMs: number }).timeoutMs).toBeLessThanOrEqual(3000);
   });
 
-  it('"could not get idle state" stops after the first attempt and hints at the agent dumper (AND R3-4)', async () => {
+  it('"could not get idle state" stops after the first attempt and hints at the agent dumper', async () => {
     const prev = process.env.SWIPIUM_ANDROID_DUMPER;
     delete process.env.SWIPIUM_ANDROID_DUMPER;
     try {

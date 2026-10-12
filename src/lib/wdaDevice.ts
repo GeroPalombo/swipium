@@ -184,7 +184,7 @@ export async function findOwnSimulatorWda(
   url: string,
   udid: string,
   runtime: (udid: string) => Promise<string | undefined> = simulatorRuntime,
-  /** GOAL NEW-R4-3: collects this simulator's own WDA URLs that listen but did not answer /status. */
+  /** Collects this simulator's own WDA URLs that listen but did not answer /status. */
   unresponsive?: string[],
 ): Promise<{ url: string; status: WdaStatus; owner: WdaOwnership } | undefined> {
   if (!isLoopbackWdaUrl(url)) return undefined;
@@ -235,7 +235,7 @@ export async function resolveSimulatorWda(
   if (!status.reachable && (await ownButUnresponsive(url, status, udid).catch(() => false))) unresponsive.push(url.replace(/\/+$/, ''));
   const own = await findOwnSimulatorWda(url, udid, runtime, unresponsive).catch(() => undefined);
   if (own) return own;
-  // GOAL NEW-R4-3: name this simulator's own hung WDA, not only the URL that was probed first.
+  // Name this simulator's own hung WDA, not only the URL that was probed first.
   return { url, status, ...(owner ? { owner } : {}), ...(unresponsive.length ? { ownUnresponsive: unresponsive[0] } : {}) };
 }
 

@@ -1,4 +1,4 @@
-// qa_prepare_ios_target (hardening P0.3): one high-level iOS prepare: boot simulator > install
+// qa_prepare_ios_target: one high-level iOS prepare: boot simulator > install
 // .app > launch bundle > verify > report WDA/visual mode. The cross-platform counterpart to
 // qa_prepare_target's Android path, so qa_test_this can complete iOS first-runs end-to-end.
 
@@ -51,7 +51,7 @@ function appSignature(appPath: string): string {
 
 function externalToRoot(session: Session, appPath: string): boolean {
   const abs = isAbsolute(appPath) ? appPath : join(session.root, appPath);
-  // CR P7: a sibling folder (`/work/app-other` next to root `/work/app`) is outside the root.
+  // A sibling folder (`/work/app-other` next to root `/work/app`) is outside the root.
   return isOutsideRoot(abs, session.root);
 }
 
@@ -85,7 +85,7 @@ export function registerPrepareIosTarget(server: McpServer, sessions: SessionSto
       const session = sessions.get(sessionId);
       if (!session) return unknownSessionError(sessionId);
       // No app / bundleId (none on the session either): use the project's own simulator .app, as
-      // qa_prepare_target does with the project's APK (GOAL-27). The install below is still consent-gated.
+      // qa_prepare_target does with the project's APK. The install below is still consent-gated.
       if (!app && !bundleId && !session.appId) {
         const art = await resolveArtifact(
           { projectRoot: session.root, platform: 'ios', requireInstallableOn: 'ios-simulator' },
@@ -121,7 +121,7 @@ export function registerPrepareIosTarget(server: McpServer, sessions: SessionSto
         // Name the simulator the install will target (explicit device > the session's simulator > operator pin).
         const sessionSim = isSimulatorUdid(session.device) ? session.device : undefined;
         const targetSim = device ?? sessionSim ?? operatorDevicePin();
-        // E2E NEW-5: check the pin BEFORE asking consent: never ask to install on a device that the
+        // Check the pin BEFORE asking consent: never ask to install on a device that the
         // pin can't reach, or that isn't the pinned one.
         const pin = operatorDevicePin();
         if (pin && !sessionSim) {
@@ -208,7 +208,7 @@ export function registerPrepareIosTarget(server: McpServer, sessions: SessionSto
 type LaunchScreen = { appError?: Finding; alert?: string; notRendered?: string };
 type InstallAffects = { appPath: string; sig: string; external: boolean } | undefined;
 
-/** E2E NEW-19: prepare used to answer "ready" while the app still showed its splash / "Downloading
+/** Prepare used to answer "ready" while the app still showed its splash / "Downloading
  *  100%..." banner. Before "ready", the same bounded render wait qa_smoke uses: structured = a tree
  *  with content and no loading marker (up to 30 s); visual-only = two identical frames (~1-4 s, no
  *  verdict). A structured screen still not rendered at the bound is reported, not called ready. */
@@ -232,7 +232,7 @@ async function settleLaunch(session: Session, res: PrepareIosResult): Promise<Pi
   }
 }
 
-/** E2E NEW-17: a structured launch is checked once (one WDA source, ~0.3 s) for a RedBox / the
+/** A structured launch is checked once (one WDA source, ~0.3 s) for a RedBox / the
  *  Expo dev launcher, so prepare never answers plain "ready" on one. Visual-only: no tree, skipped. */
 async function launchErrorCheck(sessions: SessionStore, session: Session, res: PrepareIosResult): Promise<LaunchScreen> {
   if (!res.ok || res.booting || !res.launched || res.mode !== 'structured' || !session.driver) return {};

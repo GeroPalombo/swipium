@@ -72,7 +72,7 @@ function pruneEntries(projects: Record<string, ProjectRegistryEntry>, keep?: str
 
 /** Read-modify-write projects.json under its lock (another server may be writing too); compact JSON. */
 function mutateRegistry(fn: (reg: RegistryFile) => RegistryFile | null): RegistryFile | null {
-  mkdirPrivateSync(registryDir()); // 0700/0600: projects.json lists every project root (TOOL-20)
+  mkdirPrivateSync(registryDir()); // 0700/0600: projects.json lists every project root
   return withFileLock(`${registryPath()}.lock`, () => {
     const next = fn(loadRegistry());
     if (next) {

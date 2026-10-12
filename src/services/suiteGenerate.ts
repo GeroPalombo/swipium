@@ -1,4 +1,4 @@
-// Suite generation service (Phase 3.2 Milestone C): generate POM files + test cases from a
+// Suite generation service: generate POM files + test cases from a
 // session's recorded actions, write them under .swipium/, and (optionally) compile them to runnable
 // Flow V2. Shared by qa_generate target:"suite" and qa_test_this execute so the autopilot
 // produces REAL files (not a note). Honest: when there are no recorded actions it returns a typed
@@ -71,7 +71,7 @@ const EXPLORER_RELAUNCH = /\brelaunching \S+ to continue from its first screen/;
 
 /**
  * The session's recorded actions with the explorer's mid-run relaunches put back in as
- * `restart_app` steps (GOAL NEW-R5-3). The explorer relaunches the app when back does not leave a
+ * `restart_app` steps. The explorer relaunches the app when back does not leave a
  * screen and records only its taps, so a generated flow ran the next tap against the wrong screen.
  * A relaunch before the first action (the flow starts with a launch anyway) or after the last one
  * adds nothing and is dropped.
@@ -183,7 +183,7 @@ export function generateAndCompileSuite(sessions: SessionStore, session: Session
       let compiledPath: string | undefined;
       let kept: string | undefined;
       if (ok) {
-        // A hand-edited .swipium/flows/<slug>.yaml is kept; the new output goes to <slug>.yaml.new (SET-15).
+        // A hand-edited .swipium/flows/<slug>.yaml is kept; the new output goes to <slug>.yaml.new.
         const w = writeCompiledFlow(session.root, slug, f.yaml);
         flowPath = w.flowPath;
         compiledPath = w.compiledPath;

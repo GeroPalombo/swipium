@@ -257,7 +257,7 @@ export function classifyObservation(obs: IssueObservation, ctx: ClassifyContext 
       ...(ctx.severityHint ? {} : { severityDefaulted: true }),
     };
   }
-  // TOOL NEW-2: an explicit caller severity is kept even without a category hint.
+  // An explicit caller severity is kept even without a category hint.
   return {
     ...mk(
       'mcp_limitation',

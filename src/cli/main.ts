@@ -25,14 +25,14 @@ const SUBCOMMAND_FLAGS: Record<Subcommand, readonly string[]> = {
 
 export type ParsedCommand =
   /** orphanSweep:false = the throwaway server `swipium verify` (and `init --apply`) starts: it must
-   *  not adopt or reap other runs' managed processes (SET-21). */
+   *  not adopt or reap other runs' managed processes. */
   | { kind: 'serve'; ignoredFlags?: string[]; orphanSweep?: false }
   | { kind: 'help' }
   | { kind: 'version' }
   | { kind: 'sub'; cmd: Subcommand; rest: string[] }
   | { kind: 'unknown'; cmd: string }
   /** Flags placed BEFORE a subcommand (`swipium -y init claude`): exit 2 with the corrected command
-   *  rather than starting a stdio server that ignores the subcommand and waits on stdin (SET-8). */
+   *  rather than starting a stdio server that ignores the subcommand and waits on stdin. */
   | { kind: 'misplaced'; cmd: Subcommand; flags: string[]; suggestion: string };
 
 export const USAGE = `swipium ${SWIPIUM_VERSION}: MCP server for mobile QA (Android emulator / iOS simulator)
@@ -118,7 +118,7 @@ export function nodeVersionSupported(version: string = process.version, min: str
   return !!have && (have[0] > need[0] || (have[0] === need[0] && have[1] >= need[1]));
 }
 
-/** SET-3: the stderr warning for an unsupported Node.js runtime, or null when it is supported. */
+/** The stderr warning for an unsupported Node.js runtime, or null when it is supported. */
 export function unsupportedNodeWarning(version: string = process.version): string | null {
   if (nodeVersionSupported(version)) return null;
   return (

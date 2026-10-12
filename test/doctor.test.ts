@@ -1,4 +1,4 @@
-// qa_doctor probes against MOCKED binary lookups (v1-mvp-plan P1 §6): every environment
+// qa_doctor probes against MOCKED binary lookups: every environment
 // probe funnels through lib/spawn.run(), so mocking that one seam simulates a machine with
 // adb/Xcode present or missing — the test passes identically on hosts with or without them.
 // WDA reachability (a fetch, not a spawn) is stubbed to "unreachable" for hermeticity.

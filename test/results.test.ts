@@ -1,6 +1,6 @@
-// 2.3.0 "results" area: lean qa_report structuredContent + report.md (K1/K2), error text complete and
-// deduplicated (K3), compact consent / needs-input prompts (K3), qa_doctor trims (K5), terminal
-// results (C2), inline images (C7).
+// 2.3.0 results: lean qa_report structuredContent + report.md, error text complete and
+// deduplicated, compact consent / needs-input prompts, qa_doctor trims, terminal
+// results, inline images.
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { deflateSync } from 'node:zlib';
@@ -57,7 +57,7 @@ function realPng(width: number, height: number): Buffer {
   ]);
 }
 
-describe('K3 error text', () => {
+describe('error text', () => {
   it('head carries the failure code, what, next steps; the fence carries only the rest (no repeats)', () => {
     const accepted = ['sessionId', 'action', 'target'];
     const r = qaError(
@@ -98,7 +98,7 @@ describe('K3 error text', () => {
   });
 });
 
-describe('K3 consent and needs-input prompts', () => {
+describe('consent and needs-input prompts', () => {
   it('consent: exactCommand not repeated inside explain; compact fence; none in compact mode', () => {
     const cmd = 'adb install app.apk\nadb shell am start x';
     const r = requireConsent({
@@ -108,7 +108,7 @@ describe('K3 consent and needs-input prompts', () => {
       explain: `Needs these steps:\n${cmd}\nApprove to start.`,
     });
     const sc = r.structuredContent as Record<string, unknown>;
-    // SET-19: the intro points at exactCommand instead of ending in a dangling colon.
+    // The intro points at exactCommand instead of ending in a dangling colon.
     expect(sc.explain).toBe('Needs these steps (listed in exactCommand).\nApprove to start.');
     expect(sc.exactCommand).toBe(cmd);
     const text = textOf(r);
@@ -132,7 +132,7 @@ describe('K3 consent and needs-input prompts', () => {
   });
 });
 
-describe('C2 report head + blocked fix', () => {
+describe('report head + blocked fix', () => {
   it('report head: verdicts, high findings first with evidence, failures, report.md pointer; capped', () => {
     const report = {
       executiveSummary: { risk: 'block', nextAction: 'Fix "checkout".' },
@@ -187,7 +187,7 @@ describe('C2 report head + blocked fix', () => {
     try {
       const sessions = new SessionStore();
       const session = sessions.create(root);
-      // The app was reached (a launch): a run with no evidence at all is BLOCK / NOT_RUN (E2E NEW-1).
+      // The app was reached (a launch): a run with no evidence at all is BLOCK / NOT_RUN.
       sessions.milestone(session, 'app_launch_end');
       const run = async (state: 'completed' | 'blocked', code?: string) => {
         const job = sessions.createJob(session, 'test_this:execute');
@@ -223,7 +223,7 @@ describe('C2 report head + blocked fix', () => {
   });
 });
 
-describe('K5 doctor version parsing', () => {
+describe('doctor version parsing', () => {
   it('reads platform-tools / emulator majors', () => {
     expect(sdkToolMajor('Android Debug Bridge version 1.0.41\nVersion 35.0.2-12147458\nInstalled as /x')).toBe(35);
     expect(sdkToolMajor('INFO | Android emulator version 36.1.9.0 (build_id 1)')).toBe(36);
@@ -231,7 +231,7 @@ describe('K5 doctor version parsing', () => {
   });
 });
 
-describe('C7 inline images', () => {
+describe('inline images', () => {
   it.runIf(process.platform === 'darwin')('downscales a large PNG to a 1568 px JPEG with the scale (macOS sips)', async () => {
     const img = await prepareInlineImage(realPng(1080, 2400), 'image/png');
     expect(img.resized).toBe(true);
@@ -263,7 +263,7 @@ describe('over MCP', () => {
     }
   }
 
-  it('K1/K2: qa_report structuredContent is the lean view + report.md; format:"json" returns the full report', async () => {
+  it('qa_report structuredContent is the lean view + report.md; format:"json" returns the full report', async () => {
     const fake = new ShotDriver(buttonScreen('Home', 6));
     const id = await h.start(fake);
     await h.call('qa_note', { sessionId: id, workflow: 'checkout', outcome: 'fail', reason: 'Pay does nothing', category: 'app_bug' });
@@ -281,7 +281,7 @@ describe('over MCP', () => {
     expect(JSON.stringify(lean).length).toBeLessThan(JSON.stringify(full).length / 2);
   });
 
-  it('C7: qa_screenshot inline:true returns text + image (codex/imageDetail meta), never structuredContent', async () => {
+  it('qa_screenshot inline:true returns text + image (codex/imageDetail meta), never structuredContent', async () => {
     const id = await h.start(new ShotDriver(buttonScreen('Home', 3)));
     const res = await h.call('qa_screenshot', { sessionId: id, inline: true });
     expect(res.structuredContent).toBeUndefined();

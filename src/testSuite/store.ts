@@ -51,7 +51,7 @@ export function loadSuite(root: string, appId?: string): TestSuiteFile {
 const isPlainObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 
 /** Fill a hand-written or legacy case to the canonical shape (missing featureId, arrays, result,
- *  automation), keeping every well-typed field it has, so merge/export never crash on it (LOG NEW-1). */
+ *  automation), keeping every well-typed field it has, so merge/export never crash on it. */
 function repairLoadedCase(raw: Record<string, unknown>, at: string): CanonicalTestCase {
   const base = normalizeCase(
     {
@@ -157,7 +157,7 @@ function symlinkError(path: string, why: string): Error {
 export function saveSuite(root: string, suite: TestSuiteFile): string[] {
   const written: string[] = [];
   // Mirror first, JSON last: if a mirror write fails, test-suite.json still holds the previous
-  // good suite instead of a case that breaks every later save (TOOL NEW-1).
+  // good suite instead of a case that breaks every later save.
   const casesRoot = resolve(suiteCasesDir(root));
   for (const c of suite.cases) {
     // The id is a file name: an unsafe one (a legacy or hand-edited suite) gets no mirror file

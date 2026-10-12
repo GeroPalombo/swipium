@@ -1,4 +1,4 @@
-// Round-4 typing (CR P5 M4, AND NEW-replace, AND-14, AND NEW R4-4), all hermetic:
+// Android typing fixes, all hermetic:
 //  - DirectDriver.clearFocusedText: select-all + DEL (probed once per device), the DEL / FORWARD_DEL
 //    fallback on "Unknown command", and the wait after a focusing tap;
 //  - careful inputText: <= 8-char pieces, each moved to the end, read back as it goes;
@@ -58,7 +58,7 @@ beforeEach(() => {
 });
 const shellLines = () => adb.calls.map((a) => a.slice(2).join(' '));
 
-describe('DirectDriver select-all clear (CR P5 M4, AND NEW-replace)', () => {
+describe('DirectDriver select-all clear', () => {
   it('probes keycombination once, then clears with one CTRL+A ; DEL call', async () => {
     const d = new DirectDriver('emulator-5554');
     await d.clearFocusedText();
@@ -95,7 +95,7 @@ describe('DirectDriver select-all clear (CR P5 M4, AND NEW-replace)', () => {
   });
 });
 
-describe('careful inputText and a hung dump (AND-14, AND NEW R4-4)', () => {
+describe('careful inputText and a hung dump', () => {
   it('careful mode sends <= 8-char pieces, each moved to the end, and the field reads back whole', async () => {
     const d = new DirectDriver('emulator-5560');
     const text = 'The quick brown fox jumps';
@@ -118,7 +118,7 @@ describe('careful inputText and a hung dump (AND-14, AND NEW R4-4)', () => {
   });
 });
 
-describe('qa_act type at x,y: leftover text in the focused field (CR P5 M4, AND NEW-replace)', () => {
+describe('qa_act type at x,y: leftover text in the focused field', () => {
   const FIELD: [number, number, number, number] = [40, 300, 1040, 400];
   const screen = () =>
     dump([
@@ -166,7 +166,7 @@ describe('qa_act type at x,y: leftover text in the focused field (CR P5 M4, AND 
     expect(res.failureCode).toBe('TEXT_INPUT_MISMATCH');
     expect(res.retrySafe).toBe(true);
     expect(d.got('clearFocusedText')).toHaveLength(2);
-    // R5-2: the retry clears by length, not with the select-all that just failed.
+    // The retry clears by length, not with the select-all that just failed.
     expect(d.got('clearFocusedText')[0].a[1]).toBeUndefined();
     expect(d.got('clearFocusedText')[1].a[1]).toEqual({ byLength: true });
     expect(d.inputs).toEqual([

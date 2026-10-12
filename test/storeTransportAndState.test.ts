@@ -1,8 +1,8 @@
 // Pre-launch findings on the session store:
-//  - (MED) a brief WDA outage during rehydrate permanently downgraded an iOS session: attach.ts fell
+//  - a brief WDA outage during rehydrate permanently downgraded an iOS session: attach.ts fell
 //    back to SimctlDriver and writeState then persisted driverKind='simulator', so later restarts
 //    never retried the WDA URL;
-//  - (LOW) jobs / envChanges / mutations / fixtures skipped the state.json secret redaction, and
+//  - jobs / envChanges / mutations / fixtures skipped the state.json secret redaction, and
 //    ~/.swipium/runs session dirs/files were world-readable;
 //  - lastTestThisArgs (original qa_test_this args) is persisted + rehydrated.
 // Hermetic: HOME points at a temp dir BEFORE the store module is loaded.

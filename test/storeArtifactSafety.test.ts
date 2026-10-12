@@ -1,4 +1,4 @@
-// B5 (store side): SessionStore.saveArtifact must never write outside the session directory,
+// Store side of artifact path safety: SessionStore.saveArtifact must never write outside the session directory,
 // whatever `name`/`kind` a caller passes (e.g. qa_visual baseline names), and artifact URIs
 // must match the swipium://session/{sessionId}/{kind}/{name} template (encoded segments).
 
@@ -12,7 +12,7 @@ process.env.HOME = fakeHome;
 
 const { SessionStore, safeArtifactName, encodeUriSegment, decodeUriSegment } = await import('../src/session/store.js');
 
-describe('saveArtifact path safety (B5)', () => {
+describe('saveArtifact path safety', () => {
   let root: string;
   let store: InstanceType<typeof SessionStore>;
   beforeAll(() => {

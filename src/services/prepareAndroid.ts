@@ -303,7 +303,7 @@ export async function prepareAndroid(
     await driver.launchApp(a.resolvedAppId);
     noteScreenMutation(session); // a snapshot taken before the launch is stale
     const foreground = await waitForLaunch(driver, a.resolvedAppId);
-    // CR P3: the report's "reached the app" evidence, only once the app under test is in front.
+    // The report's "reached the app" evidence, only once the app under test is in front.
     if (foreground.startsWith(a.resolvedAppId)) sessions.milestone(session, 'app_launch_end');
     sessions.recordMutation(session, {
       tool: 'qa_prepare_target',
@@ -353,7 +353,7 @@ export async function prepareAndroid(
   }
 }
 
-/** A timed-out adb call is a slow / overloaded device, not an app that fails to launch (LOG NEW-3). */
+/** A timed-out adb call is a slow / overloaded device, not an app that fails to launch. */
 export function launchFailureCode(e: unknown): 'DEVICE_UNRESPONSIVE' | 'APP_LAUNCH_FAILED' {
   return /\(timed out\)|DEVICE_UNRESPONSIVE/.test(String(e)) ? 'DEVICE_UNRESPONSIVE' : 'APP_LAUNCH_FAILED';
 }

@@ -1,4 +1,4 @@
-// AND NEW R3-2 + CR "crashed owner leaves the device offline": airplane mode is restored on shutdown
+// A crashed owner must not leave the device offline: airplane mode is restored on shutdown
 // only by the server process that changed it (network.ownerPid), and a change left behind by a dead
 // server is reported as orphaned. Fake drivers only (no adb); HOME is a temp dir (setupFakeHome).
 

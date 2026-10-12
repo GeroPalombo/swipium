@@ -1,6 +1,6 @@
 // `swipium scan [path]`: inspect a project and scaffold its .swipium/.
 // Merges the scan result into .swipium/config.json (generated keys are refreshed; the user's own keys
-// such as ios.wda.*, ocrCommand, visualMaskCommand are kept, SET-1), and scaffolds .swipium/fixtures.json
+// such as ios.wda.*, ocrCommand, visualMaskCommand are kept), and scaffolds .swipium/fixtures.json
 // (only if absent, never clobbers user fixtures) and .swipium/flows/. Ends with a clear
 // ready | partial | blocked summary and the exact missing items.
 // Pass --check / --dry-run / --no-write to inspect without writing project files. Nothing is
@@ -60,7 +60,7 @@ export function replacedScanAppId(prev: Record<string, unknown> | null, scan: Pr
 }
 
 /** Merge a fresh scan into an existing config.json object: scan (generated) keys are refreshed,
- *  every other key is the user's and is kept; a user-set appId survives the scan too (SET-1).
+ *  every other key is the user's and is kept; a user-set appId survives the scan too.
  *  `scanAppId` records what the scan detected, so a later hand edit of appId is recognized. */
 export function mergeScanIntoConfig(prev: Record<string, unknown> | null, scan: ProjectScan): Record<string, unknown> {
   const merged: Record<string, unknown> = { ...(prev ?? {}), ...scan, scanAppId: scan.appId };
@@ -127,7 +127,7 @@ export async function runScan(args: string[]): Promise<number> {
   if (write) {
     mkdirSync(swipiumDir, { recursive: true });
 
-    // config.json: the scan result is MERGED in (SET-1). It is also the user's configuration
+    // config.json: the scan result is MERGED in. It is also the user's configuration
     // (ios.wda.*, ocrCommand, visualMaskCommand…, read via loadProjectConfig), so their keys are kept,
     // and a file that doesn't parse is never overwritten.
     if (!existing.error) writeFileSync(configPath, JSON.stringify(mergeScanIntoConfig(existing.value, scan), null, 2));

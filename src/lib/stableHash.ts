@@ -22,7 +22,7 @@ export function stableHash(value: unknown): string {
 }
 
 /** Longest slug used as one path component. Filesystems cap a component at 255 bytes, and a raw
- *  ENAMETOOLONG from a long title/name broke suites for good (TOOL NEW-1). */
+ *  ENAMETOOLONG from a long title/name broke suites for good. */
 export const MAX_FILE_SLUG = 80;
 
 /** Cap a filename slug: unchanged when short, else a prefix plus a short stable hash of the whole. */

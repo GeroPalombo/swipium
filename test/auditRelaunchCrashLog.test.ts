@@ -1,7 +1,7 @@
-// Round-5 must-fix 3 and 4, plus the `mobile_audit:` session note (missing-tests list).
-// 3: the release_gate relaunch audit waits for render before its health check, and a WDA timeout is
+// Relaunch audit and crash-log fixes, plus the `mobile_audit:` session note:
+// - the release_gate relaunch audit waits for render before its health check, and a WDA timeout is
 //    a tool / environment block (no issue, no BLOCK), not a high app bug.
-// 4: a second crash inside the 30 s log-capture window links ITS OWN log excerpt, not the first's.
+// - a second crash inside the 30 s log-capture window links ITS OWN log excerpt, not the first's.
 
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -76,7 +76,7 @@ afterAll(() => {
   for (const r of roots) rmSync(r, { recursive: true, force: true });
 });
 
-describe('release_gate process_relaunch (R5 must-fix 3)', () => {
+describe('release_gate process_relaunch', () => {
   it('waits for render: a WDA blip right after the relaunch is not judged', async () => {
     const { sessions, s } = session();
     let dumps = 0;
@@ -144,7 +144,7 @@ const fatal = (pid: number, time: string, msg: string) =>
     `10-12 ${time}.002  ${pid}  ${pid} E AndroidRuntime: java.lang.RuntimeException: ${msg}`,
   ].join('\n');
 
-describe('captureCrashLog cache (R5 must-fix 4)', () => {
+describe('captureCrashLog cache', () => {
   const crashFinding = () => ({ severity: 'high' as const, layer: 'native' as const, kind: 'native_crash', detail: 'native crash dialog' });
 
   it('a second crash inside the window links its own excerpt; a repeat of the same crash reuses it', async () => {

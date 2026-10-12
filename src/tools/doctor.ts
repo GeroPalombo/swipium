@@ -143,7 +143,7 @@ export function registerDoctor(server: McpServer): void {
       const iosChecks: Check[] = [];
       const schemaHash = getSchemaHash();
 
-      // Stale-client detection (P1.8 + 3.3 A): the agent (via docs) tells us what it expects; we are
+      // Stale-client detection: the agent (via docs) tells us what it expects; we are
       // the source of truth. Version is for humans; the schema hash catches "same count, different
       // surface" after a behavior/schema/description change.
       // Compare against the LISTED surface: SWIPIUM_TOOLS=core lists fewer tools on purpose.
@@ -361,7 +361,7 @@ export function registerDoctor(server: McpServer): void {
         checks.push(...iosChecks);
         iosReady = iosChecks.filter((c) => !c.optional).every((c) => c.ok);
         wdaSummary = {
-          // Unresolved root: no project-local paths derived from the server cwd (SET-13).
+          // Unresolved root: no project-local paths derived from the server cwd.
           projectRoot: rootRes.root ?? null,
           config: { url: wdaConfig.url, mode: wdaConfig.mode, derivedDataPath: rootRes.root ? wdaConfig.derivedDataPath : null },
           status: wda,

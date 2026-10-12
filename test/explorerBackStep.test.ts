@@ -1,4 +1,4 @@
-// Round-4 must-fix 2 (GOAL NEW-R4-1): the explorer's back step.
+// The explorer's back step.
 //  - a back that leaves the screen unchanged is a no-change step: recorded as same_screen, never
 //    repeated on that screen; the run relaunches the app and ends, instead of looping until the clock;
 //  - a back that works records changed_screen with its target;
@@ -62,7 +62,7 @@ function fresh() {
   return { sessions, session };
 }
 
-describe('explorer back step (GOAL NEW-R4-1)', () => {
+describe('explorer back step', () => {
   it('a back that does nothing is a no-change step: no loop, one relaunch, the run ends', async () => {
     const { sessions, session } = fresh();
     const d = appDriver(false);

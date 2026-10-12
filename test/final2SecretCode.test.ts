@@ -45,7 +45,7 @@ describe('shared SECRET_VAR_NAME', () => {
     const fake = new FakeDriver(
       dump([{ cls: 'android.widget.EditText', desc: 'Code', id: 'com.example.app:id/code', bounds: [40, 200, 1040, 280] }]),
     );
-    fake.reflectTyping = true; // the field reads back the typed value (AND-14 verification)
+    fake.reflectTyping = true; // the field reads back the typed value (the typed-text read-back check)
     const id = await h.start(fake);
     await h.call('qa_snapshot', { sessionId: id });
     const res = await h.call('qa_act', { sessionId: id, action: 'type', target: { id: 'code' }, text: '${SWIPIUM_VERIFICATION_CODE}' });

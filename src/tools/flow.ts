@@ -51,7 +51,7 @@ const STATUS_ICON: Record<string, string> = { ready: '✅', candidate: '🟡', b
 export type FlowSourceErrorCode = 'FLOW_NOT_FOUND' | 'INVALID_ARGUMENT' | 'INVALID_FLOW' | 'UNSAFE_ACTION_REFUSED';
 
 /** Flow files are YAML (JSON is valid YAML). Explicit paths must carry one of these extensions so a
- *  read-only check/plan can't be pointed at `.env`, keys or other non-flow files (TOOL-3). */
+ *  read-only check/plan can't be pointed at `.env`, keys or other non-flow files. */
 const FLOW_FILE_EXT = /\.(ya?ml|json)$/i;
 
 /** Resolve a flow's YAML from explicit text, a path, or a name under .swipium/flows.
@@ -103,7 +103,7 @@ export function loadFlowSource(
     if (existsSync(p)) {
       try {
         const text = readFileSync(p, 'utf8');
-        // GOAL-15: a POM test (page/element steps) is not a flow; point at its compiled flow.
+        // A POM test (page/element steps) is not a flow; point at its compiled flow.
         if (/^#\s*Swipium test \(POM\)/m.test(text)) {
           const slug = (text.match(/^name:\s*["']?([^"'\n]+)["']?\s*$/m)?.[1] ?? '').trim().replace(/[^\w.-]+/g, '-');
           return {
@@ -396,7 +396,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
           );
         const missingVars = validateCiVariables([parsed]).missing;
         // Only SWIPIUM_* env names reach flows: a ${HOME} is never read from the environment, so
-        // "not set in the environment" would be wrong for it (TOOL-19).
+        // "not set in the environment" would be wrong for it.
         for (const v of missingVars)
           warnings.push(
             flowEnvAllowed(v.variable)
@@ -408,7 +408,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
         platform,
         policy: ci ? (root ? loadPolicy(root) : null) : undefined,
       });
-      // Lint errors are not warnings (LOG-16): they go to lintErrors and make the check invalid.
+      // Lint errors are not warnings: they go to lintErrors and make the check invalid.
       const lintErrors: string[] = [];
       for (const f of lintFindings) {
         const line = `${f.code}${f.step ? ` step ${f.step}` : ''}: ${f.message}`;

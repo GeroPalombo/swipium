@@ -31,7 +31,7 @@ export function planOnboardingStep(elements: SnapshotElement[]): OnboardingStep 
     if (!match) continue;
     // Never advance via something the risk classifier flags as destructive.
     if (classifyRisk({ label: el.label ?? el.text, id: el.id, role: el.role }).risk === 'destructive') continue;
-    // "Continue with Apple" is a third-party sign-in, not an onboarding step (GOAL NEW-R4-2).
+    // "Continue with Apple" is a third-party sign-in, not an onboarding step.
     if (isThirdPartySignIn({ label: el.label ?? el.text, id: el.id })) continue;
     if (!best || match.rank > best.rank) best = { el, rank: match.rank, why: match.why };
   }

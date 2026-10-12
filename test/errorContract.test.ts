@@ -1,4 +1,4 @@
-// Error-envelope contract (v1-mvp-plan P1 §6): EVERY public tool, invoked with inputs
+// Error-envelope contract: EVERY public tool, invoked with inputs
 // crafted to fail fast (an unknown sessionId where the schema has one; minimal valid-shape
 // args otherwise), must return a structured qaError envelope — `ok:false` with `what`,
 // `failureCode`, `changedState`, `retrySafe`, and a non-empty `nextSteps` (src/lib/result.ts)
@@ -50,7 +50,7 @@ const ARG_OVERRIDES: Record<string, Record<string, unknown>> = {
   qa_start_session: { projectRoot: MISSING_ROOT },
   // An unknown sessionId would fall back to the server cwd — force the project-root failure path.
   qa_flow_compile: { projectRoot: MISSING_ROOT },
-  // TOOL-4: the suite tools resolve a root like every root-aware tool, and an empty suite there is
+  // The suite tools resolve a root like every root-aware tool, and an empty suite there is
   // a legit ok:true. A missing projectRoot is their failure path.
   qa_suite_read: { projectRoot: MISSING_ROOT },
   qa_suite_export: { projectRoot: MISSING_ROOT },

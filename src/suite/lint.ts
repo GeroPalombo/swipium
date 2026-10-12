@@ -101,7 +101,7 @@ function yamlErrorText(e: unknown): string {
   return String((e as Error)?.message ?? e).split('\n')[0];
 }
 
-/** LOG-21 / E2E-14: lint the POM tests too, with the same reference checks `suite compile` runs
+/** Lint the POM tests too, with the same reference checks `suite compile` runs
  *  (unknown page, element without a usable locator) plus coordinate-only taps. */
 function lintSuiteTests(root: string): SuiteLintItem[] {
   const testsDir = join(root, '.swipium', 'tests');

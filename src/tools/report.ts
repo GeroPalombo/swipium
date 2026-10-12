@@ -1,4 +1,4 @@
-// qa_report: thin wrapper around the report service (Phase 3.2 Milestone B). All assembly lives in
+// qa_report: thin wrapper around the report service. All assembly lives in
 // src/services/report.ts so qa_test_this execute produces the identical report artifact in every
 // terminal state. This tool resolves the session, runs the service, and surfaces its result.
 
@@ -77,7 +77,7 @@ export function registerReport(server: McpServer, sessions: SessionStore): void 
             highSeverity: rep.highSeverityCount,
             toolErrors: ((rep.toolErrors as unknown[] | undefined) ?? []).length,
             outcomes: rep.outcomeTally,
-            // LOG-8: the run test catalog (outcomes + finding/exploration-derived cases), the
+            // The run test catalog (outcomes + finding/exploration-derived cases), the
             // "test catalog: N case(s)" the summary prints; `outcomes` counts qa_note outcomes only.
             testCatalog: (rep.runTestCatalog as { counts?: unknown } | undefined)?.counts,
             // Same count as the summary's "artifacts: N" (report.json + manifest included; report.md,

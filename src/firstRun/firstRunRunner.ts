@@ -93,7 +93,7 @@ export interface Observation {
   screenSignature: string;
   screenshotUri?: string;
   appError: boolean;
-  /** GOAL NEW-R4-2: an iOS alert over the screen and its cancel button (null: no alert). */
+  /** An iOS alert over the screen and its cancel button (null: no alert). */
   alert: ReturnType<typeof iosAlertCancel>;
 }
 
@@ -208,7 +208,7 @@ export async function runFirstRun(
   let alertCloses = 0;
 
   const observe = () => observeScreen(sessions, session, driver);
-  // GOAL-9: don't classify the RN splash / "Bundling 47%" screen. Bounded, best-effort (a
+  // Don't classify the RN splash / "Bundling 47%" screen. Bounded, best-effort (a
   // cancelled wait surfaces on the next observe).
   await waitForAppRender(driver, {
     visualOnly: session.mode === 'visual-fallback' || driver.kind === 'simulator',
@@ -255,7 +255,7 @@ export async function runFirstRun(
   };
 
   const executeAction = async (action: PlannedAction, screen: string): Promise<'done' | 'blocked' | 'no_change'> => {
-    // `screen` is the foreground owner the action was planned on. CR P1: qa_report counts a recorded
+    // `screen` is the foreground owner the action was planned on. qa_report counts a recorded
     // action as evidence only when the app under test was in front.
     const appForeground = !!session.appId && screen.split('/')[0].startsWith(session.appId) ? { appForeground: true } : {};
     const cx = Math.round((action.bounds?.[0] ?? 0) + ((action.bounds?.[2] ?? 0) - (action.bounds?.[0] ?? 0)) / 2);
@@ -324,7 +324,7 @@ export async function runFirstRun(
     }
 
     const obs = await observe();
-    // GOAL NEW-R4-2: an alert covers the screen ("Sign in to your Apple Account" with Close /
+    // An alert covers the screen ("Sign in to your Apple Account" with Close /
     // Settings). Close it with its cancel button and look again; never classify or act on the screen
     // behind it (that sign-up screen was reported as "home").
     if (obs.alert) {

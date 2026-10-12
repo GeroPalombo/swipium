@@ -124,7 +124,7 @@ class FakeDriver implements Driver {
   }
   async inputText(text: string): Promise<void> {
     this.rec('inputText', text);
-    // The email field reads back what was typed (qa_act verifies a typed field, AND-14).
+    // The email field reads back what was typed (qa_act verifies a typed field).
     this.screens[this.screenIndex] = this.screens[this.screenIndex].replace(
       /text="[^"]*"( resource-id="com\.example\.app:id\/email")/,
       `text="${text}"$1`,

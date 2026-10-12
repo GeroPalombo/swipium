@@ -54,31 +54,31 @@ export function adbInputTextChunks(text: string): string[] {
   return chunks.filter((c) => c.length > 0);
 }
 
-/** Longest piece of text one `adb shell input text` call sends (AND-14); longer text is split. */
+/** Longest piece of text one `adb shell input text` call sends; longer text is split. */
 export const ADB_TEXT_PIECE_CHARS = 40;
 
-/** How long one piece of long text may take to show up at the end of the focused field (AND-14). */
+/** How long one piece of long text may take to show up at the end of the focused field. */
 const TEXT_PIECE_SETTLE_MS = 4000;
 
-/** Long text is read back after this many pieces (and after the last one), not after each (AND-14). */
+/** Long text is read back after this many pieces (and after the last one), not after each. */
 const TEXT_PIECES_PER_CHECK = 2;
 
-/** Read-backs in a row that may fail to dump the screen before long text stops checking (R5-1). */
+/** Read-backs in a row that may fail to dump the screen before long text stops checking. */
 const DUMP_MISSES_BEFORE_OFF = 3;
 
-/** Careful typing (the retry after a scramble, AND-14): a labeled Compose field jumps its caret to
+/** Careful typing (the retry after a scramble): a labeled Compose field jumps its caret to
  * the start and drops keys in the middle of one burst, so the retry sends bursts this short, paced,
  * and reads back every CAREFUL_PIECES_PER_CHECK of them. */
 const CAREFUL_PIECE_CHARS = 8;
 const CAREFUL_PIECES_PER_CHECK = 5;
 const CAREFUL_PACE_MS = 250;
 
-/** The select-all clear waits this long after the focusing tap (NEW-replace: 1 s by hand always cleared). */
+/** The select-all clear waits this long after the focusing tap (1 s by hand always cleared). */
 const CLEAR_AFTER_TAP_MS = 900;
 
 /** PURE: the `input text` pieces for `text`: split at every literal `%s` (adbInputTextChunks), then
  * into pieces of at most `max` chars. A cut is moved back (up to 8 chars) so no piece starts or ends
- * on a space: a space at a piece boundary was dropped by some fields (AND-14). */
+ * on a space: a space at a piece boundary was dropped by some fields. */
 export function adbTextPieces(text: string, max = ADB_TEXT_PIECE_CHARS): string[] {
   const out: string[] = [];
   for (const c of adbInputTextChunks(text)) {
@@ -109,7 +109,7 @@ export function focusedFieldValue(xml: string): { text: string; readings: string
   return { text: readings[0], readings, password: node.attrs['password'] === 'true' };
 }
 
-/** PURE (AND-14, CR-TYPING): does a field value end with the text typed so far? Case, whitespace
+/** PURE: does a field value end with the text typed so far? Case, whitespace
  * runs and trailing spaces are ignored, and an input mask or filter that only changes punctuation
  * or spacing still counts (letters and digits compared alone). */
 export function fieldEndsWithTyped(value: string, typed: string): boolean {
@@ -120,7 +120,7 @@ export function fieldEndsWithTyped(value: string, typed: string): boolean {
   return !!lt && loose(value).endsWith(lt);
 }
 
-/** PURE (CR-TYPING): is a field value a non-empty start of the text typed so far (a max length cut
+/** PURE: is a field value a non-empty start of the text typed so far (a max length cut
  * it)? Letters and digits only, as in fieldEndsWithTyped. */
 export function fieldIsCutTyped(value: string, typed: string): boolean {
   const loose = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
@@ -218,7 +218,7 @@ const KEYCODE: Record<'back' | 'home' | 'enter', string> = {
   enter: '66',
 };
 
-/** How long a DirectDriver reuses its last screen size + rotation (review round 2: swipes used
+/** How long a DirectDriver reuses its last screen size + rotation (swipes used
  * to run `wm size` + a full `dumpsys input` (a few hundred ms) on EVERY gesture). A device-side
  * rotation is picked up sooner than the TTL: every UI dump carries `<hierarchy rotation=N>`, and a
  * rotation different from the cached one drops the cache (plus invalidateScreenSizeCache for
@@ -415,7 +415,7 @@ export class DirectDriver implements Driver {
   }
 
   async relaunchCleanTask(pkg: string): Promise<void> {
-    // LOG-12: force-stop alone leaves the app's task alive when another package's activity tops
+    // Force-stop alone leaves the app's task alive when another package's activity tops
     // it (Settings > search is a settings.intelligence activity in Settings' task), and a launcher
     // intent (RESET_TASK_IF_NEEDED) brings that stale task back. -S force-stops first, and
     // NEW_TASK|CLEAR_TASK (0x10008000) wipes the task before the launcher activity starts.
@@ -551,7 +551,7 @@ export class DirectDriver implements Driver {
     }
     let lastErr = '';
     let attempt = 0;
-    // AND NEW R4-4: a dump that ran into a full (>= 10 s) adb timeout means the device stopped
+    // A dump that ran into a full (>= 10 s) adb timeout means the device stopped
     // answering (a stalled emulator), not a transient miss; retrying cost 20 s each (~100 s a call).
     let hung = false;
     for (; attempt < ATTEMPTS; attempt++) {
@@ -572,7 +572,7 @@ export class DirectDriver implements Driver {
         lastErr = String(e);
         hung = remaining >= 10000 && /\(timed out\)/.test(lastErr);
       }
-      // AND R3-4: "could not get idle state" means uiautomator already waited ~12 s for an idle
+      // "could not get idle state" means uiautomator already waited ~12 s for an idle
       // window that a looping animation never gives; each retry burns the same 12 s (60 s per call).
       // Give up after the first one so the tool layer can fall back (visual / settle deadline).
       const idle = /could not get idle state/i.test(lastErr);
@@ -643,7 +643,7 @@ export class DirectDriver implements Driver {
     const long = careful || text.length > ADB_TEXT_PIECE_CHARS;
     const perCheck = careful ? CAREFUL_PIECES_PER_CHECK : TEXT_PIECES_PER_CHECK;
     const pace = careful ? CAREFUL_PACE_MS : 300;
-    // AND-14: a field whose state round-trips through the app (Compose) can't keep up with one long
+    // A field whose state round-trips through the app (Compose) can't keep up with one long
     // stream of key events: it moves the caret mid-way, so later parts land first and characters
     // drop. Long text goes out piece by piece, and each piece must read back at the end of the
     // focused field (the dump also waits for the UI to go idle) before the next one is sent. A
@@ -654,7 +654,7 @@ export class DirectDriver implements Driver {
     // pieces sent since then.
     let prev: string | undefined;
     let unchecked: string[] = [];
-    // Read-backs in a row that could not dump the screen (R5-1): one is skipped (the pieces stay
+    // Read-backs in a row that could not dump the screen: one is skipped (the pieces stay
     // unchecked for the next read-back), only DUMP_MISSES_BEFORE_OFF in a row turn checking off.
     let dumpMisses = 0;
     const send = async (piece: string) => {
@@ -663,7 +663,7 @@ export class DirectDriver implements Driver {
         // Long text: move to the end first, in the same shell call, so each piece goes at the end
         // even if the field moved the caret (or the focus tap put it mid-text).
         const cmd = long ? [...this.moveEndArgs(), ';', 'input', 'text', escaped] : ['input', 'text', escaped];
-        // H2: the argv IS the (possibly secret) text, so never let it into the error message.
+        // The argv IS the (possibly secret) text, so never let it into the error message.
         await this.adb(['shell', ...cmd], { sensitiveLastArg: true });
       } catch (e) {
         let msg = String((e as Error)?.message ?? e);
@@ -680,7 +680,7 @@ export class DirectDriver implements Driver {
       unchecked.push(piece);
       // No readable focused field (password, or none reports focus): pace the pieces instead. Else
       // read back every TEXT_PIECES_PER_CHECK pieces (CAREFUL_PIECES_PER_CHECK when careful) and
-      // after the last one (a uiautomator dump costs about 2 s, AND-14 speed), pacing the pieces in
+      // after the last one (a uiautomator dump costs about 2 s), pacing the pieces in
       // between.
       if (!verify || (unchecked.length < perCheck && i < pieces.length - 1)) {
         await sleepOrCancel(pace);
@@ -708,7 +708,7 @@ export class DirectDriver implements Driver {
         if (again === undefined) continue;
         held = again;
         // Cut at the same place twice: the field has a max length. Stop typing; the caller's
-        // read-back reports the cut-short value (CR-TYPING).
+        // read-back reports the cut-short value.
         if (held && !held.ok && held.text === before && fieldIsCutTyped(held.text, typed)) return;
       }
       // The field holds only a start of the typed text and did not grow: a max length. Stop there and
@@ -759,21 +759,21 @@ export class DirectDriver implements Driver {
   private keyCombo = new Map<string, boolean>();
 
   /** Shell argv that moves the caret to the end of the TEXT. CTRL+MOVE_END where key combinations
-   * work: a plain MOVE_END stops at the end of the caret's line in a multi-line field (CR-TYPING). */
+   * work: a plain MOVE_END stops at the end of the caret's line in a multi-line field. */
   private moveEndArgs(): string[] {
     return this.keyCombo.get(this.serial ?? '') ? ['input', 'keycombination', '113', '123'] : ['input', 'keyevent', '123'];
   }
 
   async clearFocusedText(approxLen = 40, opts: { byLength?: boolean } = {}): Promise<void> {
-    // R5-2: a retry after a clear that left text uses the by-length clear below, not the same
+    // A retry after a clear that left text uses the by-length clear below, not the same
     // select-all again.
     if (opts.byLength) return this.clearByLength(approxLen);
-    // CR-TYPING / AND NEW-2: select all (CTRL+A) then DEL clears the whole field wherever the caret
+    // Select all (CTRL+A) then DEL clears the whole field wherever the caret
     // is, whatever the target kind and however long or multi-line the field. Needs Android 13
     // (`input keycombination`); the first clear on a device probes it.
     const serial = this.serial ?? '';
     const combo = this.keyCombo.get(serial);
-    // NEW-replace: a tap on a Compose field that already has focus starts a caret-placement
+    // A tap on a Compose field that already has focus starts a caret-placement
     // gesture whose late handling collapses a select-all sent ~0.5 s after it (1 in 3 clears
     // deleted one char). Send it only once the focusing tap is CLEAR_AFTER_TAP_MS old.
     const sinceTap = Date.now() - this.lastTapAt;

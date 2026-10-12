@@ -710,7 +710,7 @@ async function assertVisual(ctx: VisualContext): Promise<CallToolResult> {
     outcome: pass ? 'pass' : 'fail',
     reason: args.reason,
     method: 'visual',
-    // IOS-16: the verdict is the agent's; Swipium never compared the image, so the report must not
+    // The verdict is the agent's; Swipium never compared the image, so the report must not
     // count this as visual-match evidence. manual_review = judged by the caller from the screenshot.
     evidenceKind: 'manual_review',
     artifactUris: uri ? [uri] : [],
@@ -733,7 +733,7 @@ async function assertVisual(ctx: VisualContext): Promise<CallToolResult> {
       },
     });
   }
-  // IOS-16: Swipium does not inspect the image here. The verdict is the CALLER's (and `pass`
+  // Swipium does not inspect the image here. The verdict is the CALLER's (and `pass`
   // defaults to true), so the response must not read as a machine-checked visual match.
   const passDefaulted = args.pass === undefined;
   return qaOk(
@@ -793,7 +793,7 @@ export function registerVisual(server: McpServer, sessions: SessionStore): void 
     async (args) => {
       const session = sessions.get(args.sessionId);
       if (!session) return unknownSessionError(args.sessionId);
-      // Before the device lookup, so a sensitive session never sees NO_DEVICE first (TOOL-19).
+      // Before the device lookup, so a sensitive session never sees NO_DEVICE first.
       if (session.sensitive) return sensitiveRefusal('Visual capture');
       const { driver, blocked } = await getDriver(session);
       if (!session || !driver) {

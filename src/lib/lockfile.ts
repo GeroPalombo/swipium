@@ -6,7 +6,7 @@
 // `pid:token`, created exclusively) so release can verify the lock is still ours. A holder that
 // stalled past the stale threshold and was taken over must NOT delete the new owner's lock.
 //
-// Stale takeover (holder crashed mid-write) is CLAIM-then-MOVE (H8, review round 2):
+// Stale takeover (holder crashed mid-write) is CLAIM-then-MOVE:
 //  1. claim: the taker creates `<lockPath>/.takeover` EXCLUSIVELY ('wx', with its own token).
 //     Only one taker can claim a given lock-directory instance, and the lock path never
 //     disappears during a failed claim, so a newcomer can't slip in;

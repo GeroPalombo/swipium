@@ -111,7 +111,7 @@ export function estimateFeatureCoverage(
     .flatMap((n) => [n.title, ...n.elements.flatMap((e) => [e.label, e.locator?.value, e.reason])])
     .filter(Boolean)
     .join(' ');
-  // GOAL-13: "covered" needs a feature-specific screen (its title) or an action that ran on it (a
+  // "Covered" needs a feature-specific screen (its title) or an action that ran on it (a
   // tap/type that changed the screen), not a label anywhere on a visited screen; a label alone is
   // "observed". Callers without edges keep the old lexical estimate.
   const acted = edges

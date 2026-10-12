@@ -1,4 +1,4 @@
-// B6: the WDA-less simulator must report its screen size in POINTS (the unit `idb ui tap` and
+// The WDA-less simulator must report its screen size in POINTS (the unit `idb ui tap` and
 // WebDriverAgent take), so captureCoordinateSpace derives the real 3x scale and every
 // devicePoint a visual tool returns is tappable. Hermetic: spawn/which/simctl are mocked.
 
@@ -78,7 +78,7 @@ beforeEach(() => {
   state.calls = [];
 });
 
-describe('SimctlDriver point-size screen (B6)', () => {
+describe('SimctlDriver point-size screen', () => {
   it('uses idb describe when idb is on PATH: 1179×2556 px @3x → 393×852 pt', async () => {
     state.idb = true;
     state.idbStdout = JSON.stringify({

@@ -77,7 +77,7 @@ describe('qa_status', () => {
     expect(o.tools).toBe(TOOL_COUNT);
     expect(o.firstCall).toMatchObject({ tool: 'qa_test_this', args: { mode: 'execute' } });
     expect(o.polling).toMatchObject({ tool: 'qa_job_status' });
-    // K5: names + purpose only (tool names are already in tools/list).
+    // Names + purpose only (tool names are already in tools/list).
     const groups = o.capabilityGroups as Array<{ group: string; purpose: string; tools?: string[] }>;
     expect(groups.map((g) => g.group)).toEqual(CAPABILITY_GROUPS.map((g) => g.group));
     expect(groups.every((g) => g.purpose && g.tools === undefined)).toBe(true);

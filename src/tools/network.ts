@@ -1,4 +1,4 @@
-// qa_network: safe offline/online testing without raw adb (Phase 2 CR2).
+// qa_network: safe offline/online testing without raw adb.
 // Uses `cmd connectivity airplane-mode` (API 30+). Records the original state on first
 // change so it can be restored; report + session-end restore use session.network.
 

@@ -1,4 +1,4 @@
-// Screen signatures (Phase 3.3 §6.4). Identify a screen so revisiting Home dedupes to one node
+// Screen signatures. Identify a screen so revisiting Home dedupes to one node
 // while a modal becomes a distinct node. Layered: structured (UI tree) when available, visual
 // (screenshot hash) when the tree is poor, plus context (foreground + modal/keyboard). PURE.
 

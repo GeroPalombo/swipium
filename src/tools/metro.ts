@@ -92,11 +92,11 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
     async ({ sessionId, action, consentId, approve }) => {
       const session = sessions.get(sessionId);
       if (!session) return unknownSessionError(sessionId);
-      // GOAL-4: an iOS-bound session never touches adb (no resolve/bind of an Android device, no
+      // An iOS-bound session never touches adb (no resolve/bind of an Android device, no
       // reverse, no logcat). A simulator reaches the host's Metro at localhost directly.
       const ios = sessionDevicePlatform(session) === 'ios';
       const iosDevice = ios ? session.device : undefined;
-      // Centralized device resolution (P0.1/P0.3): use the session device, else the single
+      // Centralized device resolution: use the session device, else the single
       // online one (bind it), else ask / guide. Never a circular "no device" dead end.
       const dev: DeviceResolution = ios
         ? { sessionDevice: iosDevice, available: [], effective: undefined, needSelection: false, source: 'session' }
@@ -193,7 +193,7 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
               : 'No device online. Boot one via qa_prepare_target (it boots + sets reverse), then retry.',
           );
         if (rd.wrongProject) recovery.push(`${wrongProjectMetroMessage(rd, session.root)} Stop that Metro, then qa_metro action="start".`);
-        // GOAL NEW-R4-4: serving on localhost (::1) but not on 127.0.0.1 (`expo start --localhost`):
+        // Serving on localhost (::1) but not on 127.0.0.1 (`expo start --localhost`):
         // Metro runs, the app just can't reach it on 127.0.0.1.
         if (!listening && rd.serving)
           recovery.push(
@@ -373,7 +373,7 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
       // Register the artifact (creates the empty file) BEFORE opening the append fd, so we
       // don't truncate a live log. saveArtifact files kind 'metro' under <dir>/logs/ (see
       // artifactDirectoryName), so open the path it actually recorded, never a hand-built one
-      // (AND-7 / GOAL-3: opening <dir>/metro/metro.log was a raw ENOENT on every platform).
+      // (opening <dir>/metro/metro.log was a raw ENOENT on every platform).
       let logUri: string;
       let logPath: string;
       let child: ReturnType<typeof spawn>;

@@ -41,7 +41,7 @@ describe('registeredWdaForSession with an endpoint', () => {
       ]),
     );
     expect(registeredWdaForSession('new-session')).toBeUndefined();
-    // IOS NEW-1: the endpoint alone never matches; the entry must be this session's simulator.
+    // The endpoint alone never matches; the entry must be this session's simulator.
     expect(registeredWdaForSession('new-session', 'http://127.0.0.1:8100')).toBeUndefined();
     expect(registeredWdaForSession('new-session', 'http://127.0.0.1:8100', SIM_A)?.pid).toBe(201);
     expect(registeredWdaForSession('new-session', 'http://127.0.0.1:8100', SIM_A.toLowerCase())?.pid).toBe(201);

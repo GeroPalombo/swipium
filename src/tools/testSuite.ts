@@ -28,7 +28,7 @@ interface Resolved {
   session?: Session;
 }
 
-/** TOOL-4: the session's root, else the shared resolution every root-aware tool uses (projectRoot >
+/** The session's root, else the shared resolution every root-aware tool uses (projectRoot >
  *  MCP roots > SWIPIUM_PROJECT_ROOT > CLAUDE_PROJECT_DIR > cwd marker). */
 async function resolveRoot(
   server: McpServer,
@@ -219,7 +219,7 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
         byStatus,
         ids: cases.map((c) => c.id),
         ...(uri ? { suiteUri: uri } : {}),
-        // TOOL-17: always say where the full suite is; a swipium:// URI needs a session to hang it on.
+        // Always say where the full suite is; a swipium:// URI needs a session to hang it on.
         suitePath: suiteJsonPath(r.root),
         ...(uri
           ? {}
@@ -261,7 +261,7 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
           nextSteps: ['Pass cases:[...], or use qa_suite_generate to build them from the app.'],
         });
       }
-      // TOOL-1: validate the loose `cases` records before they reach the merge layer (which assumes
+      // Validate the loose `cases` records before they reach the merge layer (which assumes
       // the canonical shape and would otherwise crash with a raw TypeError, or silently update a case).
       const shaped = shapeIncomingCases(cases);
       if (shaped.issues.length) {
@@ -381,7 +381,7 @@ export function registerTestSuite(server: McpServer, sessions: SessionStore): vo
         fixtures: session.fixtures,
         notes: secretSafeNotes(session.notes, session.secrets), // never a registered secret in test-suite.json
         exploration: session.exploration,
-        platforms: casePlatformsFor(session), // GOAL-22: the observed platform, not a default "android"
+        platforms: casePlatformsFor(session), // the observed platform, not a default "android"
         source: 'generate',
         now,
       });

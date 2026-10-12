@@ -1,4 +1,4 @@
-// Source anchors for SARIF results (B3). GitHub code scanning only displays a result that has
+// Source anchors for SARIF results. GitHub code scanning only displays a result that has
 // `locations[0].physicalLocation.artifactLocation.uri` pointing at a file in the repository
 // (https://docs.github.com/en/code-security/code-scanning/integrating-with-code-scanning/sarif-support-for-code-scanning).
 // Swipium's evidence lives on a device, not in the source tree, so we anchor each result to the
@@ -69,7 +69,7 @@ export function repositoryPrefix(root: string): string {
 }
 
 /** Build products and derived-data directories are usually not committed, so code scanning would
- *  drop an alert anchored inside one (E2E-13: `FlyingOver.app/Info.plist`). */
+ *  drop an alert anchored inside one (e.g. `MyApp.app/Info.plist`). */
 const BUILD_PRODUCT_DIR = /^(build|Build|DerivedData|\.build|dist|Pods)$|\.(app|xcarchive|framework|appex|bundle|dSYM)$/i;
 
 function insideBuildProduct(rel: string): boolean {
@@ -143,7 +143,7 @@ function anyRootFile(root: string): string | null {
   return existingRelative(root, '.gitignore');
 }
 
-/** The project's manifest file (repo-relative). E2E NEW-7: falls back to an Xcode project or any
+/** The project's manifest file (repo-relative). Falls back to an Xcode project or any
  *  existing root file; `package.json` only when the root holds no file at all (an anchor to a
  *  missing file is dropped by code scanning). */
 export function projectManifestUri(root: string): string {

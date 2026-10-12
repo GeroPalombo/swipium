@@ -1,9 +1,9 @@
-// Round-4 must-fix 1 / CR P1: the not-tested marker and an agent's pass claim need device evidence
+// The not-tested marker and an agent's pass claim need device evidence
 // with the app under test in front.
 //  - qa_act records appForeground only when the post-action foreground is the app under test;
 //  - after a blocked run, an action on another app (SpringBoard / launcher) plus a qa_note pass keeps
 //    the marker: BLOCK, gate fails with the original code;
-//  - an app-in-front action alone keeps it too, and so does an agent outcome note after it (R5).
+//  - an app-in-front action alone keeps it too, and so does an agent outcome note after it.
 // Hermetic: in-memory server with a fake driver (test/actFixFake.ts), temp HOME, no device.
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -38,7 +38,7 @@ const onOtherApp = (fake: FakeDriver, pkg: string) => {
 };
 const metroBlocked = { reason: 'Metro is not serving this debug build', failureCode: 'METRO_REQUIRED', reachedApp: false as const };
 
-describe('qa_act appForeground (CR P1)', () => {
+describe('qa_act appForeground', () => {
   it('is set when the app under test is in front after the action, not when another app is', async () => {
     const fake = new FakeDriver(buttonScreen('A', 2));
     const sessionId = await h.start(fake);
@@ -53,7 +53,7 @@ describe('qa_act appForeground (CR P1)', () => {
   });
 });
 
-describe('the not-tested marker needs app evidence (round 4 must-fix 1 / CR P1)', () => {
+describe('the not-tested marker needs app evidence', () => {
   it('a tap on another app plus a qa_note pass after a blocked run keeps BLOCK and the blocker code; the gate blocks', async () => {
     const fake = new FakeDriver(buttonScreen('A', 2));
     const sessionId = await h.start(fake);
@@ -78,7 +78,7 @@ describe('the not-tested marker needs app evidence (round 4 must-fix 1 / CR P1)'
     expect(notTestedVerdict).toMatchObject({ passed: false, failureCode: 'METRO_REQUIRED' });
   });
 
-  it('an app-in-front action plus an agent outcome note after the marker keeps it (R5 must-fix 1)', async () => {
+  it('an app-in-front action plus an agent outcome note after the marker keeps it', async () => {
     const sessionId = await h.start(new FakeDriver(buttonScreen('A', 2)));
     await report(sessionId, metroBlocked);
     await new Promise((r) => setTimeout(r, 5));

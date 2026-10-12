@@ -110,14 +110,14 @@ export function registerSuiteArtifacts(sessions: SessionStore, session: Session,
 
 /** The blocker after a launch into a bundle-load RedBox / the Expo dev launcher. "Start Metro" is
  *  wrong when another project's Metro holds the port (qa_metro start refuses: METRO_WRONG_PROJECT)
- *  and loops when this project's Metro already serves and the dev client just isn't connected (GOAL-11). */
+ *  and loops when this project's Metro already serves and the dev client just isn't connected. */
 async function metroBlocker(session: Session, isAndroid: boolean): Promise<{ code: string; summary: string; howToFix?: string }> {
   const srv = await bundleServing(undefined, session.root);
   if (srv.wrongProject) {
     const how = `Stop the other project's Metro (${srv.metroProjectRoot ?? 'unknown root'}); Swipium did not start it, so it will not stop it for you. Then start this project's Metro and re-run.`;
     return { code: 'METRO_WRONG_PROJECT', summary: `❌ The app launched without its JS bundle: ${srv.detail}. ${how}`, howToFix: how };
   }
-  // GOAL NEW-R4-4: this project's Metro answers on localhost (IPv6 ::1, e.g. `expo start --localhost`)
+  // This project's Metro answers on localhost (IPv6 ::1, e.g. `expo start --localhost`)
   // but not on 127.0.0.1, where the dev client / adb reverse connects. "Start Metro" would loop.
   if (srv.serving && !(await metroListening(METRO_PORT, '127.0.0.1'))) {
     const how =
@@ -149,7 +149,7 @@ async function metroBlocker(session: Session, isAndroid: boolean): Promise<{ cod
 
 /** The Expo dev-client deep-link scheme (`exp+<slug>`, registered by expo-dev-client): from a static
  *  app.json, else a literal `slug:` in app.config.ts/js, else (iOS) the installed app's own
- *  `exp+*` URL scheme (GOAL-11 R3: a dynamic app.config.ts project got no deep link). */
+ *  `exp+*` URL scheme (so a dynamic app.config.ts project still gets a deep link). */
 async function devClientScheme(session: Session, isAndroid: boolean): Promise<string | undefined> {
   const valid = (slug: unknown) => (typeof slug === 'string' && /^[\w.-]+$/.test(slug) ? `exp+${slug}` : undefined);
   try {
@@ -178,10 +178,10 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
   const upd = (patch: Partial<JobRecord>) => sessions.updateJobIfRunning(session, job, patch);
   const attempted: string[] = [];
   const artifacts: string[] = [];
-  const firstRunPatches: AppMapPatch[] = []; // first-run classifications folded into the durable map (§D)
+  const firstRunPatches: AppMapPatch[] = []; // first-run classifications folded into the durable map (section D)
   // Suite outputs (set in the terminal section) are embedded in the report, not just the job result.
   let suiteForReport: SuiteGenerationResult | undefined;
-  // Every terminal state (completed OR blocked) generates a report artifact (Milestone B).
+  // Every terminal state (completed OR blocked) generates a report artifact.
   const finish = createFinisher({ sessions, session, job, a, attempted, artifacts, getSuiteForReport: () => suiteForReport, upd });
 
   try {
@@ -190,7 +190,7 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
     let appPath = !a.isAndroid ? a.art.best?.path : undefined;
     let appId = a.art.best?.appId ?? a.scan.appId ?? undefined;
 
-    // AND-3: an Android build that needs an AVD booted boots it FIRST, in Swipium's own tracked
+    // An Android build that needs an AVD booted boots it FIRST, in Swipium's own tracked
     // headless boot (the consented one), so `expo run:android --device <AVD>` finds it running
     // instead of booting it itself. Prepare (B) then installs on that serial.
     let bootedSerial: string | undefined;
@@ -278,7 +278,7 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
     }
 
     // ---- B. prepare (boot/install/launch) ----
-    let wdaHungAtPrepare: string | undefined; // IOS NEW-A: WDA hung creating its session
+    let wdaHungAtPrepare: string | undefined; // WDA hung creating its session
     if (a.isAndroid) {
       if (!apkPath) return await finish('blocked', 'NO_BUILD_ARTIFACT', '❌ No installable APK to prepare.');
       if (!appId) appId = (await apkPackageId(apkPath)) ?? undefined;
@@ -336,7 +336,7 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
       if (!res.ok) {
         if (res.failureCode === 'METRO_REQUIRED' || res.failureCode === 'METRO_WRONG_PROJECT')
           prog.needsUser('Metro must be serving for this debug build.');
-        // GOAL-7: the app never launched (not a PASS), and the blocker carries the launch step's own
+        // The app never launched (not a PASS), and the blocker carries the launch step's own
         // concrete recovery (re-boot / install / logs) so nextRecommendedAction is a real call.
         return await finish('blocked', res.failureCode ?? 'APP_LAUNCH_FAILED', `❌ iOS prepare failed: ${res.error}`, {
           appLaunched: false,
@@ -370,7 +370,7 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
       const mb = await metroBlocker(session, a.isAndroid);
       return await finish('blocked', mb.code, mb.summary, mb.howToFix ? { blockerHowToFix: mb.howToFix } : {});
     }
-    // The launch only ever showed a blank / splash tree (e.g. a cold Metro bundle): not judged (GOAL-9).
+    // The launch only ever showed a blank / splash tree (e.g. a cold Metro bundle): not judged.
     if ((smoke.baseline.launch as { failureCode?: string } | undefined)?.failureCode === 'BLANK_SCREEN') {
       return await finish(
         'blocked',
@@ -378,7 +378,7 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
         '❌ The app showed only a blank / splash / loading screen after launch, so it was not judged. If Metro was still bundling, wait for it (qa_wait { for:"metro_ready" }) and re-run; if the app never leaves its splash / loading screen, that is the bug.',
       );
     }
-    // GOAL NEW-R3-2: WebDriverAgent stopped returning a UI source after the launch (e.g. hung on the
+    // WebDriverAgent stopped returning a UI source after the launch (e.g. hung on the
     // splash after a cold simulator boot): a tool / environment blocker, not an app verdict, and
     // nothing after this (first-run, exploration, suite) could run on it.
     if ((smoke.baseline.launch as { failureCode?: string } | undefined)?.failureCode === 'WDA_UNREACHABLE') {
@@ -390,7 +390,7 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
     }
 
     let pendingQuestion: NeedsInputPayload | undefined;
-    let firstRunState: string | undefined; // GOAL-19: drives the explicit test_login outcome
+    let firstRunState: string | undefined; // drives the explicit test_login outcome
     // ---- C1.5 first-run autonomy: when the app appears gated AND the environment
     //      is a disposable test/staging one where generated accounts are policy-safe, progress
     //      through auth/onboarding before exploring. Safe-by-default: in an unknown/production-like
@@ -432,7 +432,7 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
             { signal, onProgress: (p) => frProg.event(p) },
           );
           for (const u of fr.evidenceUris) if (!artifacts.includes(u)) artifacts.push(u);
-          firstRunPatches.push(...fr.mapUpdates); // folded into the durable app map in §D
+          firstRunPatches.push(...fr.mapUpdates); // folded into the durable app map in section D
           sessions.addWorkaround(session, `first-run: ${fr.pathTaken} path > ${fr.accountOutcome} (${fr.environment.environment} env)`);
           frProg.done(`first-run ${fr.state}, account ${fr.accountOutcome}`);
           firstRunState = fr.state;
@@ -453,7 +453,7 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
         { needsInput: pendingQuestion },
       );
     }
-    // GOAL-19: goal test_login always ends with an explicit login outcome, never a silent pass.
+    // Goal test_login always ends with an explicit login outcome, never a silent pass.
     if (a.goal === 'test_login') {
       const auth = session.auth;
       const loggedIn = auth.loginPerformed === true && firstRunState === 'completed';
@@ -499,7 +499,7 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
     // Otherwise the question is OPTIONAL: pre-login coverage stands, and the question is surfaced on
     // the completed result instead of being dropped. The static question comes from a login
     // dependency in the code; when first-run reached home without any login screen, say exactly
-    // that instead of "this app appears to require login" (GOAL R3 test_login leftover).
+    // that instead of "this app appears to require login".
     const loginNotSeen = firstRunState === 'completed' && !session.auth.loginScreenSeen;
     const optionalQuestion: NeedsInputPayload | undefined =
       pendingQuestion ??
@@ -518,7 +518,7 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
           }
         : undefined);
 
-    // ---- C2. optional guided exploration (§9.1) ----
+    // ---- C2. optional guided exploration ----
     if (a.explore && (smoke.baseline.launch as { outcome?: string } | undefined)?.outcome !== 'fail') {
       const exProg = startProgress(sessions, session, job, 'exploring', { statusText: 'Guided exploration of reachable screens.' });
       attempted.push('guided exploration');
@@ -562,7 +562,7 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
       }
     }
 
-    // ---- D. optional suite generation (Milestone C: really writes + compiles, or honest skip) ----
+    // ---- D. optional suite generation (really writes + compiles, or honest skip) ----
     let suite: SuiteGenerationResult | undefined;
     if (a.generateSuite) {
       const suiteProg = startProgress(sessions, session, job, 'suite_generating', {
@@ -577,7 +577,7 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
         sessions.addWorkaround(session, `generated a POM suite (${suite.compiledFlows.filter((c) => c.ok).length} runnable flow(s))`);
         suiteProg.done(`suite ready: runnable=${suite.suiteRunnable}`);
       }
-      suiteForReport = suite; // embed suite outputs in the report artifact (item 3)
+      suiteForReport = suite; // embed suite outputs in the report artifact
     }
 
     // ---- D2. App Knowledge Map: update the durable map after runtime execution.
@@ -624,7 +624,7 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
       log('warn', 'test_this app map update failed', { jobId: job.jobId, err: String(e) });
     }
 
-    // GOAL-20: reproduce_bug names the bug in the report. Swipium explored toward goalText but can't
+    // reproduce_bug names the bug in the report. Swipium explored toward goalText but can't
     // judge reproduction itself, so the outcome is an explicit "not verified" for the agent to settle.
     if (a.goal === 'reproduce_bug') {
       const bug = (a.goalText ?? '').trim();

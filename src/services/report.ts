@@ -1,4 +1,4 @@
-// Report service (Phase 3.2 Milestone B): the session-report assembly, extracted from the
+// Report service: the session-report assembly, extracted from the
 // qa_report tool so qa_test_this execute can produce a real report artifact in EVERY terminal
 // state (completed or blocked), not just tell the agent to call qa_report. qa_report is now a thin
 // wrapper around generateSessionReport().
@@ -85,7 +85,7 @@ export interface ReportOptions {
   baseline?: string;
   trendRoot?: string;
   includeCurrentDump?: boolean;
-  /** Suite outputs to embed in the report (Phase 3.2.1): paths, compiled flows, runnable status. */
+  /** Suite outputs to embed in the report: paths, compiled flows, runnable status. */
   suite?: {
     generated: boolean;
     skippedReason?: string;
@@ -133,7 +133,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   let networkRestore: string | undefined;
   if (session.network?.changed) {
     if (driver) {
-      // GOAL-25: a backend that can't toggle the network (iOS) must not make report generation
+      // A backend that can't toggle the network (iOS) must not make report generation
       // fail forever. Report the failed restore instead of throwing; on a backend that can't change
       // the network nothing was changed, so clear the stale flag.
       try {
@@ -164,7 +164,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   const high = session.findings.filter((f) => f.severity === 'high');
   const uniqueFindings = dedupeFindings(session.findings);
 
-  // GOAL NEW-R3-2 / E2E NEW-15: WDA returning no UI source (a native/high wda_unreachable finding) is
+  // WDA returning no UI source (a native/high wda_unreachable finding) is
   // a tool / environment failure (WDA_UNREACHABLE). It still fails the gate as a high finding, but it
   // is not native/app health, not an app failure and not evidence that the app was exercised.
   const isToolFinding = (f: { kind: string; failureCode?: string }) => f.kind === 'wda_unreachable' || f.failureCode === 'WDA_UNREACHABLE';
@@ -263,7 +263,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
 
   const blockedCount = outcomeTally.blocked ?? 0;
   const APP_OWNED_FAIL_CATEGORIES = new Set(['app_bug', 'other']);
-  // GOAL-24: a Swipium-generated flow failing on a locator step is automation drift (category
+  // A Swipium-generated flow failing on a locator step is automation drift (category
   // 'other' + AUTOMATION_DRIFT_NOTE): a caution to repair the flow, never an app FAIL / BLOCK.
   const driftFailCount = notes.filter(isAutomationDriftNote).length;
   const appFailNotes = notes.filter(
@@ -275,7 +275,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   const topHigh = high.find((f) => !isToolFinding(f)) ?? high[0];
   const topAppFailNote = appFailNotes[0];
   const topBlockedNote = notes.find((n) => n.outcome === 'blocked');
-  // No evidence => never SHIP. R5 must-fix 1: the rule is inverted. Only a Swipium-run check that
+  // No evidence => never SHIP. Only a Swipium-run check that
   // looked at the app's UI and found it healthy counts as exercising the app: a smoke or flow pass
   // whose oracle read the UI (a launch smoke with app=ok, so RedBox / blank were ruled out), or an
   // exploration that reached at least one structured (non visual-only) app screen. Agent verdicts
@@ -296,7 +296,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   const appActionSince = (t: number) => session.recordedActions.some((ra) => ra.at > t && ra.appForeground);
   const appShotSince = (t: number) =>
     session.artifacts.some((art) => (art.kind === 'screenshot' || art.kind === 'recording') && art.appForeground && art.createdAt > t);
-  // E2E NEW-1 / NEW-10: reaching the app takes real evidence: a launch of the app under test, a
+  // Reaching the app takes real evidence: a launch of the app under test, a
   // screenshot taken while it was in front, an action with it in front, a health finding, or the above.
   // A home-screen qa_screenshot of a blocked run, a blocked/skipped qa_note and Swipium's own report
   // exports are NOT evidence.
@@ -314,7 +314,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     !exercised && notes.some((n) => (n.source === 'qa_note' || n.evidenceKind === 'manual_review') && n.outcome === 'pass');
   const unbackedPassClaim = unverifiedPassClaim && !appSeen;
   const reachedApp = exercised || appSeen;
-  // E2E NEW-10/13: a not-tested run stays not tested for every later qa_report (same verdict, same
+  // A not-tested run stays not tested for every later qa_report (same verdict, same
   // blocker code) until a Swipium-run healthy check (above) is recorded after it.
   if (options.notTested) {
     session.notTested = {
@@ -331,7 +331,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     }
   }
   const marker = options.notTested ?? session.notTested;
-  // E2E NEW-13: a refused consent (CONSENT_CANCELLED / _DECLINED / _REFUSED) is ledgered on the
+  // A refused consent (CONSENT_CANCELLED / _DECLINED / _REFUSED) is ledgered on the
   // session with its code; a run that tested nothing gates with that code, not NOT_TESTED.
   const consentRefusal = [...(session.mutations ?? [])]
     .reverse()
@@ -346,7 +346,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   // `exercised:false` = no workflow was tested: the CI gate fails even when the app was reached.
   const notTested: { reachedApp: boolean; exercised: boolean; reason: string; failureCode: string } | undefined = marker
     ? {
-        // reachedApp:false from the caller = THIS run never launched the app (GOAL-7: a launch failure);
+        // reachedApp:false from the caller = THIS run never launched the app (a launch failure);
         // earlier evidence in the session does not make it a tested run.
         reachedApp: marker.reachedApp === false ? false : exercised,
         exercised,
@@ -380,8 +380,8 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
                 : 'the app was reached but no workflow was exercised',
             failureCode: blockerCodeOf(topBlockedNote),
           };
-  // AND-4 / E2E NEW-4: health was never checked when the app was never reached; "OK" would be a claim.
-  // E2E-2: a visual-only smoke (no UI tree read) left app-layer health "unverified", never OK.
+  // Health was never checked when the app was never reached; "OK" would be a claim.
+  // A visual-only smoke (no UI tree read) left app-layer health "unverified", never OK.
   const healthUnchecked = !!notTested && !notTested.reachedApp && healthFindings.length === 0;
   const lastLaunchSmoke = [...notes].reverse().find((n) => n.workflow === 'launch_smoke');
   if (healthUnchecked) {
@@ -495,7 +495,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
       return { status: 'BLOCKED', summary };
     }
     if (notTested && !notTested.reachedApp) return { status: 'NOT_RUN', summary: `Not tested: ${notTested.reason}.` };
-    // E2E NEW-17: launched, but the only pass is the agent's claim: nothing Swipium ran judged the app.
+    // Launched, but the only pass is the agent's claim: nothing Swipium ran judged the app.
     if (unverifiedPassClaim)
       return {
         status: 'UNVERIFIED',
@@ -545,7 +545,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   // never "PASS" after tool errors. Tool health only: it does not change the app verdict.
   const toolVerdict = toolVerdictFor(toolLimitationNotes, session.toolErrors, redact);
 
-  // Single product-facing QA level (Deliverable 6 / §3.11). Derived from the same evidence the
+  // Single product-facing QA level. Derived from the same evidence the
   // report already trusts: readiness labels and health. Honest by construction.
   const qaLevel = deriveQaLevel({
     observed: readiness.includes('observed'),
@@ -559,7 +559,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     ciReplayed: readiness.includes('ci_ready'),
   });
 
-  // Universal run test catalog (Deliverable 4 / review #6): documents executed, skipped, blocked,
+  // Universal run test catalog: documents executed, skipped, blocked,
   // and exploration-promoted workflows for EVERY run, even when no suite was generated.
   const suiteReplayStatus = readiness.includes('ci_ready')
     ? 'fresh_state'
@@ -605,7 +605,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   try {
     const now = new Date().toISOString();
     const hasKnowledge = session.recordedActions.length > 0 || notes.length > 0 || !!session.exploration;
-    // GOAL-10: actions/exploration recorded on a fatal error surface (RedBox, crash) are not app
+    // Actions/exploration recorded on a fatal error surface (RedBox, crash) are not app
     // knowledge; only the recorded outcomes are folded into the canonical suite then.
     const fatalSurface = nativeHealth === 'error' || appHealth === 'error';
     if (hasKnowledge) {
@@ -616,7 +616,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
         fixtures: session.fixtures,
         notes: session.notes,
         exploration: fatalSurface ? undefined : session.exploration,
-        platforms: casePlatformsFor(session), // GOAL-22: the observed platform, not a default "android"
+        platforms: casePlatformsFor(session), // the observed platform, not a default "android"
         source: 'report',
         now,
         replayStatus: suiteReplayStatus as ReplayStatus,
@@ -727,7 +727,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
       screen: f.screen,
       screenshotUri: f.screenshotUri,
     })),
-    // E2E NEW-18: an agent's pass claim nothing backs is marked `unverified` (exports render it as a
+    // An agent's pass claim nothing backs is marked `unverified` (exports render it as a
     // skipped / "pass (unverified)" case, never a passing test).
     testOutcomes: notes.map((n) => ({
       ...n,
@@ -748,10 +748,10 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     wda: wdaReport,
     ci: { env: !!process.env.CI },
     visualOnly: session.mode === 'visual-fallback',
-    // Generated suite (Phase 3.2.1): paths, compiled flows, runnable status, so the report (not
+    // Generated suite: paths, compiled flows, runnable status, so the report (not
     // just the job result) records whether a runnable automation suite was produced.
     generatedSuite: options.suite ?? null,
-    // Guided exploration (Phase 3.3 §9.2): screen graph + coverage counts.
+    // Guided exploration: screen graph + coverage counts.
     exploration: session.exploration
       ? {
           graphUri: session.exploration.graphUri,
@@ -883,7 +883,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     /* best-effort: issue ledger is additive, never blocks the report */
   }
 
-  // B9: deep-redact the WHOLE report (steps, nextStep, missingPrecondition, workflow names, issue
+  // Deep-redact the WHOLE report (steps, nextStep, missingPrecondition, workflow names, issue
   // markdown, …) with the session redactor before it is persisted or rendered into any export.
   // Escaping in JUnit/SARIF/Markdown would otherwise turn a secret into text redaction can't match.
   // Replace the fields rather than merge: a top-level key that itself redacts to a different
@@ -1004,7 +1004,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     'application/json',
     'artifact manifest with SHA-256 hashes',
   );
-  // E2E NEW-9: an invalid policy (ignored: every failure blocks) or unknown keys are said out loud.
+  // An invalid policy (ignored: every failure blocks) or unknown keys are said out loud.
   let releasePolicyNotice: string | null = null;
   try {
     releasePolicyNotice = policyNotice(session.root);
@@ -1038,7 +1038,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
       ? `top readiness fixes:\n  ${automationReadiness.topFixes.join('\n  ')}`
       : 'top readiness fixes: none',
     `${report.coverage}${report.visualOnly ? ' · VISUAL-ONLY (structured snapshots were poor, see screenshots)' : ''}`,
-    report.device ? `emulator display: ${report.emulatorDisplay}` : '', // AND-4: no device, no display line
+    report.device ? `emulator display: ${report.emulatorDisplay}` : '', // no device, no display line
     `network: ${finalNetwork}${networkRestore ? ` (${networkRestore})` : session.network?.changed ? ' ⚠ Swipium changed it and did NOT restore' : ''}`,
     report.activeRecording
       ? `A screen recording is still active (${report.activeRecording.backend}, ~${report.activeRecording.seconds}s). It will be stopped on shutdown.`
@@ -1116,7 +1116,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
 
   // report.md: the agent-readable report (this summary), what terminal results and the server
   // instructions point at. report.json stays the machine/CI copy.
-  // E2E NEW-12: run text (note reasons, logcat, Metro output) can carry ANSI escapes / NULs; neither the
+  // Run text (note reasons, logcat, Metro output) can carry ANSI escapes / NULs; neither the
   // qa_report text nor report.md keeps them.
   const summaryText = stripControls(redact(lines.join('\n')) ?? '');
   const reportMdUri = sessions.saveArtifact(

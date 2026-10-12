@@ -1,4 +1,4 @@
-// qa_explore (Phase 3.3): bounded, safe-by-default guided exploration as a background job. Drives
+// qa_explore: bounded, safe-by-default guided exploration as a background job. Drives
 // the runExplore service: observe > rank safe candidates > act > health > graph, writing a screen
 // graph artifact (JSON + Markdown) and recording qa_note outcomes. Returns a running jobId; the
 // terminal state + graphUri land in the job result (poll qa_job_status). Thin wrapper; all logic
@@ -377,7 +377,7 @@ async function runExploreJob(
     });
     prog.done(`explored ${res.summary.screensVisited} screens`);
 
-    // GOAL-12: the session budget stopped the exploration (runner state "blocked").
+    // The session budget stopped the exploration (runner state "blocked").
     const budgetStopped = res.stoppedReason.startsWith('session budget:');
     const nextRecommendedAction = res.needsInput
       ? {

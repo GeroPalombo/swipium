@@ -126,7 +126,7 @@ function readEntries(): ManagedProcessEntry[] {
 }
 
 function writeEntries(entries: ManagedProcessEntry[]): void {
-  // 0600: entries carry full child command lines (TOOL-20). tmp + rename (Windows-retried).
+  // 0600: entries carry full child command lines. tmp + rename (Windows-retried).
   writeFileAtomicSync(PROCESSES_FILE, JSON.stringify(entries.slice(-MAX_ENTRIES), null, 2), { mode: PRIVATE_STATE_FILE_MODE });
 }
 
@@ -191,8 +191,8 @@ export function registerManagedProcess(
  *  registry. Lets `qa_wda stop` stop a WDA started by a previous server run. With `endpoint`, a
  *  WDA this server owns at that URL also matches when its session is gone (sessions expire, an
  *  adopted WDA outlives them; only one WDA can listen on a URL), but only when its recorded
- *  `-destination id=<udid>` is `udid`: an endpoint alone never matches (IOS NEW-1: a stop by port
- *  killed another simulator's WDA). */
+ *  `-destination id=<udid>` is `udid`: an endpoint alone never matches (a stop by port
+ *  must not kill another simulator's WDA). */
 export function registeredWdaForSession(sessionId: string, endpoint?: string, udid?: string): ManagedProcessEntry | undefined {
   const owned = readEntries().filter((e) => e.kind === 'wda' && e.serverPid === process.pid);
   return (
@@ -209,8 +209,8 @@ export function wdaEntryUdid(e: Pick<ManagedProcessEntry, 'command'>): string | 
 
 /** Managed WDAs recorded for simulator `udid` by ANY server (this one, a live concurrent one, or a
  *  dead one not yet swept), newest first, whose pid still carries the recorded fingerprint. Lets
- *  `qa_wda stop` in a new session stop that simulator's WDA (IOS NEW-3) and prepare / attach find
- *  it on whatever port it was started (IOS-3). */
+ *  `qa_wda stop` in a new session stop that simulator's WDA and prepare / attach find
+ *  it on whatever port it was started. */
 export function registeredWdasForDevice(udid: string, ops: ProcessOps = REAL_OPS): ManagedProcessEntry[] {
   const want = udid.toUpperCase();
   return readEntries()
@@ -219,7 +219,7 @@ export function registeredWdasForDevice(udid: string, ops: ProcessOps = REAL_OPS
 }
 
 /** Ports recorded for live managed WDAs of OTHER simulators (any server). A WDA's xcodebuild takes
- *  10-40 s to bind its port, so a port probe alone races a concurrent setup (IOS-3): these count
+ *  10-40 s to bind its port, so a port probe alone races a concurrent setup: these count
  *  as taken. */
 export function reservedWdaPorts(udid: string, ops: Pick<ProcessOps, 'pidAlive'> = REAL_OPS): number[] {
   const want = udid.toUpperCase();
@@ -418,7 +418,7 @@ export interface ReapOptions {
 }
 
 /** A WDA busy serving a slow command (launching an app, setting up an automation session) does not
- *  answer /status within the short probe (IOS NEW-5: another server's startup sweep reaped such a
+ *  answer /status within the short probe (another server's startup sweep must not reap such a
  *  WDA mid-command). A timed-out probe is retried with a longer budget, and one that times out
  *  again counts as alive (busy, still bounded by the 12 h cap); only a refused connection or a
  *  not-ready answer is unhealthy. */

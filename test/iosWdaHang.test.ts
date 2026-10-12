@@ -1,4 +1,4 @@
-// R5 follow-ups (iOS/WDA): hung WDA handling and small result fixes.
+// iOS/WDA follow-ups: hung WDA handling and small result fixes.
 //  - prepareIos: this simulator's own WDA already hung before prepare (listens, /status silent) is
 //    WDA_UNREACHABLE / wdaHung, never a visual-only pass; POST /session is capped at 15 s and a
 //    timeout with a silent /status is the hung path

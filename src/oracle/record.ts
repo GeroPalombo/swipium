@@ -1,4 +1,4 @@
-// Record health findings into the session for qa_report (review #3, Phase 2.2).
+// Record health findings into the session for qa_report.
 // Shared by qa_act (auto after each action) and qa_check_health (on demand). Carries the
 // native/app layer + visible-text evidence, and (for app-layer error surfaces) captures
 // ONE screenshot as evidence and attaches its URI to those findings.
@@ -43,7 +43,7 @@ export async function recordHealthFindings(
   const crashLike = findings.find((f) => f.layer === 'native' && f.severity === 'high' && CRASH_KIND_RE.test(`${f.kind} ${f.detail}`));
   const logUri = crashLike && driver ? await captureCrashLog(sessions, session, driver, crashLike.kind) : undefined;
   // Also on the caller's finding, so the qa_check_health / qa_act response links the excerpt
-  // instead of leaving it findable only through qa_report's Evidence list (LOG-3).
+  // instead of leaving it findable only through qa_report's Evidence list.
   if (crashLike && logUri && !crashLike.logUri) crashLike.logUri = logUri;
 
   for (const f of findings) {
@@ -67,7 +67,7 @@ export async function recordHealthFindings(
   }
 }
 
-/** E2E NEW-17: after a prepare launch, read ONE UI tree and look for an RN/Expo launch error
+/** After a prepare launch, read ONE UI tree and look for an RN/Expo launch error
  *  screen. A bundle-load RedBox / the Expo dev launcher marks the session not tested with
  *  METRO_REQUIRED (an environment blocker, cleared by a later Swipium outcome, so a qa_note pass
  *  can't turn it into a tested run); any other RedBox is recorded as the same app finding
@@ -109,7 +109,7 @@ export function launchErrorText(f: Finding): string {
 const CRASH_KIND_RE = /native_crash|\banr\b|possible crash/i;
 const CRASH_START_RE = /FATAL EXCEPTION|ANR in |am_anr|am_crash|Fatal signal \d+/;
 // Swipium's own processes in logcat (the uiautomator dump runs as `app_process` uid 2000): their
-// AndroidRuntime start/stop lines matched the crash fallback and buried the real evidence (LOG-3).
+// AndroidRuntime start/stop lines matched the crash fallback and buried the real evidence.
 const SWIPIUM_NOISE_RE = /RuntimeInit uid 2000|com\.android\.commands\.|uiautomator/i;
 
 /** threadtime `MM-DD HH:MM:SS.mmm  PID  TID L TAG: msg` > PID. */
@@ -148,7 +148,7 @@ function crashBlock(log: string, appId?: string, appOnly = false): string | unde
   }
   if (start < 0 || (appOnly && appId && !lines.slice(start, start + 4).some((l) => l.includes(appId)))) return undefined;
   // The block only: from its start line to the next crash start, so an older tombstone's tail or a
-  // later crash never leaks in (LOG-3). A Java crash is also limited to the crashed pid's lines; a
+  // later crash never leaks in. A Java crash is also limited to the crashed pid's lines; a
   // native tombstone is not (its backtrace is logged by crash_dump/DEBUG under another pid).
   let end = start + 1;
   while (end < lines.length && end < start + 120 && !CRASH_START_RE.test(lines[end])) end++;
@@ -161,9 +161,9 @@ function crashBlock(log: string, appId?: string, appOnly = false): string | unde
 // One log capture per session per class (crash / ANR) and window: qa_act re-runs health after every
 // action while a crash dialog stays up, and each would otherwise pull logcat again. A repeat inside
 // the window reuses the captured excerpt, so the later finding (a qa_act after qa_check_health, or
-// "process gone" after the crash dialog) still links it (LOG NEW-2). A crash reuses it only while
+// "process gone" after the crash dialog) still links it. A crash reuses it only while
 // the crash buffer's newest FATAL block is the same one: a second crash (new pid / time) inside the
-// window gets its own excerpt (R5 must-fix 4). The crash-buffer read is small; the wide main-buffer
+// window gets its own excerpt. The crash-buffer read is small; the wide main-buffer
 // read is what the window saves.
 const lastLogCapture = new WeakMap<Session, Map<string, { at: number; uri?: string; block?: string }>>();
 const LOG_CAPTURE_WINDOW_MS = 30_000;

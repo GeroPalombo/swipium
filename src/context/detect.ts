@@ -40,7 +40,7 @@ export interface DetectedContext {
   framework: Framework;
   monorepo: boolean;
   artifacts: { apks: string[]; ipas: string[]; appBundles: string[] };
-  /** Android serials/AVDs plus iOS simulators (H9: macOS only; empty elsewhere or without Xcode). */
+  /** Android serials/AVDs plus iOS simulators (macOS only; empty elsewhere or without Xcode). */
   devices: {
     androidOnline: string[];
     avds: string[];

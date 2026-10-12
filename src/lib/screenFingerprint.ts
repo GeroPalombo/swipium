@@ -1,4 +1,4 @@
-// Cheap pixel fingerprint of the screen (X1 liveness): a sparse sample grid of a raw framebuffer,
+// Cheap pixel fingerprint of the screen (liveness check): a sparse sample grid of a raw framebuffer,
 // used to answer "has the screen changed since the snapshot?" without a ~2 s UI-tree dump.
 //
 // Input is Android `screencap` WITHOUT -p: a 12 or 16 byte header (width, height, format

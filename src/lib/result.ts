@@ -413,7 +413,7 @@ export function qaAnnotate(result: CallToolResult, notes: string[]): CallToolRes
 }
 
 /** A deliberate, budgeted stop: the requested action was NOT performed. Not a tool error (no
- *  isError), but never `ok:true` either (GOAL-12): an agent checking `ok` must not read a skipped
+ *  isError), but never `ok:true` either: an agent checking `ok` must not read a skipped
  *  tap/type/screenshot as done. Typed BUDGET_EXHAUSTED; the agent should call qa_report next. */
 export function qaStop(reason: string, payload: Record<string, unknown>): CallToolResult {
   const base = { ok: false, stopped: true, performed: false, failureCode: 'BUDGET_EXHAUSTED', reason, ...payload };

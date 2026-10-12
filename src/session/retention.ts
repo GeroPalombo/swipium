@@ -9,7 +9,7 @@
 //   - it is NOT among the newest `keepPerProject` sessions of its project (kept regardless of age),
 //     where the keep-N applies ONLY while the project's root (the `root` in its newest state.json)
 //     still exists. One-off roots (deleted temp dirs, removed worktrees/CI checkouts) age out by
-//     `days` alone; previously the keep-N protected every one-session project forever (SET-2/TOOL-7).
+//     `days` alone; previously the keep-N protected every one-session project forever.
 // The automatic startup prune is bounded (time budget, random starting project) so a huge runs dir
 // never costs every server start a full scan; repeated starts converge. `swipium gc` is unbounded.
 // Thresholds: SWIPIUM_RETENTION_DAYS (default 30; "0"/"off" disables the automatic startup prune,

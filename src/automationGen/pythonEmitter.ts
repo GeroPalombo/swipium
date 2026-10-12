@@ -51,7 +51,7 @@ const PY_BASE_MEMBERS = [
   'cls',
 ];
 
-/** Sanitized, collision-free names for one screen class (H4). */
+/** Sanitized, collision-free names for one screen class. */
 interface PyScreenNames {
   cls: string;
   module: string;
@@ -163,8 +163,8 @@ function locatorDict(el: CrossPlatformElement): string {
 }
 
 export function emitPythonSuite(input: PyEmitInput): GeneratedFile[] {
-  // Plan every class/attribute/method name up front (H4) and validate every step is emittable
-  // (§4). Generation fails loudly here rather than writing a suite with silent no-op steps.
+  // Plan every class/attribute/method name up front and validate every step is emittable.
+  // Generation fails loudly here rather than writing a suite with silent no-op steps.
   const names = planPyNames(input.model);
   const smoke = input.framework === 'pytest' ? pytestSmoke(input.model, names) : unittestSmoke(input.model, names);
   const files: GeneratedFile[] = [];
@@ -201,7 +201,7 @@ addopts = -ra
 
 function conftest(input: PyEmitInput): string {
   const appId = input.appId ?? '';
-  // LOG-18: unittest suites import build_options from here, so pytest is imported (and the
+  // The unittest suites import build_options from here, so pytest is imported (and the
   // fixture defined) only for pytest suites; requirements.txt lists pytest only then.
   const pytestOnly = input.framework === 'pytest';
   // The recorded app id belongs to the recorded platform only (never an Android package as a bundle id).

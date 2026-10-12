@@ -106,7 +106,7 @@ function recomputeCoverage(map: AppKnowledgeMap): void {
   };
 }
 
-/** Everything the (slow) static scan produces, computed OUTSIDE the app-map lock (H8) so the
+/** Everything the (slow) static scan produces, computed OUTSIDE the app-map lock so the
  *  locked critical section is only load > merge > save and can never outlive the stale threshold. */
 interface StaticScanBundle {
   scan: ReturnType<typeof staticScan>;
@@ -188,7 +188,7 @@ export const buildHooks: { onStaticScan?: (root: string) => void } = {};
 
 /** Build (or incrementally update) the app map. Filesystem-bound but never throws on scan errors. */
 export function buildAppMap(root: string, opts: BuildOptions): BuildResult {
-  // H8: the static scan can take many seconds on a large repo, and the lock is synchronous (no
+  // The static scan can take many seconds on a large repo, and the lock is synchronous (no
   // heartbeat can fire while a sync fn runs), and holding it across the scan let a concurrent builder
   // judge it stale and steal it. So the scan runs FIRST, lock-free (it reads sources, not the map),
   // and the lock covers only load > merge > save. The whole cycle still holds the lock end-to-end,

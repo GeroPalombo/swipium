@@ -1,4 +1,4 @@
-// Session snapshot bookkeeping: stable @eN refs across dumps (X3) and ONE freshness rule (X1/P2):
+// Session snapshot bookkeeping: stable @eN refs across dumps and ONE freshness rule:
 // a stored snapshot is reusable only while it is young AND no action ran since it was taken.
 
 import type { DumpOptions, Driver } from '../drivers/Driver.js';
@@ -8,11 +8,11 @@ import { screenFingerprint } from './settle.js';
 import { samePixels, type PixelFingerprint } from '../lib/screenFingerprint.js';
 import { runWithSignal } from '../lib/abortScope.js';
 
-/** A ref target older than this is re-checked against a fresh dump before acting (X1). */
+/** A ref target older than this is re-checked against a fresh dump before acting. */
 export const REF_FRESH_MS = 1500;
-/** text/id resolution and flows reuse the stored snapshot while younger than this (P2). */
+/** text/id resolution and flows reuse the stored snapshot while younger than this. */
 export const SNAPSHOT_REUSE_MS = 2000;
-/** A ref snapshot older than this is always re-dumped, even when the pixels look unchanged (X1). */
+/** A ref snapshot older than this is always re-dumped, even when the pixels look unchanged. */
 export const PIXEL_TRUST_MAX_MS = 60_000;
 /** Max center shift (Manhattan px) for a same-key node to keep its ref. */
 const REF_KEEP_MAX_SHIFT = 64;
@@ -21,7 +21,7 @@ const REF_KEEP_MAX_SHIFT = 64;
 const extraSeq = new WeakMap<Session, number>();
 // Highest ref number handed out per session, so a vanished ref is never reused for another node.
 const refHigh = new WeakMap<Session, number>();
-// Pixel baseline per stored snapshot (X1 liveness), captured right after adoption on drivers with
+// Pixel baseline per stored snapshot (liveness check), captured right after adoption on drivers with
 // pixelFingerprint (Android direct), with the adoption time (`at` moves on each verification).
 const baselines = new WeakMap<LastSnapshot, { at: number; fp: Promise<PixelFingerprint | undefined> }>();
 
@@ -32,7 +32,7 @@ export interface RetiredRef {
 }
 /** How many retired refs a session keeps (oldest dropped first). */
 export const RETIRED_REFS_MAX = 200;
-// Retired refs per session (X1), for the app they were seen in. Cleared when the app changes or
+// Retired refs per session, for the app they were seen in. Cleared when the app changes or
 // ref numbering restarts (no prior snapshot), since an old ref could then name a new node.
 const retired = new WeakMap<Session, { appId?: string; refs: Map<string, RetiredRef> }>();
 
@@ -98,7 +98,7 @@ function shift(a: RawNode, b: RawNode): number {
 /** Same element in (nearly) the same place whose structural key changed (its text changed in place). */
 function sameSlot(a: RawNode, b: RawNode): boolean {
   if (a.cls !== b.cls || a.id !== b.id) return false;
-  // A text field whose value changed in place (GOAL-30): its label can become the typed value
+  // A text field whose value changed in place: its label can become the typed value
   // (iOS) and a clear button can narrow it, so only the row it sits in must match.
   if (isTextFieldClass(a.cls)) {
     const [ax1, ay1, ax2, ay2] = a.bounds;
@@ -111,7 +111,7 @@ function sameSlot(a: RawNode, b: RawNode): boolean {
   if (!a.bounds.every((v, i) => Math.abs(v - b.bounds[i]) <= 8)) return false;
   // Same own text: the subtree label must match too (a scrolled list row). Changed own text: only an
   // element with an id is still the same one; an id-less element in the same spot on a new screen
-  // is a different element (IOS-10: an unlabeled Settings row took over "Información"'s ref).
+  // is a different element (an unlabeled Settings row took over "Información"'s ref).
   if (a.text === b.text && a.desc === b.desc) return (a.label ?? '') === (b.label ?? '');
   return !!a.id;
 }
@@ -198,12 +198,12 @@ export function adoptSnapshot(session: Session, parsed: ParsedSnapshot): ParsedS
 }
 
 /**
- * X1 liveness: is the screen pixel-identical (status bar excluded, lib/screenFingerprint.ts) to
+ * Liveness: is the screen pixel-identical (status bar excluded, lib/screenFingerprint.ts) to
  * when the stored snapshot was adopted? Only when no action ran since, the snapshot was adopted
  * less than PIXEL_TRUST_MAX_MS ago and it has a baseline. One raw screencap (~130 ms on Android)
  * instead of a ~2 s dump. Any doubt (no baseline, capture failed, changed pixels) answers false.
  * True refreshes the snapshot's `at` (verified current now), so the action's settle can still use
- * it as the pre-action screen (preActionFingerprint, P1).
+ * it as the pre-action screen (preActionFingerprint).
  */
 export async function unchangedSinceSnapshot(session: Session): Promise<boolean> {
   const s = session.lastSnapshot;
@@ -226,7 +226,7 @@ export async function snapshotNow(session: Session, d: Driver, opts?: DumpOption
 }
 
 /** Fingerprint of the stored snapshot when it is a recent PRE-action view (taken within
- *  PRE_ACTION_MAX_AGE_MS, at most one action since), for settle's fast accept; undefined otherwise (P1 then stays 2-dump). */
+ *  PRE_ACTION_MAX_AGE_MS, at most one action since), for settle's fast accept; undefined otherwise (settle then stays 2-dump). */
 export function preActionFingerprint(session: Session): string | undefined {
   const s = session.lastSnapshot;
   if (!s?.at || Date.now() - s.at > PRE_ACTION_MAX_AGE_MS) return undefined;

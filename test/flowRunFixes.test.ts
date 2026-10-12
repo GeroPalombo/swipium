@@ -1,6 +1,6 @@
 // Flow runner execution-layer fixes (runFlow driven directly with a fake driver):
-//  H7  clearOverlay presses BACK only when a keyboard/dialog is actually present.
-//  H2  step detail/reason are scrubbed of secrets (driver errors can echo typed text).
+//  - clearOverlay presses BACK only when a keyboard/dialog is actually present.
+//  - step detail/reason are scrubbed of secrets (driver errors can echo typed text).
 //  #7  gestures re-read the screen size, so a mid-flow rotation uses the new axes.
 
 import { describe, expect, it } from 'vitest';
@@ -134,7 +134,7 @@ async function runWith(fake: FlowFake, steps: FlowStep[], variables?: Record<str
   return runFlow(sessions, session, fake, flowOf(steps), { variables });
 }
 
-describe('flow clearOverlay (H7)', () => {
+describe('flow clearOverlay', () => {
   it('does NOT press BACK when no keyboard or dialog is present', async () => {
     const fake = new FlowFake();
     const r = await runWith(fake, [{ kind: 'clearOverlay' }]);
@@ -182,7 +182,7 @@ describe('flow clearOverlay (H7)', () => {
   }, 20_000);
 });
 
-describe('flow step detail redaction (H2)', () => {
+describe('flow step detail redaction', () => {
   it('scrubs a secret typed value echoed by a failing driver from detail and reason', async () => {
     const fake = new FlowFake();
     fake.inputError = new Error('`adb shell input text S3cretPass` exited 1: S3cretPass rejected');

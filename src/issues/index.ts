@@ -148,7 +148,7 @@ function recordObservationLocked(
   const events: IssueEvent[] = [observed];
   let record = foldEvent(prev, observed);
 
-  // Recurrence: append an explicit `reopened` event so the audit trail is honest (spec §Recurrence).
+  // Recurrence: append an explicit `reopened` event so the audit trail is honest.
   let reopened = false;
   let recurrenceMessage: string | undefined;
   if (wasFixed && record.state === 'reopened') {

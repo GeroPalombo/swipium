@@ -1,5 +1,5 @@
-// 2.3.0 final fixes: retired refs re-found or STALE_REF with candidates (X1), descendant labels
-// skip the X5 pre-tap screenshot.
+// 2.3.0 fixes: retired refs re-found or STALE_REF with candidates, descendant labels
+// skip the pre-tap screenshot.
 
 import { describe, expect, it } from 'vitest';
 import { mkdtempSync } from 'node:fs';
@@ -40,7 +40,7 @@ function rowRef(session: Session, label: string): string {
   throw new Error(`no row ${label}`);
 }
 
-describe('X1 retired refs', () => {
+describe('retired refs', () => {
   it('a row that got a new ref after a scroll is re-found by identity + label and tapped at its new center', async () => {
     const labels = ['Network', 'Battery', 'Display', 'Sound'];
     const fake = new FakeDriver(list(labels));
@@ -98,7 +98,7 @@ describe('X1 retired refs', () => {
   });
 });
 
-describe('X3 refs across a blank screen', () => {
+describe('refs across a blank screen', () => {
   it('an empty snapshot (splash) does not restart ref numbering', () => {
     const fake = new FakeDriver(list(['A', 'B']));
     const session = newSession(fake);
@@ -111,7 +111,7 @@ describe('X3 refs across a blank screen', () => {
   });
 });
 
-describe('X5 pre-tap screenshot only for really unlabeled targets', () => {
+describe('pre-tap screenshot only for really unlabeled targets', () => {
   it('a clickable row labeled by a child TextView needs no pixel check; a bare clickable does', () => {
     const xml = screen(row(200, 'Battery') + node(`class="android.view.View" clickable="true" ${bounds(600)}`));
     const session = newSession(new FakeDriver(xml));

@@ -23,7 +23,7 @@ import { AUTOMATION_DRIFT_NOTE, FAILURES } from '../oracle/failures.js';
 import { WDA_SESSION_CREATE_MS, withWdaCall } from '../lib/wda.js';
 import { isDeviceGoneError } from '../lib/deviceGone.js';
 
-/** GOAL NEW-R3-2: per-request WDA timeout once WDA returned no UI source for the whole render wait
+/** Per-request WDA timeout once WDA returned no UI source for the whole render wait
  *  (one re-probe, then the health check / screenshot), so a hung WDA can't stretch the baseline. */
 const WDA_HUNG_PROBE_MS = 5000;
 
@@ -46,7 +46,7 @@ export interface SmokeOptions {
   launch?: boolean;
   runFlows?: boolean;
   variables?: Record<string, string>;
-  /** IOS NEW-A: prepare found WebDriverAgent hung (POST /session timed out and /status did not
+  /** Prepare found WebDriverAgent hung (POST /session timed out and /status did not
    *  answer). The app is not launched or judged again: the smoke records WDA_UNREACHABLE and blocks
    *  the saved flows instead of running a visual-only "launch pass". The text says what hung. */
   wdaUnreachable?: string;
@@ -88,7 +88,7 @@ function externalProviderSteps(flow: Flow): Array<{ step: number; kind: string }
  *  Swipium-generated flow is automation drift, not evidence of an app defect. */
 const LOCATOR_STEP_KINDS = new Set(['waitForVisible', 'tap', 'inputText', 'scrollTo']);
 
-/** How a saved flow's failure is filed (GOAL-14 / GOAL-24):
+/** How a saved flow's failure is filed:
  *  - missing variables / fixtures (missing_data bucket) > blocked + missing_test_data, never a fail;
  *  - the flow's app is not installed (BUNDLE_ID_NOT_FOUND) > blocked + other: a setup problem, not a
  *    Swipium limitation (round-4 Android note: it read "limited by Swipium/MCP capabilities");
@@ -141,7 +141,7 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
 
   // ---- baseline: launch > snapshot quality > health > evidence screenshot ----
   try {
-    // IOS NEW-A: WDA hung while prepare created its session (or while the launch below re-created
+    // WDA hung while prepare created its session (or while the launch below re-created
     // one): nothing on screen is judged, the saved flows are blocked (WDA_UNREACHABLE).
     let hungDetail = opts.wdaUnreachable;
     let launchedAt = Date.now(); // the "no UI source for N s" clock starts after the launch
@@ -164,17 +164,17 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
     }
     // RN/Expo: don't judge the splash / "Bundling 47%" screen. Bounded wait until the app rendered.
     let render: RenderWaitResult | undefined;
-    // Also with launch:false: the app may have just been (re)launched outside Swipium (GOAL NEW-R3-4).
+    // Also with launch:false: the app may have just been (re)launched outside Swipium.
     if (session.appId && !hungDetail)
       render = await waitForAppRender(d, {
         visualOnly: session.mode === 'visual-fallback' || d.kind === 'simulator',
         metroProbe: () => metroListening(),
-        // GOAL NEW-R3-2: a settle that never read a tree already spent part of the one render bound
+        // A settle that never read a tree already spent part of the one render bound
         // (launch to verdict stays within ~30 s plus the 5 s re-probe below against a hung WDA).
         ...(d.kind === 'wda' && !settledTree ? { timeoutMs: Math.max(5000, RENDER_WAIT_MS - (Date.now() - launchedAt)) } : {}),
       });
     throwIfCancelled();
-    // GOAL NEW-R3-2: WebDriverAgent returned no UI source for the whole render wait (after a cold
+    // WebDriverAgent returned no UI source for the whole render wait (after a cold
     // simulator boot it can hang while the app sits on its splash: /status and /source stop
     // answering). Every further WDA call would wait out its own 30 s timeout and every saved flow
     // would replay against it, so one short re-probe decides. Still no tree: WDA_UNREACHABLE (a
@@ -212,7 +212,7 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
     throwIfCancelled();
     if (health.deviceGone) throw new Error('device offline: the bound emulator/simulator is no longer reachable (NO_DEVICE)');
     await boundedWda(() => recordHealthFindings(sessions, session, health.findings, d, health.foreground));
-    // E2E NEW-15 / GOAL NEW-R3-2: WDA not returning a UI source (hung, or died mid-run) is a
+    // WDA not returning a UI source (hung, or died mid-run) is a
     // tool / environment failure, not the app's: WDA_UNREACHABLE, blocked, never app_bug.
     const toolFailure = health.nativeStatus === 'wda_unreachable' && health.appStatus !== 'error';
     // A bundle-load RedBox ("No script URL provided" / "Unable to load script") or the Expo
@@ -222,7 +222,7 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
     const notRendered = render && !render.ready && render.reason !== 'no_tree' ? render : undefined;
     // Timed out on a blank tree (splash only), or on a loading screen ("Bundling 72%", the app's own
     // "Loading…" view; a cold Metro bundle can take 30-90 s): the app was never seen, so the launch
-    // is not judged either way and is blocked, not an app bug (GOAL-9).
+    // is not judged either way and is blocked, not an app bug.
     const blankLaunch = !!notRendered;
     // No UI tree was read (visual-only / dump failed) or only a blank splash: app-layer health was NOT
     // checked, so it is "unverified", never "ok" (a RedBox on a visual-only iOS run used to read as app OK).
@@ -237,7 +237,7 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
       flowsBlockedTag = 'WDA_UNREACHABLE';
     } else if (fatalApp || blankLaunch) {
       // Every saved flow restarts into the same broken / blank launch: don't spend ~25 s per flow
-      // and then blame "locator drift" (AND-9). The flows are blocked by the launch failure.
+      // and then blame "locator drift". The flows are blocked by the launch failure.
       flowsBlockedBy = fatalApp
         ? `launch failed: ${fatalApp.detail}${fatalApp.evidence ? ` ("${fatalApp.evidence.slice(0, 80)}")` : ''}; flows not run`
         : 'launch not verified: the app showed only a blank / splash / loading screen; flows not run';
@@ -447,7 +447,7 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
         artifactUris: failShot ? [failShot] : undefined,
       });
       flowResults.push({ name: f.name, passed: r.passed, failedAtStep: r.failedAtStep, reason: r.reason });
-      // GOAL NEW-R3-2: WDA went unreachable during this flow: the remaining flows would each wait
+      // WDA went unreachable during this flow: the remaining flows would each wait
       // out the same timeouts, so they are blocked instead.
       if (!r.passed && r.failureCode === 'WDA_UNREACHABLE' && !flowsBlockedBy) {
         flowsBlockedBy = `WDA_UNREACHABLE: WebDriverAgent stopped answering during flow ${f.name}; remaining flows not run`;

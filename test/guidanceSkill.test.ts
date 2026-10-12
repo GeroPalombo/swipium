@@ -1,6 +1,6 @@
 // 2.3.0 guidance: the swipium-qa skill (one source, shipped files stay in sync), the MCP prompts
 // built on it, `swipium init claude|codex` (skill install, SWIPIUM_MAX_WAIT_MS, --trust-local),
-// qa_continue_from_blocker resuming directly (C5), qa_status groups (K5), and the registry and
+// qa_continue_from_blocker resuming directly, qa_status groups, and the registry and
 // plugin manifests. Hermetic: HOME points at a temp dir before anything loads.
 
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
@@ -124,7 +124,7 @@ describe('MCP prompts', () => {
   });
 });
 
-describe('qa_status orientation (K5)', () => {
+describe('qa_status orientation', () => {
   it('capabilityGroups carry names + purpose only', () => {
     const groups = orientation().capabilityGroups as Array<Record<string, unknown>>;
     expect(groups.length).toBeGreaterThan(0);
@@ -133,7 +133,7 @@ describe('qa_status orientation (K5)', () => {
   });
 });
 
-describe('swipium init claude|codex (S1, C1, C6)', () => {
+describe('swipium init claude|codex', () => {
   it('claude registration carries SWIPIUM_MAX_WAIT_MS=110000 as -e flags before --', () => {
     const argv = claudeAddArgs('user', '/n', '/x/dist/index.js', claudeEnv(false));
     expect(argv).toEqual(['mcp', 'add', 'swipium', '--scope', 'user', '-e', 'SWIPIUM_MAX_WAIT_MS=110000', '--', '/n', '/x/dist/index.js']);
@@ -209,7 +209,7 @@ describe('swipium init claude|codex (S1, C1, C6)', () => {
   });
 });
 
-describe('qa_continue_from_blocker resumes directly (C5)', () => {
+describe('qa_continue_from_blocker resumes directly', () => {
   type Handler = (a: Record<string, unknown>) => Promise<{ structuredContent?: Record<string, unknown>; content?: unknown[] }>;
   const store = new SessionStore();
   const tools = new Map<string, Handler>();
@@ -263,7 +263,7 @@ describe('qa_continue_from_blocker resumes directly (C5)', () => {
   });
 });
 
-describe('registry + plugin manifests (D2, C6)', () => {
+describe('registry + plugin manifests', () => {
   const json = (f: string) => JSON.parse(readFileSync(join(REPO, f), 'utf8')) as Record<string, unknown>;
 
   it('server.json matches package.json (mcpName, npm identifier, version)', () => {

@@ -1,4 +1,4 @@
-// ESLint flat config (v1-mvp-plan P1 §6). Posture: eslint + typescript-eslint recommended,
+// ESLint flat config. Posture: eslint + typescript-eslint recommended,
 // tuned to the codebase's established patterns rather than switched off wholesale:
 // - empty `catch {}` is an intentional best-effort idiom here > allowEmptyCatch;
 // - existing `any`s are tolerated at warning level (new code should still avoid them);

@@ -33,7 +33,7 @@ export function emitReadme(input: ReadmeInput): string {
   if (model.platforms.android) platformCoverage.push(`Android (${profile.platforms.android.level})`);
   if (model.platforms.ios) platformCoverage.push(`iOS (${profile.platforms.ios.level})`);
 
-  // LOG-19: a fresh Appium has no drivers; install the one for the target platform first.
+  // A fresh Appium has no drivers; install the one for the target platform first.
   const driverInstall = `appium driver install ${defaultPlatformOf(profile, model) === 'ios' ? 'xcuitest' : 'uiautomator2'}   # once per Appium install (Android: uiautomator2, iOS: xcuitest)`;
   const runCmd = isPython
     ? profile.testFramework === 'pytest'

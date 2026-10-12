@@ -192,10 +192,10 @@ describe('qa_issue_log lifecycle modes', () => {
   });
 });
 
-// B1 (1.6.0-RC): manual logs used to fingerprint only failureCode/platform, so every issue logged
-// on one platform collapsed into one — a fixed "Login button unresponsive" came back as a false
+// Manual logs used to fingerprint only failureCode/platform, so every issue logged
+// on one platform collapsed into one: a fixed "Login button unresponsive" came back as a false
 // regression when "Checkout total shows NaN" was logged. Identity now includes the normalized title.
-describe('qa_issue_log mode "log" identity (B1)', () => {
+describe('qa_issue_log mode "log" identity', () => {
   let client: Client;
   let projectRoot: string;
   let sessions: ReturnType<typeof createServer>['sessions'];

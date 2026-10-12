@@ -1,4 +1,4 @@
-// D1: opt-in persistent Android dumper (SWIPIUM_ANDROID_DUMPER=agent). The adb seam (lib/spawn.run)
+// Opt-in persistent Android dumper (SWIPIUM_ANDROID_DUMPER=agent). The adb seam (lib/spawn.run)
 // is mocked; a local TCP server stands in for the forwarded on-device agent.
 
 import { readFileSync, existsSync } from 'node:fs';

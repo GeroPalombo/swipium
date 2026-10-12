@@ -48,7 +48,7 @@ Three calls: start the run, wait for it, and (only when the inlined head isn't e
 
 ## Requirements
 
-**Node.js 22.12 or newer.** On an older Node.js the server prints a warning on stderr and `swipium verify` fails. Swipium works with emulators and simulators only; physical devices are refused with `PHYSICAL_DEVICE_UNSUPPORTED` ([why](docs/physical-devices.md)).
+**Node.js 22.12 or newer.** On an older Node.js the server prints a warning on stderr and `swipium verify` fails. Swipium works with emulators and simulators only; physical devices are refused with `PHYSICAL_DEVICE_UNSUPPORTED` ([why](docs/physical-devices.md)). Structured iOS automation needs WebDriverAgent 6.0 or newer (`qa_wda {action:"setup"}` builds and starts one); without it an iOS Simulator is visual-only.
 
 **MCP:** a stdio server that speaks protocol revisions 2025-06-18, 2025-11-25 and 2026-07-28; the client's first message picks one. Claude Code 2.1.285 and later connect on 2026-07-28, Codex 0.146 on 2025-06-18. Any stdio MCP client should work ([protocol versions](docs/mcp-server.md#protocol-versions)).
 
@@ -78,7 +78,7 @@ npx -y swipium init claude --scope project           # preview; changes nothing
 npx -y swipium init claude --scope project --apply   # writes .mcp.json and the skill, then runs `swipium verify`
 ```
 
-For Claude Code, `init` also sets `SWIPIUM_MAX_WAIT_MS=110000` (one call can wait up to 110 s, so most runs finish in one call) and installs the **swipium-qa agent skill** under `.claude/skills/` (`~/.claude/skills/` for `--scope user`; `--no-skill` skips it). `--trust-local` (local or user scope only) also pre-approves the consent actions that run no project code, so boots and installs stop prompting while builds, Metro and WebDriverAgent still ask. A Claude Code plugin with the same server and skill is in [`plugin/`](plugin/README.md).
+For Claude Code, `init` also sets `SWIPIUM_MAX_WAIT_MS=110000` (one call can wait up to 110 s, so most runs finish in one call) and installs the **swipium-qa agent skill** under `.claude/skills/` (`~/.claude/skills/` for `--scope user`; `--no-skill` skips it). `--trust-local` (local or user scope only) also pre-approves the consent actions that run no project code, so boots and installs stop prompting while builds, Metro and WebDriverAgent still ask. A Claude Code plugin with the same server and skill is in [`plugin/`](plugin/README.md). Swipium is also listed in the [MCP Registry](https://registry.modelcontextprotocol.io) as `io.github.GeroPalombo/swipium`, so registry-aware clients can find and install it.
 
 The same command handles `codex`, `gemini`, `cursor`, and `vscode` (`swipium init <client> --apply`). Claude Desktop, Windsurf, manual configs, and per-client details are in **[docs/mcp-server.md](docs/mcp-server.md)**.
 
@@ -103,7 +103,7 @@ If a tool returns `PROJECT_ROOT_UNRESOLVED`, name the absolute project path in y
 ### What you'll see
 
 - **One approval prompt** listing the exact build, boot, and install commands. Clients with MCP elicitation show a real prompt; others return `requiresConsent`, which the agent must relay to you.
-- **The first build can take minutes.** The run is a background job; `waitForCompletion` and each `qa_job_status` poll wait up to about 45 s by default (110 s with the `SWIPIUM_MAX_WAIT_MS` that `init claude` sets).
+- **The first build can take minutes.** The run is a background job; `waitForCompletion` and each `qa_job_status` poll wait up to about 45 s by default (about 105 s with the `SWIPIUM_MAX_WAIT_MS=110000` that `init claude` sets).
 - **Two states.** The job `status` is `running`, `done`, `failed`, or `cancelled`. The run's `result.state` is `completed` or `needs_input` (job `done`), or `blocked` or `unsafe` (job `failed`). `needs_input` means one question for you, such as login credentials.
 - **A report** with separate verdicts for the app, coverage, and Swipium itself. A completed run inlines a short head (verdicts, top findings with evidence URIs) and saves `report.md` for the agent; a blocked run names the fix. Read it yourself with `npx swipium report --latest --format markdown`.
 

@@ -1,4 +1,4 @@
-// Automation Kernel V2, Workstream 1: backend capability matrix. Pure functions that answer
+// Automation Kernel V2: backend capability matrix. Pure functions that answer
 // "what can this backend actually do?" before any device is touched. The planner (plan.ts) consumes
 // these to classify each step as native / supported_with_fallback / visual_only / unsupported and to
 // name the exact missing capability when something cannot run.
@@ -289,7 +289,7 @@ const IOS_BACKENDS = new Set<AutomationBackend>(['ios-wda', 'appium-xcuitest', '
 export function selectorSupported(caps: BackendCapabilities, strategy: SelectorStrategy): boolean {
   switch (strategy) {
     case 'resource_id':
-      // GOAL-16: on iOS backends a flow `id=` selector is the element's accessibility identifier
+      // On iOS backends a flow `id=` selector is the element's accessibility identifier
       // (the runner resolves it that way), so it is supported wherever accessibility ids are.
       return caps.resourceId || (IOS_BACKENDS.has(caps.backend) && caps.accessibilityId);
     case 'accessibility_id':

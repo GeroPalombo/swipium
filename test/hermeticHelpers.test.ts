@@ -1,13 +1,13 @@
-// Round-4 pure / hermetic helpers (round-4 validation report, CR P5 and the fix notes):
+// Pure / hermetic helpers:
 //  - third-party / OS sign-in detection, the iOS alert cancel picker, generated flows skipping
-//    sign-in taps (GOAL NEW-R4-2);
-//  - init codex TOML check: real Codex headers accepted, unpaired / duplicate headers refused (SET NEW-R4-1);
-//  - scan keeps a hand-edited appId (scanAppId), a corrupt projects.json is moved aside (SET nits);
-//  - test-suite ids: unsafe / duplicate stored ids are renamed on load, never exported (must-fix 5);
-//  - qa_flow_repair: negations are opposites, containment with extra words is never applied (must-fix 6);
-//  - foldText, DEVICE_UNRESPONSIVE mapping, Compose label strip only for the known label (AND R4-2/R4-3, CR P8);
-//  - simulator pin / device-name resolution (E2E NEW-5, IOS NEW-B);
-//  - loading-screen heuristic: a weak caption counts only when it is the whole screen (CR P11).
+//    sign-in taps;
+//  - init codex TOML check: real Codex headers accepted, unpaired / duplicate headers refused;
+//  - scan keeps a hand-edited appId (scanAppId), a corrupt projects.json is moved aside;
+//  - test-suite ids: unsafe / duplicate stored ids are renamed on load, never exported;
+//  - qa_flow_repair: negations are opposites, containment with extra words is never applied;
+//  - foldText, DEVICE_UNRESPONSIVE mapping, Compose label strip only for the known label;
+//  - simulator pin / device-name resolution;
+//  - loading-screen heuristic: a weak caption counts only when it is the whole screen.
 // Hermetic: HOME is a temp dir (test/setupFakeHome.ts), no device, no adb / xcrun.
 
 import { afterAll, describe, expect, it } from 'vitest';
@@ -48,7 +48,7 @@ const tmp = (prefix: string) => {
   return d;
 };
 
-describe('third-party / OS sign-in (GOAL NEW-R4-2)', () => {
+describe('third-party / OS sign-in', () => {
   it("isThirdPartySignIn: provider sign-in labels and ids, not the app's own sign-in", () => {
     for (const label of [
       'Sign up with Apple',
@@ -126,7 +126,7 @@ describe('third-party / OS sign-in (GOAL NEW-R4-2)', () => {
   });
 });
 
-describe('init codex TOML check accepts real Codex configs (SET NEW-R4-1)', () => {
+describe('init codex TOML check accepts real Codex configs', () => {
   it('accepts quoted table names with /, @, :, non-ASCII and dotted quoted segments', () => {
     const real =
       'model = "o3"\n' +
@@ -154,7 +154,7 @@ describe('init codex TOML check accepts real Codex configs (SET NEW-R4-1)', () =
   });
 });
 
-describe('scan appId and projects.json (SET nits)', () => {
+describe('scan appId and projects.json', () => {
   const scan = { appId: 'com.example.new', appIdSource: 'app.json' } as unknown as ProjectScan;
 
   it('a hand-edited appId is kept even with the scan appIdSource left in place', () => {
@@ -178,7 +178,7 @@ describe('scan appId and projects.json (SET nits)', () => {
   });
 });
 
-describe('test-suite ids from disk (must-fix 5 / CR P2, LOG NEW-1)', () => {
+describe('test-suite ids from disk', () => {
   it('loadSuiteChecked renames unsafe and duplicate ids, repairs hand-written cases, and export never writes them', () => {
     const root = tmp('swipium-r4-suite-');
     mkdirSync(dirname(suiteJsonPath(root)), { recursive: true });
@@ -221,7 +221,7 @@ describe('test-suite ids from disk (must-fix 5 / CR P2, LOG NEW-1)', () => {
   });
 });
 
-describe('qa_flow_repair: negations and containment (must-fix 6 / CR P4)', () => {
+describe('qa_flow_repair: negations and containment', () => {
   const btn = (text: string, i: number): SnapshotElement => ({
     ref: `@e${i}`,
     role: 'Button',
@@ -266,7 +266,7 @@ describe('qa_flow_repair: negations and containment (must-fix 6 / CR P4)', () =>
   });
 });
 
-describe('selector text and driver error mapping (AND NEW R4-2 / R4-3)', () => {
+describe('selector text and driver error mapping', () => {
   it('foldText folds curly quotes and apostrophes and lower-cases', () => {
     expect(foldText('Don’t Allow')).toBe("don't allow");
     expect(foldText('ʼquoteʼ “x” ‘y’')).toBe("'quote' \"x\" 'y'");
@@ -298,7 +298,7 @@ describe('selector text and driver error mapping (AND NEW R4-2 / R4-3)', () => {
   });
 });
 
-describe('Compose label strip only for the known label (CR P8)', () => {
+describe('Compose label strip only for the known label', () => {
   const field = (text: string, desc = text) => ({ cls: 'android.widget.EditText', text, desc, attrs: {} });
 
   it('composeLabelOf reads the label from the field before typing', () => {
@@ -322,7 +322,7 @@ describe('Compose label strip only for the known label (CR P8)', () => {
   });
 });
 
-describe('simulator pin and device-name resolution (E2E NEW-5, IOS NEW-B)', () => {
+describe('simulator pin and device-name resolution', () => {
   const sims = [
     { udid: 'AAAAAAAA-0000-4000-8000-000000000001', name: 'iPhone 16', state: 'Booted', runtime: 'iOS 18.0' },
     { udid: 'AAAAAAAA-0000-4000-8000-000000000002', name: 'iPhone SE (3rd generation)', state: 'Shutdown', runtime: 'iOS 18.0' },
@@ -351,7 +351,7 @@ describe('simulator pin and device-name resolution (E2E NEW-5, IOS NEW-B)', () =
   });
 });
 
-describe('loading-screen heuristic (CR P11)', () => {
+describe('loading-screen heuristic', () => {
   const driverFor = (xml: string) => ({ kind: 'direct', dumpXml: async () => xml }) as unknown as Driver;
   const text = (t: string, y: number) => ({
     cls: 'android.widget.TextView',

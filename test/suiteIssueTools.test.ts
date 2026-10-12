@@ -1,6 +1,6 @@
-// Round-3 tool contracts through the in-memory MCP server (no device, HOME is a temp dir):
+// Tool contracts through the in-memory MCP server (no device, HOME is a temp dir):
 //  - qa_suite_update refuses an unsafe case id (path traversal, over-long) and writes nothing;
-//  - qa_issue_log: re-logging an issue without `severity` keeps the stored severity (TOOL NEW-R3-2),
+//  - qa_issue_log: re-logging an issue without `severity` keeps the stored severity,
 //    an explicit severity still wins, and an uncategorized manual log says it was filed for triage.
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -35,7 +35,7 @@ afterAll(async () => {
   for (const r of roots) rmSync(r, { recursive: true, force: true });
 });
 
-describe('qa_suite_update case ids (CR: unvalidated id became a file path)', () => {
+describe('qa_suite_update case ids (an unvalidated id became a file path)', () => {
   it('a path-traversal id is INVALID_ARGUMENT and nothing is written', async () => {
     const projectRoot = newRoot();
     const escape = join(dirname(projectRoot), 'x.yaml');
@@ -60,7 +60,7 @@ describe('qa_suite_update case ids (CR: unvalidated id became a file path)', () 
   });
 });
 
-describe('qa_issue_log severity on re-log (TOOL NEW-R3-2)', () => {
+describe('qa_issue_log severity on re-log', () => {
   const obs = {
     title: 'Coupon field rejects valid codes',
     summary: 'Coupon field shows "invalid" for a valid code on the cart screen',

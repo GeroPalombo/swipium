@@ -16,7 +16,7 @@ import { LOOP_STEPS, BATCHING, CREDENTIALS, APP_CONTROL } from '../skills/conten
 import { isToolListed } from '../core/capabilityGroups.js';
 
 /** The shared skill snippets name qa_flow_check and qa_network; under SWIPIUM_TOOLS=core those are
- *  hidden, so point at a listed tool instead (TOOL-9). Read at prompt time (env can change in tests). */
+ *  hidden, so point at a listed tool instead. Read at prompt time (env can change in tests). */
 function batching(): string {
   return isToolListed('qa_flow_check')
     ? BATCHING

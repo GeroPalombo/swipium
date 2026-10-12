@@ -1,4 +1,4 @@
-// qa_note: record a structured test outcome (Phase 2.2). Lets the agent state explicitly
+// qa_note: record a structured test outcome. Lets the agent state explicitly
 // that a workflow passed / failed / was blocked / skipped / not-applicable, with the reason,
 // missing precondition, required state, and recommended setup. This is how a report
 // distinguishes a real app bug from "no saved flight existed to delete", so missing test
@@ -74,7 +74,7 @@ export function registerNote(server: McpServer, sessions: SessionStore): void {
         });
       }
       // If a declared fixture matches this workflow/precondition, borrow its recommendedSetup
-      // so a blocked outcome carries the setup guidance the agent already declared (P1.4).
+      // so a blocked outcome carries the setup guidance the agent already declared.
       const fx = session.fixtures.find(
         (f) =>
           f.name.toLowerCase() === workflow.toLowerCase() ||

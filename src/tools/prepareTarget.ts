@@ -46,7 +46,7 @@ import { checkLaunchErrorSurface, launchErrorText } from '../oracle/record.js';
 function needsMetro(root: string, appId?: string, apk?: string): boolean {
   const fw = detectFramework(root);
   if (fw !== 'expo' && fw !== 'bare-react-native') return false;
-  // AND-15: the gate is for THIS project's debug build. An explicit appId with no APK that is not
+  // The gate is for THIS project's debug build. An explicit appId with no APK that is not
   // the project's package (e.g. a system app) never loads this project's bundle: no gate, no reverse.
   if (appId && !apk) return isProjectAndroidApp(root, appId);
   return true;
@@ -230,7 +230,7 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
         });
       }
 
-      // ---- COMBINED plan consent (Phase 2.1): all privileged steps approved at once,
+      // ---- COMBINED plan consent: all privileged steps approved at once,
       //      so boot + external-APK don't ping-pong across calls. ----
       const hl = headless ?? true;
       const avds = needBoot ? await listAvds() : [];
@@ -371,7 +371,7 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
         }
         const installed = await driver.isInstalled(resolvedAppId!);
         if (installed && !force) {
-          // Launch gate (Phase 2.1, P1.5): refuse only if Metro is NOT SERVING. A missing
+          // Launch gate: refuse only if Metro is NOT SERVING. A missing
           // reverse is not fatal (emulators reach the host via 10.0.2.2), so serving is the
           // real signal. allowLaunchWithoutMetro overrides.
           if (rnDebug && !allowLaunchWithoutMetro) {
@@ -429,7 +429,7 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
           }
           session.appId = resolvedAppId;
           const launchedOk = foreground.startsWith(resolvedAppId!);
-          // CR P3: app_launch_end is the report's "reached the app" evidence: only when the app under
+          // app_launch_end is the report's "reached the app" evidence: only when the app under
           // test is confirmed in front (a launch that never reached the foreground proves nothing).
           if (launchedOk) sessions.milestone(session, 'app_launch_end');
           sessions.persist(session);
@@ -451,7 +451,7 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
               status: 'executed',
             });
           }
-          // E2E NEW-17: a debug RN/Expo build is checked once (one dump) for a RedBox / the Expo dev
+          // A debug RN/Expo build is checked once (one dump) for a RedBox / the Expo dev
           // launcher, so a launch onto one never reads as a plain success.
           const { appError } = rnDebug && launchedOk ? await checkLaunchErrorSurface(sessions, session, driver) : {};
           if (appError && isMetroRequiredFinding(appError))
@@ -580,7 +580,7 @@ async function runHeavy(sessions: SessionStore, session: Session, driver: Direct
       status: 'executed',
     });
   }
-  // E2E NEW-17: same one-dump RedBox / Expo dev launcher check as the in-call launch path.
+  // Same one-dump RedBox / Expo dev launcher check as the in-call launch path.
   const { appError } =
     a.rnDebug && res.launchedOk
       ? await checkLaunchErrorSurface(sessions, session, driver).catch(() => ({}) as { appError?: undefined })

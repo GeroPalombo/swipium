@@ -7,11 +7,11 @@
 // longer run 5 attempts x 20 s past the settle budget.
 
 //
-// Stability is judged on a normalized FINGERPRINT (X4), not the raw XML: surfaced elements only,
+// Stability is judged on a normalized FINGERPRINT, not the raw XML: surfaced elements only,
 // bounds bucketed, volatile text (clocks, percentages, progress values) masked, so a ticking clock
 // or a progress bar no longer keeps the screen "unsettled" for the whole budget.
 //
-// Fast accept (P1, Android `direct` only): the FIRST post-action dump is accepted as settled when it
+// Fast accept (Android `direct` only): the FIRST post-action dump is accepted as settled when it
 // differs from the pre-action fingerprint and shows no busy markers. Otherwise the 2-dump confirm runs.
 
 import type { Driver } from '../drivers/Driver.js';
@@ -24,7 +24,7 @@ export interface SettleResult {
   settled: boolean;
   /** The parsed final dump (undefined when nothing could be dumped / parsed). */
   parsed?: ParsedSnapshot;
-  /** True when the first dump was accepted without a confirming second dump (P1). */
+  /** True when the first dump was accepted without a confirming second dump. */
   fastAccepted?: boolean;
 }
 
@@ -71,7 +71,7 @@ function fingerprintXml(xml: string): { fp: string; parsed?: ParsedSnapshot } {
 }
 
 let fastAccepts = 0;
-/** How many settles were fast-accepted in this process (P1 rate, for logs/tests). */
+/** How many settles were fast-accepted in this process (for logs/tests). */
 export function settleFastAccepts(): number {
   return fastAccepts;
 }

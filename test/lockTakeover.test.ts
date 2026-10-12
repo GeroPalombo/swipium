@@ -1,4 +1,4 @@
-// H8 — lockfile stale-takeover race, heartbeat, tombstones, atomic-write helpers, and the app-map
+// Lockfile stale-takeover race, heartbeat, tombstones, atomic-write helpers, and the app-map
 // build keeping its slow static scan OUTSIDE the (synchronous, un-heartbeatable) lock.
 //
 // Before the fix: two waiters that both judged a lock stale each rmSync'd it — the second one's
@@ -42,7 +42,7 @@ function makeStaleLock(lock: string, owner: string, ageMs = 60_000): void {
   utimesSync(lock, old, old);
 }
 
-describe('atomic stale takeover (H8)', () => {
+describe('atomic stale takeover', () => {
   it('two waiters that both judged the lock stale: only one takes it over; the second never deletes the fresh lock', () => {
     const lock = join(tempRoot(), 'x.lock');
     makeStaleLock(lock, '99999:dead');
@@ -96,7 +96,7 @@ describe('atomic stale takeover (H8)', () => {
   });
 });
 
-describe('takeover contender interleavings (review round 2)', () => {
+describe('takeover contender interleavings', () => {
   const tombs = (lock: string) => readdirSync(join(lock, '..')).filter((f) => f.includes('.stale-'));
 
   it('a taker that claimed the stale lock: a concurrent taker cannot claim it too', () => {
@@ -165,7 +165,7 @@ describe('takeover contender interleavings (review round 2)', () => {
   });
 });
 
-describe('heartbeat (H8)', () => {
+describe('heartbeat', () => {
   it('keeps a long async holder alive: a waiter cannot take it over while it runs', async () => {
     const lock = join(tempRoot(), 'hb.lock');
     const staleMs = 150;
@@ -194,7 +194,7 @@ describe('heartbeat (H8)', () => {
   });
 });
 
-describe('atomic write helpers (H8)', () => {
+describe('atomic write helpers', () => {
   it('renameWithRetry retries transient Windows sharing violations, then succeeds', () => {
     let calls = 0;
     renameWithRetry('a', 'b', {
@@ -240,7 +240,7 @@ describe('atomic write helpers (H8)', () => {
   });
 });
 
-describe('buildAppMap lock scope (H8)', () => {
+describe('buildAppMap lock scope', () => {
   it('runs the static scan OUTSIDE the app-map lock (only load→merge→save is locked)', () => {
     const root = tempRoot();
     writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'demo', dependencies: { expo: '1', 'react-native': '1' } }));

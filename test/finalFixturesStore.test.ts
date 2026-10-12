@@ -3,7 +3,7 @@
 //    `{var: "AWS_SECRET_ACCESS_KEY"}` returned the server's real value with secret:false, so
 //    explore / first-run typed it into the app unredacted. Fixture env reads now go through the
 //    flows allowlist (SWIPIUM_* only) and any env-sourced value is a registered secret.
-//  - (MED) persisted fixtures were redacted and then reloaded as LIVE config (a resumed session typed
+//  - persisted fixtures were redacted and then reloaded as LIVE config (a resumed session typed
 //    «redacted» into the password field / ran seeds with a broken token). state.json now holds only
 //    value-less metadata; rehydrate re-reads the project's .swipium/fixtures.json.
 // Hermetic: HOME points at a temp dir BEFORE the store module is loaded.

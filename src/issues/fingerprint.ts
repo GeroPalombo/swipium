@@ -113,7 +113,7 @@ export function fingerprintTokens(input: FingerprintInput): string[] {
   // Only include visible text when there's no stronger structural signal (exception/http).
   const hasStructural = Boolean(obs.exception || obs.http || obs.screenId || obs.route);
   if (obs.visibleText && !hasStructural) {
-    // TOOL NEW-2: trailing ids/numbers are dropped, not kept as a placeholder, so "… after coupon 42"
+    // Trailing ids/numbers are dropped, not kept as a placeholder, so "… after coupon 42"
     // and "… after coupon" are one issue (a trailing count/id is the volatile part of a title).
     const norm = scrubVolatile(obs.visibleText.toLowerCase())
       .replace(/(?:\s+:(?:id|ts|uuid))+$/, '')

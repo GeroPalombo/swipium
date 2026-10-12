@@ -1,4 +1,4 @@
-// 2.3.0 review R2: qa_ios launch / terminate / openurl change the screen outside WDA, so a
+// qa_ios launch / terminate / openurl change the screen outside WDA, so a
 // snapshot taken just before them must stop counting as fresh (text/id targets reuse a fresh one).
 // Hermetic: temp HOME, simctl mocked.
 

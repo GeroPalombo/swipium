@@ -435,7 +435,7 @@ async function runFeatureTestJob(sessions: SessionStore, session: Session, job: 
     let reportUri: string | undefined;
     let reportMdUri: string | undefined;
     try {
-      // GOAL-21: a feature run that executed none of its cases is not a pass (never SHIP / COVERED).
+      // A feature run that executed none of its cases is not a pass (never SHIP / COVERED).
       const executedCases = merge.delta.casesPassed + merge.delta.casesFailed;
       const rep = await generateSessionReport(sessions, session, {
         format: 'summary',
@@ -467,7 +467,7 @@ async function runFeatureTestJob(sessions: SessionStore, session: Session, job: 
           : { tool: 'qa_report', args: { sessionId: session.id }, why: 'Summarize the focused run' };
 
     upd({
-      // GOAL NEW-R3-3: the job ran to its end; a blocked feature run is result.state "blocked" (as
+      // The job ran to its end; a blocked feature run is result.state "blocked" (as
       // qa_explore reports it), not a failed job. Job "failed" is kept for errors that stop the job.
       status: 'done',
       progress: state,

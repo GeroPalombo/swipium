@@ -19,7 +19,7 @@ export interface PlanStep {
   why: string;
   args?: Record<string, unknown>;
   status: 'pending' | 'satisfied';
-  /** Symbolic outputs this step produces (e.g. artifact.path). Milestone E. */
+  /** Symbolic outputs this step produces (e.g. artifact.path). */
   produces?: string[];
   /** Symbolic inputs a later step needs before it can run. */
   requires?: string[];

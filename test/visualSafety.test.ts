@@ -1,11 +1,11 @@
-// qa_visual hardening (1.6.0-RC review B5–B8 + OCR docs issue):
-//   B5 baseline names / diff reads / find_image templates cannot escape the project;
-//   B6 WDA-less simulator taps go to `idb ui tap` in POINTS (3x fake: 1179×2556 px → 393×852 pt);
-//   B7 visual taps are recorded as session actions, budgeted, and respect budgetStop;
-//   B8 snapshot-less screens: credential-handling sessions need force for baseline only (diff/
+// qa_visual hardening (1.6.0) and the OCR docs:
+//   - baseline names / diff reads / find_image templates cannot escape the project;
+//   - WDA-less simulator taps go to `idb ui tap` in POINTS (3x fake: 1179×2556 px to 393×852 pt);
+//   - visual taps are recorded as session actions, budgeted, and respect budgetStop;
+//   - snapshot-less screens: credential-handling sessions need force for baseline only (diff/
 //      assert keep no evidence; find_text is OCR-screened; structured backends re-dump), OCR that reads like a
 //      password/OTP screen is withheld, and every OCR text (incl. regions[].text) is redacted;
-//   find_text without a provider → OCR_NOT_CONFIGURED with the provider contract.
+//   - find_text without a provider: OCR_NOT_CONFIGURED with the provider contract.
 // Hermetic: fake drivers via the attach.ts seam; spawn `run`/`which` mocked (idb never runs);
 // runOcr mocked but keeps the REAL coordinate-space capture from the driver.
 
@@ -218,8 +218,8 @@ describe('qa_visual safety + WDA-less correctness', () => {
     return call(sessionId, { mode: 'find_text', ...args, consentId: env.consentId, approve: true });
   };
 
-  // ---- B5 ----
-  it('B5: refuses traversal / hidden baseline names and never writes outside .swipium/baselines', async () => {
+  // ---- path containment ----
+  it('refuses traversal / hidden baseline names and never writes outside .swipium/baselines', async () => {
     const sid = await newSession();
     for (const name of ['../../src/assets/logo', '../evil', '..', '.hidden', 'a/b', 'x'.repeat(65), 'sp ace']) {
       const res = await call(sid, { mode: 'baseline', name });
@@ -235,7 +235,7 @@ describe('qa_visual safety + WDA-less correctness', () => {
     expect(existsSync(join(projectRoot, '.swipium', 'baselines', 'home.v2_final-1.png'))).toBe(true);
   });
 
-  it('B5: find_image templates must be inside the project root or a swipium:// artifact', async () => {
+  it('find_image templates must be inside the project root or a swipium:// artifact', async () => {
     const sid = await newSession();
     const outsideTpl = join(outside, 'tpl.png');
     writeFileSync(outsideTpl, TEMPLATE);
@@ -259,8 +259,8 @@ describe('qa_visual safety + WDA-less correctness', () => {
     expect(viaUri.ok).toBe(true);
   });
 
-  // ---- B6 + B7 ----
-  it('B6/B7: WDA-less simulator taps go to idb in POINTS and are recorded + budgeted', async () => {
+  // ---- simulator taps and budgets ----
+  it('WDA-less simulator taps go to idb in POINTS and are recorded + budgeted', async () => {
     driver = new FakeDriver('simulator');
     driver.screen = headerOf(1179, 2556);
     driver.size = { width: 393, height: 852 }; // SimctlDriver reports points
@@ -294,7 +294,7 @@ describe('qa_visual safety + WDA-less correctness', () => {
     expect(session.recordedActions).toHaveLength(1);
   });
 
-  it('B7: pixel captures count as screenshots and the screenshot budget stops the tool', async () => {
+  it('pixel captures count as screenshots and the screenshot budget stops the tool', async () => {
     const sid = await newSession();
     const session = sessions.get(sid)!;
     session.budget.maxScreenshots = 2;
@@ -306,8 +306,8 @@ describe('qa_visual safety + WDA-less correctness', () => {
     expect(String(stopped.reason)).toMatch(/screenshot budget/);
   });
 
-  // ---- B8 ----
-  it('B8: without a fresh UI tree, a credential-handling session needs force:true', async () => {
+  // ---- snapshot-less screens ----
+  it('without a fresh UI tree, a credential-handling session needs force:true', async () => {
     driver = new FakeDriver('simulator');
     const sid = await newSession();
     const session = sessions.get(sid)!;
@@ -324,7 +324,7 @@ describe('qa_visual safety + WDA-less correctness', () => {
     expect(forced.ok).toBe(true);
   });
 
-  it('B8: only baseline needs force — find_text/find_image/diff/assert run, persist nothing, and say how they checked', async () => {
+  it('only baseline needs force: find_text/find_image/diff/assert run, persist nothing, and say how they checked', async () => {
     driver = new FakeDriver('simulator');
     const sid = await newSession();
     const session = sessions.get(sid)!;
@@ -370,7 +370,7 @@ describe('qa_visual safety + WDA-less correctness', () => {
     expect(typeof forcedDiff.currentUri).toBe('string');
   });
 
-  it('B8: on a structured backend a qa_visual tap does not leave the next call unverified (tree re-dumped)', async () => {
+  it('on a structured backend a qa_visual tap does not leave the next call unverified (tree re-dumped)', async () => {
     const d = new FakeDriver('direct') as FakeDriver & { dumpXml(): Promise<string> };
     let xml =
       `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0">` +
@@ -397,7 +397,7 @@ describe('qa_visual safety + WDA-less correctness', () => {
     expect(String(blocked.what)).toMatch(/secure field/i);
   });
 
-  it('B8: OCR that reads like a password/OTP screen is withheld without a fresh tree', async () => {
+  it('OCR that reads like a password/OTP screen is withheld without a fresh tree', async () => {
     const sid = await newSession();
     ocrState.text = 'Enter the one-time code\nVerify';
     ocrState.regions = [{ text: 'Verify', confidence: 0.99, bbox: { x: 10, y: 10, width: 20, height: 10 } }];
@@ -408,7 +408,7 @@ describe('qa_visual safety + WDA-less correctness', () => {
     expect(driver.taps).toHaveLength(0);
   });
 
-  it('B8: every OCR text (top-level, regions[].text, the hit region) is secret-redacted', async () => {
+  it('every OCR text (top-level, regions[].text, the hit region) is secret-redacted', async () => {
     const sid = await newSession();
     const session = sessions.get(sid)!;
     session.secrets.add('hunter22');

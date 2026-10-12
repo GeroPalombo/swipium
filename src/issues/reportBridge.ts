@@ -101,7 +101,7 @@ function findingTitle(f: BridgeFinding, appId?: string): string {
   const what = FINDING_TITLES[f.kind] ?? f.kind;
   const hint = f.kind === 'wrong_foreground_app' && /possible crash/i.test(f.detail) ? ' (possible crash)' : '';
   // For a foreground loss the screen is whatever replaced the app (the launcher): name the app
-  // that left, not the launcher (LOG-3).
+  // that left, not the launcher.
   if (f.kind === 'wrong_foreground_app' && appId) return `${what}${hint}: ${appId}`;
   const where = f.screen && f.screen !== 'unknown' ? f.screen : appId;
   const ev = f.evidence ? `: "${f.evidence.slice(0, 60)}"` : '';
@@ -194,7 +194,7 @@ export function foldRunIntoLedger(
   const run = { sessionId: meta.sessionId, reportPath: meta.reportPath, reportUri: meta.reportUri };
 
   // One observation per issue per run: qa_act re-runs health after every action, so the same
-  // crash dialog / RedBox is often recorded several times in one session (LOG-3).
+  // crash dialog / RedBox is often recorded several times in one session.
   const seenFindings = new Set<string>();
   for (const f of findings) {
     if (f.severity === 'info') continue; // info findings are not issues
@@ -206,7 +206,7 @@ export function foldRunIntoLedger(
     // (e.g. "app left to the launcher (possible crash)" used to land as an unclassified low).
     // A different app in front is the app's behaviour (or the crash's first sign under load), never a
     // Swipium limitation: without this it fell to the mcp_limitation default and shared an issue id
-    // with the later app_bug "possible crash" observation (LOG NEW-2).
+    // with the later app_bug "possible crash" observation.
     const highHint =
       f.severity === 'high'
         ? { categoryHint: 'app_bug' as IssueCategory, severityHint: 'high' as const }

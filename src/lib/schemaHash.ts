@@ -1,4 +1,4 @@
-// Schema-hash freshness (Phase 3.3 Milestone A). A version bump tells a HUMAN the server changed,
+// Schema-hash freshness. A version bump tells a HUMAN the server changed,
 // but a client running a pre-upgrade build with the same tool COUNT can still look fresh after a
 // behavior/schema/description change (the 3.2.1 problem). The schema hash is a content fingerprint
 // of the registered tool surface (names + descriptions + input-parameter keys), so an agent/client
@@ -22,7 +22,7 @@ export function computeSchemaHash(entries: ToolSurfaceEntry[]): string {
 }
 
 /**
- * Best-effort normalized descriptor of a single zod input field (Phase 3.3 §5 deeper hash). Encodes
+ * Best-effort normalized descriptor of a single zod input field (deeper hash). Encodes
  * the type, enum options, optionality, and array/record element types so a NESTED change (e.g. a new
  * enum value or a string>number switch) shifts the hash even when the field name is unchanged.
  * Uses zod 4's public schema classes and accessors only; the descriptor strings are the ones zod 3

@@ -1,4 +1,4 @@
-// Automation Kernel V2, Workstream 2: Selector IR V2. One normalized selector model shared by
+// Automation Kernel V2: Selector IR V2. One normalized selector model shared by
 // Flow V2, the Appium audit, and flow repair. Parses the existing Swipium selector string
 // grammar, normalizes Android resource ids, scores risk/portability, preserves provenance, and
 // refuses unsupported strategies per backend. NEVER generates XPath. (Maestro interop left the

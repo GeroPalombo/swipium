@@ -69,7 +69,7 @@ export function generateTestCases(
     budgetProfile?: string;
     replayStatus?: TestCase['replayStatus'];
     /** False when the caller writes no `tests/<name>.smoke.yaml` and none exists: the case is then
-     *  a `candidate` with no `test` link instead of pointing at a missing file (LOG-20). */
+     *  a `candidate` with no `test` link instead of pointing at a missing file. */
     testExists?: boolean;
   },
 ): TestCaseResult {
@@ -89,7 +89,7 @@ export function generateTestCases(
   const verifiedVisualOnly = notes.some((n) => n.method === 'visual' || n.verifiedVisually);
 
   const expected = pom.steps.filter((s) => s.action === 'assertVisible' && s.text).map((s) => `${s.text} is visible`);
-  // LOG-20: with no assertion, the recorded outcome (a passing qa_note's reason) is the expectation.
+  // With no assertion, the recorded outcome (a passing qa_note's reason) is the expectation.
   if (expected.length === 0) for (const n of notes) if (n.outcome === 'pass' && n.reason) expected.push(`${n.workflow}: ${n.reason}`);
   if (expected.length === 0) expected.push('App reaches the expected post-flow screen without an error surface');
 

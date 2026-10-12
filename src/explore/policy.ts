@@ -1,4 +1,4 @@
-// Exploration safety policy (Phase 3.3 §7). Classify an actionable control's risk so strict-mode
+// Exploration safety policy. Classify an actionable control's risk so strict-mode
 // exploration never taps something destructive (delete / pay / send / logout / confirm-of-destruction)
 // without explicit approval. Lexical + structural (Android button1/button2, role) signals; PURE.
 
@@ -35,15 +35,15 @@ const CONFIRM = /\b(confirm|submit|proceed|ok|yes|agree|accept|continue)\b/i;
 const SAFE =
   /\b(home|back|close|cancel|settings?|search|menu|profile|account|info|details?|tab|next|explore|discover|map|list|history|help|about|notifications?|messages?|filter|sort|view|open|show|more|overview|dashboard|library|feed|favou?rites?)\b/i;
 
-// LOG-22: state-changing but not destructive ("Dismiss" on an upcoming-alarm row dismissed the alarm).
+// State-changing but not destructive ("Dismiss" on an upcoming-alarm row dismissed the alarm).
 // Skipped in strict mode like any unknown control; a dialog's negative button (button2) stays safe.
 const STATE_CHANGE =
   /\b(dismiss|archive|unarchive|snooze|mute|unmute|mark\s+(as\s+)?(read|unread|done|complete)|turn\s+(on|off)|enable|disable|undo)\b/i;
 
-// Controls that open another app (GOAL-13: Mapbox "Improve this map" opened Safari).
+// Controls that open another app (e.g. Mapbox "Improve this map" opens Safari).
 const EXTERNAL =
   /\b(improve this map|telemetry|attribution|mapbox|openstreetmap|open in (safari|browser|chrome|maps)|rate (us|this app)|app store|play store|visit (our )?(website|site)|privacy policy|terms of (service|use))\b/i;
-// GOAL NEW-R4-2: third-party / OS sign-in ("Sign up with Apple", "Continue with Google",
+// Third-party / OS sign-in ("Sign up with Apple", "Continue with Google",
 // social-signin.apple-button). It starts an account flow outside the app (an iOS Apple Account
 // alert, a Google account picker, a browser), so first-run, exploration and generated flows never tap it.
 const SIGN_IN_PROVIDERS = 'apple|google|facebook|microsoft|twitter|github|linkedin';
@@ -117,12 +117,12 @@ export function classifyRisk(i: RiskInput): {
     return { risk: 'unknown', reason: `state-changing control ("${(hay.match(STATE_CHANGE) ?? [''])[0]}"); skipped in strict mode` };
   if (/(^|[:/])button1$/i.test(i.id ?? '') || CONFIRM.test(hay))
     return { risk: 'unknown', reason: 'confirmation control: risky as the YES of a destructive dialog; skipped in strict mode' };
-  // GOAL-13: links that open another app (map attribution / telemetry, store, web pages) leave the
+  // Links that open another app (map attribution / telemetry, store, web pages) leave the
   // app under test; not safe to auto-tap in strict exploration.
   if (EXTERNAL.test(hay))
     return { risk: 'unknown', reason: 'external link: likely opens another app (browser/store); skipped in strict mode' };
   if (SAFE.test(hay)) return { risk: 'safe', reason: `recognized navigation/inspection control ("${(hay.match(SAFE) ?? [''])[0]}")` };
-  // LOG-22: bottom-navigation / tab-bar items are navigation by structure, whatever their label
+  // Bottom-navigation / tab-bar items are navigation by structure, whatever their label
   // ("Alarms", "Timers", "Stopwatch"), and ids like tab_menu_alarm name them so.
   if (isTabLike(i)) return { risk: 'safe', reason: 'tab / bottom-navigation item (structural navigation)' };
   return { risk: 'unknown', reason: 'unrecognized control: risk cannot be inferred from its label' };

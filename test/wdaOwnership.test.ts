@@ -1,4 +1,4 @@
-// WDA ownership / per-simulator resolution (CR-WDA, GOAL NEW-R3-1), with lsof / ps / WDA mocked:
+// WDA ownership / per-simulator resolution, with lsof / ps / WDA mocked:
 //  - wdaDeviceOwnership: listener in this simulator = match, in another = other, lsof timed out =
 //    unverified (never reusable), nothing inspectable = unknown;
 //  - findOwnSimulatorWda / resolveSimulatorWda: a WDA that is not provably this simulator's is

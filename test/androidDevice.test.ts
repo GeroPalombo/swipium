@@ -1,6 +1,6 @@
-// android-device (2.3.0): emulator boot argv (B1), launch via `am start -W` + foreground polling
-// (P3), on-device filtered foregroundOwner (P5), one-shell orientation + cached density and the
-// simulator reusing known PNG dims (P6). Hermetic: adb/simctl are mocked.
+// android-device (2.3.0): emulator boot argv, launch via `am start -W` + foreground polling,
+// on-device filtered foregroundOwner, one-shell orientation + cached density and the
+// simulator reusing known PNG dims. Hermetic: adb/simctl are mocked.
 
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
@@ -47,7 +47,7 @@ beforeEach(() => {
   state.shots = 0;
 });
 
-describe('emulatorBootArgs (B1)', () => {
+describe('emulatorBootArgs', () => {
   it('defaults: snapshot quick-boot without saving, gpu auto, headless', () => {
     expect(emulatorBootArgs('Pixel', true, {})).toEqual([
       '-avd',
@@ -72,7 +72,7 @@ describe('emulatorBootArgs (B1)', () => {
   });
 });
 
-describe('DirectDriver.launchApp (P3)', () => {
+describe('DirectDriver.launchApp', () => {
   it('resolves the launcher activity and uses am start -W with launcher intent flags', async () => {
     state.reply = (args) => (args.includes('resolve-activity') ? ok('priority=0\ncom.example.app/.MainActivity\n') : ok('Status: ok\n'));
     await new DirectDriver('emulator-5554').launchApp('com.example.app');
@@ -113,7 +113,7 @@ describe('DirectDriver.launchApp (P3)', () => {
   });
 });
 
-describe('waitForForeground (P3)', () => {
+describe('waitForForeground', () => {
   it('returns as soon as the package owns the foreground', async () => {
     const seq = ['com.android.launcher/.Home', 'com.example.app/.Main'];
     const d = { foregroundOwner: vi.fn(async () => seq.shift() ?? 'com.example.app/.Main') };
@@ -141,7 +141,7 @@ describe('waitForForeground (P3)', () => {
   });
 });
 
-describe('DirectDriver.foregroundOwner (P5)', () => {
+describe('DirectDriver.foregroundOwner', () => {
   it('greps on the device and keeps the same parse (API 36 has only mCurrentFocus)', async () => {
     state.reply = () =>
       ok(
@@ -160,7 +160,7 @@ describe('DirectDriver.foregroundOwner (P5)', () => {
   });
 });
 
-describe('P6 device metrics', () => {
+describe('device metrics', () => {
   it('getOrientation reads both settings in one adb shell', async () => {
     state.reply = () => ok('1\n0\n');
     expect(await getOrientation('e')).toEqual({ rotation: 1, auto: false });

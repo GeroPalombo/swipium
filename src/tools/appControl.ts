@@ -1,4 +1,4 @@
-// qa_app_control: app lifecycle so agents don't shell out to `adb` (Phase 2 CR1/CR3).
+// qa_app_control: app lifecycle so agents don't shell out to `adb`.
 // force_stop / restart / background / foreground / launch (non-destructive) and
 // clear_data / fresh_start (destructive, needs consent). Reports package, foreground, killed.
 
@@ -86,7 +86,7 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
         }
       }
 
-      // Destructive-wipe BUNDLE-RISK PREFLIGHT (Phase 2.1 follow-up): a `pm clear` on an RN/Expo
+      // Destructive-wipe BUNDLE-RISK PREFLIGHT: a `pm clear` on an RN/Expo
       // *debug* build wipes the cached JS bundle. Even with Metro serving, a bundle-less /
       // asset-only debug APK won't refetch and comes back on an "Unable to load script" RedBox,
       // i.e. a data wipe can BRICK the build. This is a DISTINCT risk from generic data loss:
@@ -219,7 +219,7 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
             await d.terminateApp(pkg);
             mark();
             processKilled = !(await d.isRunning(pkg));
-            // LOG-12: relaunch into a fresh task, so a foreign activity left on top of the app's
+            // Relaunch into a fresh task, so a foreign activity left on top of the app's
             // task does not come back with it.
             if (d.relaunchCleanTask) {
               await d.relaunchCleanTask(pkg);

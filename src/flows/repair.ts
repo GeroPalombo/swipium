@@ -357,7 +357,7 @@ const UI_SYNONYMS: Array<[string[], string]> = [
   [['search', 'find'], 'search'],
   [['settings', 'preferences', 'options'], 'settings'],
   [['edit', 'modify'], 'edit'],
-  // Deliberately not folded (too broad, R3 code review): new/add/create, change, apply/save,
+  // Deliberately not folded (too broad): new/add/create, change, apply/save,
   // join/signup, account/profile. "New message" is not "Add contact".
 ];
 /** Opposite actions: a candidate that swaps one side for the other is never proposed
@@ -459,7 +459,7 @@ function coreTextSimilarity(a: string, b: string): number {
 }
 
 /** A low-confidence guess also needs real evidence: a shared non-generic word or synonym, or a high
- *  character similarity on the non-generic text (LOG-17: "Logout" > "Google", "Purchase history" >
+ *  character similarity on the non-generic text ("Logout" > "Google", "Purchase history" >
  *  "Storage" share only a few bigrams). Opposite actions never qualify. */
 function plausibleRename(value: string, selector: string): boolean {
   if (isAntonymPair(value, selector)) return false;
@@ -499,7 +499,7 @@ function candidateSimilarity(value: string | undefined, selector: string | undef
   return 0.5 * textSimilarity(value, selector) + 0.5 * wordSimilarity(value, selector);
 }
 
-/** Below this score a no-text-match guess is unrelated and is not proposed (LOG-17). Sits between
+/** Below this score a no-text-match guess is unrelated and is not proposed. Sits between
  *  real renames ("Sign in" > "Log in" ~0.6) and noise ("Network and internet" > "Clear text" ~0.04). */
 const MIN_GUESS_SIMILARITY = 0.15;
 

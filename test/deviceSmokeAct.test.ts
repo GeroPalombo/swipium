@@ -279,7 +279,7 @@ describe('qa_act smoke-test fixes (fake driver)', () => {
 
   it('A: a registered secret typed into a NON-secure field is recorded as secret, without plaintext', async () => {
     const fake = new Fake(formScreen());
-    fake.reflectTyping = true; // fields read back what was typed (AND-14 verification)
+    fake.reflectTyping = true; // fields read back what was typed (the typed-text read-back check)
     const sessionId = await start(fake);
     const pw = await refOf(sessionId, (e) => e.id === 'password');
     const SECRET = 'Sup3r-S3cret!';

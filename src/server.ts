@@ -218,7 +218,7 @@ function recordConsentRefusal(
       consent: { required: true, consentId, approved: false, approvalMechanism: mechanism },
       status: 'refused',
       detail,
-      failureCode, // qa_report gates a run that tested nothing with this code (E2E NEW-13)
+      failureCode, // qa_report gates a run that tested nothing with this code
     });
   } catch (e) {
     log('warn', 'failed to ledger a consent refusal', { tool, consentId, err: String(e) });
@@ -253,7 +253,7 @@ function pendingConsentId(result: unknown): string | undefined {
   return sc?.requiresConsent === true && typeof sc.consentId === 'string' ? sc.consentId : undefined;
 }
 
-/** E2E-7: the session a routed consent envelope belongs to. qa_test_this creates its session
+/** The session a routed consent envelope belongs to. qa_test_this creates its session
  *  before asking (the envelope carries `sessionId`), but the call's arguments do not, so a refusal
  *  would otherwise lose it and the agent could not qa_note / qa_report. Bounded; dropped once the
  *  consent is decided. */
@@ -461,7 +461,7 @@ async function applyConsentDecision(
   ledger: { sessions: SessionStore; tool: string },
 ): Promise<unknown> {
   // The session the refused call belongs to (its argument, else the one the envelope created), so
-  // the agent can still qa_note / qa_report after a refusal (E2E-7).
+  // the agent can still qa_note / qa_report after a refusal.
   const envelopeSession = consentEnvelopeSession.get(consentId);
   consentEnvelopeSession.delete(consentId);
   const refusedSessionId = typeof first.sessionId === 'string' ? first.sessionId : envelopeSession;
@@ -501,7 +501,7 @@ async function applyConsentDecision(
     const extra = failed
       ? { action, answeredInMs: decision.elapsedMs, likelyAutomatic: false, elicitationFailure: decision.failure, ...sessionExtra }
       : { action, answeredInMs: decision.elapsedMs, likelyAutomatic, ...sessionExtra };
-    // E2E-8: under an auto-answering client a chat "go ahead" + re-call is auto-refused again, so
+    // Under an auto-answering client a chat "go ahead" + re-call is auto-refused again, so
     // say outright that only the operator setting helps (never offer an in-chat approval).
     const hint = likelyAutomatic
       ? [
@@ -815,8 +815,8 @@ function installResponseModeWrapper(
   (server as unknown as { registerTool: Register }).registerTool = (name, config, handler) => {
     attempted.add(name);
     if (!TOOL_NAME_SET.has(name)) return undefined; // assertToolSurface() makes this drop loud at startup
-    // Capture the tool surface (name + description + per-field type descriptors) for the schema hash
-    // (3.3 A/§5). Encoding each field's zod shape catches nested enum/type/optionality changes.
+    // Capture the tool surface (name + description + per-field type descriptors) for the schema hash.
+    // Encoding each field's zod shape catches nested enum/type/optionality changes.
     const cfg = config as { title?: string; description?: string; inputSchema?: ToolInputShape } | undefined;
     const inputKeys = Object.entries(cfg?.inputSchema ?? {}).map(([k, v]) => `${k}:${describeZodField(v)}`);
     surface.push({ name, description: cfg?.description ?? '', inputKeys });
@@ -877,8 +877,8 @@ function installResponseModeWrapper(
         recordToolErrorFromResult(sessions, name, a[0], out, callSignal); // qa_report tool status (report/toolHealth.ts)
         return jobNote ? annotateKeepingNotes(out, jobNote) : out;
       } catch (e) {
-        // A tool that threw still counts against the TOOL status (LOG NEW-3: "Tool status: PASS"
-        // after a raw adb launch timeout). The error itself goes to the client unchanged.
+        // A tool that threw still counts against the TOOL status (otherwise a raw adb launch
+        // timeout could still read "Tool status: PASS"). The error itself goes to the client unchanged.
         recordThrownToolError(sessions, name, a[0], e, callSignal);
         throw e;
       } finally {
@@ -1250,7 +1250,7 @@ export function createServer(options: CreateServerOptions = {}): ServerContext {
   registerPrepareTarget(server, sessions);
   registerIos(server, sessions);
   registerWda(server, sessions);
-  // Device / app environment parity (Phase 5)
+  // Device / app environment parity
   registerDevice(server, sessions);
   registerNetwork(server, sessions);
   registerMetro(server, sessions);
@@ -1393,7 +1393,7 @@ export function createServer(options: CreateServerOptions = {}): ServerContext {
 }
 
 /** `orphanSweep:false`: the throwaway server `swipium verify` / `init --apply` starts, which must
- *  not adopt (re-own) or reap other runs' managed processes (SET-21). */
+ *  not adopt (re-own) or reap other runs' managed processes. */
 export async function startServer(opts: { orphanSweep?: boolean } = {}): Promise<void> {
   // GUI MCP clients don't inherit the shell PATH: APPEND the Android SDK's platform-tools/ and
   // emulator/ to PATH, but only for a tool (adb / emulator) that is not already resolvable on PATH,
@@ -1423,7 +1423,7 @@ export async function startServer(opts: { orphanSweep?: boolean } = {}): Promise
     // Cancel every running job FIRST: a job left running could flip device network state (or
     // anything else) back after the restore below.
     const cancelledJobs = cancelAllRunningJobs(sessions);
-    // TOOL NEW-R3-3: cancelled build groups get <= 2 s (overlapping the restore below) to exit on
+    // Cancelled build groups get <= 2 s (overlapping the restore below) to exit on
     // SIGTERM; survivors are SIGKILLed before process.exit, which would skip the unref'd kill timer.
     const reapingGroups = killAbortedProcessGroups(2000);
     log('info', 'shutdown: restoring network', { why, changed, cancelledJobs });
@@ -1447,7 +1447,7 @@ export async function startServer(opts: { orphanSweep?: boolean } = {}): Promise
   process.once('SIGINT', () => void restoreThenExit(130, 'SIGINT'));
   process.once('SIGTERM', () => void restoreThenExit(143, 'SIGTERM'));
 
-  // Startup banner (P1.8): version + tool count on stderr so a stale build is obvious in logs.
+  // Startup banner: version + tool count on stderr so a stale build is obvious in logs.
   const listedTools = TOOL_COUNT - hiddenToolNames().size; // SWIPIUM_TOOLS=core lists fewer
   log('info', 'swipium starting', {
     version: SWIPIUM_VERSION,

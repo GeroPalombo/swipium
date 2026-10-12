@@ -26,7 +26,7 @@ import { isSimulatorUdid, sessionDeviceState } from '../session/attach.js';
 import { orphanedNetworkChanges, orphanedNetworkWarning } from './network.js';
 
 /** nextBestAction steps that drive the device (pointless while the session's device is gone). */
-/** Next steps an offline device does NOT override: the run is already reported (IOS-6 R3: every
+/** Next steps an offline device does NOT override: the run is already reported (every
  *  other step, qa_generate and qa_report included, waits until the device is back). */
 const OFFLINE_KEEPS_TOOLS = new Set(['qa_get_artifact']);
 
@@ -473,7 +473,7 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
         whatItMeans: info.summary,
         whoFixesIt: ownerText[owner],
         howToFix: info.recovery,
-        // TOOL NEW-5: the caller's context is echoed back, so scrub the session's registered secrets,
+        // The caller's context is echoed back, so scrub the session's registered secrets,
         // and credential-looking values (password=…, ghp_…) with or without a session.
         context: context == null ? null : scrubLogCredentials(sess ? (makeRedactor(sess.secrets)(context) ?? context) : context),
       };
@@ -517,7 +517,7 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
       if (declined) markLoginDeclined(sessions, s);
       const isSecret = (k: string) => secretFields?.includes(k) || secretRe.test(k);
 
-      // Register inputs into the SECURE STORE (P0.5): each maps to a flow variable; secret values
+      // Register inputs into the SECURE STORE: each maps to a flow variable; secret values
       // join the redaction set and are NEVER echoed back. Generated flows reference the var name.
       const accepted: string[] = [];
       const storedVars: string[] = [];
@@ -798,7 +798,7 @@ export function extractDecline(vals: Record<string, string | boolean>): boolean 
   return declined;
 }
 
-/** Map a NeedsInput field name to its canonical Swipium flow variable (P0.5). */
+/** Map a NeedsInput field name to its canonical Swipium flow variable. */
 function inputVarName(field: string): string {
   const f = field.toLowerCase();
   if (/pass/.test(f)) return 'SWIPIUM_TEST_PASSWORD';

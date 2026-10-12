@@ -79,7 +79,7 @@ export function registerScreenRecord(server: McpServer, sessions: SessionStore):
     async ({ sessionId, action, save, failed, consentId, approve }) => {
       const session = sessions.get(sessionId);
       if (!session) return unknownSessionError(sessionId);
-      // Before the device lookup, so a sensitive session never sees NO_DEVICE first (TOOL-19).
+      // Before the device lookup, so a sensitive session never sees NO_DEVICE first.
       if (action === 'start' && session.sensitive) return sensitiveRefusal('Screen recording');
       const { driver, blocked } = await getDriver(session);
       const serial = driver?.currentDevice();

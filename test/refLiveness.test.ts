@@ -1,4 +1,4 @@
-// 2.3.0 X1 liveness: an aged ref (no action since) skips the re-dump when a cheap pixel
+// Ref liveness: an aged ref (no action since) skips the re-dump when a cheap pixel
 // fingerprint shows the screen unchanged; any change, an action, no baseline or a very old
 // snapshot keeps the re-dump path.
 
@@ -76,7 +76,7 @@ describe('screenFingerprint (raw screencap sampling)', () => {
   });
 });
 
-describe('X1 liveness in resolveTarget', () => {
+describe('ref liveness in resolveTarget', () => {
   it('aged ref, unchanged pixels: no re-dump, stored coordinates', async () => {
     const { fake, session } = setup();
     const p = await resolveTarget(session, { ref: '@e2' });
@@ -84,7 +84,7 @@ describe('X1 liveness in resolveTarget', () => {
     expect(p).not.toHaveProperty('refMoved');
     expect(dumps(fake)).toBe(0);
     expect(fake.got('pixelFingerprint').length).toBe(2); // baseline + check
-    // verified current: the action's settle may use it as the pre-action screen (P1)
+    // verified current: the action's settle may use it as the pre-action screen
     expect(preActionFingerprint(session)).toBeDefined();
   });
 

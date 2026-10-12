@@ -110,7 +110,7 @@ function liveManagedWda(sessionId: string, url: string, udid: string | undefined
     : undefined;
 }
 
-/** IOS-7: when the WDA runner dies (crash, kill -9) its parent `xcodebuild test-without-building`
+/** When the WDA runner dies (crash, kill -9) its parent `xcodebuild test-without-building`
  *  can live on for a long time, so a live pid alone does not mean a working WDA. It is stale when
  *  its URL refuses connections (a timeout is a busy WDA, not a dead one) and it either served
  *  before (its log has WDA's ServerURLHere line) or is older than the startup timeout. */
@@ -322,7 +322,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
           nextSteps: ['Pass only device.'],
         });
       let udid = device ?? udidAlias;
-      // IOS NEW-B: a simulator name is resolved to its UDID first, so the SWIPIUM_DEVICE pin and the
+      // A simulator name is resolved to its UDID first, so the SWIPIUM_DEVICE pin and the
       // session-device check below apply to it (it used to reach xcodebuild as `-destination id=<name>`).
       if (udid && !isSimulatorUdid(udid)) {
         const r = await resolveSimulatorArg(udid);
@@ -392,7 +392,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
           nextSteps: ['Use the session-bound UDID, or start a separate session for the other simulator/device.'],
         });
       }
-      // CR-PIN: a pinned server never starts, reuses, attaches or stops a WDA on another simulator.
+      // A pinned server never starts, reuses, attaches or stops a WDA on another simulator.
       if (targetUdid && isSimulatorUdid(targetUdid) && (isWdaXcodebuildAction(action) || action === 'attach' || action === 'stop')) {
         const refusal = await simulatorPinRefusal(targetUdid);
         if (refusal) return refusal;
@@ -429,7 +429,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
         const proc = managedProcesses.get(session.id);
         if (!proc) {
           // A WDA started by a previous server run and adopted at startup (processRegistry).
-          // Matched by session, or by URL only together with this simulator's UDID (IOS NEW-1).
+          // Matched by session, or by URL only together with this simulator's UDID.
           const adopted = adoptedWda(session.id, url, targetUdid);
           const outcome = adopted ? reclaimPid(adopted.pid, 'wda', undefined, adopted) : undefined; // fingerprint-checked
           if (adopted && (outcome === 'killed' || outcome === 'recycled' || !pidIsAlive(adopted.pid)))
@@ -453,7 +453,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
           const pids = sig ? findManagedWdaProcesses(sig) : [];
           const killed = pids.filter((pid) => killManagedWda(pid));
           if (!killed.length) {
-            // IOS NEW-3: this simulator's managed WDA recorded by another server run (adopted by a
+            // This simulator's managed WDA recorded by another server run (adopted by a
             // live concurrent server, or not swept yet): any registry entry whose recorded
             // `-destination id=` is this UDID, fingerprint-checked before the signal.
             const forDevice = !adopted && targetUdid ? registeredWdasForDevice(targetUdid) : [];
@@ -570,7 +570,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
           }
           // A managed WDA runs on this simulator's own port, not WDA's shared default 8100: two
           // setups started seconds apart both saw 8100 free and raced for it, and the loser reported
-          // the winner's WDA as ready (IOS-3). The shared port is still reused when the WDA there
+          // the winner's WDA as ready. The shared port is still reused when the WDA there
           // runs in this simulator (or is ready and is provably not a simulator process, e.g. an
           // external one).
           const sharedDefault = sessionUrl?.source === 'config' && wdaUrlPort(url) === 8100 && isSimulatorUdid(targetUdid);
@@ -930,7 +930,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
       let status = await checkWda(url);
       // A session with no WDA of its own yet defaults to the configured URL (shared 8100). When the
       // WDA there is not provably this simulator's (down, slow, unidentifiable, another one's), use
-      // this simulator's own managed WDA on its per-simulator / registered port if one runs (IOS-3).
+      // this simulator's own managed WDA on its per-simulator / registered port if one runs.
       if (!webDriverAgentUrl && sessionUrl?.source === 'config' && targetUdid && isSimulatorUdid(targetUdid) && loopback) {
         const here = status.reachable ? await wdaDeviceOwnership(url, status, targetUdid) : undefined;
         if (here?.owner !== 'match') {
@@ -1369,7 +1369,7 @@ function spawnManagedWda(sessions: SessionStore, session: Session, ctx: WdaStart
   return { child, logUri };
 }
 
-/** IOS-3: /status on the start URL can answer from ANOTHER simulator's WDA that bound the port
+/** /status on the start URL can answer from ANOTHER simulator's WDA that bound the port
  *  first (this runner then fails with "Address already in use"), so a ready answer only counts
  *  when the listener is not provably another device's. When it is, this start's xcodebuild is
  *  stopped and forgotten, and the reason is returned. */

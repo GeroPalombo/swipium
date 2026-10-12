@@ -1,4 +1,4 @@
-// qa_bundletool (hardening P0.2): convert an .aab to an installable universal .apk via bundletool,
+// qa_bundletool: convert an .aab to an installable universal .apk via bundletool,
 // cached under .swipium/artifacts/. Runs as a job (conversion can take a minute). Returns a typed
 // AAB_NEEDS_BUNDLETOOL / AAB_BUILD_APKS_FAILED blocker when it cannot, never a generic error.
 
@@ -70,7 +70,7 @@ export function registerBundletool(server: McpServer, sessions: SessionStore): v
           });
         aabPath = found.path;
       } else {
-        // TOOL NEW-6: refuse a missing path up front instead of starting a job that can only fail.
+        // Refuse a missing path up front instead of starting a job that can only fail.
         aabPath = isAbsolute(aabPath) ? aabPath : join(session.root, aabPath);
         if (!isFile(aabPath))
           return qaFail('NO_BUILD_ARTIFACT', {
@@ -92,7 +92,7 @@ export function registerBundletool(server: McpServer, sessions: SessionStore): v
       // Installing an APK set runs app code on a real device/emulator, so it's consent-gated (build-only
       // is safe and ungated). Confirm intent BEFORE any work, regardless of whether bundletool is
       // installed. Mirrors qa_prepare_target / qa_prepare_ios_target.
-      // CR P6: the device the APK set is built for / installed on follows the same rule as
+      // The device the APK set is built for / installed on follows the same rule as
       // qa_prepare_target: SWIPIUM_DEVICE refuses any other device before consent, and with no
       // device the session's own emulator (else the pinned one) is used, never "any connected device".
       let deviceId = device;

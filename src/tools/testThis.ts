@@ -83,7 +83,7 @@ export function registerTestThis(server: McpServer, sessions: SessionStore): voi
           const asked = input.timeoutMs;
           const res = await handleTestThis(server, sessions, { ...input, timeoutMs: cap });
           // timeoutMs only bounds the waitForCompletion window: plan mode and a non-waiting call
-          // ignore it, so a clamp note there is noise (TOOL-19).
+          // ignore it, so a clamp note there is noise.
           if (input.mode === 'plan' || !input.waitForCompletion) return res;
           return qaAnnotate(res, [`timeoutMs ${asked} clamped to ${cap}; poll qa_job_status for longer runs.`]);
         }

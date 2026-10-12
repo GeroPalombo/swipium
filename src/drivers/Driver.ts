@@ -78,7 +78,7 @@ export interface Driver {
   foregroundTaskRoot?(): Promise<string | undefined>;
 
   screenshot(): Promise<Buffer>;
-  /** Cheap sampled pixel fingerprint of the current screen (X1 liveness check, lib/screenFingerprint.ts).
+  /** Cheap sampled pixel fingerprint of the current screen (liveness check, lib/screenFingerprint.ts).
    *  Optional: backends without it (iOS, whose /source is already fast) always re-dump. */
   pixelFingerprint?(): Promise<PixelFingerprint | undefined>;
   /** Raw uiautomator XML (parsing into @eN refs happens in the snapshot module, M3). */
@@ -95,7 +95,7 @@ export interface Driver {
   /** True when the natively-selected element is a secure text field (password/OTP), e.g.
    * XCUIElementTypeSecureTextField on iOS. Keeps values typed by selector out of records. */
   isSecureBySelector?(using: NativeSelectorStrategy, value: string): Promise<boolean>;
-  /** The natively-selected element's current value (typing read-back, CR P9). */
+  /** The natively-selected element's current value (typing read-back). */
   valueBySelector?(using: NativeSelectorStrategy, value: string): Promise<string>;
   /** Native platform alert handling when the backend supports it, e.g. WDA on iOS. */
   acceptAlert?(): Promise<void>;

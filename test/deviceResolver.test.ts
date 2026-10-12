@@ -1,4 +1,4 @@
-// Round-5 "Must fix" 2: device-choosing paths go through one resolver (exact UDID or unique exact
+// Device-choosing paths go through one resolver (exact UDID or unique exact
 // name; else INVALID_ARGUMENT / MULTIPLE_DEVICES, never "the first booted"), and the SWIPIUM_DEVICE
 // pin is the only candidate. One test per repro case (a) to (e), plus qa_ios erase getting a
 // resolved UDID. Hermetic: simctl / adb / artifacts mocked, nothing boots or erases.

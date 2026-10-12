@@ -1,4 +1,4 @@
-// Round-4 SWIPIUM_DEVICE refusals and simulator names (CR P5, IOS NEW-B / NEW-C):
+// SWIPIUM_DEVICE refusals and simulator names:
 //  - qa_wda {device:"<name>"} resolves the name to its UDID, so the pin applies (DEVICE_PINNED before consent);
 //  - qa_ios erase on another simulator under the pin: DEVICE_PINNED before consent;
 //  - qa_ios launch {device} on a non-bound simulator: refused (INVALID_ARGUMENT, nothing launched);
@@ -66,7 +66,7 @@ async function boundTo(sim: typeof A): Promise<string> {
   return sessionId;
 }
 
-describe('SWIPIUM_DEVICE refusals (CR P5)', () => {
+describe('SWIPIUM_DEVICE refusals', () => {
   it('qa_wda setup with another simulator by NAME is DEVICE_PINNED before any consent', async () => {
     process.env.SWIPIUM_DEVICE = A.udid;
     const sessionId = (await call('qa_start_session', { projectRoot: root })).sessionId as string;
@@ -93,7 +93,7 @@ describe('SWIPIUM_DEVICE refusals (CR P5)', () => {
   });
 });
 
-describe('qa_ios {device} on actions other than boot / erase (IOS NEW-C)', () => {
+describe('qa_ios {device} on actions other than boot / erase', () => {
   it('another simulator is refused and nothing is launched; the bound one by name runs', async () => {
     const sessionId = await boundTo(A);
     launched.length = 0;

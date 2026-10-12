@@ -1,6 +1,6 @@
-// 2.3.0 review round: cross-agent freshness fixes.
+// Cross-tool screen freshness fixes.
 // - qa_act compares the post-action screen against the dump taken while resolving the target
-//   (X1 re-check), not the older snapshot the agent read.
+//   (ref re-check), not the older snapshot the agent read.
 // - qa_visual's secure-screen gate uses the shared freshness rule: any screen change makes it re-check.
 // - A failed action, the flow clearOverlay step and qa_smoke's launch mark the stored snapshot stale.
 
@@ -27,7 +27,7 @@ function newSession(fake: FakeDriver) {
   return { sessions, session };
 }
 
-describe('qa_act baseline after an X1 re-dump', () => {
+describe('qa_act baseline after a ref re-check re-dump', () => {
   let h: Awaited<ReturnType<typeof harness>>;
   beforeAll(async () => {
     h = await harness('review-r2');

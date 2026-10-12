@@ -1,4 +1,4 @@
-// 2.3.0 P4 visibility heuristic (sources without `visible`), shapes taken from real iOS 18.4
+// 2.3.0 visibility heuristic (sources without `visible`), shapes taken from real iOS 18.4
 // simulator sources (iPhone SE, 375x667): keyboard with an accessory bar, tab bar, and window
 // layers (alert, sheet) over the app content.
 import { describe, expect, it } from 'vitest';
@@ -13,7 +13,7 @@ const clickable = (xml: string) =>
     [...normalizeWdaSource(xml).matchAll(/content-desc="(\w+)"[^>]*? clickable="(\w+)"/g)].map((m) => [m[1], m[2] === 'true']),
   );
 
-describe('P4 visibility heuristic without `visible`', () => {
+describe('visibility heuristic without `visible`', () => {
   it('the keyboard hides rows under it; its own keys, an accessory toolbar and rows above stay tappable', () => {
     const src = app(
       el(

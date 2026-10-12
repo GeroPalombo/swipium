@@ -1,4 +1,4 @@
-// Round-3 follow-up notes (low): planned coverage the run did not get must not leave qa_report at SHIP.
+// Planned coverage the run did not get must not leave qa_report at SHIP.
 //  - a qa_flow_run result is recorded as the flow's outcome (drift > CAUTION, app failure > BLOCK);
 //  - a blocked exploration (unsafe actions skipped) never pairs Coverage BLOCKED with SHIP;
 //  - saved flows skipped by the session budget are not covered: CAUTION, coverage PARTIAL, named.

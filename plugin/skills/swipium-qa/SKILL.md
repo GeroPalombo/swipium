@@ -48,7 +48,7 @@ Setup and verification shortcuts (prefer these over raw adb or simctl): qa_app_c
 
 ## iOS without WebDriverAgent
 
-An iOS Simulator without WebDriverAgent is visual-only (BACKEND_UNSUPPORTED from qa_snapshot/qa_act): use qa_screenshot + qa_visual, or attach WebDriverAgent with qa_wda.
+An iOS Simulator without WebDriverAgent is visual-only (BACKEND_UNSUPPORTED from qa_snapshot/qa_act): use qa_screenshot + qa_visual, or set WebDriverAgent up in one call with qa_wda {action:"setup"} (reuses, builds if needed, and starts it).
 
 ## Making the run durable
 

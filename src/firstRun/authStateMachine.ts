@@ -34,7 +34,7 @@ export function chooseAuthIntent(purpose: ScreenPurpose, session: Session, gener
 function findSubmit(elements: SnapshotElement[], intent: AuthIntent): SnapshotElement | undefined {
   const re = intent === 'create_account' ? SUBMIT_CREATE : SUBMIT_LOGIN;
   // Prefer a non-field clickable button matching the verb; exclude editable fields. Never a
-  // third-party / OS sign-in ("Sign up with Apple" opened the iOS Apple Account alert: GOAL NEW-R4-2).
+  // third-party / OS sign-in ("Sign up with Apple" opened the iOS Apple Account alert).
   const buttons = elements.filter(
     (e) =>
       e.clickable &&
@@ -54,7 +54,7 @@ const EMAIL_LINK = /\b(by|with|use|via)\s+(e-?mail)\b|^\s*e-?mail\s*$/i;
 
 /**
  * On a sign-up / login chooser (no fields: "Sign up with Apple / Google / Or by email / Already have
- * an account? Sign In"), find the in-app control that opens the email sign-in form (GOAL NEW-R5-2).
+ * an account? Sign In"), find the in-app control that opens the email sign-in form.
  * "Sign In" first, then "by email". Third-party / OS sign-in stays excluded. A link may be plain
  * text (an RN <Text onPress>), so non-clickable elements count too, after clickable ones.
  */

@@ -12,7 +12,7 @@ import type { TestThisInput } from './types.js';
 
 /** qa_test_this inputs that express the user's INTENT (never consent/one-shot plumbing). The
  *  device the user named is intent too: a resume that drops it can land on another simulator or
- *  emulator (GOAL-18). */
+ *  emulator. */
 export const TEST_THIS_INTENT_KEYS = [
   'goal',
   'goalText',
@@ -85,7 +85,7 @@ export function envCredentialsAvailable(env: NodeJS.ProcessEnv = process.env): b
   return !!env.SWIPIUM_TEST_EMAIL?.trim() && !!env.SWIPIUM_TEST_PASSWORD?.trim();
 }
 
-/** GOAL-17: SWIPIUM_TEST_EMAIL / SWIPIUM_TEST_PASSWORD (+ SWIPIUM_TEST_OTP) in the server env ARE the
+/** SWIPIUM_TEST_EMAIL / SWIPIUM_TEST_PASSWORD (+ SWIPIUM_TEST_OTP) in the server env ARE the
  *  credentials (README "Test login", qa_status rules.credentials): register them as session inputs
  *  (password/OTP redacted) so the login question is not asked and the login path can type them.
  *  No-op unless both email and password are set, or when the session already has usable ones. */

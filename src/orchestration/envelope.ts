@@ -1,12 +1,12 @@
-// Uniform terminal result envelope for qa_test_this (Developer 1, Milestone B).
+// Uniform terminal result envelope for qa_test_this.
 // Every terminal orchestration state (completed | blocked | unsafe | needs_input | running)
 // is summarizable from STRUCTURED output, with no log parsing: what was attempted, what safe
 // fallbacks were taken, which artifact/target was chosen and why, typed blockers with owner +
 // fix, the report URI, and the single exact next call.
 //
-// Developer 1 owns the ENVELOPE shape, not the source data: artifact/target explanations come
-// from Developer 2's services; suite/report/readiness summaries come from Developer 3's. This
-// module only normalizes those into one stable contract.
+// This module owns the ENVELOPE shape, not the source data: artifact/target explanations and
+// suite/report/readiness summaries come from the services. It only normalizes those into one
+// stable contract.
 
 import { FAILURES, failureOwner, isSelfFixable, type FailureCode } from '../oracle/failures.js';
 
@@ -46,7 +46,7 @@ export interface TerminalEnvelope {
   summary: string;
   /** Steps Swipium actually ran (build, prepare, smoke, …). */
   attempted: string[];
-  /** Safe fallbacks Swipium chose on its own (honesty trail, §11). */
+  /** Safe fallbacks Swipium chose on its own (honesty trail). */
   workaroundsAttempted: string[];
   artifactChoice: ChoiceExplanation | null;
   targetChoice: ChoiceExplanation | null;

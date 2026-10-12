@@ -224,7 +224,7 @@ export async function runReport(args: string[], io: ReportCliIo = defaultIo): Pr
   } else {
     const sessions = findProjectSessions(root);
     const pick = parsed.session ? sessions.find((s) => s.id === parsed.session) : [...sessions].reverse().find((s) => s.reportPath);
-    // E2E-7: say so when newer sessions exist that never saved a report (the latest agent step
+    // Say so when newer sessions exist that never saved a report (the latest agent step
     // may have failed before qa_report), instead of silently rendering an older run.
     const newerWithoutReport = pick && !parsed.session ? sessions.filter((s) => s.createdAt > pick.createdAt && !s.reportPath) : [];
     if (newerWithoutReport.length) {
@@ -251,7 +251,7 @@ export async function runReport(args: string[], io: ReportCliIo = defaultIo): Pr
     reportPath = pick.reportPath;
   }
 
-  // E2E-7: freshness. Every run prints when its report was saved; --max-age refuses a stale one.
+  // Freshness. Every run prints when its report was saved; --max-age refuses a stale one.
   const savedAt = reportSavedAt(reportPath);
   if (maxAgeMin !== undefined && (savedAt === undefined || Date.now() - savedAt > maxAgeMin * 60_000)) {
     io.stderr(
@@ -261,7 +261,7 @@ export async function runReport(args: string[], io: ReportCliIo = defaultIo): Pr
     return 2;
   }
 
-  // E2E-6: an invalid policy is a usage error (exit 2), never a crash read as "gate blocks" (exit 1).
+  // An invalid policy is a usage error (exit 2), never a crash read as "gate blocks" (exit 1).
   const policyProblem = policyFileProblem(root);
   if (policyProblem) {
     io.stderr(
@@ -269,7 +269,7 @@ export async function runReport(args: string[], io: ReportCliIo = defaultIo): Pr
     );
     return 2;
   }
-  // E2E NEW-9: a typo'd key is ignored by the gate; say so instead of silently gating without it.
+  // A typo'd key is ignored by the gate; say so instead of silently gating without it.
   const unknownPolicyKeys = policyUnknownKeys(root);
   if (unknownPolicyKeys.length) {
     io.stderr(

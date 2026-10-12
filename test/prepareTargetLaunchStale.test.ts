@@ -1,4 +1,4 @@
-// R2: qa_prepare_target's already-installed launch path changes the screen without counting an
+// qa_prepare_target's already-installed launch path changes the screen without counting an
 // action, so it must mark the stored session snapshot stale (noteScreenMutation). adb is faked.
 
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';

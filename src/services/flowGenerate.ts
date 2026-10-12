@@ -21,7 +21,7 @@ export interface FlowGenerateArgs {
   save?: boolean;
 }
 
-/** LOG-11: the app was restarted (qa_app_control restart / fresh_start) before the first recorded
+/** The app was restarted (qa_app_control restart / fresh_start) before the first recorded
  *  action, so the recording began from a clean launch state; the flow should reset the same way. */
 function recordingStartedFromRestart(session: Session): boolean {
   const first = session.recordedActions[0]?.at;
@@ -35,7 +35,7 @@ function recordingStartedFromRestart(session: Session): boolean {
   );
 }
 
-/** LOG-13: stable, human-readable text on the screen the recording ended on (the last snapshot),
+/** Stable, human-readable text on the screen the recording ended on (the last snapshot),
  *  used as the flow's final assertion. Skips typed values (trivially visible in the field), clocks /
  *  numbers (dynamic) and clickable controls; prefers the top-of-screen title. */
 function finalScreenAssertions(session: Session): string[] {
@@ -119,7 +119,7 @@ export async function runFlowGenerate(
     const dir = join(session.root, '.swipium', 'flows');
     mkdirSync(dir, { recursive: true });
     savedTo = join(dir, `${flowName}.yaml`);
-    // Say so when a same-named flow with different content is replaced (GOAL-23 / SET-15 family).
+    // Say so when a same-named flow with different content is replaced.
     if (existsSync(savedTo) && readFileSync(savedTo, 'utf8') !== gen.yaml) overwrote = true;
     writeFileSync(savedTo, gen.yaml);
   }

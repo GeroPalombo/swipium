@@ -1,7 +1,7 @@
-// prepareAndroid must never install on a physical phone (P0 #1): after booting an AVD it waits for a
+// prepareAndroid must never install on a physical phone: after booting an AVD it waits for a
 // NEW emulator serial (not one already online, and verified as an emulator), and an explicit
 // physical serial is refused. It also always waits for sys.boot_completed on a pre-existing
-// emulator that adb already lists as `device` (P2 #11). adb / getprop are faked.
+// emulator that adb already lists as `device`. adb / getprop are faked.
 
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';

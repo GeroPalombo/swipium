@@ -38,7 +38,7 @@ async function main(): Promise<void> {
     process.exitCode = 2;
     return;
   }
-  // SET-3: engines.node is >=22.12; say so up front instead of failing later in odd ways.
+  // engines.node is >=22.12; say so up front instead of failing later in odd ways.
   // `verify` skips it: the server child it starts prints the same warning (and verify fails on it).
   const nodeWarning = unsupportedNodeWarning();
   if (nodeWarning && !(parsed.kind === 'sub' && parsed.cmd === 'verify')) process.stderr.write(nodeWarning);

@@ -1,4 +1,4 @@
-// Review round 2: DirectDriver.screenSize() caches size + rotation for a short TTL instead of
+// DirectDriver.screenSize() caches size + rotation for a short TTL instead of
 // running `wm size` + `dumpsys input` on every swipe, and stays correct after a rotation.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 

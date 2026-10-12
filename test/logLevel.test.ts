@@ -1,4 +1,4 @@
-// I7: SWIPIUM_LOG_LEVEL filters stderr lines below the level, and at debug the tool wrapper emits
+// SWIPIUM_LOG_LEVEL filters stderr lines below the level, and at debug the tool wrapper emits
 // one metadata-only line per call (never argument values).
 
 import { describe, expect, it, beforeAll, afterAll, afterEach, vi } from 'vitest';

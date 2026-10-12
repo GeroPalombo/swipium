@@ -6,7 +6,7 @@ export type FlakeLikelyCause =
 
 const RESET_KINDS = new Set(['prepareTarget', 'restartApp', 'waitForIdle', 'clearOverlay']);
 
-/** LOG-11: the run failed on its FIRST locator step (everything before it only launched/reset the
+/** The run failed on its FIRST locator step (everything before it only launched/reset the
  *  app): the app was not on the screen the flow starts from (leftover state from a previous run),
  *  not a timing problem. */
 function failedAtStart(result: FlowRunResult): boolean {

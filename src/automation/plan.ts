@@ -1,4 +1,4 @@
-// Automation Kernel V2, Workstream 3: the Action Compiler. Compiles a Flow V2 file into Action IR,
+// Automation Kernel V2: the Action Compiler. Compiles a Flow V2 file into Action IR,
 // then into a backend-specific automation plan WITHOUT touching a device. Every step is classified
 // before execution (native / supported_with_fallback / visual_only / unsupported) and unsupported
 // steps name the exact missing capability and a concrete next step. This is the pure core behind the

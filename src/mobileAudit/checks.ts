@@ -50,7 +50,7 @@ export async function checkLaunch(ctx: AuditEvidenceCtx): Promise<RawCheckResult
     };
   }
   // The relaunched app shows its splash first: the health / navigation / readiness checks that follow
-  // read the tree, and judged an empty splash ("no interactive controls", GOAL-26).
+  // read the tree, and judged an empty splash ("no interactive controls").
   const render = await renderWait(ctx);
   const fg = await foreground(ctx);
   const shot = await captureScreenshot(ctx, 'audit launch');
@@ -165,7 +165,7 @@ function found(text: string, ...needles: string[]): boolean {
   return needles.some((n) => text.includes(n));
 }
 
-/** GOAL-26: "no check passes without evidence" applies to failures too. Only the current screen is
+/** "No check passes without evidence" applies to failures too. Only the current screen is
  *  inspected, so a link/path that is not on it is NOT VERIFIED (blocked, no issue recorded), never a
  *  store-compliance fail: it usually lives under Settings / About / Profile. */
 function notVerifiedOnThisScreen(what: string, evidenceUris: string[] = []): RawCheckResult {
@@ -276,7 +276,7 @@ export async function checkProcessRelaunch(ctx: AuditEvidenceCtx): Promise<RawCh
     await ctx.driver.launchApp(ctx.appId);
   } catch (e) {
     const msg = String((e as Error).message ?? e);
-    // A WDA / transport timeout is a tool or environment failure, not an app bug (R5 must-fix 3).
+    // A WDA / transport timeout is a tool or environment failure, not an app bug.
     if (isAbortError(e)) throw e;
     if (TOOL_ERROR_RE.test(msg)) return toolBlocked(`relaunch could not be driven: ${msg}`);
     return { status: 'fail', category: 'app_bug', severity: 'high', reason: `relaunch failed: ${msg}`, evidenceUris: [] };

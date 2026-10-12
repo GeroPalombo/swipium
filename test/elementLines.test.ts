@@ -66,7 +66,7 @@ describe('renderElementLine', () => {
       secure: false,
     });
     expect(parseElementLine('not a line')).toBeUndefined();
-    // K4: no name, focused + not clickable (trailing " -")
+    // No name, focused + not clickable (trailing " -")
     const bare = el({ ref: '@e2', id: 'x', focused: true, clickable: false });
     expect(renderElementLine(bare)).toBe('@e2 [button] #x [40,200][1040,245] (focused) -');
     expect(parseElementLine(renderElementLine(bare))).toMatchObject({ ref: '@e2', name: '', id: 'x', clickable: false, focused: true });
@@ -152,7 +152,7 @@ describe('through the server', () => {
     expect(objs[1]).toMatchObject({ ref: '@e2', role: 'button', text: 'Home item 0', id: 'home_0', bounds: [40, 200, 1040, 245] });
     fake.onTap = () => (fake.xml = buttonScreen('Details', 3));
     const act = structured(await h.call('qa_act', { sessionId: id, action: 'tap', target: { ref: '@e2' } }));
-    // The new screen's id-less title gets a fresh ref (IOS-10: an id-less element whose text changed
+    // The new screen's id-less title gets a fresh ref (an id-less element whose text changed
     // is a different element), so match the full object by content, not by @e1.
     expect((act.elements as SnapshotElement[])[0]).toMatchObject({ ref: expect.stringMatching(/^@e\d+$/), role: 'text', text: 'Details' });
   }, 20_000);

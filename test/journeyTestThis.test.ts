@@ -134,7 +134,7 @@ afterAll(async () => {
   rmSync(fakeHome, { recursive: true, force: true });
 });
 
-describe('plan mode never loops (P0 #4)', () => {
+describe('plan mode never loops', () => {
   it('an Expo project without an APK → next action is qa_test_this with mode:"execute" and the original goal', async () => {
     env.avds = ['Pixel_7'];
     const root = project('expo-nobuild', { 'package.json': expoPkg, 'app.json': '{"expo":{"name":"demo"}}' });
@@ -163,7 +163,7 @@ describe('plan mode never loops (P0 #4)', () => {
   });
 });
 
-describe('physical devices and missing adb (P0 #1 plan side, P1 #5)', () => {
+describe('physical devices and missing adb (plan side)', () => {
   it('phone online + AVD available → plans a boot of the AVD, never the phone', async () => {
     env.online = ['R58M123ABC'];
     env.avds = ['Pixel_7'];
@@ -200,7 +200,7 @@ describe('physical devices and missing adb (P0 #1 plan side, P1 #5)', () => {
   });
 });
 
-describe('iOS without WebDriverAgent (P0 #2)', () => {
+describe('iOS without WebDriverAgent', () => {
   const iosApp = () =>
     project(`ios-${Math.random().toString(36).slice(2)}`, {
       'App.xcodeproj/project.pbxproj': '// fake',
@@ -230,11 +230,11 @@ describe('iOS without WebDriverAgent (P0 #2)', () => {
     expect(String(sc(r).what)).toMatch(/suite generation/);
     expect(sc(r).requiresWdaFor).toContain('suite generation');
     expect((sc(r).nextSteps as string[]).join('\n')).toContain('"goal":"smoke"');
-    // The blocked plan never binds the simulator, so the WDA steps name it (GOAL NEW-R3-1).
+    // The blocked plan never binds the simulator, so the WDA steps name it.
     expect(JSON.stringify(sc(r).nextSteps)).toContain(sim.udid);
   });
 
-  it("finds the simulator's own WDA on its per-simulator port (not only ios.wda.url / :8100) (GOAL NEW-R3-1)", async () => {
+  it("finds the simulator's own WDA on its per-simulator port (not only ios.wda.url / :8100)", async () => {
     env.bins = new Set();
     env.simPresent = true;
     env.sims = [sim];
@@ -254,7 +254,7 @@ describe('iOS without WebDriverAgent (P0 #2)', () => {
     expect(sc(r).failureCode).toBe('WDA_UNREACHABLE');
   });
 
-  it('a reachable :8100 WDA whose owner could not be verified (lsof timed out) is not used (CR-WDA unverified)', async () => {
+  it('a reachable :8100 WDA whose owner could not be verified (lsof timed out) is not used', async () => {
     env.bins = new Set();
     env.simPresent = true;
     env.sims = [sim];
@@ -267,7 +267,7 @@ describe('iOS without WebDriverAgent (P0 #2)', () => {
     expect(sc(ok).failureCode).toBeUndefined();
   });
 
-  it("an unverified WDA is usable when it is this session's own recorded WDA for the simulator (CR P10)", async () => {
+  it("an unverified WDA is usable when it is this session's own recorded WDA for the simulator", async () => {
     env.bins = new Set();
     env.simPresent = true;
     env.sims = [sim];
@@ -299,7 +299,7 @@ describe('iOS without WebDriverAgent (P0 #2)', () => {
     expect(JSON.stringify(sc(r))).not.toContain('WDA_UNREACHABLE');
   });
 
-  it('a wrong-case SWIPIUM_DEVICE pin finds the simulator; a name two simulators share is MULTIPLE_DEVICES (E2E NEW-5)', async () => {
+  it('a wrong-case SWIPIUM_DEVICE pin finds the simulator; a name two simulators share is MULTIPLE_DEVICES', async () => {
     env.bins = new Set();
     env.simPresent = true;
     env.sims = [sim];
@@ -317,7 +317,7 @@ describe('iOS without WebDriverAgent (P0 #2)', () => {
   });
 });
 
-describe('consent ids (P2 #9)', () => {
+describe('consent ids', () => {
   it('a bogus consentId is explained, and the new challenge carries sessionId', async () => {
     env.avds = ['Pixel_7'];
     const r = await call('qa_test_this', {
@@ -339,7 +339,7 @@ describe('consent ids (P2 #9)', () => {
   });
 });
 
-describe('blocker resume replays the original intent (P1 #6) and decline handling (P2 #10)', () => {
+describe('blocker resume replays the original intent, and decline handling', () => {
   it('release_gate → monorepo_target → resume keeps goal', async () => {
     const root = project('mono', {
       'package.json': JSON.stringify({ name: 'mono', private: true, workspaces: ['apps/*'] }),
@@ -383,7 +383,7 @@ describe('blocker resume replays the original intent (P1 #6) and decline handlin
   });
 });
 
-describe('credentials after a restart (P1 #7)', () => {
+describe('credentials after a restart', () => {
   it('stored credential metadata without values re-asks instead of going straight to consent', async () => {
     env.avds = ['Pixel_7'];
     const root = androidApp();

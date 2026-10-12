@@ -33,7 +33,7 @@ export interface MobileAuditRunOptions {
 }
 
 /** True when a profile's execution toggles airplane mode (needs network_change consent). An iOS
- *  backend can't toggle the network (qa_network is Android-only), so it never asks (GOAL-25). */
+ *  backend can't toggle the network (qa_network is Android-only), so it never asks. */
 export function auditChangesNetwork(profile: AuditProfile, driverKind?: Driver['kind']): boolean {
   if (driverKind && isIosKind(driverKind)) return false;
   return profile === 'resilience' || profile === 'release_gate';
@@ -153,7 +153,7 @@ export async function runMobileAudit(
       let auditOwnsRestore = false;
       try {
         if (networkUnsupported) {
-          // GOAL-25: iOS can't toggle the network; skip without touching (or recording) network state.
+          // iOS can't toggle the network; skip without touching (or recording) network state.
           await finalize('offline_entry', 'Offline entry', {
             status: 'skipped',
             reason:

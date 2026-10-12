@@ -2,7 +2,7 @@
 // MAINTAINABLE suite where selectors live in page objects and tests reference them by name,
 // instead of duplicating raw selectors. PURE: no filesystem, no device. Callers serialize the
 // returned files. Also produces a locator audit (durable vs brittle) with app-code remediation,
-// because durable automation is the point (§2.4 / §6 locator policy).
+// because durable automation is the point.
 
 import { parse as parseYaml, stringify } from 'yaml';
 import type { RecordedAction } from '../session/store.js';
@@ -23,7 +23,7 @@ export interface PomElement {
   secure?: boolean;
   durability: Durability;
   readinessCode?: LocatorAuditCode;
-  /** App-code change that would make this element durably testable (§6 locator policy). */
+  /** App-code change that would make this element durably testable. */
   remediation?: string;
 }
 
@@ -106,7 +106,7 @@ function camel(s: string): string {
     .trim()
     .split(/\s+/)
     .filter(Boolean)
-    // LOG-20: an all-caps word is an acronym ("OK" > "Ok"), so names read ok / tapOk / tap_ok, not oK / tap_o_k.
+    // An all-caps word is an acronym ("OK" > "Ok"), so names read ok / tapOk / tap_ok, not oK / tap_o_k.
     .map((w) => (/^[A-Z][A-Z0-9]+$/.test(w) ? w[0] + w.slice(1).toLowerCase() : w[0].toUpperCase() + w.slice(1)))
     .join('');
   if (!p) return 'element';
@@ -141,7 +141,7 @@ function remediationFor(el: { selectorKind: string; selector?: string; screen?: 
 
 function auditCodeFor(el: { selectorKind: string }, platform?: 'android' | 'ios'): LocatorAuditCode | undefined {
   if (el.selectorKind === 'coords') return 'COORDINATE_ONLY';
-  // LOG-20: an Android-only recording gets the Android readiness code, not the iOS one.
+  // An Android-only recording gets the Android readiness code, not the iOS one.
   if (platform === 'android' && el.selectorKind === 'text') return 'ANDROID_MISSING_RESOURCE_ID';
   if (el.selectorKind === 'text' || el.selectorKind === 'name' || el.selectorKind === 'predicate' || el.selectorKind === 'class_chain')
     return 'IOS_MISSING_ACCESSIBILITY_IDENTIFIER';
@@ -167,7 +167,7 @@ export function generatePom(
     secrets?: Iterable<string>;
     /** Stored session inputs (secretGuard.inputBindings): typed text equal to one becomes its ${VAR}. */
     inputs?: InputBinding[];
-    /** The recorded platform, when known: page objects then claim only it (LOG-20). */
+    /** The recorded platform, when known: page objects then claim only it. */
     platform?: 'android' | 'ios';
   },
 ): PomResult {
@@ -200,7 +200,7 @@ export function generatePom(
     const staticLabel = opts.screenLabels?.[key];
     let name = staticLabel ? `${pascal(staticLabel)}Page` : pageNameFromScreen(a.screen, pages.length);
     // Same screen title, new signature (the Alarms list after adding an alarm): one page object
-    // with merged elements, not an `Alarms2Page` (LOG-20).
+    // with merged elements, not an `Alarms2Page`.
     const sameScreen = a.screen?.trim() && pages.find((p) => p.name === name && p.screen?.trim() === a.screen?.trim());
     if (sameScreen) {
       pageByKey.set(key, sameScreen);
@@ -273,7 +273,7 @@ export function generatePom(
         const element = ensureElement(page, a);
         let text = a.text ?? '';
         if (a.secret) {
-          // Secret values become ${SWIPIUM_TEST_*} variables, never the raw value (P0.5).
+          // Secret values become ${SWIPIUM_TEST_*} variables, never the raw value.
           const v = secretVarName(a, ++secretCount);
           text = `\${${v}}`;
           variables.push(v);

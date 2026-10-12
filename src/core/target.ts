@@ -88,7 +88,7 @@ function norm(value?: string): string {
   return (value ?? '').trim().toLowerCase();
 }
 
-/** PURE (AND NEW R4-2): text for selector matching: lower case, typographic apostrophes and quotes
+/** PURE: text for selector matching: lower case, typographic apostrophes and quotes
  * folded to ASCII, so `Don't allow` matches the system dialog's `Don’t allow` (iOS alerts too). */
 export function foldText(value: string): string {
   return value
@@ -187,7 +187,7 @@ export async function reresolveRef(
     if (retired) {
       let matches = [...parsed.fullByRef].filter(([, n]) => sameIdentity(n, old) && (n.label ?? '') === opts.label);
       // A text field's subtree label follows its value, so a type in between breaks the label match
-      // (AND R3-5). With no exact match, class + resource-id is enough when exactly one is on screen.
+      // With no exact match, class + resource-id is enough when exactly one is on screen.
       if (!matches.length && old.id && isTextFieldClass(old.cls))
         matches = [...parsed.fullByRef].filter(([, n]) => n.cls === old.cls && n.id === old.id);
       if (matches.length === 1) {
@@ -309,7 +309,7 @@ function matchSelector(parsed: Pick<ParsedSnapshot, 'elements' | 'fullByRef'>, t
         )
       : [];
   if (textCands.length > 1 && target.index == null) {
-    // AND-13: an exact (case-insensitive) text/label match wins over substring matches ("Allow"
+    // An exact (case-insensitive) text/label match wins over substring matches ("Allow"
     // must not pick "Allow Contacts to send you notifications?"), then a clickable match comes
     // before static text. An explicit index keeps counting over all matches in screen order.
     const tt = t!.trim();

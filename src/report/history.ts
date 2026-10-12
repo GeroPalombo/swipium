@@ -251,7 +251,7 @@ function likelyCategory(problem: { reason: string; category?: string } | null, r
 
 function evidenceList(report: ReportData, problem: { evidence: string[] } | null): string[] {
   const fromProblem = problem?.evidence ?? [];
-  // E2E NEW-16: the report's own exports (report JSON/Markdown, manifest) are never evidence.
+  // The report's own exports (report JSON/Markdown, manifest) are never evidence.
   const fromArtifacts = report.artifacts
     .filter((a) => a.kind !== 'report' && a.kind !== 'manifest')
     .map((a) => a.uri)
@@ -649,7 +649,7 @@ export function trendForReports(files: string[]): TrendSummary {
         const code = o.category ?? o.reason ?? 'fail';
         codeCounts.set(code, (codeCounts.get(code) ?? 0) + 1);
       }
-      // GOAL-24: missing test data (blocked + missing_test_data) and generated-flow locator drift are
+      // Missing test data (blocked + missing_test_data) and generated-flow locator drift are
       // setup / automation problems, not a failed workflow of the app: no release-blocking signal.
       const notAppFailure = (o.outcome === 'blocked' && o.category === 'missing_test_data') || isAutomationDriftNote(o);
       if ((o.outcome === 'fail' || o.outcome === 'blocked') && !notAppFailure) {

@@ -1,4 +1,4 @@
-// Candidate action ranking (Phase 3.3 §8). From a parsed snapshot, produce ranked ExploreElements:
+// Candidate action ranking. From a parsed snapshot, produce ranked ExploreElements:
 // prioritize useful low-risk coverage (nav, tabs, named safe buttons, list items) and deprioritize
 // unlabeled icons + coordinate-only targets, which also surface as locator-quality issues. PURE.
 
@@ -26,8 +26,8 @@ function bounds(e: SnapshotElement): { x: number; y: number; w: number; h: numbe
 function score(e: SnapshotElement, locator: LocatorInfo, risk: string): number {
   let s = 0;
   const label = `${e.text ?? ''} ${e.label ?? ''} ${e.id ?? ''}`;
-  if (NAV.test(label) || isTabLike(e)) s += 50; // navigation / tabs first (LOG-22: tabs by structure too)
-  // LOG-22: an overflow menu holds secondary actions (settings, feedback, privacy); explore it last.
+  if (NAV.test(label) || isTabLike(e)) s += 50; // navigation / tabs first (tabs by structure too)
+  // An overflow menu holds secondary actions (settings, feedback, privacy); explore it last.
   if (/\b(more options|overflow|more)\b/i.test(`${e.text ?? ''} ${e.label ?? ''}`) || /overflow/i.test(e.id ?? '')) s -= 40;
   if (risk === 'safe') s += 30;
   if (risk === 'destructive') s -= 200;
@@ -105,7 +105,7 @@ export function actionLikeNonInteractive(elements: SnapshotElement[]): SkippedAc
   const screenArea = Math.max(1, ...elements.map((e) => area(e.bounds)));
   // a clickable full-screen container does not make every label in it tappable
   const clickable = elements.filter((c) => c.clickable && area(c.bounds) < screenArea * 0.5);
-  // LOG-22: a label inside a clickable row (popup-menu items) is tappable through its parent.
+  // A label inside a clickable row (popup-menu items) is tappable through its parent.
   const insideClickable = (e: SnapshotElement): boolean =>
     clickable.some(
       (c) =>
@@ -124,7 +124,7 @@ export function actionLikeNonInteractive(elements: SnapshotElement[]): SkippedAc
   return out;
 }
 
-/** Locator-readiness grade for a screen (Phase 3.3 §9.4). Drives the report's testability advice. */
+/** Locator-readiness grade for a screen. Drives the report's testability advice. */
 export function locatorQuality(elements: SnapshotElement[]): {
   grade: 'A' | 'B' | 'C' | 'D';
   missingStableLocators: number;

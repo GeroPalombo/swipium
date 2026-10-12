@@ -134,7 +134,7 @@ export type FailureCode =
   | 'IPA_SIGNING_REQUIRED'
   | 'IOS_APP_WRONG_ARCH'
   | 'IOS_SIMULATOR_APP_MISSING'
-  // --- Dev2 plan §6: iOS real-device lane ---
+  // --- iOS real-device lane ---
   | 'REAL_DEVICE_NOT_CONNECTED'
   | 'REAL_DEVICE_UDID_NOT_PROVISIONED'
   | 'REAL_DEVICE_BUNDLE_ID_MISMATCH'
@@ -1032,7 +1032,7 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
     recovery: 'Build an iOS simulator app, or pass an explicit simulator .app path.',
   },
 
-  // --- Dev2 plan §6: iOS real-device lane ---
+  // --- iOS real-device lane ---
   REAL_DEVICE_NOT_CONNECTED: {
     bucket: 'environment',
     severity: 'high',
@@ -1329,7 +1329,7 @@ export const FAILURES: Record<FailureCode, FailureInfo> = {
   },
 };
 
-/** Default owner derived from the failure bucket, unless the entry sets one explicitly (§10). */
+/** Default owner derived from the failure bucket, unless the entry sets one explicitly. */
 const OWNER_BY_BUCKET: Record<FailureBucket, FailureOwner> = {
   app_bug: 'app',
   environment: 'environment',
@@ -1382,7 +1382,7 @@ export function failureForFindingKind(kind: string): FailureCode {
 }
 
 /** Map a qa_note category to a bucket (for outcomes recorded by the agent). */
-/** GOAL-14/24: the note smoke attaches to a Swipium-generated flow that failed on a locator step.
+/** The note smoke attaches to a Swipium-generated flow that failed on a locator step.
  *  Such a fail (category 'other') is automation drift, not an app defect: reports must not count
  *  it as an app failure. */
 export const AUTOMATION_DRIFT_NOTE =
@@ -1396,7 +1396,7 @@ export function isAutomationDriftNote(n: { outcome?: string; category?: string; 
 export function bucketForNoteCategory(category?: string, outcome?: string): FailureBucket {
   switch (category) {
     case 'other':
-      // E2E NEW-14: a blocked "other" note is a setup / precondition gap (Metro not serving, a refused
+      // A blocked "other" note is a setup / precondition gap (Metro not serving, a refused
       // consent, a blank launch), not a Swipium limitation.
       return outcome === 'blocked' ? 'environment' : 'mcp_limitation';
     case 'app_bug':
@@ -1432,7 +1432,7 @@ export function qaFail(
       nextSteps: opts.nextSteps ?? [info.recovery],
       failureCode: code,
     },
-    // owner + bucket + canSwipiumFix travel with every typed failure (§3.4 / §10) so an agent
+    // owner + bucket + canSwipiumFix travel with every typed failure so an agent
     // can route the blocker (app dev vs environment vs user input) without a second lookup.
     { bucket: info.bucket, owner: failureOwner(code), canSwipiumFix: isSelfFixable(code), ...(opts.extra ?? {}) },
   );

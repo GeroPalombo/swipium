@@ -23,7 +23,7 @@ describe('run() stdin handling (SWIP-11)', () => {
   });
 });
 
-describe('run() redactArgs (H2)', () => {
+describe('run() redactArgs', () => {
   it('keeps sensitive argv out of the non-zero-exit error, including echoed stderr', async () => {
     const err = (await run('sh', ['-c', 'echo "bad arg: $1" >&2; exit 3', 'sh', 'hunter2-secret'], {
       rejectOnNonZero: true,

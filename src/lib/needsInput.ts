@@ -7,7 +7,7 @@
 // Secret fields (passwords, OTPs, tokens) are flagged so the caller redacts them everywhere:
 // once provided, the value goes into session.secrets and never appears in artifacts/logs.
 //
-// Developer 1 contract (Milestone B): EVERY NeedsInput response carries one concise question,
+// Contract: EVERY NeedsInput response carries one concise question,
 // typed fields (with secret flags), safe fallback options, the EXACT resume call, what Swipium
 // already tried (`attempted`), and what happens if the user declines (`ifDeclined`). Agents ask
 // one question (never a bundle of guesses) and resume deterministically.
@@ -256,7 +256,7 @@ export function qaNeedsInput(p: NeedsInputPayload, extra?: Record<string, unknow
     args: { ...(typeof sessionId === 'string' ? { sessionId } : {}), ...p.resume.args },
   };
   const enriched: NeedsInputPayload = { ...p, attempted, resume };
-  // GOAL-18: the resume call IS the next recommended action (docs/tools.md#qa_test_this needs_input).
+  // The resume call IS the next recommended action (docs/tools.md#qa_test_this needs_input).
   const nextRecommendedAction = {
     tool: resume.tool,
     args: resume.args,

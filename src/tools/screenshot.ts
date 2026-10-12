@@ -18,7 +18,7 @@ import { launchErrorText } from '../oracle/record.js';
 import type { RawNode } from '../snapshot/parse.js';
 import { ownsForeground } from '../snapshot/overlays.js';
 
-/** The qa_screenshot line for a RedBox / Expo dev launcher on screen (E2E NEW-17). */
+/** The qa_screenshot line for a RedBox / Expo dev launcher on screen. */
 function redBoxWarning(f: Finding): string {
   return isMetroRequiredFinding(f)
     ? `⚠ METRO_REQUIRED: ${launchErrorText(f)}: the debug build has no JS bundle. This screenshot is not evidence the app works; start Metro (qa_metro { action:"start" }) and relaunch.`
@@ -44,7 +44,7 @@ export function registerScreenshot(server: McpServer, sessions: SessionStore): v
     async ({ sessionId, force, reason, inline }) => {
       const session = sessions.get(sessionId);
       if (!session) return unknownSessionError(sessionId);
-      // TOOL-19: refuse before the device lookup, so a sensitive session never sees NO_DEVICE first.
+      // Refuse before the device lookup, so a sensitive session never sees NO_DEVICE first.
       if (session.sensitive) return sensitiveRefusal('Screenshot');
       const { driver, blocked } = await getDriver(session);
       if (!session || !driver) {
@@ -71,7 +71,7 @@ export function registerScreenshot(server: McpServer, sessions: SessionStore): v
       const hasSecure =
         (session.mode === 'visual-fallback' ? secureScreenState(session, seen) : await refreshSecureState(session, driver, seen)) ===
         'secure';
-      // E2E NEW-17: the same tree, checked for an RN RedBox / Expo dev launcher (no extra device call;
+      // The same tree, checked for an RN RedBox / Expo dev launcher (no extra device call;
       // no tree, as on a visual-only simulator, means no check).
       const appError = seen.nodes ? launchErrorSurface(seen.nodes) : undefined;
       if (hasSecure && !force) {
@@ -85,7 +85,7 @@ export function registerScreenshot(server: McpServer, sessions: SessionStore): v
       }
 
       try {
-        // E2E NEW-10: note whether the app under test is in front, so qa_report counts only such a
+        // Note whether the app under test is in front, so qa_report counts only such a
         // screenshot as "reached the app" (bounded; it runs alongside the capture).
         const appId = session.appId;
         const foreground = appId

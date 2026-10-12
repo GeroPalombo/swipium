@@ -1,4 +1,4 @@
-// Round-5 typing (android R5-1, R5-2), hermetic on the real DirectDriver with adb mocked:
+// Android typing read-back and replace retry, hermetic on the real DirectDriver with adb mocked:
 //  - long text: one UI dump that times out skips that read-back instead of turning checking off,
 //    so a piece that lost characters is still found and deleted and resent at the next read-back;
 //  - clearFocusedText(n, { byLength: true }) (the replace retry) clears by length with
@@ -66,7 +66,7 @@ const shellLines = () => adb.calls.map((a) => a.slice(2).join(' '));
 /** 200 letters: 5 pieces of 40, read back after pieces 2, 4 and 5. */
 const LONG = Array.from({ length: 200 }, (_, i) => String.fromCharCode(97 + ((i * 7) % 26))).join('');
 
-describe('long text read-back survives a dump timeout (R5-1)', () => {
+describe('long text read-back survives a dump timeout', () => {
   it('a timed-out read-back is skipped, and the next one still deletes and resends a piece that lost a char', async () => {
     adb.failDumpsAt = new Set([4]); // the read-back after piece 4
     adb.dropOnText = new Set([3]); // piece 3 loses its last char
@@ -90,7 +90,7 @@ describe('long text read-back survives a dump timeout (R5-1)', () => {
   });
 });
 
-describe('replace retry clears by length, not with select-all again (R5-2)', () => {
+describe('replace retry clears by length, not with select-all again', () => {
   it('byLength: CTRL+MOVE_END, then DEL and FORWARD_DEL by the real length; no CTRL+A', async () => {
     const d = new DirectDriver('emulator-5574');
     await d.clearFocusedText(); // first clear: probes and uses select-all

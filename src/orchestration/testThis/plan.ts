@@ -64,7 +64,7 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
     approve,
     responseMode,
   } = input;
-  // Goal routing (Milestone C): the goal sets orchestration FLAGS only; explicit booleans win.
+  // Goal routing: the goal sets orchestration FLAGS only; explicit booleans win.
   // Default policy = "leave behind automation when possible" (fastSmoke opts out).
   const goalFlags = resolveGoalFlags(goal as TestGoal | undefined, { explore, generateSuite, stopOnNeedsInput }, { fastSmoke });
   // ---- resolve / create session ----
@@ -108,13 +108,13 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
   // Install probe only on this session's device (or the requested / pinned one), never a bystander.
   const probeDevice = device ?? session.device ?? operatorDevicePin();
   let scan = await scanProject(root, { device: probeDevice });
-  // What Swipium has actually tried before any pre-execute question/blocker (review item 5):
+  // What Swipium has actually tried before any pre-execute question/blocker:
   // concrete steps, not just the workaround log. Grows as resolution proceeds.
   const preAttempted: string[] = [`scanned project root (framework=${scan.framework})`];
-  /** Set for a prebuilt-only root: the near-root artifacts the plan may install (TOOL NEW-4). */
+  /** Set for a prebuilt-only root: the near-root artifacts the plan may install. */
   let prebuiltPaths: string[] = [];
 
-  // ---- 1b. low-context app discovery (§3.1/§3.7): the root may be a monorepo or a parent
+  // ---- 1b. low-context app discovery: the root may be a monorepo or a parent
   //      directory rather than the app itself. Discover candidates and either adopt the one
   //      strong candidate (recording a workaround) or ask ONE disambiguation question. ----
   if (scan.framework === 'unknown') {
@@ -139,7 +139,7 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
           .map((c) => ({ path: c.path, rel: c.rel, framework: c.framework, score: c.score, reasons: c.reasons })),
       });
     } else if (scan.appId && (prebuiltPaths = prebuiltArtifactsNearRoot(root, [...scan.appBundles, ...scan.apks])).length > 0) {
-      // E2E-5: no source project, but a prebuilt simulator .app / .apk whose app id resolves:
+      // No source project, but a prebuilt simulator .app / .apk whose app id resolves:
       // test that build as-is (the artifact step below picks it up; nothing can be rebuilt).
       preAttempted.push(`no source project; found prebuilt artifact(s) for ${scan.appId}`);
       wa(`no source project at the root; testing the prebuilt artifact for ${scan.appId} as-is (cannot rebuild)`);
@@ -186,7 +186,7 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
   let appMapUri: string | undefined;
   try {
     const at = new Date().toISOString();
-    // SET-17: mode:"plan" is a side-effect-free preview, so the map is built in memory only (no
+    // mode:"plan" is a side-effect-free preview, so the map is built in memory only (no
     // .swipium/app-map*, history snapshot, .gitignore edit or projects.json entry).
     const planOnly = mode !== 'execute' && mode !== 'interactive';
     const pre = ensurePrelaunchAppMap(root, {
@@ -248,7 +248,7 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
       });
     }
   } else {
-    // No artifact. Build from source if possible (effective-before-exhaustive, §2.1).
+    // No artifact. Build from source if possible (effective before exhaustive).
     const targetPlatform: BuildPlatform = (platform ??
       artifactPlatform ??
       (scan.framework === 'native-ios' ? 'ios' : 'android')) as BuildPlatform;
@@ -351,7 +351,7 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
   }
   const pinUsed = requestedDevice ? undefined : operatorDevicePin();
   if (pinUsed) {
-    // E2E NEW-5: the pin resolves the way qa_prepare_ios_target resolves it (pinMatches: exact,
+    // The pin resolves the way qa_prepare_ios_target resolves it (pinMatches: exact,
     // ignoring case), and a simulator name several simulators share is refused as ambiguous.
     const pinned = pinnedTarget(pinUsed, onlineAll, avds, sims);
     if (pinned.ambiguous)
@@ -401,7 +401,7 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
       /^Honoring requested (device|simulator)/,
       sessionBound ? "Honoring this session's bound $1" : `Honoring operator pin ${DEVICE_PIN_ENV}: $1`,
     );
-  // E2E NEW-5: an explicit platform the pin overrides is said out loud, never silently dropped.
+  // An explicit platform the pin overrides is said out loud, never silently dropped.
   if (!device && !sessionBound && platform && requestedDevice && !target.blocked && target.selected) {
     const pinned = selToPlatform[target.selected];
     if (pinned !== platform) {
@@ -479,13 +479,13 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
   }
   if (structuredNeeds.length) {
     const wdaConfig = loadWdaConfig(root);
-    // GOAL-5: a WDA that answers may be ANOTHER simulator's (all default to the same port). A WDA
+    // A WDA that answers may be ANOTHER simulator's (all default to the same port). A WDA
     // proven to drive a different simulator than the target (or one whose owner could not be
     // inspected) is not ready for this run.
     const targetUdid = [target.device, target.bootTarget].find(
       (d): d is string => typeof d === 'string' && /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i.test(d),
     );
-    // GOAL NEW-R3-1: resolve the WDA the way qa_prepare_ios_target does (this session's own WDA for
+    // Resolve the WDA the way qa_prepare_ios_target does (this session's own WDA for
     // the simulator, else ios.wda.url, then the simulator's own per-UDID managed port): a managed
     // WDA runs on its own port, not on the configured / default 8100.
     const ownWdaUrl = targetUdid
@@ -506,11 +506,11 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
     const wdaUrl = resolvedWda.url;
     const wda = resolvedWda.status;
     const wdaOwner = resolvedWda.owner;
-    // CR P10: one rule with prepare / attach: `unverified` is usable only as this session's own
+    // One rule with prepare / attach: `unverified` is usable only as this session's own
     // recorded WDA for the simulator.
     const sameUrl = (x: unknown, y: string) => typeof x === 'string' && x.replace(/\/+$/, '') === y.replace(/\/+$/, '');
     const wdaForeign = wdaOwner?.owner === 'other' || (wdaOwner?.owner === 'unverified' && !sameUrl(ownWdaUrl, wdaUrl));
-    // GOAL NEW-R4-3: this simulator's own WDA listens but did not answer /status (hung).
+    // This simulator's own WDA listens but did not answer /status (hung).
     const hungOwnWda = (resolvedWda as { ownUnresponsive?: string }).ownUnresponsive;
     if (!wda.reachable || !wda.ready || wdaForeign) {
       // Hard requirement = something the caller explicitly asked for (flag or a WDA-only goal).
@@ -587,7 +587,7 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
   // ---- 5. assemble the ordered plan ----
   // Effective installable artifact path: a converted universal APK for an .aab, else the artifact.
   const effectiveApk = art.best ? (isAab ? universalApkCachePath(root, art.best.path) : art.best.path) : undefined;
-  // Milestone E: when a build is pending, the artifact does not exist yet, so use SYMBOLIC refs
+  // When a build is pending, the artifact does not exist yet, so use SYMBOLIC refs
   // (${artifact.path}/${artifact.appId}) and mark the dependency, never `undefined` args.
   const prepArgs: Record<string, unknown> = { sessionId: session.id };
   if (isAndroid) {
@@ -598,13 +598,13 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
     prepArgs.app = needBuild ? '${artifact.path}' : art.best?.path;
     prepArgs.bundleId = needBuild ? '${artifact.appId}' : (art.best?.appId ?? undefined);
     // The device the plan targets, or the one it boots (never left empty: prepare would then pick any
-    // booted simulator). `device` is qa_prepare_ios_target's public name (E2E NEW-3).
+    // booted simulator). `device` is qa_prepare_ios_target's public name.
     const sim = target.device ?? target.bootTarget;
     if (sim) prepArgs.device = sim;
     prepArgs.attachWda = 'auto';
   }
 
-  // A debug RN/Expo build needs Metro on iOS too (GOAL-28: the plan listed no Metro precondition).
+  // A debug RN/Expo build needs Metro on iOS too (the plan must list the Metro precondition).
   if (scan.metroNeed === 'likely') wa('debug RN/Expo build likely needs Metro/dev server serving before launch');
   steps.push({
     tool: isAndroid ? 'qa_prepare_target' : 'qa_prepare_ios_target',
@@ -616,11 +616,11 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
   steps.push({
     tool: 'qa_smoke',
     why: `Run a guardrail/smoke pass and capture evidence (profile: ${scan.recommendedProfile})`,
-    // Only qa_smoke's own parameters: the printed call must work as-is (E2E NEW-3).
+    // Only qa_smoke's own parameters: the printed call must work as-is.
     args: { sessionId: session.id },
     status: 'pending',
   });
-  // GOAL-28: the remaining steps follow the goal's effective flags (the same ones execute runs).
+  // The remaining steps follow the goal's effective flags (the same ones execute runs).
   if (effExplore) {
     steps.push({
       tool: 'qa_explore',

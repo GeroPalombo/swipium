@@ -146,7 +146,7 @@ function describe(step: FlowStep): string {
   }
 }
 
-/** A fresh dump adopted as the session snapshot; `reuse` returns a just-settled one instead (P2,
+/** A fresh dump adopted as the session snapshot; `reuse` returns a just-settled one instead (for
  *  single-shot checks only: a polling loop must see new dumps). */
 async function snapshot(session: Session, d: Driver, reuse = false) {
   const cached = reuse ? freshSnapshot(session, SNAPSHOT_REUSE_MS) : undefined;
@@ -158,7 +158,7 @@ async function snapshot(session: Session, d: Driver, reuse = false) {
   return snapshotNow(session, d);
 }
 function visible(parsed: { allNodes: { text: string; desc: string; id: string }[] }, query: string): boolean {
-  // Typographic quotes fold to ASCII (AND NEW R4-2), as in selector matching.
+  // Typographic quotes fold to ASCII, as in selector matching.
   const q = foldText(query);
   return parsed.allNodes.some(
     (n) => (!!n.text && foldText(n.text).includes(q)) || (!!n.desc && foldText(n.desc).includes(q)) || n.id?.toLowerCase().includes(q),
@@ -345,7 +345,7 @@ export function classifyFlowDriverError(error: unknown, fallback: FailureCode = 
   // first so the free-form detail after the prefix can't hit a broader pattern below.
   if (/TEXT_INPUT_UNSUPPORTED/.test(msg)) return 'TEXT_INPUT_UNSUPPORTED';
   if (/TEXT_INPUT_MISMATCH/.test(msg)) return 'TEXT_INPUT_MISMATCH';
-  // AND NEW R4-3/R4-4: an adb call that ran into its timeout (a stalled emulator) is not a WDA
+  // An adb call that ran into its timeout (a stalled emulator) is not a WDA
   // outage and not a UI-tree problem: before the "dump" and "timed out" patterns below.
   if (/DEVICE_UNRESPONSIVE|`adb [^`]*` exited \S+ \(timed out\)/.test(msg)) return 'DEVICE_UNRESPONSIVE';
   if (/not hittable|not hit.?point|not visible.*hittable|is not enabled|element.*obscured|other element.*would receive/i.test(msg))
@@ -396,7 +396,7 @@ export async function runFlow(
   const initialScreenSize = await d.screenSize().catch(() => null);
   const currentScreenSize = async () => (await d.screenSize().catch(() => null)) ?? initialScreenSize;
   const mutationConsent = opts.mutationConsent ?? { required: false, approved: true };
-  // P1/P2: settle with the pre-action fingerprint (Android fast accept) and keep the settled dump as
+  // Settle with the pre-action fingerprint (Android fast accept) and keep the settled dump as
   // the session snapshot, so the next step's target / assertion reuses it instead of dumping again.
   // `afterAction:false` (waitForIdle): no action ran, so a dump that differs from the last snapshot
   // means the screen is still changing, never that it settled; keep the 2-dump confirm.
@@ -460,7 +460,7 @@ export async function runFlow(
     return toDevicePoint(cs, m.x, m.y);
   };
 
-  /** LOG-12: a launch step that "succeeds" while another app is in front is reported in the step
+  /** A launch step that "succeeds" while another app is in front is reported in the step
    * detail (a warning; not a failure, a permission dialog over the app is legitimate). An
    * unreadable foreground ('unknown' / unsupported backend) is never judged. */
   const foregroundWarning = async (pkg: string, stepKind: string): Promise<{ detail?: string }> => {
@@ -506,7 +506,7 @@ export async function runFlow(
         if (!appId) return { ok: false, detail: 'no appId', failureCode: 'NO_ARTIFACT' };
         try {
           await d.terminateApp(appId);
-          // LOG-12: relaunch into a FRESH task; a plain launcher intent brings back a stale task
+          // Relaunch into a FRESH task; a plain launcher intent brings back a stale task
           // that another package's activity still tops (e.g. Settings search).
           if (d.relaunchCleanTask) await d.relaunchCleanTask(appId);
           else await d.launchApp(appId);
@@ -588,7 +588,7 @@ export async function runFlow(
         if (missing.length) return unresolved(missing);
         // The focus tap of an `into` field typed by coordinates, for the read-back below.
         let typedAt: { x: number; y: number; label?: string | null } | undefined;
-        // Register a secret BEFORE typing so a failing driver call's error is scrubbed too (H2).
+        // Register a secret BEFORE typing so a failing driver call's error is scrubbed too.
         if (step.secret && out) session.secrets.add(out);
         // eslint-disable-next-line no-control-regex -- intentional: detect non-ASCII (outside \x00-\x7F) before adb text input
         if (d.kind === 'direct' && /[^\x00-\x7F]/.test(out)) {
@@ -607,7 +607,7 @@ export async function runFlow(
             try {
               if (d.clearBySelector) await d.clearBySelector(native.using, native.value);
               await d.typeBySelector(native.using, native.value, out);
-              // CR P9: read the element's value back (not for a secret or a secure field, masked); an
+              // Read the element's value back (not for a secret or a secure field, masked); an
               // unreadable value skips it.
               const secure = d.isSecureBySelector ? await d.isSecureBySelector(native.using, native.value).catch(() => true) : false;
               if (!step.secret && !secure && out && d.valueBySelector)
@@ -644,16 +644,16 @@ export async function runFlow(
           // Field hop: with the keyboard already up, "shown" says nothing about the new field having
           // focus yet, so keep the same floor qa_act uses before typing.
           const imeWasUp = await d.imeShown().catch(() => false);
-          // CR P8: the field's Compose label from its node before typing (the read-back strips only it).
+          // The field's Compose label from its node before typing (the read-back strips only it).
           const preNode = t.ref ? session.lastSnapshot?.fullByRef.get(t.ref) : undefined;
           const label = composeLabelOf(preNode && isTextFieldClass(preNode.cls) ? preNode : undefined);
           await d.tapXY(t.x, t.y);
-          await awaitIme(d, 600, imeWasUp ? IME_HOP_FLOOR_MS : 0); // P3: proceed once the keyboard is up (600 ms cap)
+          await awaitIme(d, 600, imeWasUp ? IME_HOP_FLOOR_MS : 0); // Proceed once the keyboard is up (600 ms cap)
           await d.clearFocusedText(t.textLen);
           typedAt = { x: t.x, y: t.y, label };
         }
         if (step.secret && out) session.secrets.add(out);
-        // AND-14 / NEW-replace: a field focused and cleared by `into` that scrambled the text or kept
+        // A field focused and cleared by `into` that scrambled the text or kept
         // old text gets ONE retry (clear, careful retype), as in qa_act type.
         let retried = false;
         const retype = async (len: number) => {
@@ -673,7 +673,7 @@ export async function runFlow(
           await retype(out.length + 2);
         }
         sessions.bump(session, 'actions');
-        // CR-TYPING: read the field back like qa_act type does. Only for a field focused by `into`
+        // Read the field back like qa_act type does. Only for a field focused by `into`
         // (cleared first, so its whole value must be the typed text) and never for a secret (masked).
         // The settled dump becomes the snapshot the next step reuses.
         if (typedAt && out && !step.secret) {
@@ -704,8 +704,8 @@ export async function runFlow(
         const resolved = resolveFlowText(step.query);
         if (resolved.missing.length) return unresolved(resolved.missing);
         const query = resolved.out;
-        // X2: poll up to FLOW_TARGET_WAIT_MS for the element to appear; the first check may reuse
-        // the just-settled snapshot (P2).
+        // Poll up to FLOW_TARGET_WAIT_MS for the element to appear; the first check may reuse
+        // the just-settled snapshot.
         const deadline = Date.now() + FLOW_TARGET_WAIT_MS;
         for (let first = true; ; first = false) {
           if (!first) await sleepOrCancel(Math.min(RESOLVE_POLL_MS, Math.max(1, deadline - Date.now())));
@@ -900,7 +900,7 @@ export async function runFlow(
         const query = resolved.out;
         const deadline = Date.now() + (step.kind === 'waitForVisible' ? (step.timeoutMs ?? timeoutMs) : timeoutMs);
         const waitStarted = Date.now();
-        // LOG-14: the first poll reuses the dump the previous step just settled on (no extra ~2 s dump
+        // The first poll reuses the dump the previous step just settled on (no extra ~2 s dump
         // when the target is already there); a miss falls straight through to fresh dumps.
         let reuseSettled = true;
         // A cancelled call/job stops polling at once (CancelledError > step classified CANCELLED).
@@ -954,7 +954,7 @@ export async function runFlow(
       }
       case 'clearOverlay': {
         // Best-effort cleanup (always ok), but BACK only when something is there to dismiss:
-        // with nothing open, BACK navigates away / exits the app (H7).
+        // with nothing open, BACK navigates away / exits the app.
         if (await d.imeShown().catch(() => false)) {
           if (d.hideKeyboard) await d.hideKeyboard().catch(() => false);
           else await d.pressKey('back');
@@ -1117,7 +1117,7 @@ export async function runFlow(
       } catch (e) {
         outcome = { ok: false, detail: String(e), failureCode: classifyFlowDriverError(e) };
       }
-      // H2: step detail can carry driver errors (argv/stderr), so scrub session secrets, which
+      // Step detail can carry driver errors (argv/stderr), so scrub session secrets, which
       // include every value typed into a secret step/variable before it ran.
       if (outcome.detail) outcome = { ...outcome, detail: shown(outcome.detail) };
       const rec: FlowStepResult = {

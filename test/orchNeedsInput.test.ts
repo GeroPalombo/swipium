@@ -1,4 +1,4 @@
-// needs_input as a real terminal job state (P1 #7): a first-run login/OTP stop maps to ONE
+// needs_input as a real terminal job state: a first-run login/OTP stop maps to ONE
 // NeedsInput question bound to the session, and the finisher lands state:"needs_input" (job status
 // done — a pause, not a failure) with the question, a report, and nextRecommendedAction = the
 // qa_continue_from_blocker resume call. qa_status then recommends that same call.

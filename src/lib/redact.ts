@@ -14,7 +14,7 @@ const INPUT_CLASS_RE =
 
 /** A real secure INPUT: a password field (Android password="true", iOS SecureTextField), or an
  *  input field whose id / label names a secret. A button, row or label that merely says
- *  "Passwords" / "Forgot password?" is not (IOS NEW-2: it withheld screenshots of Settings). */
+ *  "Passwords" / "Forgot password?" is not (that once withheld screenshots of Settings). */
 export function isSecureNode(n: Pick<RawNode, 'id' | 'desc' | 'attrs'> & { cls?: string }): boolean {
   if (n.attrs?.password === 'true') return true;
   const cls = n.cls ?? n.attrs?.class ?? '';
@@ -196,7 +196,7 @@ export function redactDeep<T>(value: T, secretsOrRedactor: Iterable<string> | Re
   return walk(value) as T;
 }
 
-/** LOG-5: credential SHAPES scrubbed from log artifacts (logcat, build/Metro/WDA logs) even when
+/** Credential SHAPES scrubbed from log artifacts (logcat, build/Metro/WDA logs) even when
  * the value was never registered as a session secret: bearer tokens, JWTs, `password=` /
  * `api_key=` style pairs and well-known key formats (AWS, Google, Stripe, GitHub, Slack). Applied
  * to log text only; snapshots and reports keep the registered-secrets rule. */

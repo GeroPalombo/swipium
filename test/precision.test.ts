@@ -1,7 +1,7 @@
-// 2.3.0 precision & speed (area "precision"): stable refs (X3), ref freshness re-check (X1),
-// target waits (X2), settle fingerprint (X4) + Android fast accept (P1), settled-snapshot reuse (P2),
-// pixel no-change check (X5), qa_snapshot diff (K4), qa_inspect attrs (K5), weak-tree hint (C10),
-// qa_act wait gone, flow inputText IME wait (P3).
+// 2.3.0 precision & speed: stable refs, ref freshness re-check,
+// target waits, settle fingerprint + Android fast accept, settled-snapshot reuse,
+// pixel no-change check, qa_snapshot diff, qa_inspect attrs, weak-tree hint,
+// qa_act wait gone, flow inputText IME wait.
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtempSync } from 'node:fs';
@@ -63,7 +63,7 @@ describe('stableHash', () => {
   });
 });
 
-describe('X3 stable refs', () => {
+describe('stable refs', () => {
   const base: NodeSpec[] = [
     { cls: 'android.widget.TextView', text: 'Title', bounds: [40, 100, 1040, 180], clickable: false },
     { text: 'One', id: 'com.example.app:id/one', bounds: [40, 300, 1040, 360] },
@@ -85,7 +85,7 @@ describe('X3 stable refs', () => {
   });
 });
 
-describe('X4 settle fingerprint + P1 fast accept', () => {
+describe('settle fingerprint + Android fast accept', () => {
   const clockScreen = (t: string, extra: NodeSpec[] = []) =>
     dump([
       { cls: 'android.widget.TextView', text: t, bounds: [0, 0, 200, 50], clickable: false },
@@ -127,7 +127,7 @@ describe('X4 settle fingerprint + P1 fast accept', () => {
   });
 });
 
-describe('X1 / X2 / P2 resolveTarget', () => {
+describe('resolveTarget', () => {
   it('a fresh snapshot is trusted; a stale ref is re-found (moved → refMoved) or STALE_REF with candidates', async () => {
     const xml = buttonScreen('Home', 3);
     const fake = new FakeDriver(xml);
@@ -193,7 +193,7 @@ describe('qa_act / qa_snapshot / qa_inspect (MCP)', () => {
     expect(s).toMatchObject({ ok: true, gone: true });
   }, 20_000);
 
-  it('X5: same hierarchy but changed pixels on an unlabeled target is a change (no press retry)', async () => {
+  it('same hierarchy but changed pixels on an unlabeled target is a change (no press retry)', async () => {
     const xml = dump([
       { cls: 'android.widget.TextView', text: 'Canvas', bounds: [0, 0, 1080, 90], clickable: false },
       { cls: 'android.view.View', bounds: [100, 400, 900, 900] },
@@ -209,7 +209,7 @@ describe('qa_act / qa_snapshot / qa_inspect (MCP)', () => {
     expect(s).toMatchObject({ changed: true, pixelChanged: true, retriedAsPress: false });
   }, 20_000);
 
-  it('K4: diff on the same screen returns only the changes; a new screen returns the full list', async () => {
+  it('diff on the same screen returns only the changes; a new screen returns the full list', async () => {
     const fake = new FakeDriver(buttonScreen('Home', 6));
     const id = await h.start(fake);
     await h.call('qa_snapshot', { sessionId: id });
@@ -233,7 +233,7 @@ describe('qa_act / qa_snapshot / qa_inspect (MCP)', () => {
     expect(big.diff).toMatchObject({ bigChange: true });
   }, 20_000);
 
-  it('K5: qa_inspect attrs carry only keys not already top-level; C10: weak tree hint', async () => {
+  it('qa_inspect attrs carry only keys not already top-level; weak tree hint', async () => {
     const fake = new FakeDriver(
       dump([{ text: 'Only', id: 'com.example.app:id/only', bounds: [40, 300, 1040, 360], extra: 'checkable="true"' }]),
     );
@@ -249,7 +249,7 @@ describe('qa_act / qa_snapshot / qa_inspect (MCP)', () => {
   }, 20_000);
 });
 
-describe('flows: X2 tap wait + P3 IME wait', () => {
+describe('flows: tap wait + IME wait', () => {
   const flowOf = (steps: FlowStep[]): Flow =>
     ({ name: 'precision', appId: 'com.example.app', mode: 'structured', fixtures: [], setup: [], teardown: [], steps }) as Flow;
 

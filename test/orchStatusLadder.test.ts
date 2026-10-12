@@ -1,8 +1,8 @@
-// qa_status ladder (P0 #3): following nextBestAction must always change the state it keys on.
+// qa_status ladder: following nextBestAction must always change the state it keys on.
 // Before: an app-up session with no recorded actions recommended qa_smoke forever (qa_smoke records
 // no actions), and a finished qa_test_this job with a report still recommended qa_smoke. Milestones
 // (smoke ran, report generated) are persisted session state, not recorded-action counts.
-// Also P3 #12: after a restart (no live driver) the persisted driverKind still drives mode/platform.
+// Also: after a restart (no live driver) the persisted driverKind still drives mode/platform.
 
 import { describe, expect, it } from 'vitest';
 import { nextBestAction, effectiveMode, sessionPlatform } from '../src/tools/agent.js';

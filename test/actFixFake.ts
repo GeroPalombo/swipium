@@ -58,7 +58,7 @@ export function buttonScreen(prefix: string, count: number, pkg = 'com.example.a
 
 /**
  * `xml` with the EditText under (x, y) holding `text` (appended when `append`), so a fake field
- * reads back what was typed (qa_act verifies a typed field, AND-14).
+ * reads back what was typed (qa_act verifies a typed field).
  */
 export function fillTextField(xml: string, x: number, y: number, text: string, append = false): string {
   const esc = (v: string) => v.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');

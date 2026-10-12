@@ -1,4 +1,4 @@
-// I4: input validation failures (missing required arg, wrong type) used to come back as an isError
+// Input validation failures (missing required arg, wrong type) used to come back as an isError
 // text "MCP error -32602: Input validation error: ..." with a raw zod dump and no structuredContent.
 // Swipium's own tools/call handler validates against each tool's strict schema before the handler
 // runs and returns the typed INVALID_ARGUMENT envelope. Unknown tool names keep the SDK 1.x answer.

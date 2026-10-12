@@ -524,7 +524,7 @@ export async function runTestcaseGenerate(
   if (noActions) return noActions;
 
   const { pom, flowName } = pomFor(session, name);
-  // This target writes no test file: link one only when a suite generation already wrote it (LOG-20).
+  // This target writes no test file: link one only when a suite generation already wrote it.
   const testFile = pom.files.find((f) => f.path.startsWith('tests/'))?.path;
   const tc = generateTestCases(pom, {
     appId: appIdOf(session),
@@ -598,7 +598,7 @@ export function registerSuite(server: McpServer, sessions: SessionStore): void {
         let compiledPath: string | undefined;
         let keptEdited: { newPath?: string } | undefined;
         if (ok) {
-          // discoverable by qa_flow_run flow:"<slug>"; a hand-edited flows/ copy is kept (SET-15)
+          // discoverable by qa_flow_run flow:"<slug>"; a hand-edited flows/ copy is kept
           const w = writeCompiledFlow(root, slug, f.yaml, { force });
           flowPath = w.flowPath;
           compiledPath = w.compiledPath;

@@ -1,4 +1,4 @@
-// Centralized device resolution + lazy driver attach (Phase 2.1). One place decides
+// Centralized device resolution + lazy driver attach. One place decides
 // "which device" so qa_doctor / qa_prepare_target / UI tools
 // all agree: a session-bound device, the single online device, or "needs selection".
 
@@ -104,7 +104,7 @@ export function blockedDeviceResult(blocked?: AttachBlocked): CallToolResult | u
   });
 }
 
-/** IOS NEW-A: on the visual-only simulator backend, the answer for a session that DID run on WDA
+/** On the visual-only simulator backend, the answer for a session that DID run on WDA
  *  for its simulator whose WDA no longer answers: WDA_UNREACHABLE with the restart steps, instead
  *  of a BACKEND_UNSUPPORTED that hides the cause. Undefined when the session never had a WDA, or
  *  its WDA answers again (then the caller's "attach WDA" advice is right). */
@@ -168,7 +168,7 @@ export interface DeviceResolution {
   source: 'session' | 'arg' | 'pin' | 'single-online' | 'none';
 }
 
-/** TEST SEAM (P1 §6). When set, getDriver() binds the driver this factory returns instead of
+/** TEST SEAM. When set, getDriver() binds the driver this factory returns instead of
  * discovering a real device, so handler-level tests can drive tools with a fake driver and no
  * adb. Never set in production code paths; a no-op unless a test installs it. */
 let testDriverFactory: ((session: Session) => Driver | undefined) | undefined;
@@ -191,7 +191,7 @@ export function pinMatches(pin: string, value: string | undefined): boolean {
   return !!value && value.toLowerCase() === pin.toLowerCase();
 }
 
-/** E2E NEW-5: the NO_DEVICE text when the pin names no simulator (it names the pin, not "requested"). */
+/** The NO_DEVICE text when the pin names no simulator (it names the pin, not "requested"). */
 export function pinNoSimulatorMessage(pin: string): string {
   return `${DEVICE_PIN_ENV}=${pin} (server env) matches no available iOS simulator (UDID or exact name), so no other simulator was used.`;
 }
@@ -199,7 +199,7 @@ export function pinFixStep(): string {
   return `Fix or unset ${DEVICE_PIN_ENV} in the MCP server's env (an adb serial, AVD name, or simulator UDID / exact name), then restart the server.`;
 }
 
-/** E2E NEW-5: the one pin resolver for simulators: the simulator whose UDID the pin is, else every
+/** The one pin resolver for simulators: the simulator whose UDID the pin is, else every
  *  simulator with exactly that name (pinMatches, ignoring case). More than one = ambiguous. */
 export function simulatorsForPin<T extends { udid: string; name: string }>(pin: string, sims: T[]): T[] {
   const byUdid = sims.filter((s) => pinMatches(pin, s.udid));
@@ -488,11 +488,11 @@ export function isSimulatorUdid(device: string | undefined): boolean {
   return !!device && SIMULATOR_UDID_RE.test(device);
 }
 
-/** A WDA that answers AND is not provably another simulator's (GOAL-5: every simulator's WDA
+/** A WDA that answers AND is not provably another simulator's (every simulator's WDA
  *  defaults to the same port, so "reachable" alone could re-bind this session to another device's
  *  WDA). An unknown owner is accepted (external / remote WDA); only a proven mismatch is refused.
  *  `unverified` (lsof / ps timed out) is accepted too: the only caller passes this session's own
- *  recorded WDA URL for `udid`, the one case where every resolver accepts it (CR P10). */
+ *  recorded WDA URL for `udid`, the one case where every resolver accepts it. */
 async function wdaReachableFor(url: string, udid?: string): Promise<boolean> {
   const status = await checkWda(url, 1500).catch(() => undefined);
   if (!status?.reachable) return false;
@@ -637,7 +637,7 @@ export const REHYDRATE_NOTE =
   'Note: reattached the device transport after a restart. The app may not be in the ' +
   'foreground (relaunch with qa_prepare_target on Android, qa_prepare_ios_target on iOS) and previous @eN refs are invalid (re-run qa_snapshot).';
 
-/** GOAL-18: the NO_DEVICE "prepare first" step, platform-aware. An iOS session (iOS driver or
+/** The NO_DEVICE "prepare first" step, platform-aware. An iOS session (iOS driver or
  *  persisted iOS transport, a simulator UDID, or a qa_test_this run with platform "ios") is told to
  *  use qa_prepare_ios_target, never the Android-only qa_prepare_target. */
 export function prepareFirstStep(session: Pick<Session, 'device' | 'driver' | 'driverKind' | 'lastTestThisArgs'>, then?: string): string {

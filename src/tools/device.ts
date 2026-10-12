@@ -100,7 +100,7 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
     async ({ sessionId, listPackages: withPkgs, packageFilter, logs }) => {
       const session = sessions.get(sessionId);
       if (!session) return unknownSessionError(sessionId);
-      // TOOL-19: the sensitive policy and argument checks come before the device lookup, so the
+      // The sensitive policy and argument checks come before the device lookup, so the
       // first refusal is the final one (not NO_DEVICE, then a second refusal after binding).
       if (logs) {
         if (session.sensitive) return sensitiveRefusal('Android logcat');
@@ -143,13 +143,13 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
         });
       }
       if (logs) {
-        // LOG-1: on-demand Android logcat (the iOS counterpart is qa_ios logs). Sensitive mode and
+        // On-demand Android logcat (the iOS counterpart is qa_ios logs). Sensitive mode and
         // malformed since/tag/package were refused above, before the device lookup.
         const lines = logs.lines ?? 1000;
         const level = logs.level ?? 'V';
         let since: string | undefined;
         if (logs.since) {
-          // NEW-B: a relative age is measured on the DEVICE clock (an emulator can boot hours off the
+          // A relative age is measured on the DEVICE clock (an emulator can boot hours off the
           // host clock, and -T <host epoch> then selects nothing). Host clock only if date fails.
           let deviceNow: number | undefined;
           if (/^\s*\d+\s*[smh]\s*$/i.test(logs.since)) {
@@ -169,7 +169,7 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
         }
         // -T <time> reads everything since then; -t <n> the last n lines (per buffer). `lines` caps
         // the OUTPUT after the package/grep filters, not the scan: a crash inside a busy `since`
-        // window, or a crashed package's FATAL block under later noise, is still found (LOG-1).
+        // window, or a crashed package's FATAL block under later noise, is still found.
         // A package filter without `since` scans a wider tail for the same reason.
         const scanTail = logs.package ? Math.max(lines, 5000) : lines;
         const argv = ['-s', serial, 'logcat', '-d', '-v', 'threadtime', ...(since ? ['-T', since] : ['-t', String(scanTail)])];
@@ -188,7 +188,7 @@ export function registerDevice(server: McpServer, sessions: SessionStore): void 
           // Match its lines by the current PID plus the PIDs logcat names for it (`Process: <pkg>,
           // PID: n`, `Start proc n:<pkg>`) and by name, never `--pid` alone: right after a crash the
           // app is gone or already restarted under a new PID, and the crashed PID's FATAL block
-          // is what the caller wants (LOG-1).
+          // is what the caller wants.
           pkgMatch = logs.package;
         }
         if (logs.tag) {

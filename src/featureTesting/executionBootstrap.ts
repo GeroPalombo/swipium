@@ -115,7 +115,7 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
     adbPresent ? listAvds() : Promise.resolve<string[]>([]),
     simPresent ? listSimulators() : Promise.resolve([]),
   ]);
-  // H6: property-verified emulators (localhost:5555, Genymotion) use the same policy as getDriver.
+  // Property-verified emulators (localhost:5555, Genymotion) use the same policy as getDriver.
   const emulators = await verifiedEmulatorSerials(online);
   // Same device choice as qa_test_this: an explicit device must be the pinned one (DEVICE_PINNED),
   // and without one the pin is the only candidate (never another booted simulator or emulator).

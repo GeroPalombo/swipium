@@ -1,4 +1,4 @@
-// H6 follow-ups at the tool layer (spawn mocked, no device):
+// Physical-device policy follow-ups at the tool layer (spawn mocked, no device):
 //  (a) target planners accept property-verified emulators (localhost:5555) consistently.
 //  (b) getDriver callers surface the typed refusal (PHYSICAL_DEVICE_UNSUPPORTED /
 //      DEVICE_NOT_READY) via blockedDeviceResult instead of a generic "No device attached".

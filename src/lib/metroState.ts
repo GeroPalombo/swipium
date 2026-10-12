@@ -83,7 +83,7 @@ export interface MetroReadiness {
   detail: string;
   /** Project root the Metro on the port reports (X-React-Native-Project-Root), when known. */
   metroProjectRoot?: string | null;
-  /** True when the Metro on the port serves a DIFFERENT project than `projectRoot` (AND-8). */
+  /** True when the Metro on the port serves a DIFFERENT project than `projectRoot`. */
   wrongProject?: boolean;
 }
 
@@ -137,7 +137,7 @@ export function projectAndroidAppId(root: string): string | null {
   return null;
 }
 
-/** AND-15: is `appId` (an explicit launch target, no project APK involved) this RN/Expo project's
+/** Is `appId` (an explicit launch target, no project APK involved) this RN/Expo project's
  * own app, i.e. one that loads its JS from this project's Metro? An applicationIdSuffix variant
  * (`<pkg>.debug`) counts. When the project package can't be read, only platform apps
  * (com.android.*, com.google.android.*) are treated as foreign, so the Metro gate stays on. */

@@ -1,4 +1,4 @@
-// Round-5 must-fix 1: the CI release gate passed runs that tested nothing. The rule is inverted:
+// The CI release gate passed runs that tested nothing. The rule is inverted:
 // only a Swipium-run check that looked at the app's UI and found it healthy counts (a smoke / flow
 // pass whose oracle ruled out RedBox and blank screens, or an exploration that reached a real app
 // screen). Agent verdicts (qa_note, qa_visual assert), launches, raw actions and findings never
@@ -63,7 +63,7 @@ async function blockedRun() {
   return { store, s, later: Date.now() + 10 };
 }
 
-describe('the gate never passes a run that tested nothing (R5 must-fix 1)', () => {
+describe('the gate never passes a run that tested nothing', () => {
   it('(a) qa_visual assert pass:true is the agent verdict: not SHIP, marker kept, gate blocks', async () => {
     const { store, s, later } = await blockedRun();
     store.saveArtifact(s, 'screenshot', 'visual.png', Buffer.alloc(8), 'image/png');
@@ -188,7 +188,7 @@ describe('qa_act fixes alongside the gate', () => {
   });
 });
 
-describe('explorer stops that tested nothing (R5 N4)', () => {
+describe('explorer stops that tested nothing', () => {
   it('leaving the app over and over with nothing explored is blocked, not completed', async () => {
     const { store, s } = fresh();
     const d = new FakeDriver(buttonScreen('A', 2, 'com.other.app'));

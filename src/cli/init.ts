@@ -97,7 +97,7 @@ export function applyOk(r: { error?: unknown; status: number | null }): boolean 
 export const GEMINI_TIMEOUT_MS = 600000;
 
 /** Gemini settings.json entry (user scope: machine-local command). No cwd: the user file serves every
- *  project, so pinning one app's directory would make all of them test it (SET-5). Gemini starts the
+ *  project, so pinning one app's directory would make all of them test it. Gemini starts the
  *  server in the directory you run gemini from, which is then the project root. */
 export function geminiBlock(node: string, self: string = SELF): string {
   const c = serverCommand(false, node, self);
@@ -112,7 +112,7 @@ export { CODEX_CORE_GROUPS, CODEX_CORE_EXTRA_TOOLS, codexCoreTools } from '../co
 const SWIPIUM_KEY = `(?:"swipium"|'swipium'|swipium)`;
 const CODEX_BLOCK_HEADER = new RegExp(`^[ \\t]*\\[[ \\t]*mcp_servers[ \\t]*\\.[ \\t]*${SWIPIUM_KEY}[ \\t]*\\][ \\t]*(?:#.*)?$`, 'm');
 
-/** NEW-R5-1: a swipium server written with dotted keys instead of its own table:
+/** A swipium server written with dotted keys instead of its own table:
  *  `mcp_servers.swipium.command = …` at the top level, or `swipium.command = …` / `swipium = {…}`
  *  under `[mcp_servers]`. Appending a table then makes Codex fail with "duplicate key". */
 export function hasCodexDottedServer(toml: string): boolean {
@@ -160,7 +160,7 @@ function tomlNormalize(v: string): string {
   }
 }
 
-/** SET-10: what an existing [mcp_servers.swipium] table lacks or sets differently from `expected`
+/** What an existing [mcp_servers.swipium] table lacks or sets differently from `expected`
  *  (command, args, cwd, timeouts, env_vars). Each item is one human-readable line. */
 export function codexBlockDiff(existing: string, expected: string): string[] {
   const out: string[] = [];
@@ -184,7 +184,7 @@ export function codexBlockDiff(existing: string, expected: string): string[] {
   return out;
 }
 
-/** SET-9: a conservative TOML sanity check (no TOML parser dependency). Returns the first line that
+/** A conservative TOML sanity check (no TOML parser dependency). Returns the first line that
  *  is clearly not TOML (unterminated table header or string, `key = = value`, a bare word or bare
  *  value, an invalid escape, a key or [table] defined twice, a dotted-key table or [[array]]
  *  redefined as a [table]…), or null when the file looks well-formed. Multi-line strings and
@@ -406,7 +406,7 @@ export function geminiAddArgs(scope: string, node: string = process.execPath, se
   // Gemini's parser would read `-y` as its own flag: server args that start with "-" go after `--`
   // (documented form: `gemini mcp add python-server python server.py -- --server-arg v`).
   const rest = c.args.some((x) => x.startsWith('-')) ? ['--', ...c.args] : c.args;
-  // --timeout keeps this path equal to the settings.json fallback entry (SET-5).
+  // --timeout keeps this path equal to the settings.json fallback entry.
   return ['mcp', 'add', '--scope', user ? 'user' : 'project', '--timeout', String(GEMINI_TIMEOUT_MS), 'swipium', c.command, ...rest];
 }
 
@@ -482,7 +482,7 @@ const INIT_VALUE_FLAGS = new Set(['--scope', '--cwd', '--root']);
 const INIT_BOOL_FLAGS = new Set(['--apply', '--trust-local', '--no-skill', '--force', '--help', '-h']);
 const INIT_FLOWS_FLAGS = new Set(['--root', '--force', '--help', '-h']);
 
-/** Parse `init` argv (SET-7): accepts `--flag value` and `--flag=value`; an unknown flag, a value
+/** Parse `init` argv: accepts `--flag value` and `--flag=value`; an unknown flag, a value
  *  flag with no value, or an extra positional is an error instead of being silently ignored. */
 export function parseInitArgs(args: string[]): InitArgs {
   const out: InitArgs = { client: '', apply: false, scope: 'local', trustLocal: false, withSkill: true, force: false, help: false };
@@ -536,7 +536,7 @@ function claudeConfigFile(): string {
   return process.env.CLAUDE_CONFIG_DIR ? join(process.env.CLAUDE_CONFIG_DIR, '.claude.json') : join(homedir(), '.claude.json');
 }
 
-/** SET-4: the existing `swipium` entry Claude Code has for this scope (local: ~/.claude.json
+/** The existing `swipium` entry Claude Code has for this scope (local: ~/.claude.json
  *  projects[cwd]; user: its top-level mcpServers; project: <cwd>/.mcp.json), `null` when there is
  *  none, `undefined` when it can't be determined (unreadable file). Best-effort. */
 export function existingClaudeEntry(scope: string, cwd: string): Record<string, unknown> | null | undefined {
@@ -703,7 +703,7 @@ export async function runInit(args: string[]): Promise<void> {
     }
     try {
       process.stdout.write(`Skill ${SKILL_NAME}: ${installSkill(file)} ${file}\n`);
-      // SET-21: a local (private) registration still puts the skill in the repo, which is usually committed.
+      // A local (private) registration still puts the skill in the repo, which is usually committed.
       if (target === 'claude' && scope === 'local') {
         process.stdout.write(
           `  This is inside the repository: add .claude/skills/${SKILL_NAME}/ to .gitignore if you don't want it committed (or pass --no-skill).\n`,
@@ -735,13 +735,13 @@ export async function runInit(args: string[]): Promise<void> {
           'Builds, Metro, WebDriverAgent, seed scripts, OCR commands and destructive UI taps still ask.'
         : '');
     if (apply) {
-      if (refuseMissingCwd()) return; // SET-6: never register for the shell's cwd instead
+      if (refuseMissingCwd()) return; // Never register for the shell's cwd instead
       const removeCmd = `claude mcp remove swipium --scope ${scope}`;
       const existing = existingClaudeEntry(scope, cwd);
       if (existing && claudeEntryMatches(existing, cmd, claudeEnv(trustLocal))) {
         process.stdout.write(`swipium is already registered in Claude Code's ${scope} config with these settings (unchanged).\n`);
       } else if (existing) {
-        // SET-4: `claude mcp add` refuses to overwrite; say so and give the two commands that work.
+        // `claude mcp add` refuses to overwrite; say so and give the two commands that work.
         process.stdout.write(
           `swipium is already registered in Claude Code's ${scope} config with a different command or env (left unchanged).\n` +
             `To replace it, run:\n  ${removeCmd}\n  claude ${cmd.join(' ')}\n`,
@@ -782,7 +782,7 @@ export async function runInit(args: string[]): Promise<void> {
       if (refuseMissingCwd()) return;
       const r = spawnSync('gemini', cmd, { stdio: 'inherit', cwd });
       if (!applyOk(r)) {
-        // SET-5: settings.json is plain JSON, so merge it directly (as for Cursor/VS Code) rather than
+        // settings.json is plain JSON, so merge it directly (as for Cursor/VS Code) rather than
         // only printing a block and exiting 0 with nothing registered.
         const user = scope === 'user';
         const c = serverCommand(!user, node);
@@ -822,7 +822,7 @@ export async function runInit(args: string[]): Promise<void> {
       if (refuseMissingCwd()) return;
       mkdirSync(dirname(cfg), { recursive: true });
       const cur = existsSync(cfg) ? readFileSync(cfg, 'utf8') : '';
-      // SET-9: never append to a config.toml that doesn't parse (Codex would then fail to start).
+      // Never append to a config.toml that doesn't parse (Codex would then fail to start).
       const tomlError = tomlSanityError(cur);
       if (tomlError) {
         process.stdout.write(
@@ -833,7 +833,7 @@ export async function runInit(args: string[]): Promise<void> {
       }
       const existing = findCodexServerBlock(cur);
       if (existing !== null) {
-        // SET-10: name what differs from (or is missing versus) the expected table.
+        // Name what differs from (or is missing versus) the expected table.
         const diff = codexBlockDiff(existing, block);
         process.stdout.write(
           diff.length
@@ -843,7 +843,7 @@ export async function runInit(args: string[]): Promise<void> {
             : `Already present in ${cfg} (left unchanged); it matches the expected settings.\n`,
         );
       } else if (hasCodexDottedServer(cur) || tomlSanityError(`${cur}\n${block}\n`)) {
-        // NEW-R5-1: a swipium entry written another way (dotted keys), or anything else that would
+        // A swipium entry written another way (dotted keys), or anything else that would
         // make the appended file invalid: never leave Codex unable to start.
         const why = hasCodexDottedServer(cur)
           ? 'it already defines a swipium server with dotted keys'

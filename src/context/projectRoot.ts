@@ -83,15 +83,15 @@ export function isUsableCwd(cwd: string, home: string = homedir()): boolean {
 }
 
 /** `/` (or a drive root) and $HOME are never a project root, whoever names them: discovery and the
- * artifact walk would crawl the whole disk (TOOL-2). Same rule as MCP roots and the cwd guess. */
+ * artifact walk would crawl the whole disk. Same rule as MCP roots and the cwd guess. */
 export function isOverlyBroadRoot(p: string, home: string = homedir()): boolean {
   const abs = resolve(p);
   return abs === parse(abs).root || (!!home && abs === resolve(home));
 }
 
 /** Directories that hold other people's files, never one app: a prebuilt .app/.apk found under them
- *  is not "this project's build" (TOOL NEW-4: /private planned another agent's app on its simulator),
- *  and walking them takes minutes (TOOL NEW-R3-4). */
+ *  is not "this project's build" (for example a stray app under /private),
+ *  and walking them takes minutes. */
 const BROAD_SYSTEM_DIRS = [
   '/tmp',
   '/private',
@@ -108,8 +108,8 @@ const BROAD_SYSTEM_DIRS = [
   '/Applications',
   '/System',
 ];
-/** Per-user folders that hold caches, downloads and loose files rather than one app (TOOL NEW-4:
- *  ~/Library planned WebDriverAgentRunner-Runner.app as the app under test). */
+/** Per-user folders that hold caches, downloads and loose files rather than one app (a scan of
+ *  ~/Library once planned WebDriverAgentRunner-Runner.app as the app under test). */
 const BROAD_HOME_DIRS = ['Library', 'Downloads', 'Desktop'];
 
 /** True for `/`, $HOME, its parent, ~/Library and friends, and the shared system directories above. */
@@ -148,7 +148,7 @@ export function resolveFallbackRoot(opts: RootEnv = {}): ResolvedRoot | null {
   return null;
 }
 
-/** Choose among the client's MCP roots (review P2): the first existing file:// root that has a
+/** Choose among the client's MCP roots: the first existing file:// root that has a
  * project marker; else the first one that is neither `/` nor $HOME. A client exposing
  * [$HOME, app] must land on the app, not on the home directory. Exported for tests. */
 export function pickMcpRoot(uris: unknown[], home: string = homedir()): string | undefined {
@@ -169,7 +169,7 @@ export function pickMcpRoot(uris: unknown[], home: string = homedir()): string |
   return dirs.find((p) => !unsafe(p) && hasProjectMarker(p)) ?? dirs.find((p) => !unsafe(p));
 }
 
-/** The PROJECT_ROOT_UNRESOLVED hint. Says precisely why a SET env var was skipped (SET-11): a typo
+/** The PROJECT_ROOT_UNRESOLVED hint. Says precisely why a SET env var was skipped: a typo
  * in the fix the README recommends must not read as "unset". */
 export function unresolvedRootHint(opts: RootEnv = {}): string {
   const env = opts.env ?? process.env;
@@ -275,17 +275,17 @@ async function resolveProjectRootUnrecorded(server: McpServer, explicit?: string
     if (!isAbsolute(raw)) {
       return { source: 'none', hint: `projectRoot must be an absolute path, got "${raw}".` };
     }
-    // TOOL NEW-R3-1: normalize once here (trailing "/", "..", "."), so the session root, project
+    // Normalize once here (trailing "/", "..", "."), so the session root, project
     // hash, artifact search and outside-root checks all see one spelling of the directory.
     const p = resolve(raw);
-    // Refused fast (TOOL-2): app discovery + the artifact walk under `/` or $HOME took minutes.
+    // Refused fast: app discovery + the artifact walk under `/` or $HOME took minutes.
     if (isOverlyBroadRoot(p, opts.home ?? homedir())) {
       return {
         source: 'none',
         hint: `projectRoot "${p}" is the filesystem root or the home directory, which is never an app project. Pass the app's own directory.`,
       };
     }
-    // TOOL NEW-R3-4: shared system folders (/Applications, /Users, ~/Library…) too, before any walk.
+    // Shared system folders (/Applications, /Users, ~/Library…) too, before any walk.
     if (isBroadSystemDir(p, opts.home ?? homedir())) {
       return {
         source: 'none',

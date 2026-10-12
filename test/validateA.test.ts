@@ -12,7 +12,7 @@ const bare = (y: number) => node(`class="android.view.View" clickable="true" ${b
 const screen = (rows: string) =>
   `<?xml version="1.0"?><hierarchy rotation="0">${node('class="android.widget.FrameLayout" package="com.x" bounds="[0,0][1080,2400]"', rows)}</hierarchy>`;
 
-describe('C10 weakTreeHint: labels in child nodes count', () => {
+describe('weakTreeHint: labels in child nodes count', () => {
   it('a list of clickable rows labeled by child TextViews is not a weak tree', () => {
     const parsed = parseSnapshot(screen([0, 200, 400, 600, 800].map((y, i) => row(y, `Item ${i}`)).join('')));
     expect(weakTreeHint(parsed)).toBeUndefined();

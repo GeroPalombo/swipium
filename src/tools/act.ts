@@ -74,7 +74,7 @@ const nativeSelectorSchema = z.object({
   value: z.string(),
 });
 
-/** PURE (AND-14): moved to core/readBack.ts (shared with the flow runner); re-exported here. */
+/** PURE: moved to core/readBack.ts (shared with the flow runner); re-exported here. */
 export { typedReadBack } from '../core/readBack.js';
 
 /** Values to scrub from driver error text: session secrets + the value just typed, in raw AND
@@ -295,7 +295,7 @@ async function reresolveAfterKeyboard(
   return reresolveRef(session, t.ref, old, { context: ' after hiding the keyboard' });
 }
 
-/** IOS-8: is the resolved target a key of the on-screen keyboard (WDA: an XCUIElementTypeKey, or any
+/** Is the resolved target a key of the on-screen keyboard (WDA: an XCUIElementTypeKey, or any
  *  node inside the XCUIElementTypeKeyboard)? Such a tap is deliberate typing, not an obstruction. */
 export function isKeyboardKey(session: Session, t: Point): boolean {
   const snap = session.lastSnapshot;
@@ -575,7 +575,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
         // ---- wait is its own path (no settle/health afterward) ----
         if (action === 'wait') {
           // A wait takes its element in `for`; a `target` would be ignored and the wait would return
-          // ok:true for an element that is not there (android R5-3).
+          // ok:true for an element that is not there.
           if (args.target && !args.for)
             return qaError({
               what: 'wait takes the element to wait for in `for`, not `target`',
@@ -592,7 +592,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
             if (args.for?.settled || !args.for) {
               const s = await settle(d, { timeoutMs });
               const post = adoptSnapshot(session, s.parsed ?? parseSnapshot(s.xml));
-              // observe:"none" returns verdicts only (LOG-9).
+              // observe:"none" returns verdicts only.
               if (args.observe === 'none') {
                 const hint = `${post.elements.length} element(s) not shown (observe:"none"); pass observe:"full" or run qa_snapshot to see the screen.`;
                 return qaOk(
@@ -642,7 +642,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
             }
             // A ref is matched by the node it named when the wait started (refs are stable across dumps).
             const refNode = want.ref ? session.lastSnapshot?.fullByRef.get(want.ref) : undefined;
-            // AND-18: each dump gets only the time left, so the wait ends near timeoutMs (a dump
+            // Each dump gets only the time left, so the wait ends near timeoutMs (a dump
             // that runs past the deadline used to add its whole duration).
             while (deadline - Date.now() > 250) {
               throwIfCancelled();
@@ -685,12 +685,12 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
           }
         }
 
-        // Phase timing (P1.6): mark the first real action so the report can split setup vs active.
+        // Phase timing: mark the first real action so the report can split setup vs active.
         sessions.milestone(session, 'first_action');
 
         const preSnap = session.lastSnapshot;
         let preSigs = preSnap?.signatures ?? new Set<string>();
-        // The nodes behind preSigs, so removed elements render as element lines (AND-18).
+        // The nodes behind preSigs, so removed elements render as element lines.
         let preByRef = preSnap?.fullByRef;
         // F: positions too. A scroll/swipe can move content without adding/removing elements.
         let prePositions = positionalFingerprint(preSnap?.fullByRef);
@@ -698,7 +698,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
         let preState = stateByIdentity(preSnap?.fullByRef);
         // The value actually typed (after ${SWIPIUM_*} expansion), redacted from results/errors.
         let typedValue: string | undefined;
-        // The field typed into (generic type path), for the read-back check (AND-14).
+        // The field typed into (generic type path), for the read-back check.
         // x/y: the focus tap, so a field found by focus that covers it is the typed one.
         let typedField:
           { ref?: string; x: number; y: number; secure: boolean; replace: boolean; label?: string | null; retried: boolean } | undefined;
@@ -744,7 +744,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               // H5: keyboard obstruction (the IME window is not in the app's UI dump, so the
               // overlay check below can't see it). Coordinate taps are taken as deliberate.
               let imeUp = false;
-              // IOS-8: a key of the on-screen keyboard is the target itself, never obstructed by it.
+              // A key of the on-screen keyboard is the target itself, never obstructed by it.
               const keyTap = isKeyboardKey(session, t);
               if (keyTap) imeUp = true;
               else if (!args.ignoreOverlay && t.via !== 'coords') {
@@ -817,7 +817,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               const deliverable = d.canDeliverText?.(text);
               if (deliverable && !deliverable.ok) {
                 return qaError({
-                  // The failure line already carries the code; don't repeat it (AND-18).
+                  // The failure line already carries the code; don't repeat it.
                   what: `${deliverable.reason.replace(/^TEXT_INPUT_UNSUPPORTED:\s*/, '')} Nothing was tapped or cleared.`,
                   changedState: false,
                   retrySafe: false,
@@ -868,7 +868,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
                 }
                 if (replace) await d.clearBySelector!(native.using, native.value);
                 await d.typeBySelector(native.using, native.value, text);
-                // CR P9: read the element's value back like the generic path (not secure, no submit).
+                // Read the element's value back like the generic path (not secure, no submit).
                 // A mismatch fails the call (TEXT_INPUT_MISMATCH, lengths only); an unreadable value skips it.
                 if (!secure && !args.submit && text && d.valueBySelector) {
                   let value: string | undefined;
@@ -928,13 +928,13 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               if (g.warning) warnings.push(g.warning);
               if (g.hidKeyboard) keyboardHidden = true;
               // Typing into a secure field > remember the value so it's scrubbed everywhere, and
-              // record that a login was performed (auth-state reporting, P1.5).
+              // record that a login was performed (auth-state reporting).
               if (t.secure) {
                 session.secrets.add(text);
                 sessions.markAuth(session, { loginPerformed: true, loginPerformedAt: Date.now() });
                 sessions.milestone(session, 'login_performed');
               }
-              // CR P8: the field's Compose label, from its node before typing (by ref, else the text
+              // The field's Compose label, from its node before typing (by ref, else the text
               // field under the tap), so the read-back strips only that label.
               const preNode = t.ref
                 ? session.lastSnapshot?.fullByRef.get(t.ref)
@@ -948,7 +948,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               try {
                 await d.inputText(text);
               } catch (e) {
-                // AND-14: long text that did not read back in order gets ONE retry from a cleared
+                // Long text that did not read back in order gets ONE retry from a cleared
                 // field (it may hold the old value plus what landed), typed carefully (short paced
                 // bursts on Android). A second miss fails the call.
                 if (!replace || !/TEXT_INPUT_MISMATCH/.test(String(e))) throw e;
@@ -1172,7 +1172,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
           // error, no finding). The action may have partly run, so changedState stays true.
           if (isAbortError(e)) return cancelledResult(`Action "${action}" cancelled: the call was aborted before it finished`, true);
           const msg = String((e as Error)?.message ?? e);
-          // iOS: a shut-down simulator or a dead WDA (IOS-6/7) gets its own code and the concrete
+          // iOS: a shut-down simulator or a dead WDA gets its own code and the concrete
           // recovery; a refused connection never reached the device.
           const outage = await diagnoseIosOutage(session, e);
           if (outage)
@@ -1189,13 +1189,13 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
           // H2: driver errors can echo argv/stderr. Scrub known secrets AND the value just typed.
           const redactErr = makeRedactor(errorSecrets(session, action === 'type' ? (typedValue ?? args.text) : undefined));
           // An append that did not read back left part of the text in the field: repeating it
-          // types that part twice (CR-TYPING).
+          // types that part twice.
           // A timed-out adb input (DEVICE_UNRESPONSIVE) may also have typed part of it.
           const appendMismatch =
             (failureCode === 'TEXT_INPUT_MISMATCH' || failureCode === 'DEVICE_UNRESPONSIVE') && action === 'type' && args.mode === 'append';
           return qaError({
             what: `Action "${action}" failed: ${redactErr(String(e)) ?? ''}`,
-            // A device that is gone cannot have changed (AND-12).
+            // A device that is gone cannot have changed.
             changedState: failureCode !== 'NO_DEVICE',
             retrySafe: !appendMismatch && !['WDA_SESSION_FAILED', 'UNKNOWN', 'NO_DEVICE'].includes(failureCode),
             failureCode,
@@ -1230,11 +1230,11 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
         try {
           // settle > observe > health (seeded with untilVisible's last probe; it was taken after the
           // last swipe, so re-dumping it first would be pure latency)
-          // IOS-9: home on iOS leaves the app. WDA's source still describes the backgrounded app (a
+          // Home on iOS leaves the app. WDA's source still describes the backgrounded app (a
           // stale tree, up to ~28 s per dump), so don't settle on it: report the foreground instead.
           // Never a no-change action (it does not count toward maxNoChangeActions).
           if (action === 'press' && args.key === 'home' && d.kind === 'wda') {
-            // WDA's active app lags the home transition by a few hundred ms (IOS-9): poll until the
+            // WDA's active app lags the home transition by a few hundred ms: poll until the
             // app under test is no longer in front (or, with no app id, until SpringBoard is), up
             // to ~2 s. Each read is capped so a WDA busy settling SpringBoard can't stall the call.
             const inApp = (fg: string) => !!session.appId && fg.startsWith(session.appId);
@@ -1308,13 +1308,13 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
             changed = !setsEqual(preSigs, postSigs) || movedContent() || toggled.length > 0;
           }
 
-          // AND-14: read the field back. Long adb text could land out of order, and a replace could
+          // Read the field back. Long adb text could land out of order, and a replace could
           // leave old text behind, while the call still "succeeded". The typed field holding other
           // text fails the call (TEXT_INPUT_MISMATCH): found by its ref, or in replace mode the
           // focused field under the focus tap (a coordinate target, or a ref that moved). A
           // reformatted or cut-short value, or a mismatch in another focused field (the screen may
           // have moved on), is a warning. The field's value is compared, not a Compose label after
-          // it (AND R3-1). Not for secure fields (masked), submitted fields (cleared / navigated) or
+          // it. Not for secure fields (masked), submitted fields (cleared / navigated) or
           // empty values.
           if (action === 'type' && typedField && typedValue && !typedField.secure && !args.submit) {
             const tf = typedField;
@@ -1327,7 +1327,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
               return { node, isTyped, ...fieldReadBack(node, typedText, tf.replace, tf.label) };
             };
             let back = readField();
-            // NEW-replace / AND NEW R4-1: a replace that left other text (a select-all the field
+            // A replace that left other text (a select-all the field
             // collapsed, a scramble) or came out cut short is retried ONCE while the field still has
             // focus: clear, retype (carefully after a mismatch), read back again. A cut-short value
             // passes (warning) only when the retype stops at the same length (a max length); a
@@ -1388,7 +1388,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
           const health = await checkHealth(d, session.appId, s.xml, { nodes: post.allNodes });
           if (health.cancelled)
             return cancelledResult(`Action "${action}" ran, but the call was cancelled before its result was observed`, true);
-          // CR P1: qa_report counts a recorded action as device evidence only when the app under test
+          // qa_report counts a recorded action as device evidence only when the app under test
           // was in front after it (not a tap on SpringBoard / another app, not a press home).
           // Exact package / bundle id (an Android ":process" suffix allowed): `com.example.app` must not
           // match `com.example.app2`.
@@ -1399,8 +1399,8 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
           }
 
           // Track no-change actions for the budget / no-op-loop detector.
-          // `press home` leaves the app; it is never a no-op loop step (IOS-9).
-          // A satisfied untilVisible is a success even with no swipe (IOS NEW-7).
+          // `press home` leaves the app; it is never a no-op loop step.
+          // A satisfied untilVisible is a success even with no swipe.
           const untilVisibleMet = action === 'scroll' && meta.untilVisibleFound === true;
           if (
             !changed &&
@@ -1412,7 +1412,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
           const budgetReached = sessions.budgetStop(session);
 
           // Sensitive-mode present: mask secure fields + scrub registered secrets only. A value typed
-          // into an ordinary field stays visible (IOS-12 / LOG-6): scrubbing it hid the field's value
+          // into an ordinary field stays visible: scrubbing it hid the field's value
           // and every search result containing it, while the next qa_snapshot showed it anyway.
           // Secure-field values and secret placeholders were registered in session.secrets above.
           const redact = makeRedactor(session.secrets);
@@ -1534,7 +1534,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
         } catch (e) {
           if (isAbortError(e))
             return cancelledResult(`Action "${action}" ran, but the call was cancelled before its result was observed`, true);
-          // The device disappeared (emulator killed): NO_DEVICE, no visual-fallback switch (AND-12).
+          // The device disappeared (emulator killed): NO_DEVICE, no visual-fallback switch.
           if (isDeviceGoneError(e))
             return qaError({
               what: `Action "${action}" could not be observed: the device is offline: ${String(e)}`,

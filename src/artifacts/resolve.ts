@@ -140,14 +140,14 @@ function baseInstallTargets(
   }
 }
 
-/** TOOL NEW-R3-1: compare normalized paths, so a root spelled `/x/` or `/x/a/..` still contains `/x/b.app`. */
+/** Compare normalized paths, so a root spelled `/x/` or `/x/a/..` still contains `/x/b.app`. */
 export function isOutsideRoot(path: string, projectRoot: string): boolean {
   const rel = relative(resolve(projectRoot), resolve(path));
   return rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel);
 }
 
 /** XCTest / WebDriverAgent runner bundles (WebDriverAgentRunner-Runner.app, FooUITests-Runner.app):
- *  test harnesses, never the app under test (TOOL NEW-4). Flutter's own `Runner.app` is kept. */
+ *  test harnesses, never the app under test. Flutter's own `Runner.app` is kept. */
 export function isTestRunnerBundle(path: string): boolean {
   const name = basename(path);
   return /^WebDriverAgent/i.test(name) || /.-Runner\.app$/i.test(name) || /\.xctrunner$/i.test(name);
@@ -208,7 +208,7 @@ function artifactType(name: string): ArtifactType | null {
   return m ? (m[1] as ArtifactType) : null;
 }
 
-/** Label the search location a hit came from, for the "exactly where I looked" report (§3.4). */
+/** Label the search location a hit came from, for the "exactly where I looked" report. */
 function sourceLabel(relDir: string, type: ArtifactType): string {
   const r = relDir.toLowerCase();
   if (r.includes('build/app/outputs/flutter-apk')) return 'flutter apk output';
@@ -226,7 +226,7 @@ function sourceLabel(relDir: string, type: ArtifactType): string {
  * directory it descends into so the caller can report exact search locations. `.app` is a
  * directory: we record it as a hit and do NOT descend into it.
  */
-/** Hard bounds on one artifact walk, on top of maxDepth (TOOL-2: a walk of a disk-sized tree ran
+/** Hard bounds on one artifact walk, on top of maxDepth (a walk of a disk-sized tree ran
  * for minutes). Real app trees (node_modules/build dirs skipped) stay far below both. */
 export const MAX_WALK_DIRS = 20_000;
 export const MAX_WALK_MS = 10_000;
@@ -257,7 +257,7 @@ function walk(
   }
   searched.add(root);
   for (const e of entries) {
-    // TOOL NEW-R3-4: bound per entry too; classifying hundreds of .app bundles (Info.plist reads)
+    // Bound per entry too; classifying hundreds of .app bundles (Info.plist reads)
     // in one folder ran far past the deadline.
     if (budget && Date.now() > budget.deadline) {
       budget.truncated = true;
@@ -458,7 +458,7 @@ export async function resolveArtifact(opts: ResolveOptions, enrich = true): Prom
 
   const searchedLocations = [...searched].sort();
   if (opts.onlyPaths) {
-    // TOOL NEW-4: a prebuilt-only root installs one of ITS near-root artifacts, never a deeper hit.
+    // A prebuilt-only root installs one of ITS near-root artifacts, never a deeper hit.
     const allowed = new Set(opts.onlyPaths.map((p) => resolve(p)));
     for (let i = found.length - 1; i >= 0; i--) if (!allowed.has(resolve(found[i].path))) found.splice(i, 1);
   }

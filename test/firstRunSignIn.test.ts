@@ -1,5 +1,5 @@
-// Round-5 first-run fixes and missing tests (hermetic, fake driver):
-//  - GOAL NEW-R5-2: with credentials set, a sign-up / login chooser ("Sign up with Apple / Google /
+// First-run fixes and missing tests (hermetic, fake driver):
+//  - with credentials set, a sign-up / login chooser ("Sign up with Apple / Google /
 //    Or by email / Already have an account? Sign In") follows the in-app "Sign In" link; Apple and
 //    Google sign-in stay excluded; without such a link the blocker names the chooser, not credentials.
 //  - Missing tests: first run closes an alert with its cancel button; never taps third-party sign-in.
@@ -67,7 +67,7 @@ function newSession(fake: FakeDriver, creds: boolean) {
 const tappedAt = (fake: FakeDriver, b: [number, number, number, number]) =>
   fake.got('tapXY').some((c) => c.a[0] === Math.round((b[0] + b[2]) / 2) && c.a[1] === Math.round((b[1] + b[3]) / 2));
 
-describe('findSignInLink (GOAL NEW-R5-2)', () => {
+describe('findSignInLink', () => {
   it('picks "Sign In" (even as plain text), never Apple / Google sign-in', () => {
     const els = [el('@e1', 'Sign in with Apple', 300), el('@e2', 'Sign in with Google', 400), el('@e3', 'Sign In', 700, false, 'Text')];
     expect(findSignInLink(els)?.ref).toBe('@e3');

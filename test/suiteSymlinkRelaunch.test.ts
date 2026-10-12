@@ -1,6 +1,6 @@
-// Round-5 should-fix items (hermetic):
-//  - NEW-R5-1 (tools-contract): suite writes under .swipium/ never follow a committed symlink.
-//  - NEW-R5-3 (goals-ios): the explorer's mid-run relaunch is a restartApp step in generated flows.
+// Suite and explorer fixes (hermetic):
+//  - suite writes under .swipium/ never follow a committed symlink.
+//  - the explorer's mid-run relaunch is a restartApp step in generated flows.
 //  - Missing tests: isTestRunnerBundle and resolveArtifact's onlyPaths.
 
 import { describe, expect, it } from 'vitest';
@@ -19,7 +19,7 @@ import type { RecordedAction, TestNote } from '../src/session/store.js';
 
 const tmp = (p: string) => mkdtempSync(join(tmpdir(), p));
 
-describe('NEW-R5-1: suite writes refuse symlinks', () => {
+describe('suite writes refuse symlinks', () => {
   it('refuses a symlinked test-suite.json and leaves the target untouched', () => {
     const root = tmp('swipium-sym-root-');
     const out = tmp('swipium-sym-out-');
@@ -56,7 +56,7 @@ describe('NEW-R5-1: suite writes refuse symlinks', () => {
   });
 });
 
-describe('NEW-R5-3: explorer relaunch is recorded in generated flows', () => {
+describe('explorer relaunch is recorded in generated flows', () => {
   const tap = (at: number, selector: string, screen: string): RecordedAction => ({
     at,
     action: 'tap',

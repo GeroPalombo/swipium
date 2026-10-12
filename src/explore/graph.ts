@@ -1,4 +1,4 @@
-// Screen graph (Phase 3.3 Milestone B): model exploration as nodes (screens) + edges (actions),
+// Screen graph: model exploration as nodes (screens) + edges (actions),
 // not free-form notes. Nodes dedupe by signature so revisiting Home collapses to one node while a
 // modal/sheet becomes a distinct node. PURE: serialization only; the runner drives it.
 
@@ -149,7 +149,7 @@ export class ExploreGraph {
     return { node: full, isNew: true };
   }
 
-  /** Drop a node and its edges (GOAL-13: a screen of another app reached by an external link is not
+  /** Drop a node and its edges (a screen of another app reached by an external link is not
    *  an app screen). */
   removeNode(id: string): void {
     const sig = this.order.find((s) => this.nodes.get(s)?.id === id);

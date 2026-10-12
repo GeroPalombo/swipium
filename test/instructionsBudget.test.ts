@@ -1,6 +1,6 @@
-// F4: Claude Code truncates server instructions at 2048 chars and Codex advises the first 512
+// Claude Code truncates server instructions at 2048 chars and Codex advises the first 512
 // chars stand alone. Keep SERVER_INSTRUCTIONS under budget with the essentials up front, and the
-// recommended poll (R2) under a 60 s client tool timeout.
+// recommended poll under a 60 s client tool timeout.
 import { describe, expect, it } from 'vitest';
 import { SERVER_INSTRUCTIONS, orientation } from '../src/tools/agent.js';
 import { MAX_JOB_WAIT_MS, RECOMMENDED_JOB_WAIT_MS } from '../src/tools/jobs.js';

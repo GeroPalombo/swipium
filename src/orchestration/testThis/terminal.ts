@@ -1,5 +1,5 @@
 // qa_test_this terminal-state assembly: every terminal state (completed OR blocked) generates a
-// report artifact (Milestone B) and lands the uniform TerminalEnvelope on the job result, so the
+// report artifact and lands the uniform TerminalEnvelope on the job result, so the
 // outcome is summarizable from structured output without log parsing.
 
 import {
@@ -32,12 +32,12 @@ export interface FinishContext {
 
 export type Finish = (state: ExecState, failureCode: string | undefined, summary: string, extra?: Record<string, unknown>) => Promise<void>;
 
-/** Every terminal state (completed OR blocked) generates a report artifact (Milestone B). */
+/** Every terminal state (completed OR blocked) generates a report artifact. */
 export function createFinisher(ctx: FinishContext): Finish {
   const { sessions, session, job, a, attempted, artifacts, upd } = ctx;
   return async (state: ExecState, failureCode: string | undefined, summary: string, extraIn: Record<string, unknown> = {}) => {
     // Finisher-only keys (not copied onto the job result): `appLaunched:false` = the run stopped before
-    // the app launched; `blockerHowToFix` = the failing step's own concrete recovery (GOAL-7).
+    // the app launched; `blockerHowToFix` = the failing step's own concrete recovery.
     const { appLaunched, blockerHowToFix, ...extra } = extraIn;
     if (a.testThisPlanMutation) {
       sessions.recordMutation(session, {
@@ -75,11 +75,11 @@ export function createFinisher(ctx: FinishContext): Finish {
     try {
       const r = await generateSessionReport(sessions, session, {
         format: 'summary',
-        // GOAL NEW-R3-2: no triage dump from a WDA that just hung (one more /source would wait out
+        // No triage dump from a WDA that just hung (one more /source would wait out
         // its 30 s timeout after the run was already decided).
         includeCurrentDump: failureCode !== 'WDA_UNREACHABLE',
         suite: suiteOpt,
-        // A blocked/unsafe run stopped before testing what it set out to: never a SHIP (AND-4).
+        // A blocked/unsafe run stopped before testing what it set out to: never a SHIP.
         ...((state === 'blocked' || state === 'unsafe') && failureCode
           ? {
               notTested: {
@@ -109,7 +109,7 @@ export function createFinisher(ctx: FinishContext): Finish {
     }
     reportProg.done('Report ready.');
     // Health as the report judged it ('not checked' when the app was never reached, 'unverified' on
-    // a visual-only smoke: AND-4 / E2E-2); the local derivation is only the report-failed fallback.
+    // a visual-only smoke); the local derivation is only the report-failed fallback.
     const reportHealth = reportJson as { nativeHealth?: string; appHealth?: string } | undefined;
     const native =
       reportHealth?.nativeHealth ?? (session.findings.some((f) => f.layer === 'native' && f.severity === 'high') ? 'error' : 'OK');
@@ -152,7 +152,7 @@ export function createFinisher(ctx: FinishContext): Finish {
           : blockers[0]
             ? blockerFixAction(blockers[0], session.id)
             : null;
-    // Uniform terminal envelope (Milestone B): summarizable from structured output, no log parsing.
+    // Uniform terminal envelope: summarizable from structured output, no log parsing.
     const envelope: TerminalEnvelope = buildTerminalEnvelope({
       state,
       sessionId: session.id,
@@ -217,9 +217,9 @@ const FIX_TOOL_ARGS: Record<string, (sessionId: string, howToFix: string) => Rec
   qa_doctor: () => ({}),
   qa_prepare_target: (sessionId) => ({ sessionId }),
   qa_prepare_ios_target: (sessionId) => ({ sessionId }),
-  // iOS launch failures (GOAL-7) name the qa_ios action to take ("boot", "install", "logs").
+  // iOS launch failures name the qa_ios action to take ("boot", "install", "logs").
   qa_ios: (sessionId, howToFix) => ({ sessionId, action: howToFix.match(/qa_ios \{\s*action:\s*"(\w+)"/)?.[1] ?? 'logs' }),
-  qa_metro: (sessionId) => ({ sessionId, action: 'start' }), // METRO_REQUIRED (AND-6)
+  qa_metro: (sessionId) => ({ sessionId, action: 'start' }), // METRO_REQUIRED
   // WDA_UNREACHABLE (a hung WDA): "restart WDA" starts with stop (device defaults to the session's);
   // WDA_BUILD_FAILED's "retry qa_wda build" is a build.
   qa_wda: (sessionId, howToFix) => ({

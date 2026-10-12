@@ -72,7 +72,7 @@ export async function runGc(argv: string[], out: (s: string) => void = (s) => vo
     `swipium gc${args.dryRun ? ' (dry run)' : ''}: scanned ${r.scanned} session dir(s) under ${r.runsDir}\n` +
       `  ${verb} ${r.deleted.length} session dir(s) older than ${r.days} day(s) (not registered; newest ${r.keepPerProject} per existing project kept)\n` +
       `  ${args.dryRun ? 'reclaimable' : 'reclaimed'}: ${formatBytes(r.bytesReclaimed)}\n` +
-      // NEW-2: no "26 > 26": say what was (or would be) pruned in words.
+      // No "26 > 26": say what was (or would be) pruned in words.
       `  projects.json: ${
         projects.corrupt
           ? `left unchanged: it is not a valid registry (${projects.corrupt}); fix or delete it`

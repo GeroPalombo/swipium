@@ -30,7 +30,7 @@ export interface ScreenObservation {
   /** Native error signals (redbox / ANR / crash dialog) the observer already detected. */
   nativeError?: boolean;
   appError?: boolean;
-  /** GOAL NEW-R4-2: an alert covers the screen (its words, e.g. "Settings", are not the app's). */
+  /** An alert covers the screen (its words, e.g. "Settings", are not the app's). */
   alert?: { title: string } | null;
 }
 
@@ -172,7 +172,7 @@ export function classifyCurrentScreen(obs: ScreenObservation): ScreenClassificat
     note('permissions_prompt', 2.5, 'permission dialog copy');
   if (ONBOARDING.test(text) && !hasPassword) note('onboarding', 2, 'onboarding/get-started/next/skip copy');
   // A screen under an alert is not home or settings: "Sign in to your Apple Account: Close / Settings"
-  // over a sign-up screen read as home (GOAL NEW-R4-2).
+  // over a sign-up screen read as home.
   if (obs.alert) blockedReasons.push(`an alert ("${obs.alert.title}") covers the screen`);
   else {
     if (SETTINGS.test(text)) note('settings', 1, 'settings/preferences copy');

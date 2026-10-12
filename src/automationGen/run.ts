@@ -80,7 +80,7 @@ export interface AutomationPlanArgs {
  * Appium POM suite: selected automation language, backends, coverage, files planned, blockers.
  */
 /** A recorded step the generators cannot express as real code. Fail generation with the reason
- *  instead of writing a suite that silently skips the step (§4). */
+ *  instead of writing a suite that silently skips the step. */
 function unemittable(e: UnemittableStepError, extra: Record<string, unknown> = {}): CallToolResult {
   return qaError(
     {

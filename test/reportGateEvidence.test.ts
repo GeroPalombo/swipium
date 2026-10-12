@@ -1,4 +1,4 @@
-// Round-3 report / release-gate behaviour (E2E NEW-10..13, CR "reached but blocked", NEW-15):
+// Report / release-gate behaviour:
 //  - a screenshot taken without the app in front does not count as "reached the app";
 //  - a persisted notTested marker keeps its blocker code across later qa_report calls;
 //  - an agent qa_note pass with no device evidence is never SHIP;
@@ -41,7 +41,7 @@ async function report(store: InstanceType<typeof SessionStore>, s: Session, notT
   return { r, notTestedVerdict };
 }
 
-describe('reached the app needs real evidence (E2E NEW-10)', () => {
+describe('reached the app needs real evidence', () => {
   it('a screenshot without the app in front is not evidence: BLOCK / NOT_RUN', async () => {
     const { store, s } = fresh();
     store.saveArtifact(s, 'screenshot', 'home.png', Buffer.alloc(8), 'image/png');
@@ -62,7 +62,7 @@ describe('reached the app needs real evidence (E2E NEW-10)', () => {
   });
 });
 
-describe('persisted notTested marker (E2E NEW-10 / NEW-13)', () => {
+describe('persisted notTested marker', () => {
   it('keeps BLOCK and the METRO_REQUIRED code on a later plain qa_report, even after a home-screen screenshot', async () => {
     const { store, s } = fresh();
     await report(store, s, {
@@ -90,7 +90,7 @@ describe('persisted notTested marker (E2E NEW-10 / NEW-13)', () => {
   });
 });
 
-describe('agent pass claims (E2E NEW-11)', () => {
+describe('agent pass claims', () => {
   it('a qa_note pass with no device evidence is not SHIP and fails the gate', async () => {
     const { store, s } = fresh();
     store.addNote(s, { at: Date.now(), workflow: 'login', outcome: 'pass', source: 'qa_note' });
@@ -101,7 +101,7 @@ describe('agent pass claims (E2E NEW-11)', () => {
     expect(notTestedVerdict).toMatchObject({ passed: false });
   });
 
-  it('the same pass after a launch only is not SHIP: CAUTION, App UNVERIFIED, gate fails NOT_TESTED (round 4 must-fix 1)', async () => {
+  it('the same pass after a launch only is not SHIP: CAUTION, App UNVERIFIED, gate fails NOT_TESTED', async () => {
     const { store, s } = fresh();
     store.milestone(s, 'app_launch_end');
     store.addNote(s, { at: Date.now(), workflow: 'login', outcome: 'pass', source: 'qa_note' });
@@ -113,7 +113,7 @@ describe('agent pass claims (E2E NEW-11)', () => {
     expect(notTestedVerdict).toMatchObject({ passed: false, failureCode: 'NOT_TESTED' });
   });
 
-  it('the same pass after a launch plus an action with the app in front is still not tested (R5 must-fix 1)', async () => {
+  it('the same pass after a launch plus an action with the app in front is still not tested', async () => {
     const { store, s } = fresh();
     store.milestone(s, 'app_launch_end');
     store.addRecordedAction(s, { at: Date.now() + 1, action: 'tap', selector: 'Login', exportability: 'semantic', appForeground: true });
@@ -136,7 +136,7 @@ describe('agent pass claims (E2E NEW-11)', () => {
   });
 });
 
-describe('reached but blocked fails the gate (CR, BLANK_SCREEN / GOAL-9)', () => {
+describe('reached but blocked fails the gate (BLANK_SCREEN)', () => {
   it('launch + blocked blank launch_smoke + blocked qa_note: CAUTION, gate fails with BLANK_SCREEN', async () => {
     const { store, s } = fresh();
     store.milestone(s, 'app_launch_end');
@@ -160,13 +160,13 @@ describe('reached but blocked fails the gate (CR, BLANK_SCREEN / GOAL-9)', () =>
     expect(r.executiveSummary.risk).toBe('caution');
     expect(r.notTested).toMatchObject({ reachedApp: true, exercised: false, failureCode: 'BLANK_SCREEN' });
     expect(notTestedVerdict).toMatchObject({ passed: false, failureCode: 'BLANK_SCREEN' });
-    // A blocked "other" note is setup/precondition, not a Swipium limitation (E2E NEW-14).
+    // A blocked "other" note is setup/precondition, not a Swipium limitation.
     expect(r.failureBuckets.counts.environment).toBeGreaterThanOrEqual(1);
     expect(r.failureBuckets.counts.mcp_limitation).toBe(0);
   });
 });
 
-describe('a hung WDA is a tool / environment failure, not an app bug (NEW-15 / GOAL NEW-R3-2)', () => {
+describe('a hung WDA is a tool / environment failure, not an app bug', () => {
   it('wda_unreachable finding + blocked launch_smoke: no "App status: BLOCKED", no app_bug issue, gate still fails', async () => {
     const { store, s } = fresh();
     store.milestone(s, 'app_launch_end');

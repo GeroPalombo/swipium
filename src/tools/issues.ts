@@ -241,13 +241,13 @@ export function registerIssues(server: McpServer, sessions: SessionStore): void 
           { categoryHint: args.category as IssueCategory | undefined, severityHint: args.severity as IssueSeverity | undefined },
           meta,
         );
-        // TOOL NEW-2: when the classifier did not keep the caller's severity, say why.
+        // When the classifier did not keep the caller's severity, say why.
         const cls = res.events[0]?.classification;
         const severityOverride =
           args.severity && cls && cls.severity !== args.severity
             ? `severity "${args.severity}" was requested; the classifier set "${cls.severity}" (${cls.reason})`
             : undefined;
-        // TOOL NEW-R3-2: say why an uncategorized entry landed in mcp_limitation (Swipium's bucket).
+        // Say why an uncategorized entry landed in mcp_limitation (Swipium's bucket).
         const categoryNote =
           res.isNew && cls?.categoryDefaulted
             ? `no category was given and no built-in rule matched, so it is filed as ${res.record.category} for triage; pass category (for example "app_bug") when logging an app defect`

@@ -1,4 +1,4 @@
-// Tier-1 deterministic health oracle. Phase 2.2: classifies BOTH layers:
+// Tier-1 deterministic health oracle. Classifies BOTH layers:
 // NATIVE health (process: crash dialog / ANR / wrong foreground) and APP health (JS/UI:
 // RN RedBox / LogBox error / error-boundary fallback / WebView error). A green native
 // process with a broken app UI (e.g. an ErrorBoundary screen) is now a first-class finding,
@@ -134,7 +134,7 @@ export function isMetroRequiredFinding(f: Pick<Finding, 'kind' | 'detail'>): boo
   return (f.kind === 'rn_redbox' && f.detail === RN_BUNDLE_LOAD_DETAIL) || f.kind === 'expo_dev_launcher';
 }
 
-/** E2E NEW-17: the RN/Expo launch error screen (RedBox, either variant, the Expo load-time fatal
+/** The RN/Expo launch error screen (RedBox, either variant, the Expo load-time fatal
  *  screen or the dev launcher) in a tree the caller already read, with no device call. Used by
  *  qa_prepare_* and qa_screenshot so a launch onto a RedBox never reads as plain "ready". */
 export function launchErrorSurface(nodes: ReadonlyArray<Pick<RawNode, 'text' | 'desc' | 'cls' | 'id'>>): Finding | undefined {

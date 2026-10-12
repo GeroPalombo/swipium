@@ -140,7 +140,7 @@ export function registerMobileAudit(server: McpServer, sessions: SessionStore): 
             sourceRevision: revisionResolved,
             now: nowIso(),
           });
-          // GOAL-26: the audit's outcome is part of the session's evidence, so qa_report can't say SHIP /
+          // The audit's outcome is part of the session's evidence, so qa_report can't say SHIP /
           // COVERED after an incomplete audit. Release impact "block" is a failed workflow; any failed or
           // blocked check (or a run that stopped short) is a blocked one that names those checks.
           const failedChecks = run.checks.filter((c) => c.status === 'fail');

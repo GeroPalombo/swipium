@@ -1,5 +1,5 @@
-// Round-4 follow-up fixes (hermetic, fake driver):
-//  - E2E NEW-17: a launch onto an RN RedBox / Expo dev launcher is caught from one tree
+// Launch error screens and related fixes (hermetic, fake driver):
+//  - a launch onto an RN RedBox / Expo dev launcher is caught from one tree
 //    (launchErrorSurface / checkLaunchErrorSurface): the bundle-load variant marks the session not
 //    tested (METRO_REQUIRED), a JS-exception RedBox is an app finding, an iOS alert on top is named;
 //    qa_prepare_ios_target's job fails METRO_REQUIRED instead of "ready"; qa_screenshot of a RedBox
@@ -51,7 +51,7 @@ function newSession(fake?: FakeDriver) {
   return { sessions, session };
 }
 
-describe('E2E NEW-17: launch error screen detection', () => {
+describe('launch error screen detection', () => {
   it('launchErrorSurface: bundle-load RedBox is METRO_REQUIRED, a JS-exception RedBox is not, a normal screen is nothing', () => {
     const metro = launchErrorSurface(parseSnapshot(NO_BUNDLE).allNodes);
     expect(metro?.kind).toBe('rn_redbox');
@@ -160,7 +160,7 @@ describe('E2E NEW-17: launch error screen detection', () => {
   });
 });
 
-describe('qa_wda stop wording (round-4 note)', () => {
+describe('qa_wda stop wording', () => {
   it('names this server or another one, never "another server run" for its own WDA', () => {
     expect(wdaStopOrigin([{ serverPid: 10 }], 10)).toBe('registered by this server for another session');
     expect(wdaStopOrigin([{ serverPid: 11 }], 10)).toBe('registered by another Swipium server');
@@ -168,7 +168,7 @@ describe('qa_wda stop wording (round-4 note)', () => {
   });
 });
 
-describe('a flow for an app that is not installed (round-4 Android note)', () => {
+describe('a flow for an app that is not installed (Android)', () => {
   const flow = { name: 'other-app', appId: 'com.other.app', mode: 'structured', fixtures: [], setup: [], teardown: [] } as unknown as Flow;
 
   it('prepareTarget on a missing app fails BUNDLE_ID_NOT_FOUND, filed blocked (setup), not mcp_limitation', async () => {
@@ -203,7 +203,7 @@ describe('a flow for an app that is not installed (round-4 Android note)', () =>
   });
 });
 
-describe('process registry: dead entries are pruned on registration (round-4 note)', () => {
+describe('process registry: dead entries are pruned on registration', () => {
   it('a dead child entry owned by a live server is dropped when another child registers', async () => {
     const { registerManagedProcess } = await import('../src/session/processRegistry.js');
     const file = join(registryHome, '.swipium', 'processes.json');

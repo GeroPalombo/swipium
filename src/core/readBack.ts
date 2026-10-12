@@ -1,13 +1,13 @@
-// Typed-text read-back (AND-14, AND R3-1): does a text field hold what was typed? Shared by
+// Typed-text read-back: does a text field hold what was typed? Shared by
 // qa_act type and the flow runner's inputText step. Pure.
 
 export type ReadBackVerdict = 'match' | 'reformatted' | 'truncated' | 'mismatch';
 
-/** PURE (AND R3-1): what a text-field node may hold, the value first. A hint shown in an empty
+/** PURE: what a text-field node may hold, the value first. A hint shown in an empty
  * field counts as empty. A labeled Compose field reads back "<value>, <label>" in both text and
  * content-desc, so its value is the text without that last ", <label>" part; the raw text is
  * kept as a second reading for a value that itself contains ", ".
- * CR P8: `label` is the field's Compose label when the caller knows it (composeLabelOf on the node
+ * `label` is the field's Compose label when the caller knows it (composeLabelOf on the node
  * before typing): only that ", <label>" suffix is dropped, so text left after ", " by a failed clear
  * is compared as is. null: the field had no Compose label (raw text only). undefined: unknown, any
  * last ", " part of a text == content-desc EditText counts as the label. */
@@ -28,7 +28,7 @@ export function textFieldReadings(
   return [n.text];
 }
 
-/** PURE (CR P8): the Compose label of a text field from its node BEFORE typing, for
+/** PURE: the Compose label of a text field from its node BEFORE typing, for
  * textFieldReadings. A labeled Compose field reads `<label>` empty and `<value>, <label>` filled, in
  * both text and content-desc. undefined when the node can't tell (no node, or no content-desc), null
  * when it has no such label. */
@@ -39,7 +39,7 @@ export function composeLabelOf(n?: { cls: string; text: string; desc: string }):
   return cut >= 0 ? n.desc.slice(cut + 2) : n.desc;
 }
 
-/** PURE (AND-14): does a field's value read back the typed text? Replace mode wants the whole value,
+/** PURE: does a field's value read back the typed text? Replace mode wants the whole value,
  * append mode wants it somewhere in the value. Whitespace runs and case are ignored ('match'). The
  * same letters and digits with other punctuation/spacing (an input mask, smart quotes), or a phone
  * country code in front, are 'reformatted'. A replaced value that is a non-empty start of the typed

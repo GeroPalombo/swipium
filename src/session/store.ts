@@ -100,7 +100,7 @@ export interface MutationRecord {
   ledgerUri?: string;
   detail?: string;
   /** A refused consent's code (CONSENT_DECLINED / _CANCELLED / _REFUSED): qa_report gates a run that
-   *  tested nothing with it (E2E NEW-13). */
+   *  tested nothing with it. */
   failureCode?: string;
 }
 
@@ -109,7 +109,7 @@ export interface FindingRecord {
   severity: string;
   kind: string;
   detail: string;
-  layer?: 'native' | 'app'; // Phase 2.2: which health layer the finding belongs to
+  layer?: 'native' | 'app'; // which health layer the finding belongs to
   evidence?: string; // the visible on-screen text that matched
   screen?: string; // source screen (foreground owner) when the finding fired
   screenshotUri?: string; // evidence screenshot, when captured
@@ -117,7 +117,7 @@ export interface FindingRecord {
   failureCode?: FailureCode; // typed failure class; else derived from kind in qa_report
 }
 
-// Phase 2.2: a structured test outcome the agent records via qa_note. It distinguishes a real
+// A structured test outcome the agent records via qa_note. It distinguishes a real
 // app bug from a blocked precondition / missing test data / intentional skip / refused action,
 // so reports stop mislabeling "no saved flight to delete" as a failure.
 export type TestOutcome = 'pass' | 'fail' | 'blocked' | 'skipped' | 'not_applicable';
@@ -134,14 +134,14 @@ export interface TestNote {
   requiredState?: string;
   recommendedSetup?: string;
   artifactUris?: string[];
-  verifiedVisually?: boolean; // Phase 2.2: passed via screenshot evidence (animated/canvas screen)
+  verifiedVisually?: boolean; // passed via screenshot evidence (animated/canvas screen)
   method?: 'visual' | 'ocr' | 'structured'; // How the assertion was verified
   evidenceKind?: TestEvidenceKind;
   confidence?: number;
   minConfidence?: number;
   decision?: string;
   /** 'qa_note': an agent-written claim. A pass claim only counts as testing the app when the session
-   *  holds device evidence of its own (E2E NEW-11). Swipium's own notes (smoke, flows, explore) have none. */
+   *  holds device evidence of its own. Swipium's own notes (smoke, flows, explore) have none. */
   source?: 'qa_note';
 }
 
@@ -191,7 +191,7 @@ export interface RecordedAction {
   warning?: string;
   provenance?: SelectorProvenance;
   /** The app under test was in front after the action (qa_act's post-action check). Only such an
-   *  action counts as device evidence in qa_report (CR P1). */
+   *  action counts as device evidence in qa_report. */
   appForeground?: boolean;
 }
 
@@ -203,14 +203,14 @@ export interface ToolErrorRecord {
   tool: string;
   failureCode: string; // as the result carried it (may be UNKNOWN / uncoded), not narrowed to FailureCode
   message: string;
-  /** The tool threw (a raw error, no typed result): always a tool-side failure (LOG NEW-3). */
+  /** The tool threw (a raw error, no typed result): always a tool-side failure. */
   thrown?: boolean;
 }
 
-// Phase 2.2 P1.4: a declared test precondition / fixture. Swipium does NOT mutate app state;
+// A declared test precondition / fixture. Swipium does NOT mutate app state;
 // it surfaces what a workflow needs so an unmet precondition reads as "blocked + setup guidance"
 // rather than a failure. Loaded from qa_start_session { fixtures } and/or .swipium/fixtures.json.
-// Phase 9: an OPT-IN, consent-gated seed spec that turns a declared
+// An OPT-IN, consent-gated seed spec that turns a declared
 // precondition into one Swipium can actually create. Mutating; runs only on explicit consent.
 export interface FixtureSeedAction {
   type: 'deeplink' | 'script' | 'api';
@@ -237,10 +237,10 @@ export interface Fixture {
   disposable?: boolean; // true when the fixture/account/data can be safely destroyed during QA
   environment?: 'test' | 'staging' | 'production' | string;
   fields?: Record<string, { value?: string; var?: string; secret?: boolean; generator?: string; role?: string; inputType?: string }>;
-  seed?: FixtureSeed; // Phase 9: how to create this precondition (consent-gated)
+  seed?: FixtureSeed; // how to create this precondition (consent-gated)
 }
 
-// Phase 2.2 P1.5: observed auth state across the run (no credentials stored here).
+// Observed auth state across the run (no credentials stored here).
 export interface AuthState {
   authedAtStart?: boolean; // first screen looked authenticated (no login screen)
   loginScreenSeen?: boolean;
@@ -249,7 +249,7 @@ export interface AuthState {
   loginPerformedAt?: number;
 }
 
-// Phase 2.2 P1.6: budget classes (minutes) keyed by workflow ambition.
+// Budget classes (minutes) keyed by workflow ambition.
 export const BUDGET_PROFILES: Record<string, number> = {
   guardrail: 8, // guardrail/setup validation
   login_smoke: 10, // login + one workflow
@@ -329,7 +329,7 @@ export function serializeSecretSafe(
   };
 }
 
-// Guided-exploration result summary (Phase 3.3) stored on the session for qa_report.
+// Guided-exploration result summary stored on the session for qa_report.
 export interface ExplorationRecord {
   at: number;
   graphUri?: string;
@@ -367,7 +367,7 @@ export interface Budget {
   maxNoChangeActions: number;
 }
 
-// GOAL-12: sized for the documented chain (qa_test_this smoke + saved-flow replay > qa_explore >
+// Sized for the documented chain (qa_test_this smoke + saved-flow replay > qa_explore >
 // qa_generate) in one session. 8 min / 20 actions / 8 screenshots ran out inside qa_test_this alone
 // (one generated flow is ~25-30 steps). Still a runaway guard; override with qa_start_session {budget}.
 export const DEFAULT_BUDGET: Budget = {
@@ -405,8 +405,8 @@ export interface Session {
    *  resume / re-run can replay the user's intent. Persisted (secret values redacted) + rehydrated. */
   lastTestThisArgs?: TestThisArgsRecord;
   workarounds: string[]; // resourcefulness trail: safe fallbacks Swipium tried (visual fallback, build-from-source, pre-login), surfaced in qa_report
-  exploration?: ExplorationRecord; // last guided-exploration result (Phase 3.3), surfaced in qa_report
-  /** E2E NEW-10/13: the last run that did not test what it set out to (qa_test_this blocker, a feature
+  exploration?: ExplorationRecord; // last guided-exploration result, surfaced in qa_report
+  /** The last run that did not test what it set out to (qa_test_this blocker, a feature
    *  run with 0 cases executed), with its blocker code. Every later qa_report keeps it until new test
    *  evidence (an outcome, action, exploration or finding) is recorded after `at`. Persisted. */
   notTested?: { reason: string; failureCode: string; reachedApp?: boolean; at: number };
@@ -419,13 +419,13 @@ export interface Session {
   jobs: Map<string, JobRecord>;
   artifacts: ArtifactRecord[];
   findings: FindingRecord[];
-  notes: TestNote[]; // structured test outcomes (qa_note), Phase 2.2
+  notes: TestNote[]; // structured test outcomes (qa_note)
   mutations: MutationRecord[]; // central mutation ledger for consent-bound side effects
   recordedActions: RecordedAction[]; // action IR for qa_generate target:"flow"
   toolErrors?: ToolErrorRecord[]; // tool calls that returned an error (bounded), for qa_report tool status
-  fixtures: Fixture[]; // declared preconditions, Phase 2.2 P1.4
-  auth: AuthState; // observed auth state, Phase 2.2 P1.5
-  milestones: Record<string, number>; // phase timing markers, Phase 2.2 P1.6
+  fixtures: Fixture[]; // declared preconditions
+  auth: AuthState; // observed auth state
+  milestones: Record<string, number>; // phase timing markers
   budgetProfile?: string; // chosen budget class, if any
   secrets: Set<string>; // values typed into secure fields > redacted everywhere (not persisted)
   // True on rehydrated sessions whose persisted state shows prior secret-bearing
@@ -531,7 +531,7 @@ export function artifactDirectoryName(kind: string): string {
   }
 }
 
-/** Filesystem-safe artifact file name (review B5): path separators, NUL/control chars and `..`
+/** Filesystem-safe artifact file name: path separators, NUL/control chars and `..`
  * runs are replaced, so a caller-supplied name (e.g. a visual baseline name) can never escape
  * the session directory. Long names are truncated, keeping the extension. */
 export function safeArtifactName(name: string): string {
@@ -801,7 +801,7 @@ export class SessionStore {
     return s.aborts.get(jobId)?.signal;
   }
 
-  // ---- mode + budget + counters (Phase 1) ----
+  // ---- mode + budget + counters ----
   setMode(s: Session, mode: SessionMode): void {
     s.mode = mode;
     this.persist(s);
@@ -922,7 +922,7 @@ export class SessionStore {
     if (s.recordedActions.length > 300) s.recordedActions.splice(0, s.recordedActions.length - 300);
     this.persist(s);
   }
-  /** Record a phase-timing marker the first time it happens (Phase 2.2 P1.6). */
+  /** Record a phase-timing marker the first time it happens. */
   milestone(s: Session, key: string): void {
     if (s.milestones[key] == null) {
       s.milestones[key] = Date.now();
@@ -935,7 +935,7 @@ export class SessionStore {
     s.milestones[key] = (s.milestones[key] ?? 0) + ms;
     this.persist(s);
   }
-  /** Merge an auth-state observation (Phase 2.2 P1.5). */
+  /** Merge an auth-state observation. */
   markAuth(s: Session, patch: Partial<AuthState>): void {
     s.auth = { ...s.auth, ...patch };
     this.persist(s);
@@ -970,13 +970,13 @@ export class SessionStore {
     s.lastTestThisArgs = { ...args, at: args.at ?? Date.now() };
     this.persist(s);
   }
-  /** Record the latest guided-exploration result (Phase 3.3) for qa_report. */
+  /** Record the latest guided-exploration result for qa_report. */
   setExploration(s: Session, rec: ExplorationRecord): void {
     s.exploration = rec;
     this.persist(s);
   }
   saveArtifact(s: Session, kind: string, name: string, data: Buffer | string, mime: string, label?: string): string {
-    // B5: never trust kind/name as path components. Sanitize, then verify containment.
+    // Never trust kind/name as path components. Sanitize, then verify containment.
     kind = safeArtifactName(kind);
     name = safeArtifactName(name);
     const sub = join(s.dir, artifactDirectoryName(kind));
@@ -990,7 +990,7 @@ export class SessionStore {
     // JSON/XML artifacts are redacted structurally (string values / attribute values / text
     // nodes only) so a short numeric secret (CVV "123") can never rewrite `{"actions":123}`.
     let storedData = isRedactableText ? redactStructuredText(data, structuredKindOf(mime, name), redact) : data;
-    // LOG-5: log text also loses credential SHAPES (Bearer/JWT/api_key=/AKIA…) never registered as secrets.
+    // Log text also loses credential SHAPES (Bearer/JWT/api_key=/AKIA…) never registered as secrets.
     if (isRedactableText && artifactDirectoryName(kind) === 'logs' && typeof storedData === 'string')
       storedData = scrubLogCredentials(storedData);
     const storedLabel = label ? redact(label) : label;
@@ -1181,7 +1181,7 @@ export class SessionStore {
    * entry owned by a live server is never dropped (its sessions would turn "Unknown" mid-use). */
   private appendRegistry(id: string, dir: string, keepLiveOwner = false): void {
     try {
-      mkdirPrivateSync(REGISTRY_DIR); // ~/.swipium 0700: registry.json lists every session dir (TOOL-20)
+      mkdirPrivateSync(REGISTRY_DIR); // ~/.swipium 0700: registry.json lists every session dir
       withFileLock(`${REGISTRY}.lock`, () => {
         let reg: RegistryEntry[] = [];
         if (existsSync(REGISTRY)) {

@@ -1,10 +1,10 @@
 // 2.3.0 iOS/WDA:
-//  - P4: default WDA settings (waitForIdleTimeout / animationCoolOffTimeout / accessibilityDeadline)
+//  - default WDA settings (waitForIdleTimeout / animationCoolOffTimeout / accessibilityDeadline)
 //    applied via /appium/settings, /source?excluded_attributes=visible,accessible by default, user
 //    overrides respected
-//  - W1: an existing .xctestrun under derivedDataPath skips build-for-testing
-//  - C4: qa_wda setup = reuse a ready WDA, else (build when needed +) start as one job, one consent
-// Hermetic: a local fake WDA HTTP server for P4; xcodebuild, /status and the registry faked for C4.
+//  - an existing .xctestrun under derivedDataPath skips build-for-testing
+//  - qa_wda setup = reuse a ready WDA, else (build when needed +) start as one job, one consent
+// Hermetic: a local fake WDA HTTP server for the settings; xcodebuild, /status and the registry faked for setup.
 
 import { EventEmitter } from 'node:events';
 import { createServer as createHttpServer, type IncomingMessage } from 'node:http';
@@ -132,7 +132,7 @@ async function fakeWda(opts: { settingsRoute?: boolean } = {}) {
   };
 }
 
-describe('P4: WDA settings and lean page source', () => {
+describe('WDA settings and lean page source', () => {
   it('applies the default settings and excludes visible,accessible from /source', async () => {
     const w = await fakeWda();
     try {
@@ -161,7 +161,7 @@ describe('P4: WDA settings and lean page source', () => {
         animationCoolOffTimeout: 0.5,
         accessibilityDeadline: 20,
         respectSystemAlerts: true,
-      }); // IOS-4 default
+      }); // the default settings
       await wda.wdaSource(w.url, s.sessionId);
       expect(w.requests.at(-1)!.url).toBe(`/session/${s.sessionId}/source`);
 
@@ -224,7 +224,7 @@ describe('P4: WDA settings and lean page source', () => {
   });
 });
 
-describe('W1: findWdaXctestrun', () => {
+describe('findWdaXctestrun', () => {
   it('picks the newest xctestrun for the UDID platform', () => {
     const dd = mkdtempSync(join(dir, 'dd-'));
     const products = join(dd, 'Build', 'Products');
@@ -252,7 +252,7 @@ function derivedData(withXctestrun: boolean): string {
   return dd;
 }
 
-describe('W1: qa_wda build reuses an existing build', () => {
+describe('qa_wda build reuses an existing build', () => {
   it('skips build-for-testing (and consent) when an xctestrun exists; rebuild:true still builds', async () => {
     const sessionId = await h.start(new FakeDriver(buttonScreen('A', 1)));
     const base = { sessionId, action: 'build', device: SIM, wdaProjectPath: WDA_PROJECT, derivedDataPath: derivedData(true) };
@@ -265,7 +265,7 @@ describe('W1: qa_wda build reuses an existing build', () => {
   });
 });
 
-describe('C4: qa_wda setup', () => {
+describe('qa_wda setup', () => {
   it('reuses a ready WDA without consent or xcodebuild', async () => {
     fake.wdaReady = true;
     const sessionId = await h.start(new FakeDriver(buttonScreen('A', 1)));

@@ -74,7 +74,7 @@ describe('cli init cwd handling', () => {
   });
 });
 
-// D3: team-shared project files must be portable; machine-local registrations may use absolute paths.
+// Team-shared project files must be portable; machine-local registrations may use absolute paths.
 describe('cli init portability + new clients', () => {
   const tmpRoot = mkdtempSync(join(tmpdir(), 'swipium-init-'));
 
@@ -346,7 +346,7 @@ describe('codex existing-block detection', () => {
     expect(findCodexServerBlock('x = "[mcp_servers.swipium]"\n')).toBeNull();
   });
 
-  it('NEW-R5-1: matches spaced and single/double-quoted headers, and dotted-key forms', () => {
+  it('matches spaced and single/double-quoted headers, and dotted-key forms', () => {
     expect(findCodexServerBlock('[mcp_servers.\'swipium\']\ncommand = "x"\n')).not.toBeNull();
     expect(findCodexServerBlock('[ mcp_servers . swipium ]\ncommand = "x"\n')).not.toBeNull();
     expect(findCodexServerBlock('[ mcp_servers."swipium" ]\n')).not.toBeNull();
@@ -360,7 +360,7 @@ describe('codex existing-block detection', () => {
     expect(hasCodexDottedServer('mcp_servers.other.command = "x"\n[mcp_servers]\nswipium_old = 1\n')).toBe(false);
   });
 
-  it('NEW-R5-1: init codex --apply never appends a second swipium entry (quoted, spaced, dotted)', async () => {
+  it('init codex --apply never appends a second swipium entry (quoted, spaced, dotted)', async () => {
     const cases = [
       '[mcp_servers.\'swipium\']\ncommand = "old"\n',
       '[ mcp_servers . swipium ]\ncommand = "old"\n',

@@ -401,9 +401,11 @@ finding:
   (`notTested` with `reachedApp:false`: the run stopped before the app, for example on a build,
   Metro or device blocker, or nothing at all was exercised), the gate adds a failed workflow
   `swipium: not tested` whose code is the blocker's code, or `NOT_TESTED`, with the reason as its
-  text. So `--fail-on-gate` exits 1 on a run that tested nothing. The same holds for a run that
+  text. Such a report reads release risk `block`, app verdict `NOT_RUN` and coverage `NONE`. So
+  `--fail-on-gate` exits 1 on a run that tested nothing. The same holds for a run that
   reached the app but exercised no workflow (for example a launch that ended `blocked` on
-  `BLANK_SCREEN`, or only a launch and a screenshot plus blocked notes): its risk is `caution`, but
+  `BLANK_SCREEN`, or only a launch and a screenshot plus blocked notes): its risk is `caution` and
+  coverage `NOT_COVERED`, but
   `notTested` is `{reachedApp:true, exercised:false}` and the gate adds the same failed workflow
   with the blocked note's code (`BLANK_SCREEN`, `METRO_REQUIRED`, ...) or `NOT_TESTED`. To only
   warn instead, list the code in `warnOn` (for example `"not_tested"`, `"blank_screen"` or

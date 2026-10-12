@@ -83,7 +83,7 @@ export function recordToolErrorFromResult(
 }
 
 /** Record a tool call that THREW (no typed result, e.g. a raw "`adb … monkey …` exited null (timed
- *  out)") against the calling session (LOG NEW-3): a raw exception is never a deliberate refusal, so
+ *  out)") against the calling session: a raw exception is never a deliberate refusal, so
  *  it always degrades the TOOL status. Best-effort, never throws. */
 export function recordThrownToolError(sessions: SessionStore, tool: string, args: unknown, err: unknown, signal?: AbortSignal): void {
   try {
@@ -141,7 +141,7 @@ export function toolVerdictFor(
   const codeText = Object.entries(byCode)
     .map(([c, n]) => `${c}×${n}`)
     .join(', ');
-  // A tool that threw (raw error, LOG NEW-3) degrades whatever its code; it is not an uncoded refusal.
+  // A tool that threw (raw error) degrades whatever its code; it is not an uncoded refusal.
   const degradingCount = errors.filter((e) => e.thrown || isDegradingToolError(e.failureCode)).length;
   const uncodedCount = errors.filter((e) => !e.thrown && UNCODED_CODES.has(e.failureCode)).length;
   const probingCount = errors.filter((e) => AGENT_PROBING_CODES.has(e.failureCode)).length;

@@ -1,4 +1,4 @@
-// Overlay detection + tap-obstruction analysis (Phase 2 CR4). Works from a single-window
+// Overlay detection + tap-obstruction analysis. Works from a single-window
 // uiautomator dump (allNodes, DFS-ordered). Toasts are NOT in the dump (separate windows);
 // keyboard + foreground-owner are detected by the caller via the driver and merged in.
 
@@ -169,7 +169,7 @@ const ALERT_CANCEL_RE = /^(cancel|close|not now|dismiss|don.?t allow|no(,? thank
 const ALERT_ACK_RE = /^(ok|okay|got it)$/i;
 
 /**
- * GOAL NEW-R4-2: the iOS alert in this tree (XCUIElementTypeAlert) and its cancel-style button, so
+ * The iOS alert in this tree (XCUIElementTypeAlert) and its cancel-style button, so
  * first-run and exploration close it ("Close" on "Sign in to your Apple Account") instead of
  * following its other button ("Settings" opened iOS Settings). `cancel` is undefined when the alert
  * has no recognizable cancel; null when there is no alert. PURE.
@@ -191,7 +191,7 @@ export function iosAlertCancel(allNodes: RawNode[]): { title: string; cancel?: {
   };
 }
 
-/** R5 N13: closing an iOS permission prompt with "Don't Allow" denies the permission, and the denial
+/** Closing an iOS permission prompt with "Don't Allow" denies the permission, and the denial
  *  persists on the simulator. Text to append to the "closed the alert" note so the result says so
  *  ('' for any other cancel button). PURE. */
 export function permissionDeniedNote(cancelLabel: string): string {
@@ -267,7 +267,7 @@ export function obstructionAt(allNodes: RawNode[], target: RawNode | undefined, 
   const realContent = !!(topmost.text || topmost.desc) || topmost.clickable;
   if (!realContent) return { obstructed: false };
   // A non-interactive part of the same alert / sheet as the target (its scroll indicator, a
-  // separator) is drawn over the buttons but doesn't block them (IOS R3 NEW-8).
+  // separator) is drawn over the buttons but doesn't block them.
   if (!topmost.clickable && sameDialog(allNodes, target, topmost)) return { obstructed: false };
   return {
     obstructed: true,

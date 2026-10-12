@@ -1,5 +1,5 @@
 // qa_test_this execute/interactive mode gate. Handles the synchronous half of execution:
-// the auth question, the unified consent preflight (Milestone A), job creation, and the
+// the auth question, the unified consent preflight, job creation, and the
 // optional waitForCompletion window. The heavy pipeline itself runs in ./pipeline.js.
 
 import type { McpServer, CallToolResult } from '@modelcontextprotocol/server';
@@ -47,7 +47,7 @@ export function isWithinRoot(p: string, root: string): boolean {
  *  build/convert > prepare > smoke > report pipeline as a job. */
 export async function runExecuteMode(server: McpServer, sessions: SessionStore, session: Session, a: ExecuteArgs): Promise<CallToolResult> {
   // 1. Auth question: interactive (or stopOnNeedsInput / goal:test_login) asks; execute proceeds pre-login.
-  //    Credentials in the server env answer it without a prompt (GOAL-17).
+  //    Credentials in the server env answer it without a prompt.
   seedEnvCredentials(sessions, session);
   if (
     a.scan.likelyAuth &&
@@ -79,7 +79,7 @@ export async function runExecuteMode(server: McpServer, sessions: SessionStore, 
     );
   }
 
-  // 2. Unified execution preflight (Milestone A): execute mode must request the SAME consent the
+  // 2. Unified execution preflight: execute mode must request the SAME consent the
   //    lower-level tools would for boot / external-APK / iOS .app install / build-from-source.
   const buildPlatform: BuildPlatform = (a.platform ?? (a.scan.framework === 'native-ios' ? 'ios' : 'android')) as BuildPlatform;
   // Resolve the EXACT build command so the consent shows what will run (not just "build_from_source").
@@ -182,11 +182,11 @@ export async function runExecuteMode(server: McpServer, sessions: SessionStore, 
   // the shared driver keep their own signal.
   const run = runWithSignal(sessions.abortSignal(session, job.jobId), () => runExecutePipeline(sessions, session, job, execArgs));
 
-  // Optional blocking mode for short paths (Milestone D). Default = return the running job.
+  // Optional blocking mode for short paths. Default = return the running job.
   if (a.waitForCompletion) {
     // The cap bounds the WHOLE call: time already spent resolving/scanning/planning is deducted, and
     // a tail reserve (10% of the cap, at most 2 s) covers building the response and a late timer on a
-    // busy event loop, so the call returns at or under the cap (TOOL-11). Pre-window work longer than
+    // busy event loop, so the call returns at or under the cap. Pre-window work longer than
     // a tiny cap still overruns it: nothing can be given back.
     const cap = maxWaitMs();
     const tailReserveMs = Math.min(2_000, Math.round(cap * 0.1));

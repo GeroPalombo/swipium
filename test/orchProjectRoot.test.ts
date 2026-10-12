@@ -1,4 +1,4 @@
-// MCP roots selection (P2 #8): a client exposing [$HOME, app] must resolve to the app, not $HOME
+// MCP roots selection: a client exposing [$HOME, app] must resolve to the app, not $HOME
 // (which then failed NOT_MOBILE_PROJECT). First root with a project marker wins; else the first
 // root that is neither / nor $HOME; a $HOME-only root list falls through to the env/cwd chain.
 

@@ -65,7 +65,7 @@ export function loadPolicy(root: string): Policy | null {
   return parsePolicyFile(p).policy ?? null;
 }
 
-/** Why an existing .swipium/policy.json is invalid (E2E-6), or null when it is absent or valid. */
+/** Why an existing .swipium/policy.json is invalid, or null when it is absent or valid. */
 export function policyFileProblem(root: string): string | null {
   const p = join(root, '.swipium', 'policy.json');
   if (!existsSync(p)) return null;
@@ -73,7 +73,7 @@ export function policyFileProblem(root: string): string | null {
 }
 
 /** Top-level keys of a valid .swipium/policy.json that the gate does not know (a typo such as
- *  "warnon" is otherwise silently ignored, E2E NEW-9). `$schema` is allowed. Empty when absent/invalid. */
+ *  "warnon" is otherwise silently ignored). `$schema` is allowed. Empty when absent/invalid. */
 export function policyUnknownKeys(root: string): string[] {
   const p = join(root, '.swipium', 'policy.json');
   if (!existsSync(p) || !parsePolicyFile(p).policy) return [];
@@ -150,7 +150,7 @@ export function applyPolicy(verdicts: FlowVerdict[], policy: Policy | null): Pol
   }
 
   const block = blocked.length > 0;
-  // E2E-10: the built-in launch smoke and finding checks are not flows. A smoke-only run must not
+  // The built-in launch smoke and finding checks are not flows. A smoke-only run must not
   // read as "all required flows passed".
   const flowVerdicts = verdicts.filter((v) => v.flow !== 'launch_smoke' && !v.flow.startsWith('finding:'));
   const flowsPassed = flowVerdicts.filter((v) => v.outcome === undefined || v.outcome === 'pass').length;

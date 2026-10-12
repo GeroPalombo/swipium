@@ -1,4 +1,4 @@
-// R3: a device-driving tool (explicit allowlist, DEVICE_DRIVING_TOOLS) called while a background job
+// A device-driving tool (explicit allowlist, DEVICE_DRIVING_TOOLS) called while a background job
 // is still driving the same session's device gets an advisory note (never a block). Tools that never
 // touch the device (qa_note, qa_generate, qa_suite_*, qa_app_map_*, qa_build...), read-only tools,
 // the job tools themselves, qa_report / qa_get_artifact and host-only jobs (build, bundletool) stay quiet.

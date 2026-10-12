@@ -1,4 +1,4 @@
-// Round-4 CR P3: qa_ios launch of a bundle other than the app under test is not evidence.
+// qa_ios launch of a bundle other than the app under test is not evidence.
 //  - no app_launch_end milestone, session.appId stays, the result names appUnderTest;
 //  - a qa_note pass on top of it is an unbacked claim (BLOCK, gate fails NOT_TESTED);
 //  - launching the app under test still sets the milestone (a pass note on it alone is CAUTION).
@@ -70,7 +70,7 @@ async function gate(sessionId: string) {
   return { r, notTestedVerdict: reportPolicyVerdicts(r).find((v) => v.flow === 'swipium: not tested') };
 }
 
-describe('qa_ios launch of another bundle (CR P3)', () => {
+describe('qa_ios launch of another bundle', () => {
   it('keeps the app under test, sets no launch milestone, and a pass note on it stays BLOCK / NOT_TESTED', async () => {
     const sessionId = await iosSession();
     const res = await call('qa_ios', { sessionId, action: 'launch', bundleId: 'com.apple.Preferences' });

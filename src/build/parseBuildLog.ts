@@ -1,4 +1,4 @@
-// Build-failure log parsing (Dev2 plan §4 "framework-specific build log parsing"). A build
+// Build-failure log parsing (framework-specific build log parsing). A build
 // that exits non-zero is an ENVIRONMENT/BUILD failure, never an app QA failure. But "build
 // failed" is useless to a developer. This module turns the captured build log into a typed
 // blocker with the LIKELY OWNER (app dev vs environment vs user) and a CONCRETE fix, plus the

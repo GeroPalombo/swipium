@@ -105,7 +105,7 @@ export function registerWait(server: McpServer, sessions: SessionStore): void {
       const boundAndroid =
         cond === 'device_online' && session.device && sessionDevicePlatform(session) === 'android' ? session.device : undefined;
       const boundAvd = boundAndroid ? sessionAvdFor(session, boundAndroid) : undefined;
-      // CR-PIN: an iOS-bound session waits for ITS simulator, and an unbound session under
+      // An iOS-bound session waits for ITS simulator, and an unbound session under
       // SWIPIUM_DEVICE for the pinned device; neither is satisfied by a bystander emulator.
       const boundIos = cond === 'device_online' && session.device && sessionDevicePlatform(session) === 'ios' ? session.device : undefined;
       const pin = cond === 'device_online' && !session.device ? operatorDevicePin() : undefined;
@@ -118,7 +118,7 @@ export function registerWait(server: McpServer, sessions: SessionStore): void {
           if (cond === 'wda_ready') {
             const probeMs = Math.max(250, Math.min(1500, deadline - Date.now()));
             // No WDA of the session's own yet: the configured URL, else the bound simulator's own
-            // managed WDA on its per-simulator port (GOAL NEW-R3-1), as qa_wda attach resolves it.
+            // managed WDA on its per-simulator port, as qa_wda attach resolves it.
             const simUdidForWda = configWdaUrl ? boundSimulatorUdid(session) : undefined;
             let owner: Awaited<ReturnType<typeof wdaDeviceOwnership>> | undefined;
             if (simUdidForWda) {
@@ -239,9 +239,9 @@ export function registerWait(server: McpServer, sessions: SessionStore): void {
                 qaOk({ satisfied: true, condition: cond, availableDevices: dev.available }, `device online: ${dev.available.join(', ')}`),
               );
           } else if (dev.effective || sessionDevicePlatform(session) === 'ios') {
-            // GOAL-4: an iOS simulator reaches the host's Metro at localhost (no adb device/reverse).
+            // An iOS simulator reaches the host's Metro at localhost (no adb device/reverse).
             const rd = await metroReadiness(dev.effective, METRO_PORT, session.root);
-            // Another project's Metro holds the port: it will never become OUR bundle (AND-8).
+            // Another project's Metro holds the port: it will never become OUR bundle.
             if (rd.wrongProject)
               return done(
                 qaError({

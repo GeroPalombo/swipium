@@ -124,7 +124,7 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
               failureCode: outage.failureCode,
               nextSteps: outage.nextSteps,
             });
-          // AND NEW R4-4: a dump that got no answer at all (a stalled emulator) is a device problem,
+          // A dump that got no answer at all (a stalled emulator) is a device problem,
           // not a screen the tree can't describe: one bounded attempt, no counter, no mode switch.
           if (/DEVICE_UNRESPONSIVE/.test(String(e)))
             return qaError({
@@ -183,7 +183,7 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
         // persist for inspect + next diff (fullByRef keeps raw nodes; masking happens on emit). Refs
         // are stable across snapshots (X3), so the diff below compares refs.
         let fresh = parseSnapshot(xml, { interactiveOnly: true });
-        // AND-18: a dialog window as the dump root (not anchored at [0,0]) gives the dialog's size,
+        // A dialog window as the dump root (not anchored at [0,0]) gives the dialog's size,
         // not the display's. Ask the driver for the real size then (cached, rare).
         const rootBounds = fresh.allNodes[0]?.bounds;
         if (rootBounds && (rootBounds[0] !== 0 || rootBounds[1] !== 0)) {
@@ -216,7 +216,7 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
           };
         }
 
-        // Auth-state awareness (P1.5): note login screens; the FIRST screen seen sets authedAtStart.
+        // Auth-state awareness: note login screens; the FIRST screen seen sets authedAtStart.
         const auth = detectAuthScreen(parsed.allNodes);
         if (session.auth.authedAtStart === undefined) sessions.markAuth(session, { authedAtStart: !auth.isLoginScreen });
         if (auth.isLoginScreen && !session.auth.loginScreenSeen)

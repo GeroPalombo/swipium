@@ -101,7 +101,7 @@ export const WDA_DEFAULT_EXCLUDED_ATTRIBUTES = 'visible,accessible';
  * (unbounded; the setting exists since WDA 16.8 and older builds ignore unknown settings).
  * The deadline stays under the 30 s /source HTTP timeout so a frozen app fails inside WDA.
  * respectSystemAlerts: a SpringBoard alert (a permission prompt) counts as the active app, so the
- * page source shows the alert and its buttons instead of the covered app (IOS-4). */
+ * page source shows the alert and its buttons instead of the covered app. */
 export const WDA_DEFAULT_SETTINGS: Readonly<Record<string, number | boolean>> = Object.freeze({
   waitForIdleTimeout: 1.5,
   animationCoolOffTimeout: 0.5,
@@ -169,7 +169,7 @@ function typedLength(body: unknown): number {
   return 0;
 }
 
-/** IOS NEW-A: cap for creating a session for an app that was JUST launched (prepare's attach, the
+/** Cap for creating a session for an app that was JUST launched (prepare's attach, the
  *  smoke's launch). A healthy WDA does that in a few seconds; one hung at session creation used to
  *  hold the run for the full 60 s default below and then drop to visual-only. */
 export const WDA_SESSION_CREATE_MS = 15_000;
@@ -912,18 +912,18 @@ const CLASS_NAME_LABEL_RE =
  *  A spoken image label is a word or phrase in sentence case ("Close", "Search"). */
 const SYMBOL_NAME_RE = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
 /** A row's disclosure chevron (`chevron`, `chevron.forward`): pure decoration whatever its type, and
- *  its SF Symbol label ("Forward") names nothing on screen (IOS-11 R3). */
+ *  its SF Symbol label ("Forward") names nothing on screen. */
 const CHEVRON_RE = /^chevron(?:\.[a-z.]+)?$/;
 /** A scroll view's position value ("0 %", "45%"): read by VoiceOver on scroll indicators, never a name. */
 const SCROLL_POSITION_RE = /^\d{1,3}\s?%$/;
 /** Types whose percentage value is real state (a slider's position, a progress bar). */
 const PERCENT_VALUE_TYPE_RE = /Slider|ProgressIndicator|Stepper|TextField|TextView|SearchField/;
 
-/** A label that names no visible text (IOS-11): an image's symbol/asset name, a chevron, or a
+/** A label that names no visible text: an image's symbol/asset name, a chevron, or a
  *  view-class name a node exposes only through `name` (no `label`). Such nodes are listed as unlabeled. */
 function decorativeLabel(type: string, node: Record<string, unknown>): boolean {
   const shown = String(node.label ?? node.name ?? '');
-  // IOS-11 R4: Settings rows expose the chevron as the label, the name, or (no label) the value, and
+  // Settings rows expose the chevron as the label, the name, or (no label) the value, and
   // not always on an Image / Other / StaticText node: a non-control node named "chevron" is decoration.
   const chevron = [shown || String(node.value ?? ''), String(node.name ?? '')].some((v) => CHEVRON_RE.test(v.trim()));
   if (chevron && !/Button|Cell|Link|Switch|Tab|Key\b|TextField|TextView|SearchField/.test(type)) return true;
@@ -933,7 +933,7 @@ function decorativeLabel(type: string, node: Record<string, unknown>): boolean {
 }
 
 /** A scroll indicator (`XCUIElementTypeOther`, value "0 %", label "Vertical scroll bar, 2 pages" or
- *  none): not a target, and inside an alert it sits over the bottom button (IOS R3 NEW-8). */
+ *  none): not a target, and inside an alert it sits over the bottom button. */
 function scrollIndicator(type: string, node: Record<string, unknown>): boolean {
   if (type !== 'XCUIElementTypeOther' || !SCROLL_POSITION_RE.test(String(node.value ?? '').trim())) return false;
   const label = String(node.label ?? node.name ?? '');
@@ -945,7 +945,7 @@ function normalizeNode(node: Record<string, unknown>, ctx?: VisibilityContext): 
   const indicator = scrollIndicator(type, node);
   const decorative = indicator || decorativeLabel(type, node);
   // A name-only identifier (`PageFormatMenuButton`, before WDA fills the label) stays the id.
-  // A chevron's name is not an identifier either (IOS-11).
+  // A chevron's name is not an identifier either.
   const nameId = node.name != null && !CHEVRON_RE.test(String(node.name).trim()) ? String(node.name) : '';
   const id = wdaNodeIdentifier(node) || (decorative && !indicator && node.label == null ? nameId : '');
   const label = decorative ? '' : String(node.label ?? node.name ?? '');
@@ -959,8 +959,8 @@ function normalizeNode(node: Record<string, unknown>, ctx?: VisibilityContext): 
   const isBar = IOS_BAR_RE.test(type);
   const visible = node.visible == null ? isBar || !hiddenByContext(node, ctx) : bool(node.visible);
   const textInput = IOS_TEXT_INPUT_RE.test(type);
-  // Keyboard keys are tappable (IOS-8). Images are not: an icon / chevron inside a row is not its
-  // own target, and listing each one as an unlabeled [button] flooded table rows (IOS-11).
+  // Keyboard keys are tappable. Images are not: an icon / chevron inside a row is not its
+  // own target, and listing each one as an unlabeled [button] flooded table rows.
   const typeLooksInteractive = textInput || /Button|Cell|Link|Switch|Tab|Key\b/i.test(type);
   const clickable = !indicator && (node.hittable == null ? enabled && visible && typeLooksInteractive : bool(node.hittable));
   const childValues = childNodes(node);

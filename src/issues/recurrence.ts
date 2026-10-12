@@ -106,7 +106,7 @@ export function foldEvent(prev: IssueRecord | null, event: IssueEvent): IssueRec
   if (event.environment && record.environment == null) record.environment = event.environment;
 
   // Classification updates (latest classification wins for category/severity/owner/confidence).
-  // TOOL NEW-R3-2: a defaulted severity/category (fallback guess) never overwrites what an existing
+  // A defaulted severity/category (fallback guess) never overwrites what an existing
   // issue already has: re-logging a high issue without `severity` must not downgrade it to low.
   if (cls) {
     if (!(base && cls.categoryDefaulted)) {

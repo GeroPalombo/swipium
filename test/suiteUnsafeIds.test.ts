@@ -1,4 +1,4 @@
-// Round-4 must-fix 5 (CR P2): a test-suite.json with an unsafe stored case id (`../../x`, a hand
+// A test-suite.json with an unsafe stored case id (`../../x`, a hand
 // edit or a cloned repo) never makes qa_suite_export write outside .swipium/test-suite-export/yaml,
 // the id is renamed on read and reported (loadRepairs), and qa_suite_lint flags it (unsafe_id).
 // Hermetic: in-memory server, temp HOME and project root.
@@ -36,7 +36,7 @@ function poisonedProject(): string {
 const walk = (dir: string): string[] =>
   readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)]));
 
-describe('qa_suite_export / qa_suite_lint with unsafe stored ids (must-fix 5)', () => {
+describe('qa_suite_export / qa_suite_lint with unsafe stored ids', () => {
   it('export save:true writes only under test-suite-export/yaml and reports the renames', async () => {
     const root = poisonedProject();
     const res = structured(await h.call('qa_suite_export', { projectRoot: root, format: 'yaml', save: true }));

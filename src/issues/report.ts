@@ -93,7 +93,7 @@ export function buildReportIssuesSection(
   };
 }
 
-/** Render the Markdown "Issue Memory" block (spec §Report Changes example). */
+/** Render the Markdown "Issue Memory" block. */
 export function issuesSectionToMarkdown(section: ReportIssuesSection): string {
   const s = section.summary;
   const lines: string[] = [];

@@ -39,7 +39,7 @@ export async function runVerify(args: string[] = []): Promise<void> {
     process.exitCode = 2;
     return;
   }
-  // VERIFY_CHILD_FLAG: this throwaway server skips the orphan adopt / reap sweep (SET-21).
+  // VERIFY_CHILD_FLAG: this throwaway server skips the orphan adopt / reap sweep.
   const transport = new StdioClientTransport({ command: process.execPath, args: [SELF, VERIFY_CHILD_FLAG] });
   const client = new Client({ name: 'swipium-verify', version: '0.0.0' });
   try {
@@ -80,7 +80,7 @@ export async function runVerify(args: string[] = []): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    // SET-3: an unsupported Node runtime (node check fails) is a verify failure, not a ✅; other
+    // An unsupported Node runtime (node check fails) is a verify failure, not a ✅; other
     // failed required doctor checks (adb, xcodebuild, devices…) are listed as warnings.
     const nodeFailed = failedChecks.some((c) => c.name === 'node');
     const ok = doctorRan && !nodeFailed;

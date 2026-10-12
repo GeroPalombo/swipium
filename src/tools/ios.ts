@@ -51,7 +51,7 @@ function bind(sessions: SessionStore, session: Session, udid: string): SimctlDri
   return driver;
 }
 
-/** CR-PIN: with SWIPIUM_DEVICE set, a DEVICE_PINNED refusal for any simulator other than the pinned
+/** With SWIPIUM_DEVICE set, a DEVICE_PINNED refusal for any simulator other than the pinned
  *  one (boot / install / privacy_reset / erase; erase can be pre-approved, so the pin is the only
  *  guard for a bystander simulator). Undefined when allowed. Exported for qa_wda. */
 export async function simulatorPinRefusal(udid: string, sims?: sim.Simulator[]): Promise<ReturnType<typeof qaError> | undefined> {
@@ -162,7 +162,7 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
 
       if (action === 'boot') {
         const sims = await sim.listSimulators();
-        // CR-PIN: with SWIPIUM_DEVICE set, boot defaults to the pinned simulator (never "the first
+        // With SWIPIUM_DEVICE set, boot defaults to the pinned simulator (never "the first
         // Booted", which can be a bystander) and refuses any other one.
         const pin = operatorDevicePin();
         let pick: sim.Simulator | undefined;
@@ -276,7 +276,7 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
           nextSteps: ['Call qa_ios { action: "boot" } first.'],
         });
       }
-      // IOS NEW-C: every action but boot / erase runs on the bound simulator. A `device` naming
+      // Every action but boot / erase runs on the bound simulator. A `device` naming
       // another one is refused (DEVICE_PINNED under the pin), never silently replaced by the bound one.
       if (args.device && action !== 'erase') {
         const r = await resolveSimulatorArg(args.device);
@@ -302,7 +302,7 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
         if ('error' in r) return r.error;
         eraseUdid = r.udid;
       }
-      // CR-PIN: the consent-gated simulator changes never touch a simulator other than the pinned one.
+      // The consent-gated simulator changes never touch a simulator other than the pinned one.
       if (action === 'install' || action === 'privacy_reset' || action === 'erase') {
         const refusal = await simulatorPinRefusal(action === 'erase' ? eraseUdid : udid);
         if (refusal) return refusal;
@@ -411,7 +411,7 @@ export function registerIos(server: McpServer, sessions: SessionStore): void {
           await sim.launchApp(udid, bundleId!);
           invalidateWdaPageSource(udid); // …and anything a concurrent read cached mid-launch
           noteScreenMutation(session); // a snapshot from before the launch is no longer fresh
-          // CR P3: app_launch_end is the report's "reached the app" evidence: only a launch of the
+          // app_launch_end is the report's "reached the app" evidence: only a launch of the
           // app under test sets it (launching Safari on a session for another app proves nothing).
           if (!session.appId || session.appId === bundleId) sessions.milestone(session, 'app_launch_end');
         } catch (err) {

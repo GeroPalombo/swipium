@@ -46,7 +46,7 @@ export interface GenerateInput {
   includeManualOnly?: boolean;
 }
 
-/** GOAL-22 / LOG-20: the platform the session actually observed (live driver kind, else the
+/** The platform the session actually observed (live driver kind, else the
  *  device id shape: iOS simulators are UUIDs). Undefined when unknown; callers fall back. */
 export function casePlatformsFor(
   s: Pick<Session, 'device' | 'driver'> & { driverKind?: Session['driverKind'] },
@@ -58,7 +58,7 @@ export function casePlatformsFor(
   return /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i.test(s.device) ? ['ios'] : ['android'];
 }
 
-/** The one platform a session recorded on, when known (POM pages / testcases claim only it, LOG-20). */
+/** The one platform a session recorded on, when known (POM pages / testcases claim only it). */
 export function recordedPlatform(s: Pick<Session, 'device' | 'driver'> & { driverKind?: Session['driverKind'] }): CasePlatform | undefined {
   const p = casePlatformsFor(s);
   return p?.length === 1 ? p[0] : undefined;
@@ -204,7 +204,7 @@ export function casesFromExploration(input: GenerateInput): CanonicalTestCase[] 
   const coverage = exp?.summary.featureCoverage;
   if (!coverage) return [];
   const platforms = input.platforms ?? ['android'];
-  // GOAL-22: a feature exploration never found is not a test case (and never a passing one).
+  // A feature exploration never found is not a test case (and never a passing one).
   return Object.entries(coverage)
     .filter(([, conf]) => !NO_EVIDENCE_COVERAGE.test(String(conf)))
     .map(([feature, conf]) => {
@@ -213,7 +213,7 @@ export function casesFromExploration(input: GenerateInput): CanonicalTestCase[] 
       // "covered"/"verified" is active; "partial"/"seen"/anything weaker is draft.
       const covered = /cover|verif|pass|done/i.test(conf);
       const status: CaseStatus = covered ? 'active' : 'draft';
-      // GOAL-22: these cases carry only a placeholder "explore" step and no evidence, so even a
+      // These cases carry only a placeholder "explore" step and no evidence, so even a
       // covered feature is not a pass: it stays not_run until real steps run (app errors still fail).
       // blocked/needs_fixture/unsafe are not passes either.
       const actualStatus: ActualStatus = covered

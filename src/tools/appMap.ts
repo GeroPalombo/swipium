@@ -128,7 +128,7 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
       const m = (mode ?? 'full') as BuildMode;
       const exploreGraph = m === 'static_only' ? null : latestExploreGraph(sessions, session);
       try {
-        // LOG-22: the session knows the app under test; fill appIdentity from it when the static scan
+        // The session knows the app under test; fill appIdentity from it when the static scan
         // could not (androidPackage stayed null on a known Android session).
         const kind = session?.driver?.kind ?? session?.driverKind;
         const ios = kind === 'wda' || kind === 'simulator';

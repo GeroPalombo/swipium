@@ -1,4 +1,4 @@
-// D1 on a real device: opt in with SWIPIUM_DEVICE_SERIAL=<serial> (skipped otherwise). Starts the
+// The agent dumper on a real device: opt in with SWIPIUM_DEVICE_SERIAL=<serial> (skipped otherwise). Starts the
 // agent through DirectDriver.dumpXml, times 10 dumps, checks parsing, then stops the agent and
 // removes the jar.
 

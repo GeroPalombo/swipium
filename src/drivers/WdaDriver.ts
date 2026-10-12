@@ -477,7 +477,7 @@ export class WdaDriver implements Driver {
     this.touched();
     if (key === 'home') {
       // session-less route; session kept warm. WDA presses the button at once, then waits for
-      // SpringBoard to go idle (28-36 s at times, IOS-9 R3): cap that wait, the press already
+      // SpringBoard to go idle (28-36 s at times): cap that wait, the press already
       // happened, and qa_act reads the foreground afterwards.
       await this.withSession(() =>
         withWdaCall({ timeoutMs: WDA_HOME_TIMEOUT_MS }, () => pressWdaHome(this.baseUrl)).catch((e) => {
@@ -637,7 +637,7 @@ export class WdaDriver implements Driver {
     });
   }
 
-  /** CR P9: the natively-selected element's value (WDA `/attribute/value`), for the typing read-back. */
+  /** The natively-selected element's value (WDA `/attribute/value`), for the typing read-back. */
   async valueBySelector(using: NativeSelectorStrategy, value: string): Promise<string> {
     return this.withSession(async (sid) => {
       const el = await this.timed('find_element', () => findWdaElement(this.baseUrl, sid, using, value));

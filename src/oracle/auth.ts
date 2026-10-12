@@ -1,4 +1,4 @@
-// Auth-screen heuristic (Phase 2.2 P1.5). Classifies whether the current screen looks like a
+// Auth-screen heuristic. Classifies whether the current screen looks like a
 // login/sign-in surface vs an authenticated screen, purely from the UI tree, no credentials.
 // Used to report whether login was needed / performed / skipped (persisted session).
 

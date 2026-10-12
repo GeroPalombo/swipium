@@ -151,7 +151,7 @@ function actionSelector(a: RecordedAction): string | null {
             : a.selector;
 }
 
-/** Text-entry controls whose visible text is a placeholder or the current value (GOAL-14). */
+/** Text-entry controls whose visible text is a placeholder or the current value. */
 const FIELD_CLASS = /EditText|TextField|SearchField|SecureTextField|TextInput|AutoCompleteTextView|SearchView|XCUIElementTypeTextView/i;
 
 /** A text selector on a text field is fragile: the visible text is the placeholder (or the typed
@@ -203,12 +203,12 @@ export function generateFlow(
     /** Registered session secrets (see suite/secretGuard.ts). */ secrets?: Iterable<string>;
     /** Stored session inputs (secretGuard.inputBindings): typed text equal to one becomes its ${VAR}. */
     inputs?: InputBinding[];
-    /** LOG-11: the recording began from a restarted app (qa_app_control restart/fresh_start before the
+    /** The recording began from a restarted app (qa_app_control restart/fresh_start before the
      *  first action): start the flow with restartApp so a replay starts from the same clean state. */
     resetAtStart?: boolean;
-    /** LOG-13: stable text seen on the screen the recording ended on; emitted as a final assertion. */
+    /** Stable text seen on the screen the recording ended on; emitted as a final assertion. */
     finalAssertions?: string[];
-    /** LOG-13: recorded qa_note outcomes ("add_alarm: alarm added via FAB"), named in the header so the
+    /** Recorded qa_note outcomes ("add_alarm: alarm added via FAB"), named in the header so the
      *  reviewer can turn them into the real assertion. */
     recordedOutcomes?: string[];
   },
@@ -217,7 +217,7 @@ export function generateFlow(
   // (same naming as the POM/suite generator: secretVarName), and typed text equal to a stored
   // session input becomes that input's ${SWIPIUM_TEST_*} placeholder.
   actions = secretSafeActions(actions, opts.secrets, opts.inputs).actions;
-  // GOAL NEW-R4-2: a tap on a third-party / OS sign-in ("Sign up with Apple") opens an account flow
+  // A tap on a third-party / OS sign-in ("Sign up with Apple") opens an account flow
   // outside the app; a replay would fire it again. Drop it and say so in the header.
   const droppedSignIns: string[] = [];
   actions = actions.filter((a) => {
@@ -349,7 +349,7 @@ export function generateFlow(
     }
   });
 
-  // LOG-13: end with an assertion on the screen the recording reached, so a replay that only finds
+  // End with an assertion on the screen the recording reached, so a replay that only finds
   // its locators does not "pass" without checking the outcome.
   const finalAssertions = [...new Set((opts.finalAssertions ?? []).filter((t) => t && t.trim()))].slice(0, 2);
   for (const text of finalAssertions) steps.push(waitForVisibleGuard(text), { assertVisible: text });

@@ -1,4 +1,4 @@
-// Pre-launch finding (MED): toolHealth recorded every qaError without a failureCode as UNKNOWN and
+// toolHealth used to record every qaError without a failureCode as UNKNOWN and
 // any recorded error flipped the TOOL status to DEGRADED — so deliberate refusals (≈72 uncoded sites)
 // and agent-probing misses (ELEMENT_NOT_FOUND / STALE_REF / AMBIGUOUS_SELECTOR / INVALID_ARGUMENT)
 // made a healthy run read "Tool status: DEGRADED". Also the RN/Expo pm-clear bundle-loss refusal in

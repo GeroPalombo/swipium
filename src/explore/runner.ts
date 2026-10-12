@@ -1,4 +1,4 @@
-// Guided exploration runner (Phase 3.3 Milestones D/E/G). Bounded, safe-by-default screen crawl:
+// Guided exploration runner. Bounded, safe-by-default screen crawl:
 // observe > signature > rank safe candidates > act > health-check > record edge, until a budget is
 // reached. Visual-only screens (poor UI tree) are verified with a screenshot + visual assertion
 // instead of blind coordinate crawling. Honest: unsafe actions are skipped with a note; an auth
@@ -185,7 +185,7 @@ function valueForField(
   return undefined;
 }
 
-/** LOG-22: a human screen name from the UI tree: the top-most short, non-clickable text in the top
+/** A human screen name from the UI tree: the top-most short, non-clickable text in the top
  *  band (toolbar / large title). Undefined when there is none (the caller falls back to the
  *  foreground package). */
 function screenTitleOf(
@@ -295,7 +295,7 @@ export async function runExplore(
     testabilityBlockers: [],
   };
   const exploredPerScreen = new Map<string, Set<string>>(); // nodeId > explored signatureKeys
-  // LOG-22: control (signatureKey) > screen it already led to. The same overflow button or tab on
+  // Control (signatureKey) > screen it already led to. The same overflow button or tab on
   // another screen opens a screen we have seen, so it is not worth an action again.
   const ledTo = new Map<string, string>();
   const skippedNotedScreens = new Set<string>();
@@ -305,7 +305,7 @@ export async function runExplore(
   let consecutiveNoChange = 0;
   let leftAppCount = 0;
   let sameScreenEdges = 0;
-  // GOAL NEW-R4-1: navigation steps (back, relaunch, alert close) are device actions too: they count
+  // Navigation steps (back, relaunch, alert close) are device actions too: they count
   // against maxActions with the taps. A back is checked on the next observe (pendingBack); a screen
   // whose back did not leave it is never backed out of again.
   let navSteps = 0;
@@ -317,7 +317,7 @@ export async function runExplore(
   let alertDismissals = 0;
   let planned = false;
 
-  // GOAL-9: never map the RN splash / "Bundling 47%" screen as the app's first screen. Bounded;
+  // Never map the RN splash / "Bundling 47%" screen as the app's first screen. Bounded;
   // returns after one dump when the screen already looks rendered.
   try {
     await waitForAppRender(driver, { visualOnly: session.mode === 'visual-fallback' || driver.kind === 'simulator', timeoutMs: 20_000 });
@@ -392,11 +392,11 @@ export async function runExplore(
 
     const png: Buffer | undefined = shot;
 
-    // Visual-only (Milestone E): no usable structured elements (canvas/map/webview/empty) means visual
+    // Visual-only: no usable structured elements (canvas/map/webview/empty) means visual
     // node + assertion, no blind coordinate crawl. A low automation-readiness verdict on a screen
     // that DOES expose identified elements is still structured (we can act on it).
     const visual = elements.length === 0 || webviewDominance > 0.5;
-    // IOS NEW-6: auth wording alone (an optional "Sign in to your Apple Account" row on Settings) is not
+    // Auth wording alone (an optional "Sign in to your Apple Account" row on Settings) is not
     // a wall. It is one when there is a secure field, or auth wording on a screen with an input field
     // or few other controls to explore.
     const authText = AUTH_RE.test(elements.map((e) => e.text || e.label || '').join(' '));
@@ -418,7 +418,7 @@ export async function runExplore(
       if (candidates.length === 0) actionLikeSkipped = actionLikeNonInteractive(elements);
     }
 
-    // GOAL NEW-R3-3: one evidence screenshot per screen. A revisit (back navigation, a re-observe while
+    // One evidence screenshot per screen. A revisit (back navigation, a re-observe while
     // a slow app renders) keeps the screen's first shot and costs no screenshot budget; an app error
     // always gets fresh evidence. The capture itself still feeds the visual signature above.
     let screenshotUri: string | undefined;
@@ -431,10 +431,10 @@ export async function runExplore(
       }
     }
 
-    // GOAL-13: another app (Safari from an attribution link, SpringBoard) is in front. Not an app
+    // Another app (Safari from an attribution link, SpringBoard) is in front. Not an app
     // screen: the loop drops it and returns to the app. Permission dialogs, system surfaces and a
     // foreign activity inside the app's own task (Settings search) are not "left the app".
-    // GOAL NEW-R4-2: on iOS only SpringBoard hosts system prompts; another app in front (iOS Settings
+    // On iOS only SpringBoard hosts system prompts; another app in front (iOS Settings
     // reached from an alert) has left the app even when its screen reads like a permission prompt.
     const fgPkg = (foreground ?? '').split('/')[0];
     const systemHost = platform !== 'ios' || /^com\.apple\.springboard$/i.test(fgPkg);
@@ -448,7 +448,7 @@ export async function runExplore(
       );
     const { node, isNew } = graph.upsert({
       signature,
-      // LOG-22: name the screen after its visible title, not the package (every screen used to be
+      // Name the screen after its visible title, not the package (every screen used to be
       // called "com.google.android.deskclock").
       title: visual ? foreground : (screenTitleOf(elements) ?? foreground),
       mode: visual ? 'visual' : 'structured',
@@ -477,7 +477,7 @@ export async function runExplore(
     if (isNew && visual) summary.visualOnlyScreens++;
     if (healthSnap.app === 'error') summary.appErrors++;
 
-    // Visual-only screens get a recorded visual assertion as their oracle (Milestone E).
+    // Visual-only screens get a recorded visual assertion as their oracle.
     if (visual && isNew) {
       note({
         workflow: 'guided_exploration',
@@ -493,7 +493,7 @@ export async function runExplore(
   };
 
   const allowedCandidate = (candidate: RankedCandidate, node: ScreenNode): boolean => {
-    // GOAL NEW-R4-2: a third-party / OS sign-in leaves the app in every safe mode, balanced included.
+    // A third-party / OS sign-in leaves the app in every safe mode, balanced included.
     if (isThirdPartySignIn({ label: candidate.label, id: candidate.locator?.strategy === 'id' ? candidate.locator.value : undefined }))
       return false;
     if (candidate.risk !== 'destructive') return allowedUnder(candidate.risk, safeMode);
@@ -562,7 +562,7 @@ export async function runExplore(
 
       const obs = await observe();
       progress(`exploring: ${summary.screensVisited} screens, ${summary.actionsTried} actions${obs.visual ? ', visual-only' : ''}`);
-      // GOAL NEW-R4-1: judge the last back step by the screen it produced. iOS has no system back key
+      // Judge the last back step by the screen it produced. iOS has no system back key
       // (WdaDriver taps a navigation-bar back button or edge-swipes), so a back can do nothing: that is
       // a no-change action, and that screen is never backed out of again.
       if (pendingBack) {
@@ -589,7 +589,7 @@ export async function runExplore(
           }
         }
       }
-      // GOAL NEW-R4-2: an alert (a system one like "Sign in to your Apple Account", or the app's own)
+      // An alert (a system one like "Sign in to your Apple Account", or the app's own)
       // is closed with its cancel action, never explored: its other buttons ("Settings") leave the app.
       // The alert screen is not an app screen and earns no coverage.
       if (obs.alert) {
@@ -619,8 +619,8 @@ export async function runExplore(
         await settleAndKeep(4000);
         continue;
       }
-      // GOAL-13: the last action left the app. Don't map/credit the foreign screen; go back to the app.
-      // GOAL NEW-R4-2: also when the run STARTS in another app (iOS Settings left in front by an earlier
+      // The last action left the app. Don't map/credit the foreign screen; go back to the app.
+      // Also when the run STARTS in another app (iOS Settings left in front by an earlier
       // run): that screen must not become the graph's root and earn coverage.
       if (obs.leftApp && session.appId) {
         if (obs.isNew) {
@@ -774,7 +774,7 @@ export async function runExplore(
         }
         // Nothing safe+new here. Go back to keep exploring; if we're at the root with nothing, stop.
         if (lastNodeId && obs.node.id !== graph.rootId && depth > 1) {
-          // GOAL NEW-R4-1: back once per screen; the next observe records whether it moved.
+          // Back once per screen; the next observe records whether it moved.
           if (!backFailed.has(obs.node.id)) {
             navSteps++;
             sessions.bump(session, 'actions');
@@ -963,7 +963,7 @@ export async function runExplore(
       }
       summary.actionsTried++;
       sessions.bump(session, 'actions');
-      // Record durable taps so qa_generate target:"suite" can promote the path (§9.3).
+      // Record durable taps so qa_generate target:"suite" can promote the path.
       if (pick.locator && pick.locator.strategy !== 'coordinate') {
         sessions.addRecordedAction(session, {
           at: Date.now(),
@@ -980,7 +980,7 @@ export async function runExplore(
       // ---- observe outcome to classify the transition ----
       const after = await observe();
       if (after.leftApp && session.appId) {
-        // GOAL-13: the tap opened another app (external link, system UI). Record the edge as
+        // The tap opened another app (external link, system UI). Record the edge as
         // blocked, drop the foreign screen, and return to the app.
         if (after.isNew) {
           graph.removeNode(after.node.id);
@@ -1019,7 +1019,7 @@ export async function runExplore(
       const outcome: EdgeOutcome = after.node.id === fromId ? 'same_screen' : 'changed_screen';
       if (outcome === 'changed_screen') {
         ledTo.set(pick.signatureKey, after.node.id);
-        // LOG-22: a popup opened from the overflow button is that menu, not its first row ("Screen saver").
+        // A popup opened from the overflow button is that menu, not its first row ("Screen saver").
         if (after.isNew && /\b(more options|overflow)\b/i.test(`${pick.label ?? ''} ${pick.locator?.value ?? ''}`))
           after.node.title = `${pick.label ?? 'More options'} menu`;
         summary.workflowsFound++;
@@ -1058,16 +1058,16 @@ export async function runExplore(
   return {
     graph,
     summary,
-    // GOAL-12: a SESSION budget stop is not a completed exploration (often nothing was explored at
+    // A SESSION budget stop is not a completed exploration (often nothing was explored at
     // all). Report it as blocked (BUDGET_EXHAUSTED in the job result), never "completed".
-    // GOAL NEW-R4-1: neither is a run cut off by its own time budget (the 6-minute back loop read as
+    // Neither is a run cut off by its own time budget (the 6-minute back loop read as
     // a completed, SHIP-worthy exploration).
     state:
       summary.appErrors > 0 ||
       summary.blockers > 0 ||
       stoppedReason.startsWith('session budget:') ||
       stoppedReason.startsWith('time budget reached') ||
-      // R5 N4: an alert with no way to close it, leaving the app again and again, or no way back is
+      // An alert with no way to close it, leaving the app again and again, or no way back is
       // not a completed exploration when it tested nothing (no action, or no real app screen).
       (/^(an alert \(|exploration left the app|no way back)/.test(stoppedReason) &&
         (summary.actionsTried === 0 || summary.screensVisited - summary.visualOnlyScreens === 0))

@@ -152,6 +152,11 @@ call wait up to 110 s, which fits Claude Code's longer tool timeout, so most run
 marketplace: `/plugin marketplace add GeroPalombo/swipium`, then `/plugin install swipium@swipium`.
 It never pre-approves consent. See [plugin/README.md](../plugin/README.md).
 
+**MCP Registry.** Swipium is published to the [MCP Registry](https://registry.modelcontextprotocol.io)
+as `io.github.GeroPalombo/swipium` (the npm package `swipium`, stdio transport). Clients that install
+from the registry run the same `npx -y swipium` command; `SWIPIUM_PROJECT_ROOT`,
+`SWIPIUM_TEST_EMAIL` and `SWIPIUM_TEST_PASSWORD` are the optional settings it lists.
+
 Claude Code sets `CLAUDE_PROJECT_DIR` for the servers it launches, so Swipium picks up the open
 project without extra config. Claude Code 2.1.285 and later (verified on 2.1.289) connect on MCP 2026-07-28, so consent
 prompts arrive as an `InputRequiredResult` (see [Protocol versions](#protocol-versions)); the user

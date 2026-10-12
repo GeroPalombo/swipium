@@ -90,7 +90,7 @@ export function declineConsent(consentId: string, sessionId: string | undefined)
   return entry.req;
 }
 
-// Pending challenges are bounded (review §4): a consent that is never resumed must not live
+// Pending challenges are bounded: a consent that is never resumed must not live
 // forever, and a client minting challenges in a loop must not grow the map without limit.
 // TTL comfortably exceeds the elicitation timeout below so an in-flight prompt never expires.
 export const CONSENT_TTL_MS = 30 * 60_000;
@@ -482,7 +482,7 @@ export function requireConsent(req: ConsentRequest): CallToolResult {
 
 /** `explain` without its embedded copy of `cmd` (blank lines left behind are collapsed). The text
  *  that introduced the list ("…these privileged steps (…):") points at exactCommand instead of
- *  ending in a dangling colon (SET-19). */
+ *  ending in a dangling colon. */
 function stripCommand(explain: string, cmd: string): string {
   const at = explain.indexOf(cmd);
   if (at < 0) return explain;

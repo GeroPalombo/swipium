@@ -80,7 +80,7 @@ function parseBounds(s: string): [number, number, number, number] {
 }
 
 /** fast-xml-parser decodes only the named XML entities; numeric character references (uiautomator
- *  writes a newline in a multi-line field as `&#10;`) stayed raw in labels (AND R3-6). */
+ *  writes a newline in a multi-line field as `&#10;`) stayed raw in labels. */
 function decodeCharRefs(s: string): string {
   if (!s.includes('&#')) return s;
   return s.replace(/&#(x[0-9a-f]+|\d+);/gi, (m, c: string) => {
@@ -238,7 +238,7 @@ export function toElement(ref: string, n: RawNode): SnapshotElement {
 }
 
 /** opts.screen: the display size, when the caller knows it. The dump root is used otherwise, which is
- * wrong when a dialog window is the root (AND-18). */
+ * wrong when a dialog window is the root. */
 export function parseSnapshot(xml: string, opts: { interactiveOnly?: boolean; screen?: [number, number] } = {}): ParsedSnapshot {
   const interactiveOnly = opts.interactiveOnly ?? true;
   const parser = new XMLParser({
@@ -352,7 +352,7 @@ function nearBounds(a: [number, number, number, number], b: [number, number, num
 }
 
 /**
- * A surfaced node that would only repeat an element already listed (IOS-11: an iOS table row came
+ * A surfaced node that would only repeat an element already listed (an iOS table row came
  * out as 4-5 elements and the cap hid real targets). Dropped from the element list only; allNodes
  * (overlay / obstruction analysis) keeps it.
  *  - an exact duplicate of a listed node, ancestor or not (same role, text, desc, id and bounds; iOS
@@ -365,7 +365,7 @@ function nearBounds(a: [number, number, number, number], b: [number, number, num
 function redundantNode(n: RawNode, all: RawNode[], kept: RawNode[], screen: [number, number]): boolean {
   if (isTextFieldClass(n.cls)) return false;
   // Nested unnamed scrollables with the same bounds (iOS web views stack 4 full-screen ones) are
-  // one scroll area: keep the outer one (IOS-11 R3).
+  // one scroll area: keep the outer one.
   if (n.scrollable)
     return (
       !n.text &&

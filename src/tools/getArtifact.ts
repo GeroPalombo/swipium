@@ -138,7 +138,7 @@ export function registerGetArtifact(server: McpServer, sessions: SessionStore): 
     },
     async ({ uri, mode }): Promise<CallToolResult> => {
       const found = sessions.findArtifact(uri);
-      // GOAL-29: the project app-map URIs qa_test_this hands out (appMapUri) are not session
+      // The project app-map URIs qa_test_this hands out (appMapUri) are not session
       // artifacts; read them the same way resources/read does.
       const mapUri = !found ? /^swipium:\/\/project\/([^/]+)\/app-map(?:\/([^/]+)\/(.+))?$/.exec(uri) : null;
       if (mapUri) {
@@ -159,7 +159,7 @@ export function registerGetArtifact(server: McpServer, sessions: SessionStore): 
             nextSteps: ['Build the map with qa_app_map_build, or list sections with qa_app_map_read.'],
           });
         const bytes = Buffer.byteLength(res.text, 'utf8');
-        // TOOL NEW-6: metadata mode describes the map instead of returning it (as for session artifacts).
+        // Metadata mode describes the map instead of returning it (as for session artifacts).
         if (mode === 'metadata') {
           const meta = {
             uri,

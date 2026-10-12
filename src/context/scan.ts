@@ -161,7 +161,7 @@ export async function scanProject(root: string, opts: { device?: string } = {}):
 
   // app id: source config first (authoritative for the project), else the prebuilt APK.
   let { appId, source: appIdSource } = appIdFromSource(root, ctx.framework);
-  // Prefer an artifact near the root: that is the one a prebuilt-only plan installs (TOOL NEW-4).
+  // Prefer an artifact near the root: that is the one a prebuilt-only plan installs.
   const idApk = prebuiltArtifactsNearRoot(root, ctx.artifacts.apks)[0] ?? ctx.artifacts.apks[0];
   const idApp = prebuiltArtifactsNearRoot(root, ctx.artifacts.appBundles)[0] ?? ctx.artifacts.appBundles[0];
   if (!appId && idApk) {
@@ -198,9 +198,9 @@ export async function scanProject(root: string, opts: { device?: string } = {}):
   // missing items: detect blockers, but a known-installed app removes the "no APK" blocker.
   let missing = ctx.blockers.filter((b) => !(installed === true && /no prebuilt apk/i.test(b)));
 
-  // E2E-5: a directory holding only a prebuilt simulator .app / .apk (no source project) is testable
+  // A directory holding only a prebuilt simulator .app / .apk (no source project) is testable
   // as-is once its app id resolves; "could not identify a mobile project" is then not a blocker.
-  // Only for an artifact near the root, never one found deep under a broad dir (TOOL NEW-4).
+  // Only for an artifact near the root, never one found deep under a broad dir.
   const nearPrebuilts = prebuiltArtifactsNearRoot(root, [...ctx.artifacts.appBundles, ...ctx.artifacts.apks]);
   const prebuiltOnly = ctx.framework === 'unknown' && !!appId && nearPrebuilts.length > 0;
   if (prebuiltOnly) {
@@ -212,7 +212,7 @@ export async function scanProject(root: string, opts: { device?: string } = {}):
     );
   }
 
-  // SET-14: "no prebuilt artifact" is not a hard blocker when Swipium can build from source (the
+  // "No prebuilt artifact" is not a hard blocker when Swipium can build from source (the
   // same pure buildPlan() check qa_test_this's plan uses), so scan agrees with qa_test_this.
   let buildFromSource: ProjectScan['buildFromSource'] = null;
   if (missing.some((b) => NO_PREBUILT.test(b))) {

@@ -1,4 +1,4 @@
-// qa_prepare_target install consent (MED #13): every install is consent-gated (like iOS) — an
+// qa_prepare_target install consent: every install is consent-gated (like iOS), an
 // in-root APK included — and APK containment is decided on normalized real paths, so
 // `<root>/sub/../../outside/x.apk` is an EXTERNAL install (higher risk + hash), not "inside root".
 

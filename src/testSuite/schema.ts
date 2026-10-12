@@ -196,7 +196,7 @@ export function functionalitySlug(functionality: string): string {
   );
 }
 
-/** Longest slug used as a directory name; filesystems cap a path component at 255 bytes (TOOL NEW-1). */
+/** Longest slug used as a directory name; filesystems cap a path component at 255 bytes. */
 export const MAX_DIR_SLUG = 80;
 
 /** Directory name for a functionality's YAML mirror: the slug, capped with a short stable hash when

@@ -1,11 +1,11 @@
-// POM > Flow V2 compiler (hardening P0.4). Generated POM suites reference page-object elements by
+// POM > Flow V2 compiler. Generated POM suites reference page-object elements by
 // name; this resolves those refs against the page objects and emits Flow V2 YAML that parseFlow()
 // accepts and qa_flow_run can execute. Without this, a generated suite is only
 // documentation. With it, a recorded run becomes a runnable, CI-usable flow.
 //
 // Compilation reads YAML files only (no device); the output is validated by the caller via
 // parseFlow(). writeCompiledFlow is the one writer, shared by the CLI and the MCP tools, and it
-// never clobbers a hand-edited .swipium/flows file (SET-15).
+// never clobbers a hand-edited .swipium/flows file.
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -186,7 +186,7 @@ export interface WrittenCompiledFlow {
   /** .swipium/compiled/<slug>.flow.yaml: Swipium's own copy, always refreshed. */
   compiledPath: string;
   /** The flows/ file was hand-edited (differs from the last compiled copy), so it was kept and
-   *  the new output went to `<slug>.yaml.new` instead (SET-15). Pass force to overwrite. */
+   *  the new output went to `<slug>.yaml.new` instead. Pass force to overwrite. */
   kept?: boolean;
   newPath?: string;
   /** A previous compiled flow with different content was replaced. */
@@ -198,7 +198,7 @@ export function flowSlug(name: string): string {
   return capSlug(name.replace(/[^\w.-]+/g, '-'));
 }
 
-/** Write one compiled flow without clobbering hand edits (SET-15): the flows/ copy is overwritten
+/** Write one compiled flow without clobbering hand edits: the flows/ copy is overwritten
  *  only when it is missing, unchanged since the last compile, or `force` is set. */
 export function writeCompiledFlow(root: string, slug: string, yaml: string, opts: { force?: boolean } = {}): WrittenCompiledFlow {
   const flowsDir = join(root, '.swipium', 'flows');

@@ -6,7 +6,7 @@
 // Structured backends: re-dump until the loading markers are gone and the tree has content (an
 // interactive control, or content on two dumps in a row). A rendered screen that keeps changing
 // (an animated map / globe) is accepted: only a loading marker or a blank tree keeps the wait
-// going, and a timeout on either is NOT ready (GOAL-9). The app's own JS loading screen (a splash
+// going, and a timeout on either is NOT ready. The app's own JS loading screen (a splash
 // container id, a "Loading…" caption) is a loading marker too. Visual-only backends (no tree): wait until two consecutive screenshots
 // are byte-identical (the progress banner changes while bundling). Always bounded.
 
@@ -19,13 +19,13 @@ import { isAbortError } from '../lib/abortScope.js';
 export const RN_LOADING_RE =
   /\b(?:bundling|downloading)\s+\d{1,3}(?:\.\d+)?\s*%|\bbundling\s*(?:…|\.\.\.)|loading from (?:metro|localhost|\d{1,3}(?:\.\d{1,3}){3})|connect to metro to develop|downloading javascript bundle|building javascript bundle|new update available, downloading/i;
 
-/** The app's own JS loading screen (GOAL-9): a short caption that is only a loading message
+/** The app's own JS loading screen: a short caption that is only a loading message
  *  ("Loading…", "Downloading...", "Looking for your plane in the sky…"), or a splash container id
  *  (`nav.splash`, `splash_screen`). Only judged on a screen with almost no controls, so a feed's
  *  "Loading more…" row or a leftover splash id under the real UI doesn't hold the wait. */
 const APP_LOADING_TEXT_RE =
   /^(?:loading|downloading|refreshing|please wait|looking for|fetching|preparing|getting ready|starting up)\b.{0,60}(?:…|\.\.\.)$/i;
-/** CR P11: these openings are also real, waiting-for-something screens ("Looking for nearby
+/** These openings are also real, waiting-for-something screens ("Looking for nearby
  *  devices…" on a pairing screen, "Fetching your rides…"). Such a caption is a loading screen only
  *  when it is ALL the screen shows: no control and no other text. */
 const WEAK_LOADING_TEXT_RE = /^(?:looking for|fetching|preparing|getting ready|starting up)\b/i;
@@ -98,7 +98,7 @@ export async function waitForAppRender(
     pollMs?: number;
     visualOnly?: boolean;
     /** Asked once when a blank tree reaches its short bound: true (Metro is serving, so a cold
-     *  bundle may still be building) keeps waiting up to the full timeout (GOAL-9). */
+     *  bundle may still be building) keeps waiting up to the full timeout. */
     metroProbe?: () => Promise<boolean>;
   } = {},
 ): Promise<RenderWaitResult> {

@@ -2,7 +2,7 @@
 // can use without the agent transcript: an issue-ready Markdown doc and a CI-ready JUnit XML.
 // (a third-party-format exporter is deferred and out of scope here.)
 //
-// Callers pass the report through redactReportData() FIRST (B9): every string field (steps,
+// Callers pass the report through redactReportData() FIRST: every string field (steps,
 // nextStep, missingPrecondition, workflow names, …) is scrubbed with the session redactor before
 // any format escapes it, so XML/JSON/Markdown escaping can never hide a secret from redaction.
 
@@ -33,7 +33,7 @@ export interface ReportNote {
   artifactUris?: string[];
   /** 'qa_note' = written by the agent, not by Swipium. */
   source?: string;
-  /** E2E NEW-18: an agent's pass claim nothing on the device backs (services/report.ts). Rendered as
+  /** An agent's pass claim nothing on the device backs (services/report.ts). Rendered as
    *  skipped / "pass (unverified)", never as a passing test. */
   unverified?: boolean;
 }
@@ -162,7 +162,7 @@ export interface ReportData {
 }
 
 /**
- * Deep-redact a report (B9): returns a copy where EVERY string value at any depth (and every string
+ * Deep-redact a report: returns a copy where EVERY string value at any depth (and every string
  * object key) has been passed through the session redactor. Run it once on the assembled report,
  * before persisting it or rendering any export format. Escaping (`&` > `&amp;`, `"` > `\"`) would
  * otherwise turn a secret like `P@ss&w0rd"1` into text the redactor no longer matches.
@@ -208,7 +208,7 @@ export function toPlaywrightJson(r: ReportData): string {
   const evidenceTaxonomy = r.evidenceTaxonomy ?? evidenceTaxonomyForNotes(r.testOutcomes);
   const evidenceByWorkflow = new Map(evidenceTaxonomy.assessments.map((a) => [a.workflow, a]));
   const specs = r.testOutcomes.map((n) => {
-    const status = n.unverified ? 'skipped' : playwrightStatus(n.outcome); // E2E NEW-18: a claim is not a pass
+    const status = n.unverified ? 'skipped' : playwrightStatus(n.outcome); // a claim is not a pass
     const message =
       (n.unverified ? 'unverified manual claim: ' : '') +
       ([n.category, n.reason, n.missingPrecondition, n.recommendedSetup].filter(Boolean).join(': ') || n.outcome);
@@ -341,14 +341,14 @@ function outcomeLabel(n: Pick<ReportNote, 'outcome' | 'unverified'>): string {
     : `${OUTCOME_MARK[n.outcome] ?? ''} ${n.outcome}`;
 }
 
-/** E2E NEW-15: WebDriverAgent returning no UI source is a tool / environment failure
+/** WebDriverAgent returning no UI source is a tool / environment failure
  *  (WDA_UNREACHABLE), not an app or native defect: SARIF note, JUnit skipped, labelled "tool". It
  *  still fails the release gate (reportPolicyVerdicts), so the run never passes on it. */
 export function isToolReportFinding(f: Pick<ReportFinding, 'kind' | 'failureCode'>): boolean {
   return f.kind === 'wda_unreachable' || f.failureCode === 'WDA_UNREACHABLE';
 }
 
-/** Outcome tally with unverified pass claims counted apart (E2E NEW-18: no "pass=1" for a claim). */
+/** Outcome tally with unverified pass claims counted apart (no "pass=1" for a claim). */
 function displayOutcomeTally(r: Pick<ReportData, 'outcomeTally' | 'testOutcomes'>): Array<[string, number]> {
   const unverified = r.testOutcomes.filter((n) => n.outcome === 'pass' && n.unverified).length;
   const out: Array<[string, number]> = Object.entries(r.outcomeTally).map(([k, v]) => [k, k === 'pass' ? v - unverified : v]);
@@ -389,7 +389,7 @@ function likelyReportCategory(problem: ReturnType<typeof firstReportProblem>, r:
 
 function evidenceSummary(r: ReportData, problem: ReturnType<typeof firstReportProblem>): string {
   const kinds = new Set<string>();
-  // E2E NEW-16: the report's own exports (report JSON/Markdown, manifest) are never evidence.
+  // The report's own exports (report JSON/Markdown, manifest) are never evidence.
   const artifacts = r.artifacts.filter((a) => !REPORT_EXPORT_KINDS.has(a.kind));
   const uris = [...(problem?.evidence ?? []), ...artifacts.map((a) => a.uri)];
   for (const a of artifacts) {
@@ -573,7 +573,7 @@ export function toMarkdown(r: ReportData): string {
       ]
         .filter(Boolean)
         .join('; ');
-      // E2E NEW-12: a "|" or newline in a workflow name / reason must not break the table row.
+      // A "|" or newline in a workflow name / reason must not break the table row.
       L.push(`| ${mdCell(n.workflow)} | ${outcomeLabel(n)} | ${detail ? mdCell(detail) : '-'} |`);
     }
 
@@ -690,7 +690,7 @@ export function toMarkdown(r: ReportData): string {
   return neutralizeMarkdownHtml(stripControls(L.join('\n')));
 }
 
-/** E2E NEW-12: run text in the Markdown export (note reasons, app text, logs) is not trusted HTML.
+/** Run text in the Markdown export (note reasons, app text, logs) is not trusted HTML.
  *  Outside fenced code blocks "<" becomes "&lt;", so `<img onerror>` / `<script>` render as text;
  *  the export's own Markdown (blockquotes, tables) uses no raw HTML, so nothing else changes. */
 function neutralizeMarkdownHtml(md: string): string {
@@ -747,7 +747,7 @@ export function reportPolicyVerdicts(r: ReportData): FlowVerdict[] {
   return verdicts;
 }
 
-/** A run that never reached the app, as a synthetic failed workflow (TOOL-5 / AND-4): the gate and
+/** A run that never reached the app, as a synthetic failed workflow: the gate and
  *  JUnit count it, so CI can't go green on a run that tested nothing. */
 function notReachedOutcomes(r: ReportData): ReportNote[] {
   const nt = r.notTested;
@@ -796,11 +796,11 @@ export function toJUnit(r: ReportData, policy?: PolicyDecision): string {
   const cases = [...r.testOutcomes, ...notReachedOutcomes(r)];
   const lenient = nonBlockingFailures(policy);
   const caseVerdict = (n: ReportNote): 'failure' | 'skipped' | 'pass' => {
-    if (n.outcome === 'pass') return n.unverified ? 'skipped' : 'pass'; // E2E NEW-18: a claim is not a passing test
+    if (n.outcome === 'pass') return n.unverified ? 'skipped' : 'pass'; // a claim is not a passing test
     if (n.outcome !== 'fail') return 'skipped';
     return lenient.has(workflowPolicyKey(n)) ? 'skipped' : 'failure';
   };
-  // E2E NEW-15: a tool / environment finding is not an app failure (the gate still fails on it).
+  // A tool / environment finding is not an app failure (the gate still fails on it).
   const findingVerdict = (f: ReportFinding): 'failure' | 'skipped' | 'pass' =>
     f.severity !== 'high' ? 'pass' : lenient.has(findingPolicyKey(f)) || isToolReportFinding(f) ? 'skipped' : 'failure';
   const failures = cases.filter((n) => caseVerdict(n) === 'failure').length;
@@ -839,7 +839,7 @@ export function toJUnit(r: ReportData, policy?: PolicyDecision): string {
     junitTestcase(lines, n.workflow, suiteName, body, n.artifactUris ?? []);
   }
   lines.push('  </testsuite>');
-  // Always two suites (docs/ci-reports.md), the findings suite empty when nothing was found (E2E-11).
+  // Always two suites (docs/ci-reports.md), the findings suite empty when nothing was found.
   const findingsSuite = `${suiteName}.findings`;
   lines.push(
     `  <testsuite name="${escapeXml(findingsSuite)}" tests="${r.findings.length}" failures="${findingFailures}" skipped="${findingSkipped}" time="0">`,
@@ -947,7 +947,7 @@ export function toSarif(r: ReportData, policy?: PolicyDecision, options: SarifOp
     const file = (f.screen && sources.byScreen?.[f.screen.toLowerCase()]) || sources.defaultUri;
     return {
       ruleId,
-      // A tool / environment failure is not a defect in the code (E2E NEW-15): a note, like mcp_limitation.
+      // A tool / environment failure is not a defect in the code: a note, like mcp_limitation.
       level: isToolReportFinding(f) ? 'note' : sarifLevel(f.severity),
       message: { text: `${f.detail}${f.evidence ? `: "${f.evidence}"` : ''}${f.nextStep ? ` Next: ${f.nextStep}` : ''}` },
       locations: [anchor(file)],
@@ -969,7 +969,7 @@ export function toSarif(r: ReportData, policy?: PolicyDecision, options: SarifOp
     const file = sources.byWorkflow?.[n.workflow.toLowerCase()] ?? sources.defaultUri;
     results.push({
       ruleId,
-      // A Swipium/tool limitation is not an app defect: a note, not a code-scanning error (E2E-13).
+      // A Swipium/tool limitation is not an app defect: a note, not a code-scanning error.
       level: n.category === 'mcp_limitation' ? 'note' : 'error',
       message: { text: `${n.workflow}: ${[n.reason, n.missingPrecondition].filter(Boolean).join('; ') || 'workflow failed'}` },
       locations: [anchor(file)],
@@ -1042,7 +1042,7 @@ export function mdText(s: string): string {
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/([\\`*_[\]#|~])/g, '\\$1')
-      // E2E-12: no live @mentions / team pings and no autolinks from run text. A zero-width space
+      // No live @mentions / team pings and no autolinks from run text. A zero-width space
       // after "@" and inside "://" / "www." keeps the text readable but inert on GitHub.
       .replace(/@/g, '@\u200b')
       .replace(/:\/\//g, ':\u200b//')
@@ -1051,7 +1051,7 @@ export function mdText(s: string): string {
 }
 
 /** Drop ANSI escape sequences and other C0 controls (except TAB/LF/CR) from run text: GitHub renders
- *  a raw ESC as a replacement glyph ("[31m" noise), E2E NEW-6. */
+ *  a raw ESC as a replacement glyph ("[31m" noise). */
 export function stripControls(s: string): string {
   // eslint-disable-next-line no-control-regex
   return s.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
@@ -1074,7 +1074,7 @@ export function toGithubSummary(r: ReportData, policy?: PolicyDecision): string 
   const L: string[] = [];
   L.push(`## Swipium QA: ${RISK_BADGE[r.executiveSummary.risk] ?? mdText(r.executiveSummary.risk.toUpperCase())}`);
   L.push('');
-  // E2E NEW-6: say what is missing instead of printing placeholder words as if they were values.
+  // Say what is missing instead of printing placeholder words as if they were values.
   L.push(
     `App ${r.appId ? mdCode(r.appId) : '(not resolved)'} ${r.device ? `on ${mdCode(r.device)}` : '(no device bound)'}, session ${mdCode(r.sessionId)}.`,
   );
@@ -1082,7 +1082,7 @@ export function toGithubSummary(r: ReportData, policy?: PolicyDecision): string 
   if (policy) L.push(`**Release gate (policy):** ${policy.block ? '❌ BLOCK' : '✅ PASS'}: ${mdText(policy.reason)}`, '');
   L.push(`**Next action:** ${mdText(r.executiveSummary.nextAction)}`);
   L.push('');
-  // Tool / environment findings (WDA_UNREACHABLE) are counted apart from app findings (E2E NEW-15).
+  // Tool / environment findings (WDA_UNREACHABLE) are counted apart from app findings.
   const toolCount = r.findings.filter(isToolReportFinding).length;
   const sevCount = (sev: string) => r.findings.filter((f) => f.severity === sev && !isToolReportFinding(f)).length;
   const outcomes = displayOutcomeTally(r)
@@ -1096,7 +1096,7 @@ export function toGithubSummary(r: ReportData, policy?: PolicyDecision): string 
     const bySeverity = { high: 0, medium: 1, low: 2 } as Record<string, number>;
     const top = [...r.findings].sort((a, b) => (bySeverity[a.severity] ?? 3) - (bySeverity[b.severity] ?? 3)).slice(0, 10);
     for (const f of top) {
-      // swipium:// URIs are not browsable on GitHub: show them as artifact paths, not dead links (E2E-12).
+      // swipium:// URIs are not browsable on GitHub: show them as artifact paths, not dead links.
       const evidence = f.screenshotUri ? tableCell(mdCode(f.screenshotUri)) : '-';
       const times = f.count && f.count > 1 ? ` (×${f.count})` : '';
       L.push(
@@ -1113,7 +1113,7 @@ export function toGithubSummary(r: ReportData, policy?: PolicyDecision): string 
       L.push(`| ${summaryCell(n.workflow)} | ${outcomeLabel(n)} | ${summaryCell(reason)} | ${evidence} |`);
     }
   }
-  // Swipium's own report exports are not evidence of the run (E2E NEW-6): screenshots and recordings only.
+  // Swipium's own report exports are not evidence of the run: screenshots and recordings only.
   const evidenceArtifacts = r.artifacts.filter((a) => ['screenshot', 'recording'].includes(a.kind)).slice(0, 10);
   if (evidenceArtifacts.length) {
     L.push(

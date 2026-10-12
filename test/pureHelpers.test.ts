@@ -1,11 +1,11 @@
-// Round-3 pure / hermetic helpers that had no coverage:
+// Pure / hermetic helpers that had no coverage:
 //  - typed-text read-back (src/core/readBack.ts): Compose label suffix, hint, masks, truncation;
 //  - DirectDriver long-text checks (fieldEndsWithTyped / fieldIsCutTyped);
 //  - qa_flow_repair: opposite actions are never proposed, "Book now" is never auto-applied as "OK";
 //  - test-suite case ids are one safe path component (no traversal), unsafe ids are re-allocated;
 //  - projectRoot: one normalized spelling, broad system / user folders refused before any walk;
-//  - init codex TOML sanity check (SET-9 cases);
-//  - scan keeps a user-set appId but refreshes one an earlier scan wrote (SET NEW-R3-1).
+//  - init codex TOML sanity check;
+//  - scan keeps a user-set appId but refreshes one an earlier scan wrote.
 
 import { afterAll, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -41,7 +41,7 @@ const field = (text: string, extra: Partial<{ cls: string; desc: string; hint: s
   attrs: extra.hint ? { hint: extra.hint } : {},
 });
 
-describe('read-back helpers (AND R3-1, AND-14)', () => {
+describe('read-back helpers', () => {
   it('textFieldReadings: hint-only is empty, ", <hint>" and a Compose ", <label>" suffix are dropped', () => {
     expect(textFieldReadings(field('Email', { hint: 'Email' }))).toEqual(['']);
     expect(textFieldReadings(field('Dora, First name', { hint: 'First name' }))[0]).toBe('Dora');
@@ -80,7 +80,7 @@ describe('read-back helpers (AND R3-1, AND-14)', () => {
   });
 });
 
-describe('qa_flow_repair antonym guard and medium-confidence containment (CR, LOG-17)', () => {
+describe('qa_flow_repair antonym guard and medium-confidence containment', () => {
   const project = (flowYaml: string) => {
     const root = tmp('swipium-repair-r3-');
     mkdirSync(join(root, '.swipium', 'flows'), { recursive: true });
@@ -127,7 +127,7 @@ describe('qa_flow_repair antonym guard and medium-confidence containment (CR, LO
   it('unrelated controls are not proposed; containment with extra words is a low proposal, never applied', () => {
     expect(repair('New message', ['Add contact']).s.replacementSelector).toBeUndefined();
     expect(repair('Battery settings', ['Search Settings']).s.replacementSelector).toBeUndefined();
-    // Round 4 (CR P4): "Submit order" adds a word, so it may be a different action: low, not applied.
+    // "Submit order" adds a word, so it may be a different action: low, not applied.
     const { r, s: sub, file } = repair('Submit', ['Submit order', 'Cancel'], true);
     expect(sub).toMatchObject({ replacementSelector: 'Submit order', confidence: 'low' });
     expect(r.applied).not.toBe(true);
@@ -135,7 +135,7 @@ describe('qa_flow_repair antonym guard and medium-confidence containment (CR, LO
   });
 });
 
-describe('test-suite case ids are one safe path component (CR qa_suite_update)', () => {
+describe('test-suite case ids are one safe path component (qa_suite_update)', () => {
   const tc = (id: string): CanonicalTestCase => ({
     schemaVersion: 1,
     id,
@@ -191,7 +191,7 @@ describe('test-suite case ids are one safe path component (CR qa_suite_update)',
   });
 });
 
-describe('projectRoot normalization and broad roots (TOOL NEW-R3-1 / NEW-R3-4)', () => {
+describe('projectRoot normalization and broad roots', () => {
   const server = { server: { getClientCapabilities: () => ({}), listRoots: async () => ({ roots: [] }) } } as unknown as McpServer;
   const opts = { env: {}, cwd: '/', home: '/nonexistent-home' };
 
@@ -216,8 +216,8 @@ describe('projectRoot normalization and broad roots (TOOL NEW-R3-1 / NEW-R3-4)',
   });
 });
 
-describe('init codex TOML sanity check (SET-9)', () => {
-  it('refuses the four round-3 cases', () => {
+describe('init codex TOML sanity check', () => {
+  it('refuses the four malformed cases', () => {
     expect(tomlSanityError('a = nope\n')).not.toBeNull();
     expect(tomlSanityError('a = "\\q"\n')).not.toBeNull();
     expect(tomlSanityError('a.b = 1\n[a]\nb = 2\n')).not.toBeNull();
@@ -234,7 +234,7 @@ describe('init codex TOML sanity check (SET-9)', () => {
   });
 });
 
-describe('scan appId refresh (SET NEW-R3-1)', () => {
+describe('scan appId refresh', () => {
   const scan = { appId: 'com.example.new', appIdSource: 'app.json' } as unknown as ProjectScan;
 
   it('refreshes an appId an earlier scan wrote, keeps one the user set', () => {

@@ -69,7 +69,7 @@ export interface PrepareIosResult {
   wda?: { reachable: boolean; url?: string };
   wdaSessionId?: string;
   requiresAttach?: boolean;
-  /** IOS NEW-A: WDA answered /status, then hung creating the session (POST /session timed out and
+  /** WDA answered /status, then hung creating the session (POST /session timed out and
    *  /status stopped answering). What hung, for a WDA_UNREACHABLE verdict; mode is visual-fallback. */
   wdaHung?: string;
   resultText?: string;
@@ -118,7 +118,7 @@ export async function prepareIos(
   const pin = operatorDevicePin();
   const explicit = args.simulator ?? (isSimulatorUdid(session.device) ? session.device : undefined);
   const wanted = explicit ?? pin;
-  // E2E NEW-5: a pin whose exact name several simulators share is ambiguous, never "the first one".
+  // A pin whose exact name several simulators share is ambiguous, never "the first one".
   const pinnedSims = !explicit && pin ? simulatorsForPin(pin, sims) : [];
   if (pinnedSims.length > 1)
     return { ok: false, failureCode: 'MULTIPLE_DEVICES', error: pinAmbiguousMessage(pin!, pinnedSims), nextSteps: [pinFixStep()] };
@@ -159,7 +159,7 @@ export async function prepareIos(
   // A simulator this process is still booting lists as Booted before bootstatus says it is done:
   // join that boot instead of installing onto a half-booted device.
   let stillBooting: sim.BoundedBootResult | undefined;
-  // E2E-9: only a boot Swipium actually started is an environment change; an already-booted
+  // Only a boot Swipium actually started is an environment change; an already-booted
   // simulator is reused, and the report must not claim Swipium booted it.
   const bootedHere = pick.state !== 'Booted' || sim.bootInFlight(pick.udid);
   if (bootedHere) {
@@ -227,7 +227,7 @@ export async function prepareIos(
   if (args.app) {
     const appPath = isAbsolute(args.app) ? args.app : join(session.root, args.app);
     if (!existsSync(appPath)) return { ok: false, failureCode: 'IOS_SIMULATOR_APP_MISSING', error: `.app not found: ${appPath}` };
-    // Metro gate BEFORE the install: a blocked run must not have changed the simulator (IOS NEW-4).
+    // Metro gate BEFORE the install: a blocked run must not have changed the simulator.
     const gate = gateMetro ? await metroGate(appPath, session.root) : undefined;
     if (gate) return { ok: false, ...gate, udid: pick.udid, name: pick.name, bundleId, installed: false };
     // A device-SDK (iphoneos) .app cannot run on the simulator. Catch it before the opaque
@@ -339,8 +339,8 @@ export async function prepareIos(
       status: 'executed',
     });
   } else if (bundleId && args.bundleId && session.appId !== bundleId) {
-    // launch:false with an explicit bundleId still names the app under test (GOAL NEW-R3-4): without
-    // it the app shows up as a foreign_app overlay and press home can't tell it left (IOS-9).
+    // launch:false with an explicit bundleId still names the app under test: without
+    // it the app shows up as a foreign_app overlay and press home can't tell it left.
     session.appId = bundleId;
     sessions.persist(session);
   }
@@ -362,8 +362,8 @@ export async function prepareIos(
     );
   let wdaUrl = ownWda ? String(ownWda.target!.webDriverAgentUrl) : configuredWdaUrl;
   // A new session starts in mode 'structured' by default (and session.driver was just replaced
-  // above), so only this session's own WDA for the simulator counts (IOS-3: "dropped from
-  // structured" on a brand-new session).
+  // above), so only this session's own WDA for the simulator counts (otherwise a brand-new
+  // session reads as "dropped from structured").
   const wasStructured = !!ownWda;
   const attach: WdaMode = args.attachWda ?? 'auto';
   let wdaHint = '';
@@ -372,7 +372,7 @@ export async function prepareIos(
   let wdaSessionId: string | undefined;
   let requiresAttach = false;
   let wdaHung: string | undefined;
-  // IOS NEW-A: WDA hung (session create timed out, or this simulator's own WDA listens but does not
+  // WDA hung (session create timed out, or this simulator's own WDA listens but does not
   // answer /status): never a visual-only launch pass. 'required' fails; else blocked + ledger entry.
   const markHung = (hung: string): PrepareIosResult | undefined => {
     if (attach === 'required')
@@ -421,14 +421,14 @@ export async function prepareIos(
     // WDA defaults to one port for every simulator: a WDA there may drive ANOTHER simulator.
     // Never create a session on it (that launches the app there and tears down its owner's
     // session); look for this simulator's own WDA on its per-simulator port instead. That lookup
-    // also runs when the WDA there is down, too busy to answer in time, or unidentifiable (IOS-3:
+    // also runs when the WDA there is down, too busy to answer in time, or unidentifiable (without it,
     // a new session never found its own WDA on its port when the foreign one missed the probe).
     let foreign: WdaOwnership | undefined;
     const owner = status.reachable ? await wdaDeviceOwnership(wdaUrl, status, pick.udid, async () => pick.runtime) : undefined;
     // unverified (lsof / ps timed out on a loaded host): may be another simulator's WDA on the same
     // runtime, so it is not attached unless it is this session's own WDA for the simulator.
     if (owner?.owner === 'other' || (owner?.owner === 'unverified' && !ownWda)) foreign = owner;
-    // IOS NEW-A: this simulator's own WDA that listens but did not answer /status (already hung
+    // This simulator's own WDA that listens but did not answer /status (already hung
     // before prepare): the same hang detection qa_test_this's plan uses.
     const unresponsive: string[] = [];
     if (!status.reachable && (await ownButUnresponsive(wdaUrl, status, pick.udid).catch(() => false)))
@@ -480,7 +480,7 @@ export async function prepareIos(
           capabilities: wdaCfg?.capabilities,
           settings: wdaCfg?.settings,
         };
-        // IOS NEW-A: capped (WDA's default is 60 s); a timeout is checked against /status below.
+        // Capped (WDA's default is 60 s); a timeout is checked against /status below.
         const created = await withWdaCall({ timeoutMs: WDA_SESSION_CREATE_MS }, () => createWdaSession(wdaUrl, sessionOptions));
         const mismatched = wdaSessionUdidMismatch(created.capabilities, pick.udid);
         if (mismatched) throw new Error(`WDA reported device ${mismatched}, but this session targets ${pick.udid}.`);
@@ -540,7 +540,7 @@ export async function prepareIos(
         launched,
       };
     } else {
-      // IOS-6: a session that was structured (e.g. its managed WDA died with a simulator shutdown)
+      // A session that was structured (e.g. its managed WDA died with a simulator shutdown)
       // must not drop to visual-only silently.
       wdaHint = wasStructured
         ? ` (WebDriverAgent is no longer reachable at ${wdaUrl}, so this session dropped from structured to visual-only: run qa_wda { action:"setup" }, then qa_wda attach)`

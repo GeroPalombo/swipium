@@ -1,8 +1,8 @@
-// F2: cancellation (notifications/cancelled > the call's scoped signal) must stop every polling
+// Cancellation (notifications/cancelled > the call's scoped signal) must stop every polling
 // loop promptly instead of polling until its deadline: qa_wait, qa_job_status long-poll, the
 // qa_act wait path, flow waitForVisible, settle and the Android boot wait. Cancelled work comes
 // back as CANCELLED (or CancelledError in helpers), never as a failure.
-// F6: qa_wait timeoutMs is bounded: integer >= 0, default 45000, larger values clamped to 50000 (with a note).
+// qa_wait timeoutMs is bounded: integer >= 0, default 45000, larger values clamped to 50000 (with a note).
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -329,7 +329,7 @@ describe('qa_test_this waitForCompletion window', () => {
     const big = structured(await h.call('qa_test_this', { mode: 'execute', waitForCompletion: true, timeoutMs: 120_000 }));
     expect(big.failureCode).not.toBe('INVALID_ARGUMENT');
     expect(String(big.notes)).toContain('timeoutMs 120000 clamped to 50000');
-    // plan mode (or no waitForCompletion) ignores timeoutMs, so it gets no clamp note (TOOL-19)
+    // plan mode (or no waitForCompletion) ignores timeoutMs, so it gets no clamp note
     const plan = structured(await h.call('qa_test_this', { mode: 'plan', timeoutMs: 120_000 }));
     expect(plan.failureCode).not.toBe('INVALID_ARGUMENT');
     expect(String(plan.notes ?? '')).not.toContain('clamped');

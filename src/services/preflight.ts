@@ -1,4 +1,4 @@
-// Execution preflight + consent (Phase 3.2 Milestone A): compute the privileged steps a high-level
+// Execution preflight + consent: compute the privileged steps a high-level
 // run will perform, so qa_test_this execute requests the SAME consent the lower-level tools would
 // (boot, external-APK install, iOS .app install, build-from-source). The high-level tool must never
 // be less safe than the tool it orchestrates.
@@ -84,7 +84,7 @@ export function buildTestThisPreflight(i: TestThisPreflightInput): ExecutionPref
           : `xcrun simctl boot ${i.bootTarget}`,
       }
     : undefined;
-  // AND-3: an Android run boots the AVD before the build (pipeline step A), so the consent lists it first too.
+  // An Android run boots the AVD before the build (pipeline step A), so the consent lists it first too.
   if (bootStep && i.isAndroid) steps.push(bootStep);
   if (i.needBuild) {
     steps.push({
