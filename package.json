@@ -28,13 +28,19 @@
   },
   "files": [
     "dist",
+    "!dist/**/*.js.map",
     "skills",
     "android-agent/prebuilt/swipium-dumper.jar",
     "android-agent/src",
     "android-agent/build.sh",
+    "android-agent/README.md",
     "docs",
     "!docs/v1-mvp-plan.md",
+    "plugin/README.md",
     "THREAT_MODEL.md",
+    "SECURITY.md",
+    "SUPPORT.md",
+    "CONTRIBUTING.md",
     "CHANGELOG.md"
   ],
   "engines": {

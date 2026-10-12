@@ -8,15 +8,15 @@
 
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import type { McpServer, CallToolResult } from '@modelcontextprotocol/server';
 import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { resolveProjectRoot, unresolvedProjectRootError } from '../context/projectRoot.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
-import { generatePom, type GeneratedFile, type PomResult } from '../suite/pom.js';
+import { generatePom, mergePomFile, type GeneratedFile, type PomResult } from '../suite/pom.js';
 import { generateTestCases } from '../suite/testcase.js';
-import { compileSuite } from '../suite/compile.js';
+import { compileSuite, flowSlug, writeCompiledFlow } from '../suite/compile.js';
 import { parseFlow } from '../flows/schema.js';
 import { runFlow } from '../flows/run.js';
 import { loadProjectConfig } from '../cli/scan.js';
@@ -28,6 +28,7 @@ import { loadStateProfile, prepareStateProfile, teardownStateProfile, verifyStat
 import { hasStateProfileMutation, stateProfileAffects, stateRisk } from '../state/profileConsent.js';
 import { stableHash } from '../lib/stableHash.js';
 import type { Session, SessionStore } from '../session/store.js';
+import { recordedPlatform } from '../testSuite/generator.js';
 
 function hashFile(path: string | undefined | null): string | null {
   if (!path) return null;
@@ -88,7 +89,8 @@ function writeFiles(session: Session, files: GeneratedFile[]): string[] {
   for (const f of files) {
     const abs = join(base, f.path);
     mkdirSync(dirname(abs), { recursive: true });
-    writeFileSync(abs, f.content);
+    // merge into existing page objects / suite files instead of dropping what earlier suites use
+    writeFileSync(abs, mergePomFile(f.path, existsSync(abs) ? readFileSync(abs, 'utf8') : undefined, f.content));
     written.push(abs);
   }
   return written;
@@ -125,13 +127,14 @@ function requireActions(session: Session): CallToolResult | null {
 
 function pomFor(session: Session, name?: string): { pom: PomResult; flowName: string } {
   const appId = appIdOf(session);
-  const flowName = (name ?? `${(appId ?? 'app').split('.').pop()}-smoke`).replace(/[^\w.-]+/g, '-');
+  const flowName = flowSlug(name ?? `${(appId ?? 'app').split('.').pop()}-smoke`);
   const pom = generatePom(session.recordedActions, {
     name: flowName,
     appId,
     budgetProfile: session.budgetProfile,
     secrets: session.secrets,
     inputs: inputBindings(session), // typed text equal to a stored input maps to its ${SWIPIUM_TEST_*} placeholder
+    platform: recordedPlatform(session),
   });
   return { pom, flowName };
 }
@@ -448,6 +451,7 @@ export async function runSuiteGenerate(
         notes: secretSafeNotes(session.notes, session.secrets),
         budgetProfile: session.budgetProfile,
         replayStatus,
+        platform: recordedPlatform(session),
       });
       writeFiles(session, [
         { path: `testcases/${flowName}.cases.yaml`, content: tc.yaml },
@@ -463,7 +467,10 @@ export async function runSuiteGenerate(
     (audit.brittle ? `\n⚠ ${audit.brittle} brittle locator(s), see locators/locator-audit.json for app-code fixes.` : '') +
     (written.length ? `\nwrote ${written.length} files under ${suiteDir(session)}` : `\n(preview; pass save:true to write)`) +
     (res.compiledFlows.length
-      ? `\ncompiled ${ranOk}/${res.compiledFlows.length} runnable flow(s) > run: swipium suite run (or qa_flow_run).`
+      ? `\ncompiled ${ranOk}/${res.compiledFlows.length} runnable flow(s) > run with qa_flow_run: ${res.compiledFlows
+          .filter((c) => c.ok)
+          .map((c) => `flow:"${c.slug}"`)
+          .join(', ')} (the tests/*.yaml POM files are not flows; .swipium/flows/<slug>.yaml are).`
       : `\nNext: qa_flow_compile to produce runnable Flow V2.`) +
     `\nreplay gate (${replayMode}): ${replayPassed ? 'passed' : replayResults.length ? 'not proven' : 'not run'}; readiness=${readiness}; labels=${readinessLabels.join(' > ')}` +
     (ciReady
@@ -517,11 +524,15 @@ export async function runTestcaseGenerate(
   if (noActions) return noActions;
 
   const { pom, flowName } = pomFor(session, name);
+  // This target writes no test file: link one only when a suite generation already wrote it (LOG-20).
+  const testFile = pom.files.find((f) => f.path.startsWith('tests/'))?.path;
   const tc = generateTestCases(pom, {
     appId: appIdOf(session),
     fixtures: session.fixtures,
     notes: secretSafeNotes(session.notes, session.secrets),
     budgetProfile: session.budgetProfile,
+    platform: recordedPlatform(session),
+    testExists: !!testFile && existsSync(join(suiteDir(session), testFile)),
   });
   const fmt = format ?? 'both';
   const files: GeneratedFile[] = [];
@@ -552,9 +563,15 @@ export function registerSuite(server: McpServer, sessions: SessionStore): void {
         sessionId: z.string().optional(),
         projectRoot: z.string().optional(),
         suite: z.string().optional().describe('Suite file relative to .swipium/ (default suites/smoke.yaml).'),
+        force: z
+          .boolean()
+          .optional()
+          .describe(
+            'Overwrite .swipium/flows/<slug>.yaml even when it was edited by hand since the last compile (default: keep it, write <slug>.yaml.new).',
+          ),
       },
     },
-    async ({ sessionId, projectRoot, suite }) => {
+    async ({ sessionId, projectRoot, suite, force }) => {
       let root: string | undefined = sessionId ? sessions.get(sessionId)?.root : undefined;
       if (!root) {
         const resolved = await resolveProjectRoot(server, projectRoot);
@@ -566,30 +583,38 @@ export function registerSuite(server: McpServer, sessions: SessionStore): void {
       if (result.errors.length && result.flows.length === 0) {
         return qaError({
           what: `Could not compile suite: ${result.errors.join('; ')}`,
+          failureCode: result.errors.some((e) => e.startsWith('suite not found')) ? 'FLOW_NOT_FOUND' : 'INVALID_FLOW',
           changedState: false,
           retrySafe: true,
           nextSteps: ['Generate a suite first: qa_generate target:"suite", then qa_flow_compile.'],
         });
       }
 
-      const flowsDir = join(root, '.swipium', 'flows');
-      const compiledDir = join(root, '.swipium', 'compiled');
-      mkdirSync(flowsDir, { recursive: true });
-      mkdirSync(compiledDir, { recursive: true });
-
       const compiled = result.flows.map((f) => {
-        const slug = f.name.replace(/[^\w.-]+/g, '-');
+        const slug = flowSlug(f.name);
         const parse = f.yaml ? parseFlow(f.yaml) : { errors: ['empty'] as string[] };
         const ok = !!f.yaml && parse.errors.length === 0 && f.errors.length === 0;
         let flowPath: string | undefined;
         let compiledPath: string | undefined;
+        let keptEdited: { newPath?: string } | undefined;
         if (ok) {
-          flowPath = join(flowsDir, `${slug}.yaml`); // discoverable by qa_flow_run flow:"<slug>"
-          compiledPath = join(compiledDir, `${slug}.flow.yaml`);
-          writeFileSync(flowPath, f.yaml);
-          writeFileSync(compiledPath, f.yaml);
+          // discoverable by qa_flow_run flow:"<slug>"; a hand-edited flows/ copy is kept (SET-15)
+          const w = writeCompiledFlow(root, slug, f.yaml, { force });
+          flowPath = w.flowPath;
+          compiledPath = w.compiledPath;
+          if (w.kept) keptEdited = { newPath: w.newPath };
         }
-        return { name: f.name, slug, ok, variables: f.variables, errors: [...f.errors, ...parse.errors], flowPath, compiledPath };
+        return {
+          name: f.name,
+          slug,
+          ok,
+          variables: f.variables,
+          errors: [...f.errors, ...parse.errors],
+          flowPath,
+          compiledPath,
+          keptEditedFlow: keptEdited ? true : undefined,
+          newOutputPath: keptEdited?.newPath,
+        };
       });
 
       const okCount = compiled.filter((c) => c.ok).length;
@@ -598,7 +623,13 @@ export function registerSuite(server: McpServer, sessions: SessionStore): void {
         compiled
           .map(
             (c) =>
-              `  ${c.ok ? '✓' : '✗'} ${c.name}${c.ok ? ` > flows/${c.slug}.yaml (run: qa_flow_run flow:"${c.slug}")` : `: ${c.errors.join('; ')}`}`,
+              `  ${c.ok ? '✓' : '✗'} ${c.name}${
+                c.ok
+                  ? c.keptEditedFlow
+                    ? `: flows/${c.slug}.yaml was edited by hand and was kept; new output > ${c.newOutputPath} (force:true overwrites)`
+                    : ` > flows/${c.slug}.yaml (run: qa_flow_run flow:"${c.slug}")`
+                  : `: ${c.errors.join('; ')}`
+              }`,
           )
           .join('\n');
       return qaOk({ suite: result.suite, flows: compiled, okCount }, summary);

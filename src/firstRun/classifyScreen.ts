@@ -30,6 +30,8 @@ export interface ScreenObservation {
   /** Native error signals (redbox / ANR / crash dialog) the observer already detected. */
   nativeError?: boolean;
   appError?: boolean;
+  /** GOAL NEW-R4-2: an alert covers the screen (its words, e.g. "Settings", are not the app's). */
+  alert?: { title: string } | null;
 }
 
 const FIELD_RULES: Array<{ field: FieldKind; re: RegExp }> = [
@@ -169,8 +171,13 @@ export function classifyCurrentScreen(obs: ScreenObservation): ScreenClassificat
   if (PERMISSION.test(text) && /\b(allow|don'?t allow|while using)\b/i.test(text))
     note('permissions_prompt', 2.5, 'permission dialog copy');
   if (ONBOARDING.test(text) && !hasPassword) note('onboarding', 2, 'onboarding/get-started/next/skip copy');
-  if (SETTINGS.test(text)) note('settings', 1, 'settings/preferences copy');
-  if (HOME.test(text) && !hasPassword && !PAYWALL.test(text)) note('home', 1.5, 'home/feed/dashboard/tabs with no blocking gate');
+  // A screen under an alert is not home or settings: "Sign in to your Apple Account: Close / Settings"
+  // over a sign-up screen read as home (GOAL NEW-R4-2).
+  if (obs.alert) blockedReasons.push(`an alert ("${obs.alert.title}") covers the screen`);
+  else {
+    if (SETTINGS.test(text)) note('settings', 1, 'settings/preferences copy');
+    if (HOME.test(text) && !hasPassword && !PAYWALL.test(text)) note('home', 1.5, 'home/feed/dashboard/tabs with no blocking gate');
+  }
 
   // Static app-map candidates corroborate a purpose.
   const mapLinks: MapLink[] = [];

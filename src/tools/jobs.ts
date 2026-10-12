@@ -1,9 +1,10 @@
 // qa_job_status / qa_job_cancel: poll (or long-poll with waitMs) or cancel a background job.
 // Lets a client reconnect after a tool-call timeout instead of restarting the work.
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
-import { cancelledResult, qaOk, qaError, unknownSessionError } from '../lib/result.js';
+import { cancelledResult, qaAnnotate, qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { currentSignal, isAbortError, sleepOrCancel } from '../lib/abortScope.js';
 import { progressLine } from '../session/progress.js';
 import { jobProgressReporter } from '../lib/progressNotify.js';
@@ -27,6 +28,29 @@ export function maxWaitMs(env: NodeJS.ProcessEnv = process.env): number {
   const n = raw ? Number(raw) : NaN;
   if (!Number.isFinite(n)) return MAX_JOB_WAIT_MS;
   return Math.min(MAX_WAIT_CEILING_MS, Math.max(MAX_WAIT_FLOOR_MS, Math.round(n)));
+}
+/** Startup warning for an unusable SWIPIUM_MAX_WAIT_MS (not a number, or outside 1000..230000),
+ *  else undefined. A bad value is never silent: server.ts logs it once on stderr. */
+export function maxWaitSettingWarning(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const raw = env.SWIPIUM_MAX_WAIT_MS?.trim();
+  if (!raw) return undefined;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return `SWIPIUM_MAX_WAIT_MS=${JSON.stringify(raw)} is not a number; using the default ${MAX_JOB_WAIT_MS} ms`;
+  const used = maxWaitMs(env);
+  return used !== Math.round(n)
+    ? `SWIPIUM_MAX_WAIT_MS=${raw} is outside ${MAX_WAIT_FLOOR_MS}..${MAX_WAIT_CEILING_MS}; using ${used} ms`
+    : undefined;
+}
+/** When the current tool call started, for waits that must count the call's earlier work
+ *  (resolution, scan, planning) against the SWIPIUM_MAX_WAIT_MS cap (qa_test_this waitForCompletion). */
+const waitBudgetStart = new AsyncLocalStorage<number>();
+export function runWithWaitBudget<T>(fn: () => T, startedAt: number = Date.now()): T {
+  return waitBudgetStart.run(startedAt, fn);
+}
+/** Milliseconds this call has already spent (0 outside runWithWaitBudget). */
+export function waitBudgetUsedMs(): number {
+  const s = waitBudgetStart.getStore();
+  return s === undefined ? 0 : Math.max(0, Date.now() - s);
 }
 /** The waitMs the instructions and nextSteps recommend: under MAX_JOB_WAIT_MS with headroom. */
 export const RECOMMENDED_JOB_WAIT_MS = 45_000;
@@ -72,7 +96,15 @@ export function registerJobs(server: McpServer, sessions: SessionStore): void {
           nextSteps: ['Use the sessionId + jobId returned by the tool that started the job (qa_status lists the last job).'],
         });
       }
-      const budget = Math.min(Math.max(0, waitMs ?? 0), maxWaitMs());
+      const cap = maxWaitMs();
+      const budget = Math.min(Math.max(0, waitMs ?? 0), cap);
+      // Over-large waitMs is clamped, never rejected, and the result says so (README troubleshooting).
+      const clampNotes =
+        (waitMs ?? 0) > cap
+          ? [
+              `waitMs ${waitMs} clamped to ${cap} (SWIPIUM_MAX_WAIT_MS): one call stays under client tool timeouts. Call again to keep waiting.`,
+            ]
+          : [];
       const started = Date.now();
       // Cancelling THIS poll (notifications/cancelled) ends the wait at once; the job keeps running.
       const signal = ctx?.mcpReq.signal ?? currentSignal();
@@ -91,7 +123,7 @@ export function registerJobs(server: McpServer, sessions: SessionStore): void {
       }
       const waited = budget > 0 ? { waitedMs: Date.now() - started, timedOut: job.status === 'running' } : undefined;
       const progLine = progressLine(job.progressDetail);
-      return qaOk(
+      const ok = qaOk(
         {
           jobId: job.jobId,
           kind: job.kind,
@@ -109,6 +141,7 @@ export function registerJobs(server: McpServer, sessions: SessionStore): void {
         // unless the result carries the inline report head (already a payload field): headline only.
         { structuredSummary: (job.result as { reportHead?: unknown } | undefined)?.reportHead ? 'headline' : 'full' },
       );
+      return qaAnnotate(ok, clampNotes);
     },
   );
 

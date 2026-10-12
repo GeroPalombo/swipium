@@ -162,6 +162,7 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
     needBuild: false,
     willBoot: target.willBoot,
     bootTarget: target.bootTarget,
+    device: target.device,
     isAab: false,
     apkPath: effectiveApk,
     externalApk,
@@ -265,7 +266,13 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
         const res = await prepareIos(
           a.sessions,
           session,
-          { app: iosApp, bundleId: best.appId ?? undefined, simulator: target.device, attachWda: 'auto', mutationConsent },
+          {
+            app: iosApp,
+            bundleId: best.appId ?? undefined,
+            simulator: target.device ?? target.bootTarget,
+            attachWda: 'auto',
+            mutationConsent,
+          },
           {},
         );
         if (!res.ok)

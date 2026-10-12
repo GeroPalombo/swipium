@@ -6,7 +6,8 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
-import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
+import { capEchoed, qaOk, qaError, unknownSessionError } from '../lib/result.js';
+import { makeRedactor } from '../lib/redact.js';
 import type { SessionStore, TestOutcome, TestCategory } from '../session/store.js';
 
 const OUTCOMES = ['pass', 'fail', 'blocked', 'skipped', 'not_applicable'] as const;
@@ -39,18 +40,14 @@ export function registerNote(server: McpServer, sessions: SessionStore): void {
         verifiedVisually: z.boolean().optional().describe('The pass was confirmed from an attached screenshot.'),
       },
     },
-    async ({
-      sessionId,
-      workflow,
-      outcome,
-      category,
-      reason,
-      missingPrecondition,
-      requiredState,
-      recommendedSetup,
-      artifactUris,
-      verifiedVisually,
-    }) => {
+    async (args) => {
+      const { sessionId, outcome, category, artifactUris, verifiedVisually } = args;
+      // Stored note strings are length-capped (they land in state.json, reports and every echo).
+      const workflow = capEchoed(args.workflow);
+      const reason = capEchoed(args.reason);
+      const missingPrecondition = capEchoed(args.missingPrecondition);
+      const requiredState = capEchoed(args.requiredState);
+      const recommendedSetup = capEchoed(args.recommendedSetup);
       const session = sessions.get(sessionId);
       if (!session) {
         return unknownSessionError(sessionId);
@@ -59,6 +56,7 @@ export function registerNote(server: McpServer, sessions: SessionStore): void {
       if (verifiedVisually && outcome === 'pass' && !(artifactUris && artifactUris.length)) {
         return qaError({
           what: 'A visually-verified pass needs a screenshot in artifactUris as evidence.',
+          failureCode: 'INVALID_ARGUMENT',
           changedState: false,
           retrySafe: true,
           nextSteps: ['Call qa_screenshot (with a reason), then re-call qa_note with its URI in artifactUris.'],
@@ -69,6 +67,7 @@ export function registerNote(server: McpServer, sessions: SessionStore): void {
       if (outcome === 'blocked' && !missingPrecondition && !reason) {
         return qaError({
           what: 'A "blocked" outcome needs a missingPrecondition or reason so the report is actionable.',
+          failureCode: 'INVALID_ARGUMENT',
           changedState: false,
           retrySafe: true,
           nextSteps: ['Re-call qa_note with missingPrecondition (e.g. "no saved flight exists") and/or reason.'],
@@ -96,11 +95,16 @@ export function registerNote(server: McpServer, sessions: SessionStore): void {
         recommendedSetup: recommendedSetup ?? fx?.recommendedSetup,
         artifactUris,
         verifiedVisually,
+        source: 'qa_note',
       });
       const tally = session.notes.reduce<Record<string, number>>((a, n) => ((a[n.outcome] = (a[n.outcome] ?? 0) + 1), a), {});
+      // The response is scrubbed like everything persisted: registered secrets never echo back.
+      const redact = makeRedactor(session.secrets);
+      const shownWorkflow = redact(workflow) ?? workflow;
+      const shownMissing = redact(missingPrecondition) ?? missingPrecondition;
       return qaOk(
-        { recorded: { workflow, outcome, category: effectiveCategory }, tally },
-        `noted: "${workflow}" > ${outcome}${effectiveCategory ? ` (${effectiveCategory}${category ? '' : ', default for a failing note'})` : ''}${missingPrecondition ? `, missing: ${missingPrecondition}` : ''}\ntally: ${Object.entries(
+        { recorded: { workflow: shownWorkflow, outcome, category: effectiveCategory }, tally },
+        `noted: "${shownWorkflow}" > ${outcome}${effectiveCategory ? ` (${effectiveCategory}${category ? '' : ', default for a failing note'})` : ''}${shownMissing ? `, missing: ${shownMissing}` : ''}\ntally: ${Object.entries(
           tally,
         )
           .map(([k, v]) => `${k}=${v}`)

@@ -18,6 +18,13 @@ export function currentLogLevel(): Level {
   return raw && Object.hasOwn(RANK, raw) ? (raw as Level) : 'info';
 }
 
+/** Startup warning for an unrecognised SWIPIUM_LOG_LEVEL (it falls back to info), else undefined. */
+export function logLevelSettingWarning(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const raw = env.SWIPIUM_LOG_LEVEL?.trim();
+  if (!raw || Object.hasOwn(RANK, raw.toLowerCase())) return undefined;
+  return `SWIPIUM_LOG_LEVEL=${JSON.stringify(raw)} is not one of debug | info | warn | error; using info`;
+}
+
 /** True when a line at `level` would be written (lets callers skip building debug metadata). */
 export function logEnabled(level: Level): boolean {
   return RANK[level] >= RANK[currentLogLevel()];

@@ -3,7 +3,7 @@
 // unlabeled icons + coordinate-only targets, which also surface as locator-quality issues. PURE.
 
 import type { SnapshotElement } from '../drivers/Driver.js';
-import { classifyRisk } from './policy.js';
+import { classifyRisk, isTabLike } from './policy.js';
 import type { ExploreElement, LocatorInfo } from './graph.js';
 
 const NAV =
@@ -26,7 +26,9 @@ function bounds(e: SnapshotElement): { x: number; y: number; w: number; h: numbe
 function score(e: SnapshotElement, locator: LocatorInfo, risk: string): number {
   let s = 0;
   const label = `${e.text ?? ''} ${e.label ?? ''} ${e.id ?? ''}`;
-  if (NAV.test(label)) s += 50; // navigation / tabs first
+  if (NAV.test(label) || isTabLike(e)) s += 50; // navigation / tabs first (LOG-22: tabs by structure too)
+  // LOG-22: an overflow menu holds secondary actions (settings, feedback, privacy); explore it last.
+  if (/\b(more options|overflow|more)\b/i.test(`${e.text ?? ''} ${e.label ?? ''}`) || /overflow/i.test(e.id ?? '')) s -= 40;
   if (risk === 'safe') s += 30;
   if (risk === 'destructive') s -= 200;
   if (risk === 'unknown') s -= 10;
@@ -99,9 +101,20 @@ export interface SkippedActionLike {
 
 export function actionLikeNonInteractive(elements: SnapshotElement[]): SkippedActionLike[] {
   const out: SkippedActionLike[] = [];
+  const area = (b: SnapshotElement['bounds']) => Math.max(0, b[2] - b[0]) * Math.max(0, b[3] - b[1]);
+  const screenArea = Math.max(1, ...elements.map((e) => area(e.bounds)));
+  // a clickable full-screen container does not make every label in it tappable
+  const clickable = elements.filter((c) => c.clickable && area(c.bounds) < screenArea * 0.5);
+  // LOG-22: a label inside a clickable row (popup-menu items) is tappable through its parent.
+  const insideClickable = (e: SnapshotElement): boolean =>
+    clickable.some(
+      (c) =>
+        c !== e && c.bounds[0] <= e.bounds[0] && c.bounds[1] <= e.bounds[1] && c.bounds[2] >= e.bounds[2] && c.bounds[3] >= e.bounds[3],
+    );
   for (const e of elements) {
     const editable = /EditText|Text[-_ ]?Field|TextInput|SearchView/i.test(e.role) || e.secure;
     if (e.clickable || editable) continue;
+    if (insideClickable(e)) continue;
     const text = (e.text ?? e.label ?? '').trim();
     if (!text) continue;
     const wordCount = text.split(/\s+/).length;

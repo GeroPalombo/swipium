@@ -143,10 +143,19 @@ describe('identifier sanitization (H4)', () => {
     expect(pyName('Contraseña')).toBe('contrasena');
     expect(jsMemberName('Contraseña')).toBe('contrasena');
 
-    // Two distinct screens titled "Configuración" (different signatures) → deduped page names.
-    const cfg = (screenSig: string, selector: string): RecordedAction =>
-      act({ action: 'tap', screen: 'Configuración', screenSig, selector, selectorKind: 'text' });
-    const p = generatePom([cfg('sig-a', 'Contraseña'), cfg('sig-b', 'Guardar')], { name: 'ajustes', appId: 'com.example' });
+    // Same title, different signatures: one page object with merged elements (LOG-20).
+    const cfg = (screenSig: string, selector: string, screen = 'Configuración'): RecordedAction =>
+      act({ action: 'tap', screen, screenSig, selector, selectorKind: 'text' });
+    const merged = generatePom([cfg('sig-a', 'Contraseña'), cfg('sig-b', 'Guardar')], { name: 'ajustes', appId: 'com.example' });
+    expect(merged.pages.map((pg) => pg.name)).toEqual(['ConfiguracionPage']);
+    expect(merged.pages[0].elements.map((e) => e.name)).toEqual(['contrasena', 'guardar']);
+
+    // Two distinct screens whose titles fold to the same name ("Configuración" / "Configuracion")
+    // > deduped page names.
+    const p = generatePom([cfg('sig-a', 'Contraseña'), cfg('sig-b', 'Guardar', 'Configuracion')], {
+      name: 'ajustes',
+      appId: 'com.example',
+    });
     expect(p.pages.map((pg) => pg.name)).toEqual(['ConfiguracionPage', 'Configuracion2Page']);
     expect(p.pages[0].elements.map((e) => e.name)).toEqual(['contrasena']);
     expect(p.files.map((f) => f.path)).toEqual(

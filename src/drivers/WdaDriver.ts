@@ -38,6 +38,8 @@ const UNSUPPORTED = 'not supported by the WDA backend yet.';
 /** A cached screen size is re-validated (GET /orientation + /window/size) after this long even
  * without an observed rotation. Rotations seen in a page source drop it immediately. */
 export const WDA_SCREEN_SIZE_TTL_MS = 30_000;
+/** Cap on WDA's /wda/homescreen request (it waits for SpringBoard to settle after the press). */
+const WDA_HOME_TIMEOUT_MS = 3_000;
 /** How long a post-settle page source may answer `press back` (only while no action ran since and
  * nothing invalidated the device's screen). Short on purpose: the app can navigate by itself. */
 export const WDA_BACK_SOURCE_FRESH_MS = 3_000;
@@ -474,7 +476,14 @@ export class WdaDriver implements Driver {
     const cached = this.lastSource; // the screen as last dumped, if nothing acted since
     this.touched();
     if (key === 'home') {
-      await this.withSession(() => pressWdaHome(this.baseUrl)); // session-less route; session kept warm
+      // session-less route; session kept warm. WDA presses the button at once, then waits for
+      // SpringBoard to go idle (28-36 s at times, IOS-9 R3): cap that wait, the press already
+      // happened, and qa_act reads the foreground afterwards.
+      await this.withSession(() =>
+        withWdaCall({ timeoutMs: WDA_HOME_TIMEOUT_MS }, () => pressWdaHome(this.baseUrl)).catch((e) => {
+          if (!/timed out after/.test(String((e as Error)?.message ?? e))) throw e;
+        }),
+      );
       return;
     }
     if (key === 'back') {
@@ -625,6 +634,14 @@ export class WdaDriver implements Driver {
     await this.withSession(async (sid) => {
       const el = await this.timed('find_element', () => findWdaElement(this.baseUrl, sid, using, value));
       await this.timed('clear', () => clearWdaElement(this.baseUrl, sid, el.elementId));
+    });
+  }
+
+  /** CR P9: the natively-selected element's value (WDA `/attribute/value`), for the typing read-back. */
+  async valueBySelector(using: NativeSelectorStrategy, value: string): Promise<string> {
+    return this.withSession(async (sid) => {
+      const el = await this.timed('find_element', () => findWdaElement(this.baseUrl, sid, using, value));
+      return wdaElementAttribute(this.baseUrl, sid, el.elementId, 'value');
     });
   }
 

@@ -119,3 +119,35 @@ export function codexCoreTools(): string[] {
   const core = CAPABILITY_GROUPS.filter((g) => (CODEX_CORE_GROUPS as readonly string[]).includes(g.group)).flatMap((g) => g.tools);
   return [...core, ...CODEX_CORE_EXTRA_TOOLS.filter((t) => !core.includes(t))];
 }
+
+/** SWIPIUM_TOOLS=core: tools/list carries only codexCoreTools() (server.ts hiddenToolNames). */
+export function coreToolsOnly(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.SWIPIUM_TOOLS?.trim().toLowerCase() === 'core';
+}
+
+/** Startup warning for an unrecognised SWIPIUM_TOOLS value (anything but core/all lists every tool). */
+export function toolsSettingWarning(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const raw = env.SWIPIUM_TOOLS?.trim();
+  if (!raw || ['core', 'all'].includes(raw.toLowerCase())) return undefined;
+  return `SWIPIUM_TOOLS=${JSON.stringify(raw)} is not "core" or "all"; listing every tool`;
+}
+
+/** The tool names this server lists under the active SWIPIUM_TOOLS mode (every grouped tool, or
+ *  the core set). Counts, freshness checks and guidance use this, not the full surface. */
+export function listedToolNames(env: NodeJS.ProcessEnv = process.env): string[] {
+  const all = CAPABILITY_GROUPS.flatMap((g) => g.tools as string[]);
+  if (!coreToolsOnly(env)) return all;
+  const core = new Set(codexCoreTools());
+  return all.filter((t) => core.has(t));
+}
+
+/** Whether `tool` is listed (callable) under the active SWIPIUM_TOOLS mode. */
+export function isToolListed(tool: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  return !coreToolsOnly(env) || codexCoreTools().includes(tool);
+}
+
+/** "55 tools", or "37 of 55 tools listed (SWIPIUM_TOOLS=core)" in core mode. */
+export function listedToolsLabel(env: NodeJS.ProcessEnv = process.env): string {
+  const total = CAPABILITY_GROUPS.reduce((n, g) => n + g.tools.length, 0);
+  return coreToolsOnly(env) ? `${listedToolNames(env).length} of ${total} tools listed (SWIPIUM_TOOLS=core)` : `${total} tools`;
+}

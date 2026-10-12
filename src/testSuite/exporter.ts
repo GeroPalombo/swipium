@@ -4,7 +4,7 @@
 // here are the v1 surface other tools can build on.
 
 import { stringify } from 'yaml';
-import { functionalitySlug, type CanonicalTestCase, type TestSuiteFile } from './schema.js';
+import { functionalityDirName, isSafeCaseId, type CanonicalTestCase, type TestSuiteFile } from './schema.js';
 
 export type ExportFormat = 'markdown' | 'yaml' | 'json' | 'junit';
 
@@ -73,10 +73,13 @@ export function exportMarkdown(suite: TestSuiteFile): string {
 }
 
 export function exportYamlFiles(suite: TestSuiteFile): ExportedFile[] {
-  return suite.cases.map((c) => ({
-    path: `${functionalitySlug(c.functionality)}/${c.id}.yaml`,
-    content: stringify(c),
-  }));
+  // The id is a file name: an unsafe one (path segments) never becomes a path (loadSuite renames them).
+  return suite.cases
+    .filter((c) => isSafeCaseId(c.id))
+    .map((c) => ({
+      path: `${functionalityDirName(c.functionality)}/${c.id}.yaml`,
+      content: stringify(c),
+    }));
 }
 
 export function exportJunit(suite: TestSuiteFile): string {

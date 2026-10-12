@@ -29,6 +29,9 @@ export interface RawNode {
   key?: string;
   /** Surfaced nodes only: subtreeLabel(), the text a list row shows through its child views. */
   label?: string;
+  /** Surfaced clickable nodes without their own text/desc only: the first text/desc in their
+   *  subtree (never an id), shown as the element's name (a list row labeled by its child title). */
+  childLabel?: string;
 }
 
 export interface SnapshotQuality {
@@ -76,6 +79,16 @@ function parseBounds(s: string): [number, number, number, number] {
   return [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])];
 }
 
+/** fast-xml-parser decodes only the named XML entities; numeric character references (uiautomator
+ *  writes a newline in a multi-line field as `&#10;`) stayed raw in labels (AND R3-6). */
+function decodeCharRefs(s: string): string {
+  if (!s.includes('&#')) return s;
+  return s.replace(/&#(x[0-9a-f]+|\d+);/gi, (m, c: string) => {
+    const cp = c[0] === 'x' || c[0] === 'X' ? parseInt(c.slice(1), 16) : parseInt(c, 10);
+    return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
+  });
+}
+
 function toRaw(n: Record<string, unknown>): RawNode {
   const attrs: Record<string, string> = {};
   for (const [k, v] of Object.entries(n)) {
@@ -85,8 +98,8 @@ function toRaw(n: Record<string, unknown>): RawNode {
   const kids = n.node;
   return {
     cls: String(n['class'] ?? ''),
-    text: String(n['text'] ?? '').trim(),
-    desc: String(n['content-desc'] ?? '').trim(),
+    text: decodeCharRefs(String(n['text'] ?? '')).trim(),
+    desc: decodeCharRefs(String(n['content-desc'] ?? '')).trim(),
     id: String(n['resource-id'] ?? '').trim(),
     bounds: parseBounds(String(n['bounds'] ?? '')),
     clickable: bool(n['clickable']),
@@ -144,7 +157,8 @@ function computeQuality(all: RawNode[], screen: [number, number]): SnapshotQuali
   const nodeCount = all.length;
   const clickables = all.filter((n) => n.clickable || n.longClickable);
   const clickableCount = clickables.length;
-  const unidentified = clickables.filter((n) => !n.id && !n.desc && !n.text).length;
+  // A clickable row labeled by a child text view counts as labeled (same rule as weakTreeHint).
+  const unidentified = clickables.filter((n) => !subtreeLabel(n, all)).length;
   const withId = clickables.filter((n) => n.id).length;
   const unidentifiedClickableRatio = clickableCount ? unidentified / clickableCount : 0;
   const idCoverage = clickableCount ? withId / clickableCount : 1;
@@ -212,7 +226,8 @@ export function toElement(ref: string, n: RawNode): SnapshotElement {
   return {
     ref,
     role: role(n),
-    label: n.desc || undefined,
+    // A clickable row without its own text/desc is named by its child title (childLabel).
+    label: n.desc || (!n.text && n.childLabel) || undefined,
     id: n.id ? shortId(n.id) : undefined,
     text: n.text || undefined,
     bounds: n.bounds,
@@ -222,7 +237,9 @@ export function toElement(ref: string, n: RawNode): SnapshotElement {
   };
 }
 
-export function parseSnapshot(xml: string, opts: { interactiveOnly?: boolean } = {}): ParsedSnapshot {
+/** opts.screen: the display size, when the caller knows it. The dump root is used otherwise, which is
+ * wrong when a dialog window is the root (AND-18). */
+export function parseSnapshot(xml: string, opts: { interactiveOnly?: boolean; screen?: [number, number] } = {}): ParsedSnapshot {
   const interactiveOnly = opts.interactiveOnly ?? true;
   const parser = new XMLParser({
     ignoreAttributes: false,
@@ -251,17 +268,25 @@ export function parseSnapshot(xml: string, opts: { interactiveOnly?: boolean } =
   const rootSeen = new Map<string, number>();
   for (const r of roots) walk(r as Record<string, unknown>, '', rootSeen);
 
-  const screen: [number, number] = all.length ? [all[0].bounds[2], all[0].bounds[3]] : [0, 0];
+  const screen: [number, number] =
+    opts.screen && opts.screen[0] > 0 && opts.screen[1] > 0 ? opts.screen : all.length ? [all[0].bounds[2], all[0].bounds[3]] : [0, 0];
 
   const elements: SnapshotElement[] = [];
   const fullByRef = new Map<string, RawNode>();
+  const kept: RawNode[] = [];
   let i = 0;
   for (const n of all) {
     if (interactiveOnly && !isSurfaced(n)) continue;
     if (!interactiveOnly && !isSurfaced(n)) continue;
     if (!isOnScreen(n.bounds, screen)) continue;
+    if (redundantNode(n, all, kept, screen)) continue;
+    kept.push(n);
     const ref = `@e${++i}`;
     n.label = subtreeLabel(n, all);
+    if ((n.clickable || n.longClickable) && !n.text && !n.desc && !isTextFieldClass(n.cls)) {
+      const child = childText(n, all);
+      if (child) n.childLabel = child;
+    }
     fullByRef.set(ref, n);
     elements.push(toElement(ref, n));
   }
@@ -304,6 +329,66 @@ export function subtreeLabel(n: RawNode, all: RawNode[]): string {
     id ||= all[i].id;
   }
   return id;
+}
+
+/** The first text / desc below a node (never an id), '' when there is none. A nested clickable
+ *  element is its own target, so its subtree never names the outer one; a field's value never does. */
+function childText(n: RawNode, all: RawNode[]): string {
+  if (all[n.dfs] !== n) return '';
+  for (let i = n.dfs + 1; i <= n.subtreeEnd && i < all.length; i++) {
+    if (all[i].clickable || all[i].longClickable || isTextFieldClass(all[i].cls) || isSecureNode(all[i])) {
+      i = all[i].subtreeEnd;
+      continue;
+    }
+    const v = all[i].text || all[i].desc;
+    if (v) return v;
+  }
+  return '';
+}
+
+/** Every side within `tol` px. */
+function nearBounds(a: [number, number, number, number], b: [number, number, number, number], tol: number): boolean {
+  return a.every((v, i) => Math.abs(v - b[i]) <= tol);
+}
+
+/**
+ * A surfaced node that would only repeat an element already listed (IOS-11: an iOS table row came
+ * out as 4-5 elements and the cap hid real targets). Dropped from the element list only; allNodes
+ * (overlay / obstruction analysis) keeps it.
+ *  - an exact duplicate of a listed node, ancestor or not (same role, text, desc, id and bounds; iOS
+ *    lists e.g. the Dictate button twice, as siblings);
+ *  - non-clickable text that repeats the name of the listed clickable element it sits in;
+ *  - an unlabeled, id-less clickable container around a clickable element with (nearly) its bounds
+ *    (the inner element is the same tap target and carries the name).
+ * `kept` holds the nodes listed so far (dfs order).
+ */
+function redundantNode(n: RawNode, all: RawNode[], kept: RawNode[], screen: [number, number]): boolean {
+  if (isTextFieldClass(n.cls)) return false;
+  // Nested unnamed scrollables with the same bounds (iOS web views stack 4 full-screen ones) are
+  // one scroll area: keep the outer one (IOS-11 R3).
+  if (n.scrollable)
+    return (
+      !n.text &&
+      !n.desc &&
+      !n.id &&
+      kept.some((a) => a.scrollable && a.dfs < n.dfs && a.subtreeEnd >= n.dfs && nearBounds(a.bounds, n.bounds, 0))
+    );
+  const clickable = n.clickable || n.longClickable;
+  const ancestors = kept.filter((a) => a.dfs < n.dfs && a.subtreeEnd >= n.dfs);
+  if (kept.some((a) => a.text === n.text && a.desc === n.desc && a.id === n.id && role(a) === role(n) && nearBounds(a.bounds, n.bounds, 0)))
+    return true;
+  const name = n.text || n.desc;
+  if (!clickable && n.isLeaf && name) {
+    const owner = [...ancestors].reverse().find((a) => a.clickable || a.longClickable);
+    if (owner && !isTextFieldClass(owner.cls) && (owner.desc === name || owner.text === name || owner.childLabel === name)) return true;
+  }
+  if (clickable && !n.text && !n.desc && !n.id && all[n.dfs] === n) {
+    for (let i = n.dfs + 1; i <= n.subtreeEnd && i < all.length; i++) {
+      const m = all[i];
+      if ((m.clickable || m.longClickable) && nearBounds(m.bounds, n.bounds, 8) && isOnScreen(m.bounds, screen)) return true;
+    }
+  }
+  return false;
 }
 
 /** Stable identity for diffing across snapshots (ignores minor bounds shifts). */

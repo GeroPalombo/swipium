@@ -17,7 +17,7 @@ import type { McpServer } from '@modelcontextprotocol/server';
 import type { SessionStore } from '../session/store.js';
 import { handleTestThis } from '../orchestration/testThis/plan.js';
 import { TEST_THIS_WAIT_DEFAULT_MS, TEST_THIS_WAIT_MAX_MS } from '../orchestration/testThis/execute.js';
-import { maxWaitMs } from './jobs.js';
+import { maxWaitMs, runWithWaitBudget } from './jobs.js';
 import { qaAnnotate } from '../lib/result.js';
 
 export function registerTestThis(server: McpServer, sessions: SessionStore): void {
@@ -70,18 +70,24 @@ export function registerTestThis(server: McpServer, sessions: SessionStore): voi
           .describe('compact = summary + URIs only; kept as the session default for later calls.'),
       },
     },
-    async (raw) => {
-      // mode defaults to execute (the plan-only pass is opt-in).
-      const input = { ...raw, mode: raw.mode ?? ('execute' as const) };
-      // Clamp (not reject) like qa_job_status waitMs: the window is bounded so the call returns
-      // well inside common client request timeouts; a longer job keeps running and is polled.
-      const cap = maxWaitMs();
-      if (input.timeoutMs != null && input.timeoutMs > cap) {
-        const asked = input.timeoutMs;
-        const res = await handleTestThis(server, sessions, { ...input, timeoutMs: cap });
-        return qaAnnotate(res, [`timeoutMs ${asked} clamped to ${cap}; poll qa_job_status for longer runs.`]);
-      }
-      return handleTestThis(server, sessions, input);
-    },
+    async (raw) =>
+      // The whole call (resolution, scan, planning AND the waitForCompletion window) counts
+      // against the SWIPIUM_MAX_WAIT_MS cap: execute.ts subtracts waitBudgetUsedMs().
+      runWithWaitBudget(async () => {
+        // mode defaults to execute (the plan-only pass is opt-in).
+        const input = { ...raw, mode: raw.mode ?? ('execute' as const) };
+        // Clamp (not reject) like qa_job_status waitMs: the window is bounded so the call returns
+        // well inside common client request timeouts; a longer job keeps running and is polled.
+        const cap = maxWaitMs();
+        if (input.timeoutMs != null && input.timeoutMs > cap) {
+          const asked = input.timeoutMs;
+          const res = await handleTestThis(server, sessions, { ...input, timeoutMs: cap });
+          // timeoutMs only bounds the waitForCompletion window: plan mode and a non-waiting call
+          // ignore it, so a clamp note there is noise (TOOL-19).
+          if (input.mode === 'plan' || !input.waitForCompletion) return res;
+          return qaAnnotate(res, [`timeoutMs ${asked} clamped to ${cap}; poll qa_job_status for longer runs.`]);
+        }
+        return handleTestThis(server, sessions, input);
+      }),
   );
 }

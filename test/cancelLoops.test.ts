@@ -326,9 +326,13 @@ describe('qa_test_this waitForCompletion window', () => {
       expect(r.isError, `timeoutMs=${timeoutMs}`).toBe(true);
       expect(structured(r).failureCode).toBe('INVALID_ARGUMENT');
     }
-    const big = structured(await h.call('qa_test_this', { mode: 'plan', timeoutMs: 120_000 }));
+    const big = structured(await h.call('qa_test_this', { mode: 'execute', waitForCompletion: true, timeoutMs: 120_000 }));
     expect(big.failureCode).not.toBe('INVALID_ARGUMENT');
     expect(String(big.notes)).toContain('timeoutMs 120000 clamped to 50000');
+    // plan mode (or no waitForCompletion) ignores timeoutMs, so it gets no clamp note (TOOL-19)
+    const plan = structured(await h.call('qa_test_this', { mode: 'plan', timeoutMs: 120_000 }));
+    expect(plan.failureCode).not.toBe('INVALID_ARGUMENT');
+    expect(String(plan.notes ?? '')).not.toContain('clamped');
   });
 });
 

@@ -13,6 +13,7 @@ import {
   GENERATED_FIELDS,
   caseIdentity,
   idPrefix,
+  isSafeCaseId,
 } from './schema.js';
 
 export type MergeMode = 'append' | 'update' | 'replace_generated';
@@ -40,6 +41,8 @@ export interface MergeResult {
   deprecated: string[];
   unchanged: string[];
   conflicts: MergeConflict[];
+  /** Caller-given ids that were not used: the case merged into an existing one, or the id was taken. */
+  idsIgnored: Array<{ given: string; id: string; reason: string }>;
 }
 
 const AUTOMATION_RANK: Record<AutomationStatus, number> = {
@@ -51,7 +54,7 @@ const AUTOMATION_RANK: Record<AutomationStatus, number> = {
 };
 
 /** Allocate the next free `TC-<PREFIX>-NNN` id, skipping live + retired ids so nothing is ever reused. */
-function allocateId(functionality: string, used: Set<string>): string {
+export function allocateId(functionality: string, used: Set<string>): string {
   const prefix = idPrefix(functionality);
   let n = 1;
   let id = `TC-${prefix}-${String(n).padStart(3, '0')}`;
@@ -173,6 +176,7 @@ export function mergeCases(suite: TestSuiteFile, incoming: CanonicalTestCase[], 
   const updated: string[] = [];
   const unchanged: string[] = [];
   const conflicts: MergeConflict[] = [];
+  const idsIgnored: MergeResult['idsIgnored'] = [];
 
   const cases = suite.cases.map((c) => ({ ...c }));
   const byId = new Map(cases.map((c) => [c.id, c] as const));
@@ -183,6 +187,9 @@ export function mergeCases(suite: TestSuiteFile, incoming: CanonicalTestCase[], 
   for (const inc of incoming) {
     const match = (inc.id && byId.get(inc.id)) || byIdentity.get(caseIdentity(inc));
     if (match) {
+      // An explicit id that differs from the matched case is dropped: say so instead of silently.
+      if (inc.id && inc.id !== match.id)
+        idsIgnored.push({ given: inc.id, id: match.id, reason: `same feature, objective and steps as ${match.id}; merged into it` });
       if (opts.mode === 'append') {
         unchanged.push(match.id);
         touched.add(match.id);
@@ -196,7 +203,10 @@ export function mergeCases(suite: TestSuiteFile, incoming: CanonicalTestCase[], 
       updated.push(next.id);
       touched.add(next.id);
     } else {
-      const id = inc.id && !used.has(inc.id) ? (used.add(inc.id), inc.id) : allocateId(inc.functionality, used);
+      // The id becomes a file name, so an unsafe one (path segments, 300 chars) is replaced, never kept.
+      const id = isSafeCaseId(inc.id) && !used.has(inc.id) ? (used.add(inc.id), inc.id) : allocateId(inc.functionality, used);
+      if (inc.id && inc.id !== id)
+        idsIgnored.push({ given: inc.id, id, reason: isSafeCaseId(inc.id) ? 'id already used or retired' : 'unsafe id' });
       const run = runRefFrom({ ...inc, id }, opts);
       const fresh: CanonicalTestCase = {
         ...inc,
@@ -243,5 +253,5 @@ export function mergeCases(suite: TestSuiteFile, incoming: CanonicalTestCase[], 
     cases,
     retiredIds: Array.from(retiredIds),
   };
-  return { suite: next, created, updated, deprecated, unchanged, conflicts };
+  return { suite: next, created, updated, deprecated, unchanged, conflicts, idsIgnored };
 }

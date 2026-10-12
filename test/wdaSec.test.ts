@@ -140,7 +140,8 @@ describe('remote WDA from repository config', () => {
     const res = sc(
       await client.callTool({
         name: 'qa_wda',
-        arguments: { sessionId, action: 'start', device: 'SIM-1', wdaProjectPath: 'WDA.xcodeproj' },
+        // A simulator name resolves to its UDID (SIM-1) before the managed-process check (IOS NEW-B).
+        arguments: { sessionId, action: 'start', device: 'iPhone 16', wdaProjectPath: 'WDA.xcodeproj' },
       }),
     );
     expect(res.failureCode).toBe('WDA_START_FAILED');

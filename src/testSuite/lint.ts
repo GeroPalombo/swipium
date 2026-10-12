@@ -42,6 +42,7 @@ export function lintSuite(suite: TestSuiteFile, opts: LintOptions = {}): LintRes
   const brittleGrades = opts.brittleThreshold === 'C' ? ['C', 'D'] : ['D'];
 
   const seen = new Set<string>();
+  const stepKeys = new Map<string, string>();
   const live = opts.liveFeatureIds ? new Set(opts.liveFeatureIds) : null;
 
   for (const c of suite.cases) {
@@ -74,6 +75,31 @@ export function lintSuite(suite: TestSuiteFile, opts: LintOptions = {}): LintRes
     }
     if (c.automation.status === 'automated' && (c.automation.replayStatus === 'failed' || c.automation.replayStatus === 'blocked')) {
       add('warn', 'unreplayable_automation', `Automated case has replayStatus ${c.automation.replayStatus}, not release-gate proof`, c.id);
+    }
+
+    // GOAL-22: no steps, or only a generic "explore" placeholder step, is not a real test; and a
+    // "pass" on an exploration placeholder whose coverage was not found is not evidence.
+    if (!c.steps.length) add('warn', 'no_steps', 'Case has no steps', c.id);
+    else if (c.steps.every((s) => s.action === 'explore')) {
+      add('warn', 'placeholder_steps', 'Case has only a generic "explore" placeholder step; record the real steps', c.id);
+      // GOAL-22: a pass needs evidence; a placeholder-only case with none proves nothing.
+      if (c.actualResult.status === 'pass' && /not_found|none/i.test(c.actualResult.summary ?? ''))
+        add('error', 'unproven_pass', `Case is marked pass but its evidence says "${c.actualResult.summary}"`, c.id);
+      else if (c.actualResult.status === 'pass' && !(c.actualResult.evidence?.length || c.evidence?.length))
+        add(
+          'error',
+          'unproven_pass',
+          'Case is marked pass with only a placeholder step and no evidence; mark it not_run or attach evidence',
+          c.id,
+        );
+    }
+
+    // LOG-20: the same normalized steps under a different id/feature label is a duplicate case.
+    if (c.steps.length && !c.steps.every((s) => s.action === 'explore')) {
+      const key = c.steps.map((s) => `${s.action}|${(s.target ?? '').toLowerCase()}|${(s.data ?? '').toLowerCase()}`).join('>');
+      const prior = stepKeys.get(key);
+      if (prior && prior !== c.id) add('warn', 'duplicate_steps', `Case has the same steps as ${prior}`, c.id);
+      else stepKeys.set(key, c.id);
     }
 
     if (c.creativityLevel === 'adversarial' && !hasAdversarialSafety(c)) {

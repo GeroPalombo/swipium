@@ -156,7 +156,12 @@ describe('P4: WDA settings and lean page source', () => {
       const caps = (w.requests[0].body.capabilities as { alwaysMatch: Record<string, unknown> }).alwaysMatch;
       expect(caps.waitForIdleTimeout).toBe(10);
       const settings = w.requests.find((r) => r.url.endsWith('/appium/settings'))!.body.settings as Record<string, unknown>;
-      expect(settings).toEqual({ waitForIdleTimeout: 10, animationCoolOffTimeout: 0.5, accessibilityDeadline: 20 });
+      expect(settings).toEqual({
+        waitForIdleTimeout: 10,
+        animationCoolOffTimeout: 0.5,
+        accessibilityDeadline: 20,
+        respectSystemAlerts: true,
+      }); // IOS-4 default
       await wda.wdaSource(w.url, s.sessionId);
       expect(w.requests.at(-1)!.url).toBe(`/session/${s.sessionId}/source`);
 

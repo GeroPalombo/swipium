@@ -8,7 +8,7 @@ import type { McpServer, CallToolResult } from '@modelcontextprotocol/server';
 import { qaOk, unknownSessionError } from '../../lib/result.js';
 import { qaFail } from '../../oracle/failures.js';
 import { qaNeedsInput, NeedsInput } from '../../lib/needsInput.js';
-import { scanProject } from '../../context/scan.js';
+import { prebuiltArtifactsNearRoot, scanProject } from '../../context/scan.js';
 import { findMobileApps, classifyDiscovery } from '../../context/findApps.js';
 import { resolveGoalFlags, type TestGoal } from '../goal.js';
 import { resolveArtifact, type ArtifactPlatform } from '../../artifacts/resolve.js';
@@ -16,17 +16,32 @@ import { buildPlan, type BuildPlatform } from '../../build/plan.js';
 import { adbDevices, listAvds, which } from '../../lib/android.js';
 import { simctlAvailable, listSimulators } from '../../lib/simctl.js';
 import { checkWda } from '../../lib/wda.js';
+import { resolveSimulatorWda } from '../../lib/wdaDevice.js';
 import { loadWdaConfig } from '../../lib/wdaConfig.js';
 import { planTarget, type TargetInputs } from '../../core/targetPlan.js';
-import { verifiedEmulatorSerials } from '../../session/attach.js';
+import {
+  DEVICE_PIN_ENV,
+  devicePinConflict,
+  isSimulatorUdid,
+  onlineSerialForAvd,
+  operatorDevicePin,
+  pinAmbiguousMessage,
+  pinFixStep,
+  pinMatches,
+  sessionAvdFor,
+  simulatorsForPin,
+  verifiedEmulatorSerials,
+} from '../../session/attach.js';
 import { universalApkCachePath } from '../../artifacts/bundletool.js';
 import { ensurePrelaunchAppMap } from '../../appMap/prelaunch.js';
+import { appMapPath } from '../../appMap/store.js';
+import { existsSync } from 'node:fs';
 import type { AppKnowledgeMap } from '../../appMap/schema.js';
 import { log } from '../../lib/logger.js';
 import type { Session, SessionStore } from '../../session/store.js';
 import { type State, type PlanStep, type TestThisInput, selToPlatform } from './types.js';
 import { runExecuteMode } from './execute.js';
-import { rememberTestThisIntent } from './sessionIntent.js';
+import { envCredentialsAvailable, hasUsableCredentials, rememberTestThisIntent } from './sessionIntent.js';
 
 export async function handleTestThis(server: McpServer, sessions: SessionStore, input: TestThisInput): Promise<CallToolResult> {
   const {
@@ -91,10 +106,14 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
   const wa = (note: string) => sessions.addWorkaround(session!, note);
 
   // ---- 1. project scan ----
-  let scan = await scanProject(root);
+  // Install probe only on this session's device (or the requested / pinned one), never a bystander.
+  const probeDevice = device ?? session.device ?? operatorDevicePin();
+  let scan = await scanProject(root, { device: probeDevice });
   // What Swipium has actually tried before any pre-execute question/blocker (review item 5):
   // concrete steps, not just the workaround log. Grows as resolution proceeds.
   const preAttempted: string[] = [`scanned project root (framework=${scan.framework})`];
+  /** Set for a prebuilt-only root: the near-root artifacts the plan may install (TOOL NEW-4). */
+  let prebuiltPaths: string[] = [];
 
   // ---- 1b. low-context app discovery (§3.1/§3.7): the root may be a monorepo or a parent
   //      directory rather than the app itself. Discover candidates and either adopt the one
@@ -110,7 +129,7 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
       root = cls.chosen.path;
       session.root = root; // adopt the app subdir as the effective project root
       sessions.persist(session);
-      scan = await scanProject(root);
+      scan = await scanProject(root, { device: probeDevice });
     } else if (cls.decision === 'disambiguate') {
       return qaNeedsInput(NeedsInput.monorepoTarget(cls.choices.map((c) => c.path)), {
         sessionId: session.id,
@@ -120,6 +139,11 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
           .slice(0, 6)
           .map((c) => ({ path: c.path, rel: c.rel, framework: c.framework, score: c.score, reasons: c.reasons })),
       });
+    } else if (scan.appId && (prebuiltPaths = prebuiltArtifactsNearRoot(root, [...scan.appBundles, ...scan.apks])).length > 0) {
+      // E2E-5: no source project, but a prebuilt simulator .app / .apk whose app id resolves:
+      // test that build as-is (the artifact step below picks it up; nothing can be rebuilt).
+      preAttempted.push(`no source project; found prebuilt artifact(s) for ${scan.appId}`);
+      wa(`no source project at the root; testing the prebuilt artifact for ${scan.appId} as-is (cannot rebuild)`);
     } else {
       const empty = scan.readiness === 'blocked' && scan.missing.some((m) => /empty/i.test(m));
       return qaFail(empty ? 'PROJECT_ROOT_EMPTY' : 'NOT_MOBILE_PROJECT', {
@@ -127,6 +151,7 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
         nextSteps: [
           `Searched: ${disc.searchedLocations.slice(0, 8).join('; ') || '(root only)'}`,
           'Pass projectRoot="/abs/path/to/app" pointing at the app directory.',
+          'To test a prebuilt build without source, put the simulator .app or the .apk in that directory (Swipium reads its app id from Info.plist / the APK), or install it directly (qa_prepare_target apk= on Android, qa_ios install on iOS).',
         ],
         extra: { sessionId: session.id, scan, searchedLocations: disc.searchedLocations, state: 'blocked' as State },
       });
@@ -162,8 +187,12 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
   let appMapUri: string | undefined;
   try {
     const at = new Date().toISOString();
+    // SET-17: mode:"plan" is a side-effect-free preview, so the map is built in memory only (no
+    // .swipium/app-map*, history snapshot, .gitignore edit or projects.json entry).
+    const planOnly = mode !== 'execute' && mode !== 'interactive';
     const pre = ensurePrelaunchAppMap(root, {
       at,
+      persist: !planOnly,
       appIdentityHints: {
         androidPackage:
           scan.framework === 'native-android' || scan.framework === 'expo' || scan.framework === 'bare-react-native' ? scan.appId : null,
@@ -171,7 +200,8 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
       },
     });
     prelaunchMap = pre.map;
-    appMapUri = pre.appMapUri;
+    // A plan-only pass on a project with no saved map has no resource to point at yet.
+    appMapUri = planOnly && !existsSync(appMapPath(root)) ? undefined : pre.appMapUri;
     preAttempted.push(
       `${pre.rescanned ? 'built' : 'loaded'} static app map (${pre.reason}; ${pre.map.staticTopology.screens.length} static screen(s)) > ${pre.appMapUri}`,
     );
@@ -187,7 +217,12 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
   const steps: PlanStep[] = [];
 
   // ---- 2. artifact ----
-  const art = await resolveArtifact({ projectRoot: root, platform: platform ?? 'any', allowOutsideRoot });
+  const art = await resolveArtifact({
+    projectRoot: root,
+    platform: platform ?? 'any',
+    allowOutsideRoot,
+    ...(prebuiltPaths.length ? { onlyPaths: prebuiltPaths } : {}),
+  });
   let artifactPlatform: ArtifactPlatform | undefined = art.best?.platform;
   let needBuild = false;
 
@@ -292,16 +327,56 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
   // ALL online serials go to the planner (it refuses physical ones with PHYSICAL_DEVICE_UNSUPPORTED
   // when nothing else is viable). Pre-filtering to emulators hid that and reported NO_DEVICE.
   const emulators = await verifiedEmulatorSerials(onlineAll);
-  if (device && onlineAll.includes(device) && !emulators.includes(device)) {
+  // Device choice: explicit `device` > the device this session is already bound to (a session is
+  // only re-bound to its own device; an offline emulator is re-booted as its own AVD, never replaced
+  // by another one) > the operator pin (SWIPIUM_DEVICE). Nothing else is ever substituted.
+  const pinConflict = await devicePinConflict(device, onlineAll, sims);
+  if (pinConflict)
+    return qaFail('DEVICE_PINNED', {
+      what: pinConflict,
+      nextSteps: [
+        `Re-run without device (the pinned device is used): qa_test_this ${JSON.stringify({ ...reinvokeArgs, device: undefined })}`,
+      ],
+      extra: { sessionId: session.id, appMapUri, state: 'blocked' as State },
+    });
+  let requestedDevice = device;
+  let sessionBound: string | undefined;
+  if (!requestedDevice && session.device) {
+    const boundIos = isSimulatorUdid(session.device);
+    const wanted = platform ?? artifactPlatform;
+    if (!wanted || wanted === (boundIos ? 'ios' : 'android')) {
+      sessionBound = session.device;
+      requestedDevice =
+        boundIos || onlineAll.includes(session.device) ? session.device : (sessionAvdFor(session, session.device) ?? session.device);
+    }
+  }
+  const pinUsed = requestedDevice ? undefined : operatorDevicePin();
+  if (pinUsed) {
+    // E2E NEW-5: the pin resolves the way qa_prepare_ios_target resolves it (pinMatches: exact,
+    // ignoring case), and a simulator name several simulators share is refused as ambiguous.
+    const pinnedSims = simulatorsForPin(pinUsed, sims);
+    if (pinnedSims.length > 1)
+      return qaFail('MULTIPLE_DEVICES', {
+        what: pinAmbiguousMessage(pinUsed, pinnedSims),
+        nextSteps: [pinFixStep()],
+        extra: { sessionId: session.id, appMapUri, state: 'blocked' as State },
+      });
+    requestedDevice =
+      onlineAll.find((s) => pinMatches(pinUsed, s)) ?? avds.find((a) => pinMatches(pinUsed, a)) ?? pinnedSims[0]?.udid ?? pinUsed;
+  }
+  // A requested AVD that is already running is bound as its serial, not booted a second time.
+  if (requestedDevice && !onlineAll.includes(requestedDevice) && avds.includes(requestedDevice))
+    requestedDevice = (await onlineSerialForAvd(requestedDevice, onlineAll)) ?? requestedDevice;
+  if (requestedDevice && onlineAll.includes(requestedDevice) && !emulators.includes(requestedDevice)) {
     return qaFail('PHYSICAL_DEVICE_UNSUPPORTED', {
-      what: `Android target "${device}" appears to be a physical device. Swipium supports the Android Emulator only.`,
+      what: `Android target "${requestedDevice}" appears to be a physical device. Swipium supports the Android Emulator only.`,
       nextSteps: ['Start or create an Android Emulator, then retry without a real-device serial.'],
       extra: { sessionId: session.id, appMapUri, state: 'blocked' as State },
     });
   }
   const tInputs: TargetInputs = {
     requestedPlatform: platform,
-    requestedDevice: device,
+    requestedDevice,
     preferRealDevice: false,
     artifactPlatform,
     artifactInstallTargets: art.best?.installableOn,
@@ -313,6 +388,30 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
     },
   };
   const target = planTarget(tInputs);
+  if (target.blocked && sessionBound && target.blocked.failureCode === 'NO_DEVICE') {
+    return qaFail('NO_DEVICE', {
+      what: `This session's device ${sessionBound} is not available${isSimulatorUdid(sessionBound) ? '' : ' (offline, and the AVD it ran is unknown)'}; it is NOT replaced by another device.`,
+      nextSteps: [
+        `Pick the target explicitly: qa_test_this ${JSON.stringify({ ...reinvokeArgs, device: '<serial | AVD name | simulator UDID>' })}, or start a new session.`,
+      ],
+      extra: { sessionId: session.id, targetPlan: target, appMapUri, state: 'blocked' as State },
+    });
+  }
+  // Say WHY this device: the session's own device / the operator pin, not a caller request.
+  if (!device && requestedDevice && !target.blocked)
+    target.reason = target.reason.replace(
+      /^Honoring requested (device|simulator)/,
+      sessionBound ? "Honoring this session's bound $1" : `Honoring operator pin ${DEVICE_PIN_ENV}: $1`,
+    );
+  // E2E NEW-5: an explicit platform the pin overrides is said out loud, never silently dropped.
+  if (!device && !sessionBound && platform && requestedDevice && !target.blocked && target.selected) {
+    const pinned = selToPlatform[target.selected];
+    if (pinned !== platform) {
+      const note = `platform:"${platform}" was overridden: ${DEVICE_PIN_ENV}=${pinUsed ?? requestedDevice} pins this server to a ${pinned} device`;
+      wa(note);
+      target.reason = `${target.reason} (${note})`;
+    }
+  }
   if (target.blocked) {
     const androidWanted = platform === 'android' || artifactPlatform === 'android' || /android/i.test(target.blocked.detail);
     const blockedExtra = {
@@ -338,6 +437,15 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
         extra: blockedExtra,
       });
     }
+    const pin = operatorDevicePin();
+    if (target.blocked.failureCode === 'NO_DEVICE' && !device && !sessionBound && pin)
+      return qaFail('NO_DEVICE', {
+        what: `${DEVICE_PIN_ENV}=${pin} (server env) matches no online device, simulator or AVD, so nothing else was picked.`,
+        nextSteps: [
+          `Fix or unset ${DEVICE_PIN_ENV} in the MCP server's env (an adb serial, AVD name, or simulator UDID / exact name), then restart the server.`,
+        ],
+        extra: blockedExtra,
+      });
     return qaFail(target.blocked.failureCode, {
       ...(target.blocked.failureCode === 'NO_DEVICE' && androidWanted
         ? { what: 'No Android emulator is online and no AVD exists to boot.', nextSteps: avdSteps }
@@ -350,7 +458,12 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
       extra: blockedExtra,
     });
   }
-  if (target.willBoot) wa(`no online ${selToPlatform[target.selected!]} target, will boot ${target.bootTarget}`);
+  if (target.willBoot)
+    wa(
+      requestedDevice
+        ? `${target.bootTarget} is not running, will boot it`
+        : `no online ${selToPlatform[target.selected!]} target, will boot ${target.bootTarget}`,
+    );
 
   const isAndroid = selToPlatform[target.selected!] === 'android';
   const isIosReal = false;
@@ -368,8 +481,40 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
   }
   if (structuredNeeds.length) {
     const wdaConfig = loadWdaConfig(root);
-    const wda = await checkWda(wdaConfig.url, 1500);
-    if (!wda.reachable || !wda.ready) {
+    // GOAL-5: a WDA that answers may be ANOTHER simulator's (all default to the same port). A WDA
+    // proven to drive a different simulator than the target (or one whose owner could not be
+    // inspected) is not ready for this run.
+    const targetUdid = [target.device, target.bootTarget].find(
+      (d): d is string => typeof d === 'string' && /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i.test(d),
+    );
+    // GOAL NEW-R3-1: resolve the WDA the way qa_prepare_ios_target does (this session's own WDA for
+    // the simulator, else ios.wda.url, then the simulator's own per-UDID managed port): a managed
+    // WDA runs on its own port, not on the configured / default 8100.
+    const ownWdaUrl = targetUdid
+      ? [...(session.mutations ?? [])]
+          .reverse()
+          .find(
+            (r) =>
+              (r.tool === 'qa_wda' || r.tool === 'qa_prepare_ios_target') &&
+              ['wda_start', 'wda_reuse', 'wda_attach'].includes(r.action) &&
+              r.status === 'executed' &&
+              typeof r.target?.webDriverAgentUrl === 'string' &&
+              String(r.target?.udid ?? '').toUpperCase() === targetUdid.toUpperCase(),
+          )?.target?.webDriverAgentUrl
+      : undefined;
+    const resolvedWda = targetUdid
+      ? await resolveSimulatorWda(typeof ownWdaUrl === 'string' ? ownWdaUrl : wdaConfig.url, targetUdid)
+      : { url: wdaConfig.url, status: await checkWda(wdaConfig.url, 1500), owner: undefined };
+    const wdaUrl = resolvedWda.url;
+    const wda = resolvedWda.status;
+    const wdaOwner = resolvedWda.owner;
+    // CR P10: one rule with prepare / attach: `unverified` is usable only as this session's own
+    // recorded WDA for the simulator.
+    const sameUrl = (x: unknown, y: string) => typeof x === 'string' && x.replace(/\/+$/, '') === y.replace(/\/+$/, '');
+    const wdaForeign = wdaOwner?.owner === 'other' || (wdaOwner?.owner === 'unverified' && !sameUrl(ownWdaUrl, wdaUrl));
+    // GOAL NEW-R4-3: this simulator's own WDA listens but did not answer /status (hung).
+    const hungOwnWda = (resolvedWda as { ownUnresponsive?: string }).ownUnresponsive;
+    if (!wda.reachable || !wda.ready || wdaForeign) {
       // Hard requirement = something the caller explicitly asked for (flag or a WDA-only goal).
       const hard: string[] = [];
       if (generateSuite === true || goalFlags.goal === 'create_automation_suite') hard.push('suite generation');
@@ -383,10 +528,20 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
         return qaFail('WDA_UNREACHABLE', {
           what:
             `iOS ${hard.join(' + ')} (requested via ${goal ? `goal "${goalFlags.goal}"` : 'explicit flags'}) needs the structured ` +
-            `WebDriverAgent backend, and WDA is not ready at ${wdaConfig.url}. A visual-only smoke (launch + screenshots + health) does not need WDA.`,
+            (hungOwnWda
+              ? `WebDriverAgent backend, and this simulator's own WDA at ${hungOwnWda} is listening but did not answer /status within 1.5 s (hung)${sameUrl(hungOwnWda, wdaUrl) ? '' : `; the WDA at ${wdaUrl} is not usable for it${wdaForeign ? ` (${wdaOwner!.reason})` : ''}`}.`
+              : `WebDriverAgent backend, and WDA is not ready at ${wdaUrl}${wdaForeign ? ` (${wdaOwner!.reason})` : ''}.`) +
+            ' A visual-only smoke (launch + screenshots + health) does not need WDA.',
           nextSteps: [
+            ...(hungOwnWda
+              ? [
+                  `Restart the hung WDA: qa_wda { action:"stop"${targetUdid ? `, device:"${targetUdid}"` : ''} }, then qa_wda { action:"setup" } and qa_wda { action:"attach" } with the same device, then re-run the same qa_test_this call.`,
+                ]
+              : []),
             `Visual-only alternative now: qa_test_this ${JSON.stringify(visualSmoke)}`,
-            'Or set up WDA: qa_wda { action:"doctor" } > qa_wda { action:"build" } > qa_wda { action:"start" } (or attach an external WDA URL), then re-run the same qa_test_this call.',
+            // The blocked plan never bound the simulator to the session: name it, or setup / attach
+            // fail with NO_DEVICE / MULTIPLE_DEVICES.
+            `Or set up WDA in one step: qa_wda { action:"setup"${targetUdid ? `, device:"${targetUdid}"` : ''} } (builds if needed and starts it on this simulator's own port; poll qa_job_status), then qa_wda { action:"attach"${targetUdid ? `, device:"${targetUdid}"` : ''} }, then re-run the same qa_test_this call.`,
             ...(appMapUri ? [`Static app map is still available: qa_app_map_read { projectRoot:"${root}" }`] : []),
           ],
           extra: {
@@ -395,7 +550,12 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
             goal: goalFlags.goal,
             requiresWdaFor: hard,
             target,
-            wda: { config: { url: wdaConfig.url, mode: wdaConfig.mode, derivedDataPath: wdaConfig.derivedDataPath }, status: wda },
+            wda: {
+              config: { url: wdaConfig.url, mode: wdaConfig.mode, derivedDataPath: wdaConfig.derivedDataPath },
+              url: wdaUrl,
+              status: wda,
+              ...(wdaOwner ? { ownership: wdaOwner } : {}),
+            },
             appMapUri,
           },
         });
@@ -404,15 +564,24 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
       effGenerateSuite = false;
       effRequiredOutputs = effRequiredOutputs.filter((o) => o !== 'suite' && o !== 'exploration');
       wa(
-        `WebDriverAgent not ready at ${wdaConfig.url}, skipping ${structuredNeeds.join(' + ')}; running a visual-only iOS smoke (set up WDA via qa_wda to enable them)`,
+        `WebDriverAgent not ready at ${wdaUrl}${wdaForeign ? ` (not usable for this simulator: ${wdaOwner!.reason})` : ''}${hungOwnWda && !sameUrl(hungOwnWda, wdaUrl) ? ` and this simulator's own WDA at ${hungOwnWda} did not answer /status (hung: qa_wda stop, then setup)` : ''}, skipping ${structuredNeeds.join(' + ')}; running the iOS smoke only (set up WDA via qa_wda${targetUdid ? ` { action:"setup", device:"${targetUdid}" }` : ''} to enable them)`,
       );
-      preAttempted.push(`checked WebDriverAgent at ${wdaConfig.url}: not ready; degraded to visual-only`);
+      preAttempted.push(
+        `checked WebDriverAgent at ${wdaUrl}: ${wdaForeign ? 'not usable for this simulator' : 'not ready'}; skipped ${structuredNeeds.join(' + ')}`,
+      );
     }
   }
 
   // ---- 4. auth (be effective: proceed pre-login; surface the question as optional) ----
   let optionalQuestion: ReturnType<typeof NeedsInput.credentials> | undefined;
-  if (scan.likelyAuth) {
+  if (scan.likelyAuth && (envCredentialsAvailable() || hasUsableCredentials(session))) {
+    // Env (or already provided) credentials answer the login question: execute seeds and uses them
+    // without asking (seedEnvCredentials), so the plan must not say it will stop and ask.
+    wa(
+      'app likely has a login: test credentials are available (SWIPIUM_TEST_EMAIL / SWIPIUM_TEST_PASSWORD or provided inputs); ' +
+        'no login question',
+    );
+  } else if (scan.likelyAuth) {
     wa('app likely has a login: will test pre-login coverage; authenticated flows are blocked until credentials are provided');
     optionalQuestion = NeedsInput.credentials('Authenticated workflows need a test account.');
   }
@@ -430,12 +599,15 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
   } else {
     prepArgs.app = needBuild ? '${artifact.path}' : art.best?.path;
     prepArgs.bundleId = needBuild ? '${artifact.appId}' : (art.best?.appId ?? undefined);
-    prepArgs.simulator = target.device;
+    // The device the plan targets, or the one it boots (never left empty: prepare would then pick any
+    // booted simulator). `device` is qa_prepare_ios_target's public name (E2E NEW-3).
+    const sim = target.device ?? target.bootTarget;
+    if (sim) prepArgs.device = sim;
     prepArgs.attachWda = 'auto';
-    if (target.device) prepArgs.device = target.device;
   }
 
-  if (isAndroid && scan.metroNeed === 'likely') wa('debug RN/Expo build likely needs Metro/dev server serving before launch');
+  // A debug RN/Expo build needs Metro on iOS too (GOAL-28: the plan listed no Metro precondition).
+  if (scan.metroNeed === 'likely') wa('debug RN/Expo build likely needs Metro/dev server serving before launch');
   steps.push({
     tool: isAndroid ? 'qa_prepare_target' : 'qa_prepare_ios_target',
     why: `Install + launch on ${target.selected}`,
@@ -445,22 +617,36 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
   });
   steps.push({
     tool: 'qa_smoke',
-    why: 'Run a guardrail/smoke pass and capture evidence',
-    args: { sessionId: session.id, profile: scan.recommendedProfile },
-    status: 'pending',
-  });
-  steps.push({
-    tool: 'qa_report',
-    why: 'Summarize what was tested/blocked with evidence',
+    why: `Run a guardrail/smoke pass and capture evidence (profile: ${scan.recommendedProfile})`,
+    // Only qa_smoke's own parameters: the printed call must work as-is (E2E NEW-3).
     args: { sessionId: session.id },
     status: 'pending',
   });
+  // GOAL-28: the remaining steps follow the goal's effective flags (the same ones execute runs).
+  if (effExplore) {
+    steps.push({
+      tool: 'qa_explore',
+      why: goalText ? `Guided exploration focused on: ${goalText.slice(0, 120)}` : 'Guided exploration of reachable screens',
+      args: { sessionId: session.id, ...(goalText ? { goal: goalText } : {}) },
+      status: 'pending',
+    });
+  }
   steps.push({
-    tool: 'qa_generate',
-    why: 'Optional: turn this run into a durable POM suite',
-    args: { sessionId: session.id, target: 'suite' },
+    tool: 'qa_report',
+    why: goalFlags.releaseGate
+      ? 'Summarize with the release-gate verdict (ship / caution / block) and readiness'
+      : 'Summarize what was tested/blocked with evidence',
+    args: { sessionId: session.id },
     status: 'pending',
   });
+  if (effGenerateSuite) {
+    steps.push({
+      tool: 'qa_generate',
+      why: 'Turn this run into a durable POM suite',
+      args: { sessionId: session.id, target: 'suite' },
+      status: 'pending',
+    });
+  }
 
   const nextAction = steps.find((s) => s.status === 'pending') ?? null;
   const state: State = 'ready';
@@ -525,7 +711,7 @@ export async function handleTestThis(server: McpServer, sessions: SessionStore, 
     `plan:\n${steps.map((s, i) => `  ${i + 1}. [${s.status === 'satisfied' ? '✓' : ' '}] ${s.tool}: ${s.why}`).join('\n')}\n` +
     (nextAction ? `next: call ${nextAction.tool} ${JSON.stringify(nextAction.args ?? {})}\n` : '') +
     (session.workarounds.length ? `workarounds: ${session.workarounds.length} (see workaroundsAttempted)\n` : '') +
-    (optionalQuestion ? `note: ${optionalQuestion.question}` : '');
+    (optionalQuestion ? `${goalFlags.stopOnNeedsInput ? 'execute will stop and ask first' : 'note'}: ${optionalQuestion.question}` : '');
 
   return qaOk(
     {

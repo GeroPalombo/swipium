@@ -165,11 +165,30 @@ export function registerIssues(server: McpServer, sessions: SessionStore): void 
       if (!root) return error ?? unresolvedProjectRootError({ source: 'none', hint });
       const mode = args.mode ?? 'history';
       const now = nowIso();
+      // Evidence must point at something that exists: a swipium://session/... URI is checked against
+      // the artifact ledger (a typo or invented URI would otherwise be stored as "evidence").
+      if ((mode === 'log' || mode === 'verify_fixed') && args.evidenceUris?.length) {
+        const missing = args.evidenceUris.filter((u) => u.startsWith('swipium://session/') && !sessions.findArtifact(u));
+        if (missing.length)
+          return qaError(
+            {
+              failureCode: 'INVALID_ARGUMENT',
+              what: `evidenceUris names ${missing.length} unknown artifact${missing.length === 1 ? '' : 's'}: ${missing.slice(0, 5).join(', ')}${missing.length > 5 ? ', ...' : ''}. Nothing was recorded.`,
+              changedState: false,
+              retrySafe: true,
+              nextSteps: [
+                'Pass only artifact URIs a tool returned in this or a recent session (qa_report lists them), or drop the unknown ones.',
+              ],
+            },
+            { unknownEvidenceUris: missing.slice(0, 20) },
+          );
+      }
 
       // --- log: record a new observation (may reopen a previously fixed issue) ---------------
       if (mode === 'log') {
         if (!args.title && !args.summary)
           return qaError({
+            failureCode: 'INVALID_ARGUMENT',
             what: 'mode "log" needs a title (and ideally a summary) describing what was observed',
             changedState: false,
             retrySafe: true,
@@ -222,6 +241,17 @@ export function registerIssues(server: McpServer, sessions: SessionStore): void 
           { categoryHint: args.category as IssueCategory | undefined, severityHint: args.severity as IssueSeverity | undefined },
           meta,
         );
+        // TOOL NEW-2: when the classifier did not keep the caller's severity, say why.
+        const cls = res.events[0]?.classification;
+        const severityOverride =
+          args.severity && cls && cls.severity !== args.severity
+            ? `severity "${args.severity}" was requested; the classifier set "${cls.severity}" (${cls.reason})`
+            : undefined;
+        // TOOL NEW-R3-2: say why an uncategorized entry landed in mcp_limitation (Swipium's bucket).
+        const categoryNote =
+          res.isNew && cls?.categoryDefaulted
+            ? `no category was given and no built-in rule matched, so it is filed as ${res.record.category} for triage; pass category (for example "app_bug") when logging an app defect`
+            : undefined;
         return qaOk(
           {
             mode,
@@ -231,10 +261,14 @@ export function registerIssues(server: McpServer, sessions: SessionStore): void 
             isNew: res.isNew,
             reopened: res.reopened,
             recurrenceMessage: res.recurrenceMessage,
+            ...(severityOverride ? { severityOverride } : {}),
+            ...(categoryNote ? { categoryNote } : {}),
           },
-          res.reopened
+          (res.reopened
             ? `Reopened ${res.issueId}: ${res.recurrenceMessage}`
-            : `${res.isNew ? 'Logged new' : 'Updated'} issue ${res.issueId} (${res.record.state}, ${res.record.category}/${res.record.severity})`,
+            : `${res.isNew ? 'Logged new' : 'Updated'} issue ${res.issueId} (${res.record.state}, ${res.record.category}/${res.record.severity})`) +
+            (severityOverride ? `. Note: ${severityOverride}` : '') +
+            (categoryNote ? `. Note: ${categoryNote}` : ''),
         );
       }
 
@@ -264,6 +298,7 @@ export function registerIssues(server: McpServer, sessions: SessionStore): void 
         const key = { issueId: args.issueId, fingerprint: args.fingerprint };
         if (!key.issueId && !key.fingerprint)
           return qaError({
+            failureCode: 'INVALID_ARGUMENT',
             what: `mode "${mode}" needs the issue key`,
             changedState: false,
             retrySafe: true,

@@ -10,6 +10,7 @@ import { stringify } from 'yaml';
 import type { Point, Target } from '../core/target.js';
 import type { Exportability, RecordedAction, SelectorProvenance, Session } from '../session/store.js';
 import { waitForVisibleGuard } from './waitGuards.js';
+import { isThirdPartySignIn } from '../explore/policy.js';
 import { secretSafeActions, secretVarName, type InputBinding } from '../suite/secretGuard.js';
 
 export interface RecordableTarget {
@@ -150,6 +151,21 @@ function actionSelector(a: RecordedAction): string | null {
             : a.selector;
 }
 
+/** Text-entry controls whose visible text is a placeholder or the current value (GOAL-14). */
+const FIELD_CLASS = /EditText|TextField|SearchField|SecureTextField|TextInput|AutoCompleteTextView|SearchView|XCUIElementTypeTextView/i;
+
+/** A text selector on a text field is fragile: the visible text is the placeholder (or the typed
+ *  value), which changes as soon as the field has a value. Prefer the field's resource-id /
+ *  accessibility identifier when the recording captured one; otherwise flag it. */
+function fieldSafeSelector(a: RecordedAction, selector: string): { selector: string; fragile: boolean } {
+  if (a.selectorKind !== 'text') return { selector, fragile: false };
+  const cls = `${a.provenance?.className ?? ''} ${a.provenance?.elementRole ?? ''}`;
+  if (!FIELD_CLASS.test(cls)) return { selector, fragile: false };
+  const id = a.provenance?.resourceId;
+  if (id) return { selector: `id=${id}`, fragile: false };
+  return { selector, fragile: true };
+}
+
 function addProvenance(
   entries: Array<Record<string, unknown>>,
   a: RecordedAction,
@@ -187,14 +203,43 @@ export function generateFlow(
     /** Registered session secrets (see suite/secretGuard.ts). */ secrets?: Iterable<string>;
     /** Stored session inputs (secretGuard.inputBindings): typed text equal to one becomes its ${VAR}. */
     inputs?: InputBinding[];
+    /** LOG-11: the recording began from a restarted app (qa_app_control restart/fresh_start before the
+     *  first action): start the flow with restartApp so a replay starts from the same clean state. */
+    resetAtStart?: boolean;
+    /** LOG-13: stable text seen on the screen the recording ended on; emitted as a final assertion. */
+    finalAssertions?: string[];
+    /** LOG-13: recorded qa_note outcomes ("add_alarm: alarm added via FAB"), named in the header so the
+     *  reviewer can turn them into the real assertion. */
+    recordedOutcomes?: string[];
   },
 ): GenerateResult {
   // Defense in depth: a registered secret recorded as a literal (non-secure field) becomes a ${VAR}
   // (same naming as the POM/suite generator: secretVarName), and typed text equal to a stored
   // session input becomes that input's ${SWIPIUM_TEST_*} placeholder.
   actions = secretSafeActions(actions, opts.secrets, opts.inputs).actions;
-  const steps: Array<string | Record<string, unknown>> = ['prepareTarget'];
+  // GOAL NEW-R4-2: a tap on a third-party / OS sign-in ("Sign up with Apple") opens an account flow
+  // outside the app; a replay would fire it again. Drop it and say so in the header.
+  const droppedSignIns: string[] = [];
+  actions = actions.filter((a) => {
+    if (a.action !== 'tap' || !a.selector || !isThirdPartySignIn({ label: a.selector, id: a.selector })) return true;
+    droppedSignIns.push(a.selector);
+    return false;
+  });
+  const steps: Array<string | Record<string, unknown>> = [opts.resetAtStart ? 'restartApp' : 'prepareTarget'];
   const brittleSteps: Array<{ index: number; reason: string }> = [];
+  let fragile = 0;
+  /** Field-safe selector + bookkeeping: a placeholder/value text selector counts against durability. */
+  const fieldSelector = (a: RecordedAction, i: number, selector: string): string => {
+    const f = fieldSafeSelector(a, selector);
+    if (f.fragile) {
+      fragile++;
+      brittleSteps.push({
+        index: i,
+        reason: `text field matched by its visible text "${selector}" (a placeholder or value that changes once the field has text). Add a testID/accessibilityIdentifier`,
+      });
+    }
+    return f.selector;
+  };
   const variables: string[] = [];
   const provenanceEntries: Array<Record<string, unknown>> = [];
   let semantic = 0;
@@ -207,7 +252,8 @@ export function generateFlow(
     switch (a.action) {
       case 'tap':
         {
-          const selector = actionSelector(a);
+          const raw = actionSelector(a);
+          const selector = raw ? fieldSelector(a, i, raw) : null;
           if (selector) {
             pushSelectorAction(steps, provenanceEntries, a, actionIndex, selector, { tap: selector }, 'tap');
             semantic++;
@@ -224,7 +270,8 @@ export function generateFlow(
         }
         break;
       case 'clear': {
-        const selector = actionSelector(a);
+        const raw = actionSelector(a);
+        const selector = raw ? fieldSelector(a, i, raw) : null;
         if (selector) {
           pushSelectorAction(steps, provenanceEntries, a, actionIndex, selector, { inputText: { into: selector, text: '' } }, 'inputText');
           semantic++;
@@ -241,7 +288,8 @@ export function generateFlow(
       }
       case 'type':
         {
-          const selector = actionSelector(a);
+          const raw = actionSelector(a);
+          const selector = raw ? fieldSelector(a, i, raw) : null;
           const varName = a.secret ? secretVarName(a, ++secretCount) : undefined;
           const text = varName ? `\${${varName}}` : (a.text ?? '');
           if (varName) {
@@ -297,8 +345,15 @@ export function generateFlow(
     }
   });
 
+  // LOG-13: end with an assertion on the screen the recording reached, so a replay that only finds
+  // its locators does not "pass" without checking the outcome.
+  const finalAssertions = [...new Set((opts.finalAssertions ?? []).filter((t) => t && t.trim()))].slice(0, 2);
+  for (const text of finalAssertions) steps.push(waitForVisibleGuard(text), { assertVisible: text });
+
   const uniqueVars = [...new Set(variables)];
-  const total = semantic + coordinate + needsHumanData;
+  // A fragile field selector was counted as semantic; move it out so the grade reflects it.
+  semantic = Math.max(0, semantic - fragile);
+  const total = semantic + coordinate + needsHumanData + fragile;
   const semanticPct = total ? Math.round((semantic / total) * 100) : 100;
   const grade: Grade = semanticPct >= 90 ? 'A' : semanticPct >= 70 ? 'B' : 'C';
 
@@ -310,8 +365,22 @@ export function generateFlow(
 
   const header = [
     `# Generated by Swipium qa_generate target:"flow". Review before committing.`,
-    `# durability: ${grade} (${semanticPct}% semantic; ${coordinate} coordinate, ${needsHumanData} needs-human-data)`,
+    `# durability: ${grade} (${semanticPct}% semantic; ${coordinate} coordinate, ${needsHumanData} needs-human-data${fragile ? `, ${fragile} fragile text-field` : ''})`,
+    opts.resetAtStart
+      ? '# starts with restartApp: the recording began from a restarted app (replays need flow_mutation_run consent; CI allows restartApp by default)'
+      : '# starts with prepareTarget (launch / bring to front, no reset): replay from the screen the recording started on',
+    ...(finalAssertions.length
+      ? [
+          `# final assertion(s) from the last observed screen: ${finalAssertions.join(', ')}. This is a NAVIGATION check (the screen the recording ended on), not the outcome: replace it with text that proves the result`,
+        ]
+      : ['# TODO: add an assertVisible for the expected outcome; this flow only checks that its locators exist']),
+    ...(opts.recordedOutcomes ?? []).slice(0, 3).map((o) => `# recorded outcome to assert: ${o.replace(/\s+/g, ' ').slice(0, 160)}`),
     ...(uniqueVars.length ? [`# variables: provide via qa_flow_run { variables }: ${uniqueVars.join(', ')}`] : []),
+    ...(droppedSignIns.length
+      ? [
+          `# left out: tap(s) on a third-party / OS sign-in (${[...new Set(droppedSignIns)].join(', ')}): it leaves the app and can't be replayed`,
+        ]
+      : []),
     ...brittleSteps.map((b) => `# WARNING step ${b.index}: ${b.reason}`),
   ].join('\n');
 

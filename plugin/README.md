@@ -15,8 +15,10 @@ repository root has a plugin marketplace (`.claude-plugin/marketplace.json`), so
 | `skills/swipium-qa/SKILL.md` | The agent skill: the `qa_test_this` loop, batching with `qa_flow_run {flowYaml}`, credentials via env, app-control shortcuts, and the CI CLI. |
 
 The plugin never pre-approves consent: every build, boot and install still asks you. To pre-approve
-the actions that run no project code on your own machine, use
-`npx -y swipium init claude --trust-local` instead (local or user scope only).
+the actions that run no project code on your own machine, register Swipium with `init` instead of
+the plugin: uninstall the plugin first (`/plugin uninstall swipium@swipium`), so you don't end up
+with two `swipium` servers, then run `npx -y swipium init claude --trust-local --apply` (local or
+user scope only; without `--apply` it only previews).
 
 The skill file is generated from `src/skills/content.ts`. Don't edit it here: change the source and
 run `SWIPIUM_UPDATE_SKILL=1 npx vitest run test/guidanceSkill.test.ts`, which rewrites this copy and

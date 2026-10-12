@@ -208,7 +208,7 @@ describe('toGithubSummary', () => {
     const decision = applyPolicy(reportPolicyVerdicts(fixture()), gatePolicy);
     const md = toGithubSummary(fixture(), decision);
     expect(md).toContain('🔴 BLOCK');
-    expect(md).toContain('**Release gate (policy):** ❌ FAIL');
+    expect(md).toContain('**Release gate (policy):** ❌ BLOCK'); // matches the BLOCK verdict wording
     expect(md).toContain('release blocked: finding:crash: NATIVE\\_CRASH'); // Markdown-escaped
     expect(md).toContain('NATIVE_CRASH');
     expect(md).toContain('login flow');

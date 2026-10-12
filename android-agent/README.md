@@ -26,8 +26,12 @@ MCP server's `env`, Swipium reads the UI tree through this agent instead of runn
   server killed with SIGKILL can leave them behind; both are harmless and the next run's shutdown
   removes the jar again. A jar pushed by another Swipium process whose agent is reused is left alone.
 
-Measured on an API 36 emulator (Settings, 86 nodes): about 0.28 s per dump on a static screen
-(`uiautomator dump`: about 2.0 s) and about 0.6 s right after a navigation (about 2.9 s).
+How much faster depends on the host. On a quiet host (API 36 emulator, Settings, 86
+nodes): about 0.28 s per dump on a static screen (`uiautomator dump`: about 2.0 s, so about 7x) and
+about 0.6 s right after a navigation (about 2.9 s). On a busy host with other emulators and builds
+running, `qa_snapshot` on the same screen took 0.5 to 1.4 s instead of 2.2 to 3.0 s, and taps 1.1 to
+1.9 s instead of 2.4 to 2.7 s: about 2x to 3x. A screen that never goes idle (a ticking clock) still
+waits up to the 2 s idle limit per dump.
 
 ## Limits
 
@@ -35,8 +39,10 @@ Measured on an API 36 emulator (Settings, 86 nodes): about 0.28 s per dump on a 
   Maestro and `uiautomator dump` started outside Swipium fail with "UiAutomationService already
   registered". Wait two minutes after the last Swipium snapshot, or unset the variable.
 - The device write is gated only by the opt-in variable; there is no consent prompt for it yet.
-- The socket has no file permissions, so other processes on the emulator may be able to request
-  dumps while it runs. Leave the agent off on devices with untrusted apps.
+- The abstract socket has no file permissions, so access control is the peer uid check: apps on
+  the emulator are refused, but any other process running as the shell user (or root) can request
+  dumps while the agent runs. Leave the agent off on emulators where untrusted code runs as shell
+  or root.
 
 ## Building
 

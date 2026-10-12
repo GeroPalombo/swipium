@@ -33,6 +33,7 @@ export function registerFlowRepair(server: McpServer, sessions: SessionStore): v
           blockedDeviceResult(blocked) ??
           qaError({
             what: 'No device attached to this session',
+            failureCode: 'NO_DEVICE',
             changedState: false,
             retrySafe: true,
             nextSteps: ['Call qa_prepare_target / qa_ios + qa_wda first.'],

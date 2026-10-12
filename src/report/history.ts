@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ReportData, ReportNote } from './export.js';
 import { evidenceTaxonomyForNotes } from './evidence.js';
+import { isAutomationDriftNote } from '../oracle/failures.js';
 
 export interface ReportCompare {
   current: string;
@@ -242,13 +243,19 @@ function likelyCategory(problem: { reason: string; category?: string } | null, r
   const raw = `${problem?.category ?? ''} ${problem?.reason ?? ''}`.toLowerCase();
   if (/accessibility|identifier|locator|element|not found|continue missing/.test(raw)) return 'automation readiness';
   if (/network|device|wda|simulator|emulator|install|seed|fixture|toolchain|permission/.test(raw)) return 'environment/setup';
-  if (report.appHealth !== 'OK' || /assert|visible|expected|crash|errorboundary|redbox/.test(raw)) return 'app regression';
+  // 'not checked' / 'unverified' (app never reached, visual-only) are not app regressions.
+  if (report.appHealth === 'error' || report.appHealth === 'degraded' || /assert|visible|expected|crash|errorboundary|redbox/.test(raw))
+    return 'app regression';
   return 'unknown';
 }
 
 function evidenceList(report: ReportData, problem: { evidence: string[] } | null): string[] {
   const fromProblem = problem?.evidence ?? [];
-  const fromArtifacts = report.artifacts.map((a) => a.uri).slice(0, 5);
+  // E2E NEW-16: the report's own exports (report JSON/Markdown, manifest) are never evidence.
+  const fromArtifacts = report.artifacts
+    .filter((a) => a.kind !== 'report' && a.kind !== 'manifest')
+    .map((a) => a.uri)
+    .slice(0, 5);
   return [...new Set([...fromProblem, ...fromArtifacts])];
 }
 
@@ -642,7 +649,10 @@ export function trendForReports(files: string[]): TrendSummary {
         const code = o.category ?? o.reason ?? 'fail';
         codeCounts.set(code, (codeCounts.get(code) ?? 0) + 1);
       }
-      if (o.outcome === 'fail' || o.outcome === 'blocked') {
+      // GOAL-24: missing test data (blocked + missing_test_data) and generated-flow locator drift are
+      // setup / automation problems, not a failed workflow of the app: no release-blocking signal.
+      const notAppFailure = (o.outcome === 'blocked' && o.category === 'missing_test_data') || isAutomationDriftNote(o);
+      if ((o.outcome === 'fail' || o.outcome === 'blocked') && !notAppFailure) {
         addReleaseSignal(
           'block',
           'REQUIRED_WORKFLOW_FAILED',
@@ -672,7 +682,11 @@ export function trendForReports(files: string[]): TrendSummary {
         envCounts.set(f.kind, (envCounts.get(f.kind) ?? 0) + 1);
       }
     }
-    if (report.appHealth !== 'OK' || report.findings.some((f) => f.layer === 'app' && f.severity === 'high')) {
+    if (
+      report.appHealth === 'error' ||
+      report.appHealth === 'degraded' ||
+      report.findings.some((f) => f.layer === 'app' && f.severity === 'high')
+    ) {
       addReleaseSignal(
         'block',
         'APP_ERROR',

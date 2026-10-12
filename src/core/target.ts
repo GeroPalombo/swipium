@@ -88,6 +88,15 @@ function norm(value?: string): string {
   return (value ?? '').trim().toLowerCase();
 }
 
+/** PURE (AND NEW R4-2): text for selector matching: lower case, typographic apostrophes and quotes
+ * folded to ASCII, so `Don't allow` matches the system dialog's `Don’t allow` (iOS alerts too). */
+export function foldText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[‘’‚‛′ʼ]/g, "'")
+    .replace(/[“”„‟″]/g, '"');
+}
+
 function applyResourceIdHints<T extends { text?: string; label?: string; role?: string; bounds: [number, number, number, number] }>(
   candidates: T[],
   target: Target,
@@ -176,8 +185,17 @@ export async function reresolveRef(
     const same = parsed.fullByRef.get(ref);
     let hit: [string, RawNode] | undefined = !retired && same && sameIdentity(same, old) ? [ref, same] : undefined;
     if (retired) {
-      const matches = [...parsed.fullByRef].filter(([, n]) => sameIdentity(n, old) && (n.label ?? '') === opts.label);
-      if (matches.length === 1) return pointFor(matches[0][0], matches[0][1], { refMoved: true });
+      let matches = [...parsed.fullByRef].filter(([, n]) => sameIdentity(n, old) && (n.label ?? '') === opts.label);
+      // A text field's subtree label follows its value, so a type in between breaks the label match
+      // (AND R3-5). With no exact match, class + resource-id is enough when exactly one is on screen.
+      if (!matches.length && old.id && isTextFieldClass(old.cls))
+        matches = [...parsed.fullByRef].filter(([, n]) => n.cls === old.cls && n.id === old.id);
+      if (matches.length === 1) {
+        // refMoved means the tap point moved (> 8 px), not merely that the ref number changed.
+        const c = center(matches[0][1].bounds);
+        const moved = Math.abs(c.x - oc.x) > 8 || Math.abs(c.y - oc.y) > 8;
+        return pointFor(matches[0][0], matches[0][1], moved ? { refMoved: true } : {});
+      }
       ambiguous = matches.length;
     } else if (!hit) {
       let bestDist = Infinity;
@@ -225,6 +243,11 @@ export async function resolveTarget(session: Session, target?: Target, opts: { w
   if (target?.x != null && target?.y != null) return { x: target.x, y: target.y, via: 'coords' };
 
   if (target?.ref) {
+    if (!/^@e\d+$/.test(target.ref))
+      return {
+        error: `Invalid ref ${JSON.stringify(target.ref)}: refs look like @e12 (copy one from qa_snapshot).`,
+        failureCode: 'INVALID_ARGUMENT',
+      };
     const node = session.lastSnapshot?.fullByRef.get(target.ref);
     if (!node) {
       // A ref a later snapshot replaced (an action, a scroll): re-find it by identity, or STALE_REF + candidates.
@@ -272,15 +295,30 @@ export async function resolveTarget(session: Session, target?: Target, opts: { w
 /** Match a text/id selector on one snapshot: a point, an AMBIGUOUS_SELECTOR error, or undefined (no match). */
 function matchSelector(parsed: Pick<ParsedSnapshot, 'elements' | 'fullByRef'>, target: Target): Point | ResolveError | undefined {
   const screenMismatch = target.screenSignature && screenSignatureFor(parsed) !== target.screenSignature;
-  const t = target.text?.toLowerCase();
+  const t = target.text !== undefined ? foldText(target.text) : undefined;
   const idCands = target.id
     ? parsed.elements.filter((e) => {
         const raw = e.ref ? parsed.fullByRef.get(e.ref) : undefined;
         return resourceIdMatches(e.id, raw?.id, target.id!);
       })
     : [];
-  const textCands =
-    !target.id && t ? parsed.elements.filter((e) => e.text?.toLowerCase().includes(t) || e.label?.toLowerCase().includes(t)) : [];
+  let textCands =
+    !target.id && t
+      ? parsed.elements.filter(
+          (e) => (e.text !== undefined && foldText(e.text).includes(t)) || (e.label !== undefined && foldText(e.label).includes(t)),
+        )
+      : [];
+  if (textCands.length > 1 && target.index == null) {
+    // AND-13: an exact (case-insensitive) text/label match wins over substring matches ("Allow"
+    // must not pick "Allow Contacts to send you notifications?"), then a clickable match comes
+    // before static text. An explicit index keeps counting over all matches in screen order.
+    const tt = t!.trim();
+    const exact = textCands.filter(
+      (e) => (e.text !== undefined && foldText(e.text.trim()) === tt) || (e.label !== undefined && foldText(e.label.trim()) === tt),
+    );
+    if (exact.length) textCands = exact;
+    textCands = [...textCands].sort((a, b) => Number(b.clickable) - Number(a.clickable));
+  }
   let cands = target.id ? idCands : textCands;
   if (target.id && cands.length > 1 && target.index == null) {
     cands = applyResourceIdHints(cands, target, (candidate) => parsed.fullByRef.get(candidate.ref));

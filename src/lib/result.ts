@@ -374,8 +374,22 @@ function withSummary(base: Record<string, unknown>, summary: string, opts?: QaTe
   return out;
 }
 
+/** Longest caller-supplied string a SUCCESS result echoes back (a note's workflow/reason, a query).
+ * Tools cap echoed input with capEchoed() so a multi-MB argument cannot inflate the response (it is
+ * repeated in the summary, the JSON fence and structuredContent) past a client's read buffer. */
+export const MAX_ECHOED_INPUT_CHARS = 2000;
+
+/** capMiddle at MAX_ECHOED_INPUT_CHARS, passing undefined through. */
+export function capEchoed<T extends string | undefined>(s: T): T {
+  return (typeof s === 'string' ? capMiddle(s, MAX_ECHOED_INPUT_CHARS) : s) as T;
+}
+
+/** Backstop for success summaries (the human text line): head + tail kept past this length. */
+export const MAX_SUCCESS_SUMMARY_CHARS = 20_000;
+
 export function qaOk(payload: Record<string, unknown>, summary: string, opts?: QaTextOptions): CallToolResult {
   const base = { ok: true, ...payload };
+  summary = capMiddle(summary, MAX_SUCCESS_SUMMARY_CHARS);
   return {
     // The fence renders `base`, not the summary/next copies: the text block already IS the summary.
     content: [{ type: 'text', text: renderText(summary, base, currentResponseMode(), opts) }],
@@ -398,13 +412,21 @@ export function qaAnnotate(result: CallToolResult, notes: string[]): CallToolRes
   return { ...result, content, structuredContent: { ...(result.structuredContent as Record<string, unknown>), notes } };
 }
 
-/** A deliberate, budgeted stop (not an error). The agent should call qa_report next. */
+/** A deliberate, budgeted stop: the requested action was NOT performed. Not a tool error (no
+ *  isError), but never `ok:true` either (GOAL-12): an agent checking `ok` must not read a skipped
+ *  tap/type/screenshot as done. Typed BUDGET_EXHAUSTED; the agent should call qa_report next. */
 export function qaStop(reason: string, payload: Record<string, unknown>): CallToolResult {
-  const base = { ok: true, stopped: true, reason, ...payload };
-  const summary = `⏹ Stopped: ${reason}\nCall qa_report to summarize what was verified.`;
+  const base = { ok: false, stopped: true, performed: false, failureCode: 'BUDGET_EXHAUSTED', reason, ...payload };
+  const summary =
+    `⏹ BUDGET_EXHAUSTED: ${reason}. This call did nothing.\n` +
+    'Call qa_report to summarize what was verified, or start a session with a larger budget ' +
+    '(qa_start_session { budget: { maxScreenshots, maxActions, maxMinutes } }) and pass its sessionId.';
   return {
     content: [{ type: 'text', text: renderText(summary, base, currentResponseMode()) }],
-    structuredContent: withSummary(base, summary, undefined, ['qa_report to summarize what was verified']),
+    structuredContent: withSummary(base, summary, undefined, [
+      'qa_report to summarize what was verified',
+      'qa_start_session { budget: {...} } for a larger budget',
+    ]),
   };
 }
 

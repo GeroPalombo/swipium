@@ -77,10 +77,16 @@ export function registerReport(server: McpServer, sessions: SessionStore): void 
             highSeverity: rep.highSeverityCount,
             toolErrors: ((rep.toolErrors as unknown[] | undefined) ?? []).length,
             outcomes: rep.outcomeTally,
-            artifacts: ((rep.artifacts as unknown[] | undefined) ?? []).length,
+            // LOG-8: the run test catalog (outcomes + finding/exploration-derived cases), the
+            // "test catalog: N case(s)" the summary prints; `outcomes` counts qa_note outcomes only.
+            testCatalog: (rep.runTestCatalog as { counts?: unknown } | undefined)?.counts,
+            // Same count as the summary's "artifacts: N" (report.json + manifest included; report.md,
+            // which holds that summary, is saved after it).
+            artifacts: session.artifacts.filter((art) => art.uri !== r.reportMdUri).length,
           },
           ...uris,
-          ...(links ? { reportLinks: links } : {}),
+          // Always present (docs/tools.md#qa_report); null without baseline/trendRoot.
+          reportLinks: links ?? null,
         },
         r.summaryText,
         { structuredSummary: 'full' },

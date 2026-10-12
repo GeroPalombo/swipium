@@ -205,13 +205,74 @@ export function classifyIosInstallFailure(message: string): FailureCode {
   return 'INSTALL_FAILED';
 }
 
+/** `xcrun` runs simctl as a child process, so the kill timer only kills xcrun and a wedged
+ *  `simctl launch` outlives the call. Reap it by its exact command line (best-effort). */
+async function reapTimedOutLaunch(udid: string, bundleId: string): Promise<void> {
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  await run('pkill', ['-KILL', '-f', `simctl launch .*${esc(udid)} ${esc(bundleId)}`], { timeoutMs: 5000 }).catch(() => undefined);
+}
+
+async function runLaunch(udid: string, bundleId: string, args: string[]): Promise<void> {
+  try {
+    await run(X, args, { timeoutMs: 30000, rejectOnNonZero: true });
+  } catch (e) {
+    if (/\(timed out\)/.test(String(e))) await reapTimedOutLaunch(udid, bundleId);
+    throw e;
+  }
+}
+
 export async function launchApp(udid: string, bundleId: string): Promise<void> {
-  await run(X, ['simctl', 'launch', udid, bundleId], { timeoutMs: 30000, rejectOnNonZero: true });
+  await runLaunch(udid, bundleId, ['simctl', 'launch', udid, bundleId]);
 }
 
 export async function launchAppWithArgs(udid: string, bundleId: string, args: Record<string, unknown>): Promise<void> {
   const argv = Object.entries(args).flatMap(([key, value]) => [`--${key}`, String(value)]);
-  await run(X, ['simctl', 'launch', '--terminate-running-process', udid, bundleId, ...argv], { timeoutMs: 30000, rejectOnNonZero: true });
+  await runLaunch(udid, bundleId, ['simctl', 'launch', '--terminate-running-process', udid, bundleId, ...argv]);
+}
+
+/** Why `simctl launch` failed, for the failure code: a shut-down simulator (NO_DEVICE), a
+ *  launch that timed out (APP_LAUNCH_FAILED, wedged launch service), a bundle id that is not
+ *  installed (BUNDLE_ID_NOT_FOUND, confirmed with `simctl get_app_container`), else an installed
+ *  app that refused to launch (APP_LAUNCH_FAILED, e.g. a device build denied by SpringBoard). */
+export async function classifyIosLaunchFailure(
+  udid: string,
+  bundleId: string,
+  error: unknown,
+): Promise<{ failureCode: FailureCode; what: string; nextSteps: string[] }> {
+  const msg = String((error as Error)?.message ?? error);
+  // simctl errors are multi-line; the first line plus the most telling clause is enough.
+  const short = msg.replace(/\s+/g, ' ').trim().slice(0, 300);
+  if (/current state: Shutdown|Unable to lookup in current state|device is not booted|not booted/i.test(msg)) {
+    return {
+      failureCode: 'NO_DEVICE',
+      what: `Launch failed: simulator ${udid} is not booted (it was shut down). ${short}`,
+      nextSteps: [
+        'Boot it again with qa_ios { action:"boot" } or qa_prepare_ios_target, then retry. A managed WDA stopped with it: run qa_wda { action:"setup" }, then qa_wda { action:"attach" }.',
+      ],
+    };
+  }
+  if (/\(timed out\)/.test(msg)) {
+    return {
+      failureCode: 'APP_LAUNCH_FAILED',
+      what: `Launch of ${bundleId} timed out after 30 s: the simulator's launch service is not responding. ${short}`,
+      nextSteps: [`Shut the simulator down and boot it again (xcrun simctl shutdown ${udid}, then qa_ios { action:"boot" }), then retry.`],
+    };
+  }
+  const installed = await isInstalled(udid, bundleId).catch(() => undefined);
+  if (installed === false) {
+    return {
+      failureCode: 'BUNDLE_ID_NOT_FOUND',
+      what: `Launch failed: ${bundleId} is not installed on simulator ${udid}.`,
+      nextSteps: ['Install the simulator .app (qa_ios { action:"install" }), or pass the correct bundleId.'],
+    };
+  }
+  return {
+    failureCode: 'APP_LAUNCH_FAILED',
+    what: `Launch of ${bundleId} failed although it is installed: ${short}`,
+    nextSteps: [
+      'If the .app is a device (iphoneos) build, rebuild it for the simulator SDK and reinstall; otherwise check qa_ios { action:"logs" } for the launch error.',
+    ],
+  };
 }
 
 export async function terminateApp(udid: string, bundleId: string): Promise<void> {
@@ -222,6 +283,13 @@ export async function terminateApp(udid: string, bundleId: string): Promise<void
 export async function isInstalled(udid: string, bundleId: string): Promise<boolean> {
   const r = await run(X, ['simctl', 'get_app_container', udid, bundleId], { timeoutMs: 10000 });
   return r.code === 0 && r.stdout.trim().length > 0;
+}
+
+/** The installed .app bundle path of `bundleId` on the simulator, or null when not installed. */
+export async function appContainer(udid: string, bundleId: string): Promise<string | null> {
+  const r = await run(X, ['simctl', 'get_app_container', udid, bundleId, 'app'], { timeoutMs: 10000 });
+  const p = r.stdout.trim();
+  return r.code === 0 && p ? p : null;
 }
 
 /** Erase requires the device be shut down first. */
@@ -277,6 +345,20 @@ export async function privacySet(udid: string, action: 'grant' | 'revoke' | 'res
   const args = ['simctl', 'privacy', udid, action, service];
   if (bundleId) args.push(bundleId);
   await run(X, args, { timeoutMs: 15000, rejectOnNonZero: true });
+}
+
+/** The URL schemes a built .app registers (CFBundleURLTypes[].CFBundleURLSchemes), [] when none. */
+export async function appUrlSchemes(appPath: string): Promise<string[]> {
+  try {
+    const r = await run('plutil', ['-extract', 'CFBundleURLTypes', 'json', '-o', '-', `${appPath}/Info.plist`], { timeoutMs: 8000 });
+    if (r.code !== 0) return [];
+    const types = JSON.parse(r.stdout) as Array<{ CFBundleURLSchemes?: unknown }>;
+    return (Array.isArray(types) ? types : []).flatMap((t) =>
+      Array.isArray(t?.CFBundleURLSchemes) ? t.CFBundleURLSchemes.filter((s): s is string => typeof s === 'string') : [],
+    );
+  } catch {
+    return [];
+  }
 }
 
 /** Read CFBundleIdentifier from a built .app via plutil. */

@@ -3,7 +3,7 @@
 
 import type { DumpOptions, Driver } from '../drivers/Driver.js';
 import type { LastSnapshot, Session } from '../session/store.js';
-import { parseSnapshot, signature, subtreeLabel, toElement, type ParsedSnapshot, type RawNode } from './parse.js';
+import { isTextFieldClass, parseSnapshot, signature, subtreeLabel, toElement, type ParsedSnapshot, type RawNode } from './parse.js';
 import { screenFingerprint } from './settle.js';
 import { samePixels, type PixelFingerprint } from '../lib/screenFingerprint.js';
 import { runWithSignal } from '../lib/abortScope.js';
@@ -95,8 +95,25 @@ function shift(a: RawNode, b: RawNode): number {
   );
 }
 
+/** Same element in (nearly) the same place whose structural key changed (its text changed in place). */
 function sameSlot(a: RawNode, b: RawNode): boolean {
-  return a.cls === b.cls && a.id === b.id && sameLabel(a, b) && a.bounds.every((v, i) => Math.abs(v - b.bounds[i]) <= 8);
+  if (a.cls !== b.cls || a.id !== b.id) return false;
+  // A text field whose value changed in place (GOAL-30): its label can become the typed value
+  // (iOS) and a clear button can narrow it, so only the row it sits in must match.
+  if (isTextFieldClass(a.cls)) {
+    const [ax1, ay1, ax2, ay2] = a.bounds;
+    const [bx1, by1, bx2, by2] = b.bounds;
+    // Same row, and horizontally overlapping by at least half the narrower width (fields side by
+    // side never overlap; a clear button can take ~48dp, more than any fixed px tolerance).
+    const overlap = Math.min(ax2, bx2) - Math.max(ax1, bx1);
+    return Math.abs(ay1 - by1) <= 8 && Math.abs(ay2 - by2) <= 8 && overlap * 2 >= Math.min(ax2 - ax1, bx2 - bx1);
+  }
+  if (!a.bounds.every((v, i) => Math.abs(v - b.bounds[i]) <= 8)) return false;
+  // Same own text: the subtree label must match too (a scrolled list row). Changed own text: only an
+  // element with an id is still the same one; an id-less element in the same spot on a new screen
+  // is a different element (IOS-10: an unlabeled Settings row took over "Información"'s ref).
+  if (a.text === b.text && a.desc === b.desc) return (a.label ?? '') === (b.label ?? '');
+  return !!a.id;
 }
 
 /** A node without its own text/desc (a list row container) must still show the same label: after a

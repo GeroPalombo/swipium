@@ -433,29 +433,47 @@ async function runFeatureTestJob(sessions: SessionStore, session: Session, job: 
 
     // 5. Report.
     let reportUri: string | undefined;
+    let reportMdUri: string | undefined;
     try {
-      const rep = await generateSessionReport(sessions, session, { format: 'summary', includeCurrentDump: true });
+      // GOAL-21: a feature run that executed none of its cases is not a pass (never SHIP / COVERED).
+      const executedCases = merge.delta.casesPassed + merge.delta.casesFailed;
+      const rep = await generateSessionReport(sessions, session, {
+        format: 'summary',
+        includeCurrentDump: true,
+        ...(executedCases === 0 ? { notTested: { reason: `0 of ${merge.cases.length} "${liveScope.title}" case(s) were executed` } } : {}),
+      });
       reportUri = rep.reportUri;
+      reportMdUri = rep.reportMdUri;
     } catch (e) {
       log('warn', 'feature test report generation failed', { err: String(e) });
     }
 
     const state = blocked ? 'blocked' : merge.delta.casesFailed > 0 ? 'completed_with_findings' : 'completed';
-    const nextRecommendedAction = blocked
+    const budgetStopped = ex.stoppedReason.startsWith('session budget:');
+    const nextRecommendedAction = budgetStopped
       ? {
-          tool: 'qa_continue_from_blocker',
-          args: { sessionId: session.id, kind: 'credentials' },
-          why: 'Provide setup to unblock the feature, then re-run qa_test_feature',
+          tool: 'qa_start_session',
+          args: { projectRoot: session.root, budget: { maxActions: 120, maxScreenshots: 80, maxMinutes: 60 } },
+          why: `The session budget is used up (${ex.stoppedReason.replace(/^session budget: /, '')}). Start a session with a larger budget, then re-run qa_test_feature.`,
         }
-      : reportUri
-        ? { tool: 'qa_get_artifact', args: { uri: reportUri }, why: 'Open the focused feature report' }
-        : { tool: 'qa_report', args: { sessionId: session.id }, why: 'Summarize the focused run' };
+      : blocked
+        ? {
+            tool: 'qa_continue_from_blocker',
+            args: { sessionId: session.id, kind: 'credentials' },
+            why: 'Provide setup to unblock the feature, then re-run qa_test_feature',
+          }
+        : (reportMdUri ?? reportUri)
+          ? { tool: 'qa_get_artifact', args: { uri: reportMdUri ?? reportUri }, why: 'Open the focused feature report (report.md)' }
+          : { tool: 'qa_report', args: { sessionId: session.id }, why: 'Summarize the focused run' };
 
     upd({
-      status: blocked ? 'failed' : 'done',
+      // GOAL NEW-R3-3: the job ran to its end; a blocked feature run is result.state "blocked" (as
+      // qa_explore reports it), not a failed job. Job "failed" is kept for errors that stop the job.
+      status: 'done',
       progress: state,
       result: {
         state,
+        ...(budgetStopped ? { failureCode: 'BUDGET_EXHAUSTED' } : {}),
         feature: a.feature,
         featureId: liveScope.featureId,
         title: liveScope.title,

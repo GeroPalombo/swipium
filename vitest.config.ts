@@ -14,5 +14,7 @@ export default defineConfig({
     hookTimeout: 30_000,
     // Agent worktrees (.claude/worktrees) hold other checkouts of this repo; never run their tests.
     exclude: [...configDefaults.exclude, '.claude/**'],
+    // Every test file gets a throwaway HOME so no test writes into the real ~/.swipium.
+    setupFiles: ['./test/setupFakeHome.ts'],
   },
 });

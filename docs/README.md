@@ -4,10 +4,10 @@ Public documentation for the Swipium MCP server. Start with the top-level [READM
 
 ## Guides
 
-- [Concepts](concepts.md): sessions, jobs and cancellation, project root, consent (prompts, the `requiresConsent` re-call, operator pre-approval for headless runs and `init --trust-local`), secrets and redaction, screens, refs and settling (stable and stale refs), iOS modes (visual-only vs WebDriverAgent), devices, and a glossary of terms such as app map, flow, POM suite, and `@eN` refs.
-- [Flows](flows.md): writing, running, and repairing replayable flows, with an example, automatic waits, batching steps with an inline `flowYaml`, variables, and CI policy.
+- [Concepts](concepts.md): sessions, jobs and cancellation, project root, consent (prompts, the `requiresConsent` re-call, operator pre-approval for headless runs and `init --trust-local`), secrets and redaction, screens, refs and settling (stable and stale refs), iOS modes (visual-only vs WebDriverAgent), devices (auto-binding and the `SWIPIUM_DEVICE` pin), and a glossary of terms such as app map, flow, POM suite, and `@eN` refs.
+- [Flows](flows.md): writing, running, and repairing replayable flows, with an example, automatic waits, batching steps with an inline `flowYaml`, variables, the POM suite layout with `swipium suite` exit codes, and CI policy.
 - [MCP Server](mcp-server.md): the server command, per-client setup (Claude Code and its plugin, Codex, Gemini CLI, Cursor, VS Code, Claude Desktop, Windsurf, headless runs), the swipium-qa skill, server settings (`SWIPIUM_MAX_WAIT_MS`, `SWIPIUM_TOOLS`, `SWIPIUM_ANDROID_DUMPER`, emulator boot), protocol versions (2025-06-18, 2025-11-25 and 2026-07-28), what the model sees, server behavior, verification, debugging, and troubleshooting.
-- [CI Reports](ci-reports.md): `swipium report` output formats (JUnit, SARIF, GitHub summary, Markdown, JSON), a GitHub Actions recipe with a headless agent step, pre-approving consents in CI, and the release-gate policy.
+- [CI Reports](ci-reports.md): `swipium report` output formats (JUnit, SARIF, GitHub summary, Markdown, JSON), a GitHub Actions recipe with a headless agent step, pre-approving consents in CI, the gate verdict in each format, and the release-gate policy.
 
 ## Reference
 

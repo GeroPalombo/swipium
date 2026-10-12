@@ -60,7 +60,12 @@ export function registerResolveArtifact(server: McpServer, sessions: SessionStor
 
       if (result.failureCode) {
         return qaFail(result.failureCode, {
-          what: result.failureCode === 'NO_BUILD_ARTIFACT' ? `No installable artifact found under ${root}` : result.warnings[0],
+          what:
+            path?.trim() && result.warnings[0]
+              ? result.warnings[0] // explicit path: say what is wrong with THAT path, not "nothing under root"
+              : result.failureCode === 'NO_BUILD_ARTIFACT'
+                ? `No installable artifact found under ${root}`
+                : result.warnings[0],
           nextSteps: [
             ...(result.warnings.length ? result.warnings : []),
             'Build from source: qa_build { mode:"plan" } > qa_build { mode:"run" }.',

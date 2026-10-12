@@ -20,3 +20,14 @@ export function stableHash(value: unknown): string {
     .update(JSON.stringify(sortKeys(value)) ?? '')
     .digest('hex');
 }
+
+/** Longest slug used as one path component. Filesystems cap a component at 255 bytes, and a raw
+ *  ENAMETOOLONG from a long title/name broke suites for good (TOOL NEW-1). */
+export const MAX_FILE_SLUG = 80;
+
+/** Cap a filename slug: unchanged when short, else a prefix plus a short stable hash of the whole. */
+export function capSlug(slug: string, max = MAX_FILE_SLUG): string {
+  if (slug.length <= max) return slug;
+  const h = createHash('sha256').update(slug).digest('hex').slice(0, 8);
+  return `${slug.slice(0, max - 9).replace(/[-_.]+$/, '')}-${h}`;
+}

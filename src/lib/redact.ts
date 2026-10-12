@@ -7,8 +7,18 @@ import type { RawNode } from '../snapshot/parse.js';
 
 const SECRET_RE = /password|passwd|otp|one.?time|pin\b|cvv|card.?number|secret|token|security.?code/i;
 
-export function isSecureNode(n: Pick<RawNode, 'id' | 'desc' | 'attrs'>): boolean {
-  return n.attrs?.password === 'true' || SECRET_RE.test(n.id) || SECRET_RE.test(n.desc);
+/** Editable input classes (same set as snapshot/parse.ts TEXT_FIELD_CLASS_RE; not imported, since
+ *  parse.ts imports this module). */
+const INPUT_CLASS_RE =
+  /EditText|AutoCompleteTextView|XCUIElementType(?:Secure)?TextField\b|XCUIElementTypeSearchField\b|XCUIElementTypeTextView\b/;
+
+/** A real secure INPUT: a password field (Android password="true", iOS SecureTextField), or an
+ *  input field whose id / label names a secret. A button, row or label that merely says
+ *  "Passwords" / "Forgot password?" is not (IOS NEW-2: it withheld screenshots of Settings). */
+export function isSecureNode(n: Pick<RawNode, 'id' | 'desc' | 'attrs'> & { cls?: string }): boolean {
+  if (n.attrs?.password === 'true') return true;
+  const cls = n.cls ?? n.attrs?.class ?? '';
+  return INPUT_CLASS_RE.test(cls) && (SECRET_RE.test(n.id) || SECRET_RE.test(n.desc));
 }
 
 export type Redactor = ((s?: string) => string | undefined) & {
@@ -184,4 +194,28 @@ export function redactDeep<T>(value: T, secretsOrRedactor: Iterable<string> | Re
     return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, walk(x)]));
   };
   return walk(value) as T;
+}
+
+/** LOG-5: credential SHAPES scrubbed from log artifacts (logcat, build/Metro/WDA logs) even when
+ * the value was never registered as a session secret: bearer tokens, JWTs, `password=` /
+ * `api_key=` style pairs and well-known key formats (AWS, Google, Stripe, GitHub, Slack). Applied
+ * to log text only; snapshots and reports keep the registered-secrets rule. */
+const LOG_CREDENTIAL_PATTERNS: Array<[RegExp, string]> = [
+  [/\b(Bearer|Basic)\s+[A-Za-z0-9\-._~+/]{8,}=*/g, `$1 ${REDACTED}`],
+  [/\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*/g, REDACTED],
+  [
+    /\b((?:pass(?:word|wd)?|pwd|secret|client[_-]?secret|(?:access|refresh|id|auth)?[_-]?token|api[_-]?key|apikey|x-api-key|private[_-]?key)["']?\s*[:=]\s*["']?)(?!«)[^\s"'&,;)}\]]+/gi,
+    `$1${REDACTED}`,
+  ],
+  [/\bAKIA[0-9A-Z]{16}\b/g, REDACTED],
+  [/\bAIza[0-9A-Za-z_-]{35}\b/g, REDACTED],
+  [/\b(?:sk|pk|rk|tok)_(?:live|test)_[A-Za-z0-9]{8,}\b/g, REDACTED],
+  [/\bgh[pousr]_[A-Za-z0-9]{30,}\b/g, REDACTED],
+  [/\bxox[abprs]-[A-Za-z0-9-]{10,}\b/g, REDACTED],
+];
+
+export function scrubLogCredentials(text: string): string {
+  let out = text;
+  for (const [re, rep] of LOG_CREDENTIAL_PATTERNS) out = out.replace(re, rep);
+  return out;
 }

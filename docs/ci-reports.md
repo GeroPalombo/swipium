@@ -25,7 +25,7 @@ on committed flows (see [flows.md](flows.md)); that still runs through an MCP cl
 ```text
 swipium report --format <junit|sarif|github-summary|markdown|json>
                [--root <dir>] [--latest | --session <id> | --report <file>]
-               [--out <file>] [--fail-on-gate]
+               [--out <file>] [--max-age <minutes>] [--fail-on-gate]
 ```
 
 - **Which report it reads.** It renders the report JSON that `qa_report` (or the end of a
@@ -36,18 +36,24 @@ swipium report --format <junit|sarif|github-summary|markdown|json>
   the JSON: the same summary text an agent reads (`reportMdUri`). The CLI renders from the JSON,
   which is unchanged, so CI scripts need no change.
 - **`--latest`** is the default. It picks the newest session for `--root` (default: the current
-  directory) that has a saved report, and skips sessions that never produced one.
+  directory) that has a saved report, and skips sessions that never produced one. When newer
+  sessions saved no report (the latest agent step probably failed before `qa_report`), it prints a
+  warning on stderr naming them and the older session it renders.
+- **`--max-age <minutes>`** refuses (exit 2) a report saved longer ago than that, so a job never
+  publishes an earlier run's report when this run's agent step produced none. Use it on persistent
+  or self-hosted runners, where `~/.swipium/runs` survives between jobs.
 - **`--session <id>`** picks one session. **`--report <file>`** renders a report JSON you copied
   yourself, for example from a downloaded artifact.
 - **Output.** The file goes to stdout, or to `--out` (parent directories are created). The verdict
-  line `Release gate: PASS|BLOCK: <reason>` always goes to stderr.
+  line `Release gate: PASS|BLOCK: <reason> (session <id>, report saved <ISO time>)` always goes to
+  stderr.
 - **Exit codes:**
 
   | Code | Meaning |
   | --- | --- |
   | `0` | The file was written. The gate passed, or it blocked but `--fail-on-gate` was not set. |
   | `1` | `--fail-on-gate` was set and the release-gate policy blocks. |
-  | `2` | Usage error, unknown format, no session or report found, or the file is not a Swipium report. |
+  | `2` | Usage error, unknown format, no session or report found, the file is not a Swipium report, the report is older than `--max-age`, `.swipium/policy.json` is invalid, or the format could not be rendered. |
 
 - **Secrets.** Raw secret values are never written to disk, so the CLI can't scrub them later.
   Instead, `qa_report` deep-redacts the whole report with the session's registered secrets before
@@ -235,6 +241,9 @@ Notes on the agent step:
   (`test_this_plan`) for the privileged steps it plans, and every app install is among them. With
   nobody to approve and no pre-approval, it ends blocked. The low-level path above attaches to the
   running emulator, and an app that is already installed skips the install consent.
+- **Refused consents keep the session.** A `CONSENT_*` refusal carries the `sessionId` of the call
+  (including the session `qa_test_this` created before it asked), so the agent can still record it
+  with `qa_note` and save the report with `qa_report`.
 - **Testing more.** `qa_explore { sessionId }` can follow the smoke. By default it skips
   destructive-looking actions without asking. It asks for consent only when a call names one
   explicit `destructiveCandidate` to run, which the settings above would refuse.
@@ -267,23 +276,37 @@ Keep the list as short as the prompt needs:
   scripts and others) also need `SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE=1`. A `test_this_plan` that
   includes a build is only covered when `build_from_source` is pre-approved that way too. Building
   in the workflow, as the recipe does, avoids that.
+- Pre-approval is not tied to a device: a listed action is approved for whatever device the plan
+  picks. On a runner with more than one emulator, or shared between jobs, also set
+  `SWIPIUM_DEVICE` (for example `"SWIPIUM_DEVICE": "emulator-5554"`, or an AVD name) in the same
+  `env`. Every plan then targets that device, and a call that names another one is refused with
+  `DEVICE_PINNED` ([Device pin](concepts.md#device-pin)).
 - Installing with `adb` in the workflow is still the safest option: nothing the model chooses gets
   approved.
 
 ## What each file contains
 
-**JUnit** has two suites. The first holds one testcase per recorded workflow, the second one per
-finding.
+**JUnit** always has two suites. The first holds one testcase per recorded workflow, the second one
+per finding (empty, with `tests="0"`, when there are none).
+
+- A run that never reached the app, or reached it but exercised nothing, adds a failed testcase
+  `swipium: not tested` to the workflows suite (see [Release-gate policy](#release-gate-policy)).
 
 - A workflow `fail` becomes `<failure>`. `blocked`, `skipped` and `not_applicable` become
   `<skipped>`.
+- An agent's `qa_note` pass that no Swipium check or device evidence backs is
+  `<skipped message="unverified manual claim (…)">`, never a passing testcase.
 - A high-severity finding becomes `<failure>`. Medium and low findings pass, with the detail in
   `<system-out>`.
+- A `WDA_UNREACHABLE` finding is a tool or environment item, not an app defect: the testcase is
+  named `[high] tool/wda_unreachable` and is `<skipped message="tool / environment failure, not an
+  app defect (the app was not judged): WDA_UNREACHABLE">`. It still fails the gate (see
+  [Release-gate policy](#release-gate-policy)), so the job fails without a `<failure>` for it.
 - A failure that the release-gate policy only warns on (`warnOn`) or suppresses (`ignoreKnown`)
   becomes `<skipped message="policy warned|suppressed (release gate not blocked): …">`, so a gate
   PASS never shows up as a failed test.
-- The gate verdict (`swipium.releaseGate`) and reason (`swipium.releaseGate.reason`) are testsuite
-  `<properties>`.
+- The gate verdict (`swipium.releaseGate`, `pass` or `fail`) and reason
+  (`swipium.releaseGate.reason`) are testsuite `<properties>`.
 - Evidence URIs appear in each testcase's `<system-out>`.
 - XML-illegal control characters, such as ANSI escapes and NULs from logcat, are replaced with
   U+FFFD, so strict parsers accept the file.
@@ -295,7 +318,13 @@ real file Swipium can justify:
 1. the app-map source file of the screen or workflow involved, when `.swipium/app-map.json` exists
    (see `qa_app_map_update`);
 2. otherwise the project manifest, in this order: `app.json`, `package.json`, `pubspec.yaml`, the
-   Gradle app module, an iOS `Info.plist`, then `README.md`.
+   Gradle app module, an iOS `Info.plist`, then `README.md`. Paths inside build products (`*.app`,
+   `*.xcarchive`, `*.framework`, `*.appex`, `*.bundle`, `*.dSYM`, `build/`, `DerivedData/`,
+   `.build/`, `dist/`, `Pods/`) are skipped, because they are usually not committed and GitHub
+   would drop the alert;
+3. otherwise an Xcode project (`ios/*.xcodeproj/project.pbxproj`, then
+   `*.xcodeproj/project.pbxproj`), then the first non-hidden file in the root (sorted), then
+   `.gitignore`. `package.json` is used as a last resort only when the root holds no file at all.
 
 Other SARIF details:
 
@@ -303,7 +332,10 @@ Other SARIF details:
   anchor reads `apps/mobile/app.json`. Each location has `uriBaseId: %SRCROOT%` and a region on
   line 1.
 - The level follows severity: high is `error`, medium is `warning`, low is `note`. Failed workflows
-  are `error`.
+  are `error`, except a Swipium or tool limitation (category `mcp_limitation`), which is `note`: it
+  is not a defect in your code. A `WDA_UNREACHABLE` finding is `note` too, with
+  `properties.layer:"tool"`.
+- A run that never reached the app is gated (see below) but adds no SARIF result.
 - Screenshots and other `swipium://` evidence go in `relatedLocations` and `properties`.
 - Each result carries its own `partialFingerprints.primaryLocationLineHash`. Volatile ids and
   timestamps are removed before hashing. This keeps distinct results on the same manifest line from
@@ -317,10 +349,36 @@ See GitHub's
 and
 [Uploading a SARIF file](https://docs.github.com/en/code-security/code-scanning/integrating-with-code-scanning/uploading-a-sarif-file-to-github).
 
-**GitHub summary** contains the verdict, the gate line, finding counts, the top findings, failed or
-blocked workflows, and links to the evidence. Text that comes from the run is escaped so it can't
-inject Markdown or HTML: the app id, device name, policy reason and next action. GitHub rejects a
-step summary over 1 MiB, so the summary stops at about 900 KB and ends with a truncation note.
+**GitHub summary** contains the verdict, the gate line (`✅ PASS` or `❌ BLOCK`), finding counts,
+the top findings, failed or blocked workflows, and the evidence. Without an app id or device the
+header says `(not resolved)` and `(no device bound)` instead of placeholders. Evidence lists
+screenshots and recordings only, never the report's own exports, as `swipium://` paths in code spans, not links, because GitHub can't open them: read them with `qa_get_artifact`,
+or find the files in the session folder under `~/.swipium/runs/` (the recipe uploads it as the
+`swipium-runs` artifact). Text that comes from the run is escaped so it can't inject Markdown or
+HTML: the app id, device name, policy reason and next action. `@mentions`, `://` URLs and `www.`
+links in that text get a zero-width space, so they don't ping anyone or turn into links. ANSI
+escapes and other control characters (except tab and newlines) are stripped, in the Markdown export
+and `report.md` too. The Markdown export also escapes `<` outside code blocks (so run text can't
+inject HTML such as `<img onerror>`; a generated `<redacted>` value shows as `&lt;redacted>`), and
+escapes pipes and flattens newlines in table cells, so a note reason can't break the Workflows
+table. The PR summary (`prSummary`) lists device evidence only as well, and a not-tested run with
+none says `Evidence: none recorded`. The high, medium and low counts leave out tool and
+environment findings (`WDA_UNREACHABLE`, shown as `high (tool/environment)`) and add a
+`· N tool/environment` count. An unverified `qa_note` pass claim is tallied as
+`pass (unverified)=1` on the `Workflows:` line (not `pass=1`) and listed among the problems; the
+Markdown export's Workflows table says `pass (unverified)` too, and the Playwright export marks it
+`skipped`. `outcomeTally` in `report.json` is unchanged. GitHub
+rejects a step summary over 1 MiB, so the summary stops at about 900 KB and ends with a truncation
+note.
+
+**The gate verdict in each format:**
+
+| Where | Pass | Block |
+| --- | --- | --- |
+| CLI stderr verdict line | `PASS` | `BLOCK` |
+| JUnit `swipium.releaseGate` property | `pass` | `fail` |
+| SARIF `runs[0].properties.releaseGateVerdict` | `pass` | `block` |
+| GitHub summary gate line | `✅ PASS` | `❌ BLOCK` |
 
 ## From inside an agent session (no CLI)
 
@@ -339,6 +397,64 @@ finding:
 - A failed workflow's code is the failure code of its first failing step, else its category, else
   `UNKNOWN`.
 - A finding's code is its failure code, else its kind.
+- **A run that tested nothing fails the gate.** When the report says the app was never reached
+  (`notTested` with `reachedApp:false`: the run stopped before the app, for example on a build,
+  Metro or device blocker, or nothing at all was exercised), the gate adds a failed workflow
+  `swipium: not tested` whose code is the blocker's code, or `NOT_TESTED`, with the reason as its
+  text. So `--fail-on-gate` exits 1 on a run that tested nothing. The same holds for a run that
+  reached the app but exercised no workflow (for example a launch that ended `blocked` on
+  `BLANK_SCREEN`, or only a launch and a screenshot plus blocked notes): its risk is `caution`, but
+  `notTested` is `{reachedApp:true, exercised:false}` and the gate adds the same failed workflow
+  with the blocked note's code (`BLANK_SCREEN`, `METRO_REQUIRED`, ...) or `NOT_TESTED`. A run with
+  at least one passing outcome, such as a `launch_smoke` pass, is not affected. To only warn
+  instead, list the code in `warnOn` (for example `"not_tested"`, `"blank_screen"` or
+  `"build_failed"`). Reports saved before this change carry no `exercised` field and gate as before.
+- **Notes never upgrade an untested run.** A launch or a screenshot only shows the app was
+  reached. "A launch" means a launch of the app under test that reached the foreground (a prepare
+  call, `qa_smoke`, or `qa_ios launch` of the session's own app; launching Safari or Settings, or a
+  launch that failed, doesn't count), and a screenshot or recording counts only when the app under
+  test was in front (the home screen or another app is not evidence). Exercising the app takes
+  more: a pass or fail outcome from Swipium (smoke, flows, explore, audit), an exploration, an
+  action taken while the app under test was in front (a tap on SpringBoard or another app, a press
+  home, or a `qa_visual` tap doesn't count, and first-run actions count only with the app in
+  front), or a finding. An agent's `qa_note` pass counts only on top of that. A pass note on top of
+  only a launch or a screenshot is an unverified claim: risk `caution`, app `UNVERIFIED`, and the
+  gate fails with `NOT_TESTED` ("only an unverified qa_note pass claim on a launched app ... run
+  qa_smoke or a flow"); a pass note with no evidence at all leaves the run not tested (`block`). A
+  `blocked` or `skipped` note alone, or a fail note under `mcp_limitation` (such as "baseline
+  failed: device offline"), doesn't count, and the report's own exports are not evidence.
+- **The verdict sticks.** A not-tested verdict is saved on the session, so every later `qa_report`
+  call keeps its reason and code (a Metro-blocked run stays `METRO_REQUIRED`, not `NOT_TESTED`)
+  until the app is retested after it: a Swipium outcome (smoke, flows, explore) or an exploration,
+  or an agent outcome note together with an action taken with the app in front after the marker. A
+  recorded action alone, a finding, a launch, or a screenshot plus a note don't clear it.
+  Without a `qa_test_this` marker, the code comes from the first blocked note whose reason starts
+  with a failure code (`METRO_REQUIRED: …`), else `NOT_TESTED`.
+- **Refused consent.** A run that tested nothing after a refused consent gates with the refusal's
+  code instead of `NOT_TESTED`: `CONSENT_CANCELLED`, `CONSENT_DECLINED` or `CONSENT_REFUSED` (also
+  when the agent's blocked note doesn't start with a code). Use `consent_cancelled`,
+  `consent_declined` or `consent_refused` in `warnOn` or `blockOn`.
+- **WebDriverAgent failures.** A `WDA_UNREACHABLE` finding is exported as a tool or environment item
+  (JUnit skipped, SARIF note, its own count in the GitHub summary) and doesn't count as a
+  high-severity app finding in the release risk, but the run still never passes the gate on it
+  (gate code `WDA_UNREACHABLE`).
+- With no failures the reason says what actually ran:
+  - `all required flows passed` only when every flow verdict is a pass;
+  - `no failures recorded (N of M workflow(s) passed; the rest were blocked or skipped)`;
+  - `no failures recorded (launch smoke only, 0 flows run)` (`launch_smoke` and findings are not
+    flows);
+  - `no failures recorded (0 workflows run)` when the report has no workflow outcomes at all.
+- A flow stopped or skipped by the session budget is a skipped workflow (`BUDGET_EXHAUSTED`), not a
+  failure, but it was not covered: the risk is at least `caution`, coverage is `PARTIAL` (or
+  `BLOCKED` when something else blocked too), and the report names the flows and says to re-run
+  with a larger `qa_start_session { budget }`. A blocked exploration (blockers, only unsafe actions
+  left, a session-budget stop, or `time budget reached` on `maxDurationMs`) is also at least `caution`: coverage `BLOCKED` never comes with `ship`.
+- A `qa_flow_run` result is recorded as that flow's outcome, like a saved flow in `qa_smoke`.
+- A Swipium-generated flow that fails on a locator step is reported as automation drift (coverage
+  `BLOCKED`, risk `caution`), not an app failure, but the gate still counts it as a failed workflow
+  with its step's code (for example `ELEMENT_NOT_FOUND`), because the flow is broken. List that code
+  in `warnOn` to only warn, or repair the flow with `qa_flow_repair`. A `blocked` workflow, such as
+  one missing test data, never fails the gate.
 
 ```json
 {
@@ -350,7 +466,15 @@ finding:
 
 Each failure is checked in this order:
 
-1. **No policy file, or one that doesn't parse**: every failure blocks.
+1. **No policy file**: every failure blocks. **An invalid one** (not JSON, not an object, or a list
+   field that isn't an array of strings) is refused by the CLI with
+   `❌ INVALID_ARGUMENT: <path> <problem>` and exit 2, before anything is rendered. `qa_report`
+   exports inside an agent session fall back to "every failure blocks" instead, and the `qa_report`
+   summary says so in a `⚠ release-gate policy: …` line. **Unknown keys** (a typo such as
+   `"warnon"`) don't make the file invalid: they are ignored, the CLI prints
+   `⚠ <path>: unknown key(s) "warnon" ignored. Known keys: …` on stderr, and `qa_report` adds the
+   same warning line. The known keys are `blockOn`, `warnOn`, `ignoreKnown`, `ciAllowMutations` and
+   `$schema`.
 2. **`ignoreKnown`**: an exact code match (case and punctuation ignored) is suppressed.
 3. **`blockOn`**: a matching code blocks. An empty or missing `blockOn` blocks every failure. The
    token `failed_required_flow` matches every failure, so with it in `blockOn`, `warnOn` never

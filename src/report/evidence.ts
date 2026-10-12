@@ -57,6 +57,9 @@ function isAiVisualWorkflow(workflow: string): boolean {
 export function evidenceKindForNote(note: EvidenceNote): EvidenceKind {
   if (note.evidenceKind === 'structured_locator' || note.method === 'structured') return 'structured_locator';
   if (note.evidenceKind === 'ai_visual_evidence') return 'ai_visual_evidence';
+  // An explicit manual_review (qa_visual assert: an agent-asserted screenshot, IOS-16) stays manual
+  // even though it carries method:'visual' / verifiedVisually; it is not a visual match.
+  if (note.evidenceKind === 'manual_review') return 'manual_review';
   if (note.evidenceKind === 'ocr_locator' || note.evidenceKind === 'ocr_text' || note.method === 'ocr') return 'ocr_locator';
   if (note.evidenceKind === 'visual_match' || note.method === 'visual' || note.verifiedVisually)
     return isAiVisualWorkflow(note.workflow) ? 'ai_visual_evidence' : 'visual_match';

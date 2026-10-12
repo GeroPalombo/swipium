@@ -108,7 +108,8 @@ describe('K3 consent and needs-input prompts', () => {
       explain: `Needs these steps:\n${cmd}\nApprove to start.`,
     });
     const sc = r.structuredContent as Record<string, unknown>;
-    expect(sc.explain).toBe('Needs these steps:\nApprove to start.');
+    // SET-19: the intro points at exactCommand instead of ending in a dangling colon.
+    expect(sc.explain).toBe('Needs these steps (listed in exactCommand).\nApprove to start.');
     expect(sc.exactCommand).toBe(cmd);
     const text = textOf(r);
     expect(text.split('adb install app.apk')).toHaveLength(2); // once, under "Will run:"
@@ -186,6 +187,8 @@ describe('C2 report head + blocked fix', () => {
     try {
       const sessions = new SessionStore();
       const session = sessions.create(root);
+      // The app was reached (a launch): a run with no evidence at all is BLOCK / NOT_RUN (E2E NEW-1).
+      sessions.milestone(session, 'app_launch_end');
       const run = async (state: 'completed' | 'blocked', code?: string) => {
         const job = sessions.createJob(session, 'test_this:execute');
         const finish = createFinisher({

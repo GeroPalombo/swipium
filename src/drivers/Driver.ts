@@ -46,6 +46,10 @@ export interface Driver {
   isInstalled(pkg: string): Promise<boolean>;
   isRunning(pkg: string): Promise<boolean>;
   launchApp(pkg: string): Promise<void>;
+  /** Cold relaunch into a FRESH task (Android: `am start -S` with NEW_TASK|CLEAR_TASK), so another
+   *  package's activity left on top of the app's task (e.g. Settings search) does not resurface.
+   *  Optional: restart callers fall back to terminateApp + launchApp. */
+  relaunchCleanTask?(pkg: string): Promise<void>;
   launchAppWithArgs?(pkg: string, args: Record<string, unknown>): Promise<void>;
   terminateApp(pkg: string): Promise<void>;
   clearData(pkg: string): Promise<void>;
@@ -59,14 +63,19 @@ export interface Driver {
   imeState?(): Promise<ImeState>;
   /** Hide the soft keyboard if shown (never a blind BACK). Resolves true when it acted. */
   hideKeyboard?(): Promise<boolean>;
-  /** Dump the last `lines` of logcat (optionally only lines matching `grep`). Evidence, not inference. */
-  logcat(lines: number, grep?: string): Promise<string>;
+  /** Dump the last `lines` of logcat (optionally only lines matching `grep`; `buffer`: one logcat
+   *  buffer such as "crash", default buffers otherwise). Evidence, not inference. */
+  logcat(lines: number, grep?: string, opts?: { buffer?: string }): Promise<string>;
   /** Read airplane-mode flag (global setting). */
   airplaneOn(): Promise<boolean>;
   /** Toggle airplane mode via `cmd connectivity airplane-mode`. */
   setAirplane(on: boolean): Promise<void>;
   /** Foreground package/activity owner, the basis of the system/app/foreign classifier. */
   foregroundOwner(): Promise<string>;
+  /** Root package (realActivity, else affinity) of the task that holds the resumed activity, when the backend can
+   *  tell (Android `dumpsys activity`). Lets health treat another package's activity running
+   *  inside the app's own task (e.g. Settings search) as part of the app. Optional. */
+  foregroundTaskRoot?(): Promise<string | undefined>;
 
   screenshot(): Promise<Buffer>;
   /** Cheap sampled pixel fingerprint of the current screen (X1 liveness check, lib/screenFingerprint.ts).
@@ -86,10 +95,14 @@ export interface Driver {
   /** True when the natively-selected element is a secure text field (password/OTP), e.g.
    * XCUIElementTypeSecureTextField on iOS. Keeps values typed by selector out of records. */
   isSecureBySelector?(using: NativeSelectorStrategy, value: string): Promise<boolean>;
+  /** The natively-selected element's current value (typing read-back, CR P9). */
+  valueBySelector?(using: NativeSelectorStrategy, value: string): Promise<string>;
   /** Native platform alert handling when the backend supports it, e.g. WDA on iOS. */
   acceptAlert?(): Promise<void>;
   dismissAlert?(): Promise<void>;
-  inputText(text: string): Promise<void>;
+  /** `careful` (a retry after a field scrambled or dropped input): the backend types slower, in
+   * small verified bursts where it can (Android); others ignore it. */
+  inputText(text: string, opts?: { careful?: boolean }): Promise<void>;
   /** PURE pre-flight: can inputText() deliver this value verbatim? Callers check it BEFORE any
    * focus tap / clear so a refused value leaves the device untouched. Optional: absent means the
    * backend has no known character restriction. */

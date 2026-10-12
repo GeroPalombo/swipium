@@ -95,6 +95,7 @@ export function registerMobileAudit(server: McpServer, sessions: SessionStore): 
         if (!session)
           return qaError({
             what: 'execute mode needs a sessionId with a prepared device',
+            failureCode: 'INVALID_ARGUMENT',
             changedState: false,
             retrySafe: true,
             nextSteps: ['Call qa_start_session + qa_prepare_target (or qa_test_this), then qa_mobile_audit { mode:"execute" }.'],
@@ -105,6 +106,7 @@ export function registerMobileAudit(server: McpServer, sessions: SessionStore): 
             blockedDeviceResult(blocked) ??
             qaError({
               what: 'No device attached to this session',
+              failureCode: 'NO_DEVICE',
               changedState: false,
               retrySafe: true,
               nextSteps: ['Prepare a device first (qa_test_this / qa_prepare_target), then re-run.'],
@@ -112,7 +114,7 @@ export function registerMobileAudit(server: McpServer, sessions: SessionStore): 
           );
         // resilience / release_gate toggle airplane mode: same network_change gate as qa_network.
         let networkChangeApproved = false;
-        if (auditChangesNetwork(prof)) {
+        if (auditChangesNetwork(prof, driver.kind)) {
           const req = auditNetworkConsentRequest(prof);
           const gate = consumeConsent(consentId, approve, { action: req.action, affects: req.affects });
           if (!gate.approved) {
@@ -137,6 +139,40 @@ export function registerMobileAudit(server: McpServer, sessions: SessionStore): 
             offlineMode,
             sourceRevision: revisionResolved,
             now: nowIso(),
+          });
+          // GOAL-26: the audit's outcome is part of the session's evidence, so qa_report can't say SHIP /
+          // COVERED after an incomplete audit. Release impact "block" is a failed workflow; any failed or
+          // blocked check (or a run that stopped short) is a blocked one that names those checks.
+          const failedChecks = run.checks.filter((c) => c.status === 'fail');
+          const blockedChecks = run.checks.filter((c) => c.status === 'blocked');
+          const auditOutcome =
+            run.releaseImpact === 'block'
+              ? 'fail'
+              : failedChecks.length || blockedChecks.length || run.state !== 'completed'
+                ? 'blocked'
+                : 'pass';
+          const auditPassed = run.checks.filter((c) => c.status === 'pass').length;
+          sessions.addNote(session, {
+            at: Date.now(),
+            workflow: `mobile_audit: ${prof}`,
+            outcome: auditOutcome,
+            category: auditOutcome === 'fail' ? 'app_bug' : auditOutcome === 'blocked' ? 'other' : undefined,
+            reason:
+              `audit ${run.state}, release=${run.releaseImpact}, ${auditPassed}/${run.checks.length} pass` +
+              (failedChecks.length ? `; failed: ${failedChecks.map((c) => c.id).join(', ')}` : '') +
+              (blockedChecks.length ? `; blocked: ${blockedChecks.map((c) => c.id).join(', ')}` : '') +
+              (run.issueIds.length ? `; issues: ${run.issueIds.join(', ')}` : ''),
+            ...(auditOutcome === 'blocked'
+              ? {
+                  missingPrecondition: blockedChecks.length
+                    ? `audit checks blocked: ${blockedChecks.map((c) => c.id).join(', ')}`
+                    : undefined,
+                  recommendedSetup:
+                    [...blockedChecks, ...failedChecks].find((c) => c.nextStep)?.nextStep ??
+                    `Resolve the ${prof} audit's blocked/failed checks, then re-run qa_mobile_audit { profile:"${prof}", mode:"execute" }.`,
+                }
+              : {}),
+            artifactUris: [...new Set(run.checks.flatMap((c) => c.evidenceUris))].slice(0, 10),
           });
           let reportUri: string | undefined;
           try {

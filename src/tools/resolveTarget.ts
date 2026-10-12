@@ -16,7 +16,7 @@ import { planTarget, type TargetInputs } from '../core/targetPlan.js';
 import { detectContext, hasAnyDevice, type DetectedContext } from '../context/detect.js';
 import { buildPlan, type Plan } from '../plan/plan.js';
 import { listFlowFiles } from '../flows/discover.js';
-import { verifiedEmulatorSerials } from '../session/attach.js';
+import { onlineSerialForAvd, operatorDevicePin, verifiedEmulatorSerials } from '../session/attach.js';
 import { loadProjectFixtures } from './startSession.js';
 import type { Session, SessionStore } from '../session/store.js';
 
@@ -103,9 +103,14 @@ export function registerResolveTarget(server: McpServer, sessions: SessionStore)
       // The artifact (best-effort) tells us the platform constraint. Never fail on this.
       const art = await resolveArtifact({ projectRoot: root, platform: platform ?? 'any' }, false).catch(() => null);
 
+      // Same device choice as qa_test_this: explicit device > operator pin (SWIPIUM_DEVICE); a requested
+      // AVD that is already running resolves to its serial (bound, not booted twice).
+      let requestedDevice = device ?? operatorDevicePin();
+      if (requestedDevice && !online.includes(requestedDevice) && avds.includes(requestedDevice))
+        requestedDevice = (await onlineSerialForAvd(requestedDevice, online)) ?? requestedDevice;
       const inputs: TargetInputs = {
         requestedPlatform: platform,
-        requestedDevice: device,
+        requestedDevice,
         preferRealDevice,
         artifactPlatform: art?.best?.platform,
         artifactInstallTargets: art?.best?.installableOn,

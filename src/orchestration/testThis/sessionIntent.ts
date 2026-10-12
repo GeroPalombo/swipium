@@ -10,10 +10,13 @@
 import type { Session, SessionStore } from '../../session/store.js';
 import type { TestThisInput } from './types.js';
 
-/** qa_test_this inputs that express the user's INTENT (never device/consent/one-shot plumbing). */
+/** qa_test_this inputs that express the user's INTENT (never consent/one-shot plumbing). The
+ *  device the user named is intent too: a resume that drops it can land on another simulator or
+ *  emulator (GOAL-18). */
 export const TEST_THIS_INTENT_KEYS = [
   'goal',
   'goalText',
+  'device',
   'fastSmoke',
   'explore',
   'generateSuite',
@@ -74,6 +77,26 @@ export function isLoginDeclined(session: Pick<Session, 'milestones'>): boolean {
  *  memory and are gone after a server restart, so the question must be asked again. */
 export function hasUsableCredentials(session: Pick<Session, 'inputs' | 'inputValues'>): boolean {
   return session.inputs.some((i) => /EMAIL|PASSWORD/.test(i.varName) && session.inputValues.has(i.varName));
+}
+
+/** SWIPIUM_TEST_EMAIL and SWIPIUM_TEST_PASSWORD are both set to non-empty values in the server env
+ *  (a blank placeholder is missing). Pure: plan mode uses it to skip the login question too. */
+export function envCredentialsAvailable(env: NodeJS.ProcessEnv = process.env): boolean {
+  return !!env.SWIPIUM_TEST_EMAIL?.trim() && !!env.SWIPIUM_TEST_PASSWORD?.trim();
+}
+
+/** GOAL-17: SWIPIUM_TEST_EMAIL / SWIPIUM_TEST_PASSWORD (+ SWIPIUM_TEST_OTP) in the server env ARE the
+ *  credentials (README "Test login", qa_status rules.credentials): register them as session inputs
+ *  (password/OTP redacted) so the login question is not asked and the login path can type them.
+ *  No-op unless both email and password are set, or when the session already has usable ones. */
+export function seedEnvCredentials(sessions: SessionStore, session: Session, env: NodeJS.ProcessEnv = process.env): boolean {
+  const email = env.SWIPIUM_TEST_EMAIL?.trim();
+  const password = env.SWIPIUM_TEST_PASSWORD;
+  if (!envCredentialsAvailable(env) || !email || !password || hasUsableCredentials(session)) return false;
+  sessions.setInput(session, 'SWIPIUM_TEST_EMAIL', email, false, 'env');
+  sessions.setInput(session, 'SWIPIUM_TEST_PASSWORD', password, true, 'env');
+  if (env.SWIPIUM_TEST_OTP) sessions.setInput(session, 'SWIPIUM_TEST_OTP', env.SWIPIUM_TEST_OTP, true, 'env');
+  return true;
 }
 
 /** Credentials whose metadata survived a restart but whose values did not. */

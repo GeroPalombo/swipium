@@ -75,7 +75,7 @@ const { runMobileAudit } = await import('../src/mobileAudit/runner.js');
 const wdaDir = mkdtempSync(join(tmpdir(), 'swipium-wda-timeouts-'));
 const WDA_PROJECT = join(wdaDir, 'WebDriverAgent.xcodeproj');
 mkdirSync(WDA_PROJECT, { recursive: true });
-const UDID = 'SIM-TIMEOUTS-1';
+const UDID = 'A1B2C3D4-0000-4000-8000-00000000F1E1'; // UUID-shaped: a non-UDID device is resolved by name (IOS NEW-B)
 
 let h: Awaited<ReturnType<typeof harness>>;
 beforeAll(async () => {

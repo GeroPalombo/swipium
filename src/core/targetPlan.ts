@@ -94,11 +94,13 @@ function planAndroid(i: TargetInputs, reasonPrefix: string): TargetPlan {
     return physicalDeviceRefusal(real, emu || i.android.avds.length ? ['android-emulator'] : []);
   }
   if (emu) {
+    const otherEmus = online.filter((s) => isEmulator(s) && s !== emu);
     return {
       selected: 'android-emulator',
       device: emu,
       reason:
         `${reasonPrefix}emulator ${emu} is already online (fastest).` +
+        (otherEmus.length ? ` Also online, not chosen: ${otherEmus.join(', ')} (pass device to pick one).` : '') +
         (real ? ` (Physical device ${real} is visible but out of scope: simulator-only policy.)` : ''),
       alternatives: [],
       preconditions: [],
@@ -141,10 +143,15 @@ function planIos(i: TargetInputs, reasonPrefix: string): TargetPlan {
   }
   if (i.ios.bootedSimulators.length) {
     const s = i.ios.bootedSimulators[0];
+    const others = i.ios.bootedSimulators.slice(1);
     return {
       selected: 'ios-simulator',
       device: s.udid,
-      reason: `${reasonPrefix}simulator "${s.name}" is already booted (fastest).`,
+      reason:
+        `${reasonPrefix}simulator "${s.name}" is already booted (fastest).` +
+        (others.length
+          ? ` Also booted, not chosen: ${others.map((o) => `"${o.name}" (${o.udid})`).join(', ')} (pass device to pick one).`
+          : ''),
       alternatives: [],
       preconditions: iosPre,
       willBoot: false,

@@ -9,7 +9,9 @@ import type { McpServer, CallToolResult, ReadResourceResult } from '@modelcontex
 import { qaError } from '../lib/result.js';
 import { INLINE_IMAGE_META, inlineScaleLine, prepareInlineImage } from '../lib/image.js';
 import { pngSize } from '../lib/png.js';
-import type { ArtifactRecord, SessionStore } from '../session/store.js';
+import { decodeUriSegment, type ArtifactRecord, type SessionStore } from '../session/store.js';
+import { readAppMapResource, resolveAppMapRoot } from './appMap.js';
+import { appMapPath } from '../appMap/store.js';
 
 /** resources/read size caps. Binary (images, recordings) over the cap is not inlined at all
  * (base64 would be ~1.33x on top); text over the cap returns the head (or the tail, for logs)
@@ -136,6 +138,45 @@ export function registerGetArtifact(server: McpServer, sessions: SessionStore): 
     },
     async ({ uri, mode }): Promise<CallToolResult> => {
       const found = sessions.findArtifact(uri);
+      // GOAL-29: the project app-map URIs qa_test_this hands out (appMapUri) are not session
+      // artifacts; read them the same way resources/read does.
+      const mapUri = !found ? /^swipium:\/\/project\/([^/]+)\/app-map(?:\/([^/]+)\/(.+))?$/.exec(uri) : null;
+      if (mapUri) {
+        const projectId = decodeUriSegment(mapUri[1]);
+        const root = resolveAppMapRoot(projectId, sessions);
+        const res = root
+          ? readAppMapResource(root, {
+              kind: mapUri[2] ? decodeUriSegment(mapUri[2]) : undefined,
+              id: mapUri[3] ? decodeUriSegment(mapUri[3]) : undefined,
+            })
+          : null;
+        if (!res)
+          return qaError({
+            what: root ? `No app-map data at ${uri}` : `Unknown project ${projectId} in ${uri}`,
+            changedState: false,
+            retrySafe: true,
+            failureCode: 'NO_APP_MAP',
+            nextSteps: ['Build the map with qa_app_map_build, or list sections with qa_app_map_read.'],
+          });
+        const bytes = Buffer.byteLength(res.text, 'utf8');
+        // TOOL NEW-6: metadata mode describes the map instead of returning it (as for session artifacts).
+        if (mode === 'metadata') {
+          const meta = {
+            uri,
+            mime: res.mimeType,
+            kind: 'app-map',
+            bytes,
+            path: mapUri[2] || !root ? null : appMapPath(root),
+            hint: 'pass mode:"inline" (or omit mode) to fetch contents; qa_app_map_read returns one compact section',
+          };
+          return { content: [{ type: 'text', text: `${uri}\n${JSON.stringify(meta, null, 2)}` }], structuredContent: meta };
+        }
+        const text =
+          bytes > RESOURCE_TEXT_MAX_BYTES
+            ? `${trimUtf8End(Buffer.from(res.text, 'utf8').subarray(0, RESOURCE_TEXT_MAX_BYTES)).toString('utf8')}\n… [truncated: ${bytes} bytes; use qa_app_map_read for a section]`
+            : res.text;
+        return { content: [{ type: 'text', text }] };
+      }
       if (!found) {
         return qaError({
           what: `Unknown artifact ${uri}`,

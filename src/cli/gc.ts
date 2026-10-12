@@ -10,7 +10,8 @@ import { compactProjectRegistry } from '../appMap/projectRegistry.js';
 export const GC_USAGE = `Usage: swipium gc [--dry-run] [--days N] [--keep N]
   Delete ~/.swipium/runs session dirs older than N days (default: SWIPIUM_RETENTION_DAYS or 30) that
   are not in ~/.swipium/registry.json, keeping the newest --keep (default: SWIPIUM_RETENTION_KEEP or 20)
-  per project regardless of age; prune ~/.swipium/projects.json entries whose root no longer exists.
+  per project regardless of age while that project's root still exists (sessions of deleted roots,
+  e.g. temp dirs, age out by --days alone); prune ~/.swipium/projects.json entries whose root no longer exists.
   --dry-run   report what would be reclaimed, delete nothing
 `;
 
@@ -69,10 +70,16 @@ export async function runGc(argv: string[], out: (s: string) => void = (s) => vo
   const verb = args.dryRun ? 'would delete' : 'deleted';
   out(
     `swipium gc${args.dryRun ? ' (dry run)' : ''}: scanned ${r.scanned} session dir(s) under ${r.runsDir}\n` +
-      `  ${verb} ${r.deleted.length} session dir(s) older than ${r.days} day(s) (not registered; newest ${r.keepPerProject} per project kept)\n` +
+      `  ${verb} ${r.deleted.length} session dir(s) older than ${r.days} day(s) (not registered; newest ${r.keepPerProject} per existing project kept)\n` +
       `  ${args.dryRun ? 'reclaimable' : 'reclaimed'}: ${formatBytes(r.bytesReclaimed)}\n` +
-      `  projects.json: ${projects.before} > ${projects.after} entr${projects.after === 1 ? 'y' : 'ies'}` +
-      `${projects.removed ? ` (${projects.removed} stale ${args.dryRun ? 'would be ' : ''}removed)` : ''}\n` +
+      // NEW-2: no "26 > 26": say what was (or would be) pruned in words.
+      `  projects.json: ${
+        projects.corrupt
+          ? `left unchanged: it is not a valid registry (${projects.corrupt}); fix or delete it`
+          : projects.removed
+            ? `${args.dryRun ? 'would prune' : 'pruned'} ${projects.removed} stale of ${projects.before} entr${projects.before === 1 ? 'y' : 'ies'} (${projects.after} left)`
+            : `${projects.before} entr${projects.before === 1 ? 'y' : 'ies'}, nothing to prune`
+      }\n` +
       (r.skipped ? `  prune skipped: ${r.skipped}\n` : '') +
       (r.errors ? `  ${r.errors} entr${r.errors === 1 ? 'y' : 'ies'} could not be processed (see logs)\n` : ''),
   );

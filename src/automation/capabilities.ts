@@ -283,11 +283,15 @@ export function backendCapabilities(backend: AutomationBackend, session?: Appium
   }
 }
 
+const IOS_BACKENDS = new Set<AutomationBackend>(['ios-wda', 'appium-xcuitest', 'ios-raw-simulator']);
+
 /** Whether a backend can target an element with the given selector strategy. */
 export function selectorSupported(caps: BackendCapabilities, strategy: SelectorStrategy): boolean {
   switch (strategy) {
     case 'resource_id':
-      return caps.resourceId;
+      // GOAL-16: on iOS backends a flow `id=` selector is the element's accessibility identifier
+      // (the runner resolves it that way), so it is supported wherever accessibility ids are.
+      return caps.resourceId || (IOS_BACKENDS.has(caps.backend) && caps.accessibilityId);
     case 'accessibility_id':
       return caps.accessibilityId;
     case 'text':

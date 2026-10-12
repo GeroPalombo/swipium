@@ -145,6 +145,23 @@ describe('reapOrphanedProcesses — managed WDA adoption', () => {
     expect(registry().map((e) => [e.pid, e.serverPid])).toEqual([[204, LIVE_SERVER]]); // emulator adopted-and-dropped
   });
 
+  it('never re-owns a live server entry whose start time cannot be read; a recycled owner pid is adopted', async () => {
+    const LIVE_SERVER = 616161;
+    const RECYCLED_SERVER = 626262;
+    seed([
+      wda(206, { serverPid: LIVE_SERVER, serverStart: 'srv-start' }),
+      wda(207, { serverPid: RECYCLED_SERVER, serverStart: 'srv-old' }),
+    ]);
+    const base = fakeOps({ 206: XCODEBUILD, 207: XCODEBUILD, [LIVE_SERVER]: 'node dist/index.js', [RECYCLED_SERVER]: 'node other.js' });
+    // `ps` fails for the live owner (null start time): unknown counts as alive, never touched.
+    const ops: typeof base = { ...base, psStartTime: (pid) => (pid === LIVE_SERVER ? null : base.psStartTime(pid)) };
+    await reapOrphanedProcesses({ ops, now: NOW, wdaHealthy: async () => true });
+    expect(ops.killed).toEqual([]);
+    const byPid = Object.fromEntries(registry().map((e) => [e.pid, e]));
+    expect(byPid[206]).toMatchObject({ serverPid: LIVE_SERVER, serverStart: 'srv-start' });
+    expect(byPid[207].serverPid).toBe(process.pid); // start time differs: a dead server's recycled pid
+  });
+
   it('default probe hits the real GET /status of the recorded endpoint', async () => {
     let ready = true;
     const srv: Server = createServer((req, res) => {

@@ -137,6 +137,7 @@ export function registerExplore(server: McpServer, sessions: SessionStore): void
           blockedDeviceResult(blocked) ??
           qaError({
             what: 'No device attached to this session',
+            failureCode: 'NO_DEVICE',
             changedState: false,
             retrySafe: true,
             nextSteps: ['Prepare a device first: qa_test_this { mode:"execute" } or qa_prepare_target, then qa_explore.'],
@@ -376,13 +377,21 @@ async function runExploreJob(
     });
     prog.done(`explored ${res.summary.screensVisited} screens`);
 
+    // GOAL-12: the session budget stopped the exploration (runner state "blocked").
+    const budgetStopped = res.stoppedReason.startsWith('session budget:');
     const nextRecommendedAction = res.needsInput
       ? {
           tool: 'qa_continue_from_blocker',
           args: { sessionId: session.id, kind: 'credentials' },
           why: 'Provide credentials to explore authenticated screens',
         }
-      : { tool: 'qa_report', args: { sessionId: session.id }, why: 'Summarize the exploration with the screen graph' };
+      : budgetStopped
+        ? {
+            tool: 'qa_start_session',
+            args: { projectRoot: session.root, budget: { maxActions: 120, maxScreenshots: 80, maxMinutes: 60 } },
+            why: `The session budget is used up (${res.stoppedReason.replace(/^session budget: /, '')}). Start a session with a larger budget, then re-run qa_explore.`,
+          }
+        : { tool: 'qa_report', args: { sessionId: session.id }, why: 'Summarize the exploration with the screen graph' };
 
     upd({
       status: 'done',
@@ -390,6 +399,7 @@ async function runExploreJob(
       result: {
         state: res.state,
         stoppedReason: res.stoppedReason,
+        ...(budgetStopped ? { failureCode: 'BUDGET_EXHAUSTED' } : {}),
         summary: res.summary,
         destructiveCandidates: res.destructiveCandidates,
         graphUri,

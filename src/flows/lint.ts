@@ -54,7 +54,7 @@ export function lintFlowObjectWithOptions(
 ): FlowLintFinding[] {
   const findings: FlowLintFinding[] = [];
   const all = [...flow.setup, ...flow.steps, ...flow.teardown];
-  const setupHasMutation = flow.setup.some((step) => MUTATING.has(step.kind));
+  const setupHasMutation = flow.setup.some((step) => MUTATING.has(step.kind) && step.kind !== 'restartApp'); // a relaunch needs no teardown
   if (setupHasMutation && !flow.teardown.length) {
     findings.push({
       file,
@@ -147,7 +147,8 @@ export function lintFlowObjectWithOptions(
         });
       }
     }
-    if (MUTATING.has(step.kind)) {
+    // restartApp is allowed in CI by default (ciMutationAllowed), so it carries no policy warning.
+    if (MUTATING.has(step.kind) && step.kind !== 'restartApp') {
       findings.push({
         file,
         flow: flow.name,

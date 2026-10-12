@@ -22,7 +22,7 @@ const JS_DEV_DEPS: Record<string, string> = {
   '@wdio/mocha-framework': '^9.0.0',
   '@wdio/appium-service': '^9.0.0',
   '@wdio/spec-reporter': '^9.0.0',
-  appium: '^2.11.0',
+  appium: '^3.0.0', // current uiautomator2/xcuitest drivers need Appium 3
 };
 
 export function computeDependencyPatch(profile: AutomationProjectProfile): DependencyPatch {
@@ -36,7 +36,7 @@ export function computeDependencyPatch(profile: AutomationProjectProfile): Depen
       addRequirements: reqs,
       notes: [
         'Install with `pip install -r requirements.txt` (or your project package manager).',
-        'A local Appium 2 server with the relevant driver (uiautomator2 / xcuitest) is required.',
+        'A local Appium 3 server with the relevant driver (uiautomator2 / xcuitest) is required.',
       ],
     };
   }
@@ -53,7 +53,7 @@ export function computeDependencyPatch(profile: AutomationProjectProfile): Depen
     addRequirements: [],
     notes: [
       `Install with \`${installCmd(profile)}\`.`,
-      'A local Appium 2 server with the relevant driver (uiautomator2 / xcuitest) is required.',
+      'A local Appium 3 server with the relevant driver (uiautomator2 / xcuitest) is required.',
     ],
   };
 }

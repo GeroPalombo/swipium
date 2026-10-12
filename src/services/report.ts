@@ -11,7 +11,14 @@ import { toolVerdictFor } from '../report/toolHealth.js';
 import { getDriver } from '../session/attach.js';
 import { restoreNetwork } from '../tools/network.js';
 import { releaseAssessment } from '../report/summary.js';
-import { FAILURES, failureForFindingKind, bucketForNoteCategory, ALL_BUCKETS, type FailureBucket } from '../oracle/failures.js';
+import {
+  FAILURES,
+  failureForFindingKind,
+  bucketForNoteCategory,
+  isAutomationDriftNote,
+  ALL_BUCKETS,
+  type FailureBucket,
+} from '../oracle/failures.js';
 import {
   inlinePrSummary,
   redactReportData,
@@ -21,9 +28,10 @@ import {
   toMarkdown,
   toPlaywrightJson,
   toSarif,
+  stripControls,
   type ReportData,
 } from '../report/export.js';
-import { applyPolicy, loadPolicy as loadReleasePolicy, type PolicyDecision } from '../report/policy.js';
+import { applyPolicy, loadPolicy as loadReleasePolicy, policyNotice, type PolicyDecision } from '../report/policy.js';
 import { resolveSarifSources } from '../report/sarifSources.js';
 import { generateFlow } from '../flows/generate.js';
 import { loadProjectConfig } from '../cli/scan.js';
@@ -60,10 +68,10 @@ import {
 import { saveSuite } from '../testSuite/store.js';
 import type { IssueEnvironment, IssuePlatform } from '../issues/schema.js';
 import { pomForSession } from './suiteGenerate.js';
-import { generateCanonicalCases } from '../testSuite/generator.js';
+import { casePlatformsFor, generateCanonicalCases } from '../testSuite/generator.js';
 import { applyMerge, loadSuite, suiteDelta, runIdFromNow } from '../testSuite/store.js';
 import type { ReplayStatus } from '../testSuite/schema.js';
-import type { Session, SessionStore } from '../session/store.js';
+import type { Session, SessionStore, TestNote } from '../session/store.js';
 
 export type ReportFormat = 'summary' | 'markdown' | 'json' | 'junit' | 'sarif' | 'github-summary' | 'flow' | 'playwright';
 
@@ -87,6 +95,12 @@ export interface ReportOptions {
     suiteRunnable?: boolean;
     readinessLabels?: ReadinessLabel[];
   };
+  /**
+   * The run this report closes did not test what it set out to: qa_test_this stopped by a blocker
+   * (BUILD_FAILED, METRO_REQUIRED, …) or a focused feature run that executed 0 of its cases. Keeps
+   * the release risk off SHIP: BLOCK when nothing in the session exercised the app, else CAUTION.
+   */
+  notTested?: { reason: string; failureCode?: string; reachedApp?: boolean };
 }
 
 export interface ReportResult {
@@ -111,13 +125,28 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   const { format, baseline, trendRoot } = options;
   const includeCurrentDump = options.includeCurrentDump ?? true;
   const redact = makeRedactor(session.secrets);
-  const { driver } = await getDriver(session);
+  // A report never adopts a device: a session with none (fresh, report-only, or a run that failed
+  // before prepare) must not bind and capture whatever emulator happens to be online.
+  const { driver } = await getDriver(session, { autoBind: false });
 
   // Auto-restore network if Swipium changed it, else warn.
   let networkRestore: string | undefined;
   if (session.network?.changed) {
-    if (driver) networkRestore = (await restoreNetwork(sessions, session, driver)) ?? undefined;
-    else networkRestore = 'PENDING: Swipium changed the network but no device is attached to restore it';
+    if (driver) {
+      // GOAL-25: a backend that can't toggle the network (iOS) must not make report generation
+      // fail forever. Report the failed restore instead of throwing; on a backend that can't change
+      // the network nothing was changed, so clear the stale flag.
+      try {
+        networkRestore = (await restoreNetwork(sessions, session, driver)) ?? undefined;
+      } catch (e) {
+        networkRestore = `FAILED: could not restore the network: ${String((e as Error).message ?? e)}`;
+        if (driver.kind === 'wda' || driver.kind === 'simulator') {
+          session.network = { changed: false, originalAirplane: session.network.originalAirplane };
+          sessions.persist(session);
+          networkRestore = 'not applicable: this backend cannot change the network, so nothing was changed';
+        }
+      }
+    } else networkRestore = 'PENDING: Swipium changed the network but no device is attached to restore it';
   }
 
   // Attach a redacted current dump (best-effort) for triage.
@@ -135,10 +164,16 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   const high = session.findings.filter((f) => f.severity === 'high');
   const uniqueFindings = dedupeFindings(session.findings);
 
-  const nativeFindings = session.findings.filter((f) => f.layer === 'native');
-  const appFindings = session.findings.filter((f) => f.layer === 'app');
-  const nativeHealth = nativeFindings.some((f) => f.severity === 'high') ? 'error' : 'OK';
-  const appHealth = appFindings.some((f) => f.severity === 'high')
+  // GOAL NEW-R3-2 / E2E NEW-15: WDA returning no UI source (a native/high wda_unreachable finding) is
+  // a tool / environment failure (WDA_UNREACHABLE). It still fails the gate as a high finding, but it
+  // is not native/app health, not an app failure and not evidence that the app was exercised.
+  const isToolFinding = (f: { kind: string; failureCode?: string }) => f.kind === 'wda_unreachable' || f.failureCode === 'WDA_UNREACHABLE';
+  const healthFindings = session.findings.filter((f) => !isToolFinding(f));
+  const nativeFindings = healthFindings.filter((f) => f.layer === 'native');
+  const appFindings = healthFindings.filter((f) => f.layer === 'app');
+  // Narrowed below to 'not checked' / 'unverified' once it is known whether the app was reached.
+  let nativeHealth: 'OK' | 'error' | 'not checked' = nativeFindings.some((f) => f.severity === 'high') ? 'error' : 'OK';
+  let appHealth: 'OK' | 'degraded' | 'error' | 'unverified' | 'not checked' = appFindings.some((f) => f.severity === 'high')
     ? 'error'
     : appFindings.some((f) => f.severity === 'medium')
       ? 'degraded'
@@ -213,7 +248,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     if (n.outcome !== 'fail' && n.outcome !== 'blocked') continue;
     totalFailures++;
     classified++;
-    const bucket = bucketForNoteCategory(n.category);
+    const bucket = bucketForNoteCategory(n.category, n.outcome);
     bucketCounts[bucket]++;
     bucketExamples[bucket] ??= `${n.workflow}: ${n.reason ? redact(n.reason) : n.outcome}`;
   }
@@ -228,19 +263,164 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
 
   const blockedCount = outcomeTally.blocked ?? 0;
   const APP_OWNED_FAIL_CATEGORIES = new Set(['app_bug', 'other']);
-  const appFailNotes = notes.filter((n) => n.outcome === 'fail' && (n.category == null || APP_OWNED_FAIL_CATEGORIES.has(n.category)));
+  // GOAL-24: a Swipium-generated flow failing on a locator step is automation drift (category
+  // 'other' + AUTOMATION_DRIFT_NOTE): a caution to repair the flow, never an app FAIL / BLOCK.
+  const driftFailCount = notes.filter(isAutomationDriftNote).length;
+  const appFailNotes = notes.filter(
+    (n) => n.outcome === 'fail' && (n.category == null || APP_OWNED_FAIL_CATEGORIES.has(n.category)) && !isAutomationDriftNote(n),
+  );
   const appFailCount = appFailNotes.length;
   const toolLimitationNotes = notes.filter((n) => (n.outcome === 'fail' || n.outcome === 'blocked') && n.category === 'mcp_limitation');
   const toolLimitationFailCount = toolLimitationNotes.filter((n) => n.outcome === 'fail').length;
-  const topHigh = high[0];
+  const topHigh = high.find((f) => !isToolFinding(f)) ?? high[0];
   const topAppFailNote = appFailNotes[0];
   const topBlockedNote = notes.find((n) => n.outcome === 'blocked');
+  // No evidence => never SHIP. "Exercised" = a Swipium pass/fail outcome, exploration, an action taken
+  // with the app in front or a health finding. The report's own UI dump (captured above) is NOT evidence that the app ran, and
+  // neither is a Swipium-side failure (mcp_limitation: "baseline failed: device offline").
+  const isOutcome = (n: TestNote) => n.outcome === 'pass' || (n.outcome === 'fail' && n.category !== 'mcp_limitation');
+  // Swipium's own outcomes (smoke, flows, explore) or an exploration recorded after `t`.
+  const swipiumOutcomeSince = (t: number) =>
+    notes.some((n) => n.at > t && n.source !== 'qa_note' && isOutcome(n)) || (session.exploration?.at ?? 0) > t;
+  // CR P1: a recorded action counts only when it ran with the app under test in front (qa_act sets
+  // appForeground from its post-action check). A press home or a tap on SpringBoard proves nothing.
+  const appActionSince = (t: number) => session.recordedActions.some((ra) => ra.at > t && ra.appForeground);
+  // Device evidence recorded after `t`: the above, an app-in-front action, or a health finding.
+  const deviceEvidenceSince = (t: number) => swipiumOutcomeSince(t) || appActionSince(t) || healthFindings.some((f) => f.at > t);
+  const appShotSince = (t: number) =>
+    session.artifacts.some((art) => (art.kind === 'screenshot' || art.kind === 'recording') && art.appForeground && art.createdAt > t);
+  // E2E NEW-1 / NEW-10: reaching the app takes real evidence: a launch of the app under test, a
+  // screenshot taken while it was in front, or the above. A home-screen qa_screenshot of a blocked run,
+  // a blocked/skipped qa_note and Swipium's own report exports are NOT evidence.
+  const appSeen = !!session.milestones?.app_launch_end || !!session.milestones?.smoke_launch || appShotSince(0);
+  // E2E NEW-11 / NEW-17: an agent's qa_note pass is a claim; it counts only once the session holds
+  // device evidence that the app was exercised. A launch or an app-in-front screenshot only proves the
+  // app was reached (it may sit on a RedBox): a pass claim on top of that is unverified (CAUTION, the
+  // gate fails NOT_TESTED). A claimed failure always counts (it can only block).
+  const exercised =
+    deviceEvidenceSince(0) || notes.some((n) => n.source === 'qa_note' && n.outcome === 'fail' && n.category !== 'mcp_limitation');
+  const unverifiedPassClaim = !exercised && notes.some((n) => n.source === 'qa_note' && n.outcome === 'pass');
+  const unbackedPassClaim = unverifiedPassClaim && !appSeen;
+  const reachedApp = exercised || appSeen;
+  // E2E NEW-10/13: a not-tested run stays not tested for every later qa_report (same verdict, same
+  // blocker code) until new test evidence arrives after it: a Swipium outcome or an exploration, or an
+  // agent's outcome note together with an app-in-front action after the marker (CR P1: an action
+  // alone, a finding, a launch or a screenshot plus a note do not clear it).
+  if (options.notTested) {
+    session.notTested = {
+      reason: options.notTested.reason,
+      failureCode: options.notTested.failureCode ?? 'NOT_TESTED',
+      ...(options.notTested.reachedApp === false ? { reachedApp: false } : {}),
+      at: Date.now(),
+    };
+    sessions.persist(session);
+  } else if (session.notTested) {
+    const t = session.notTested.at;
+    const retested = swipiumOutcomeSince(t) || (appActionSince(t) && notes.some((n) => n.at > t && n.source === 'qa_note' && isOutcome(n)));
+    if (retested) {
+      session.notTested = undefined;
+      sessions.persist(session);
+    }
+  }
+  const marker = options.notTested ?? session.notTested;
+  // E2E NEW-13: a refused consent (CONSENT_CANCELLED / _DECLINED / _REFUSED) is ledgered on the
+  // session with its code; a run that tested nothing gates with that code, not NOT_TESTED.
+  const consentRefusal = [...(session.mutations ?? [])]
+    .reverse()
+    .find((m) => m.status === 'refused' && typeof m.failureCode === 'string' && m.failureCode.startsWith('CONSENT_'));
+  // The blocker a blocked note names: "METRO_REQUIRED: …" (smoke, or an agent's note), or a blank launch.
+  const blockerCodeOf = (n: TestNote | undefined): string => {
+    const code = n?.reason?.match(/^([A-Z][A-Z0-9_]{3,})\b/)?.[1];
+    if (code && code in FAILURES) return code;
+    if (n?.workflow === 'launch_smoke' && n.missingPrecondition === 'the app rendering its first screen') return 'BLANK_SCREEN';
+    return consentRefusal?.failureCode ?? 'NOT_TESTED';
+  };
+  // `exercised:false` = no workflow was tested: the CI gate fails even when the app was reached.
+  const notTested: { reachedApp: boolean; exercised: boolean; reason: string; failureCode: string } | undefined = marker
+    ? {
+        // reachedApp:false from the caller = THIS run never launched the app (GOAL-7: a launch failure);
+        // earlier evidence in the session does not make it a tested run.
+        reachedApp: marker.reachedApp === false ? false : exercised,
+        exercised,
+        reason: marker.reason,
+        failureCode: marker.failureCode ?? 'NOT_TESTED',
+      }
+    : exercised
+      ? undefined
+      : !reachedApp
+        ? {
+            reachedApp: false,
+            exercised: false,
+            reason: unbackedPassClaim
+              ? 'only an unverified qa_note pass claim (manual claim, no device evidence): nothing was launched or exercised'
+              : topBlockedNote
+                ? `the app was never launched or exercised (recorded "${topBlockedNote.workflow}" as blocked${topBlockedNote.reason ? `: ${redact(topBlockedNote.reason)}` : ''})`
+                : consentRefusal
+                  ? `nothing ran: consent for "${consentRefusal.action}" was refused (${consentRefusal.failureCode})`
+                  : 'no app was launched or exercised and no evidence was captured',
+            failureCode: blockerCodeOf(topBlockedNote),
+          }
+        : {
+            // CR: a reached app that was then blocked (BLANK_SCREEN, a refused consent) tested nothing:
+            // CAUTION, and the gate fails with the blocker's code.
+            reachedApp: true,
+            exercised: false,
+            reason: unverifiedPassClaim
+              ? 'only an unverified qa_note pass claim on a launched app (no Swipium smoke, flow or exploration, and no action with the app in front, backs it; the screen may show an error): run qa_smoke or a flow'
+              : topBlockedNote
+                ? `the app was reached but no workflow was exercised (recorded "${topBlockedNote.workflow}" as blocked${topBlockedNote.reason ? `: ${redact(topBlockedNote.reason)}` : ''})`
+                : 'the app was reached but no workflow was exercised',
+            failureCode: blockerCodeOf(topBlockedNote),
+          };
+  // AND-4 / E2E NEW-4: health was never checked when the app was never reached; "OK" would be a claim.
+  // E2E-2: a visual-only smoke (no UI tree read) left app-layer health "unverified", never OK.
+  const healthUnchecked = !!notTested && !notTested.reachedApp && healthFindings.length === 0;
+  const lastLaunchSmoke = [...notes].reverse().find((n) => n.workflow === 'launch_smoke');
+  if (healthUnchecked) {
+    nativeHealth = 'not checked';
+    appHealth = 'not checked';
+  } else if (
+    appHealth === 'OK' &&
+    ((lastLaunchSmoke?.reason && /\bapp=unverified\b/.test(lastLaunchSmoke.reason)) || session.findings.some(isToolFinding))
+  ) {
+    appHealth = 'unverified';
+  }
+  // Round-3 notes: coverage the run planned but did not get must not leave the risk at SHIP.
+  // Flows whose latest outcome is a session-budget skip were not run; a blocked exploration
+  // (unsafe actions skipped, blockers, budget stop) explored less than it set out to.
+  const latestByWorkflow = new Map(notes.map((n) => [n.workflow, n]));
+  const budgetSkipped = [...latestByWorkflow.values()]
+    .filter((n) => n.outcome === 'skipped' && /^budget:|BUDGET_EXHAUSTED/.test(n.reason ?? ''))
+    .map((n) => n.workflow);
+  const explorationBlocked = session.exploration?.state === 'blocked';
+  const coverageGaps = [
+    ...(budgetSkipped.length
+      ? [
+          {
+            reason: `${budgetSkipped.length} workflow(s) not run, the session budget ran out: ${budgetSkipped.join(', ')}`,
+            next: `Re-run with a larger budget (qa_start_session { budget }) so ${budgetSkipped.join(', ')} run.`,
+          },
+        ]
+      : []),
+    ...(explorationBlocked
+      ? [
+          {
+            reason: `exploration blocked (${session.exploration!.stoppedReason}; ${session.exploration!.summary.blockers} blocker(s), ${session.exploration!.summary.unsafeActionsSkipped} unsafe action(s) skipped)`,
+            next: 'Review the exploration blockers (graph in the report), provide the missing setup, then re-run.',
+          },
+        ]
+      : []),
+  ];
   const executiveSummary = releaseAssessment({
+    coverageGaps,
+    notTested,
     nativeHealth,
     appHealth,
-    highSeverityCount: high.length,
+    // A WDA_UNREACHABLE finding is a tool / environment failure, not an app verdict: it keeps the risk
+    // off SHIP (tool status, app health unverified) and still fails the gate, but is no app BLOCK.
+    highSeverityCount: high.filter((f) => !isToolFinding(f)).length,
     failCount: appFailCount,
-    blockedCount: blockedCount + toolLimitationFailCount,
+    blockedCount: blockedCount + toolLimitationFailCount + driftFailCount,
     overrideCount: session.envChanges.filter((c) => /OVERRIDE|GUARDRAIL|acknowledgeBundleRisk|allowLaunchWithoutMetro/i.test(c)).length,
     topHighFinding: topHigh ? redact(topHigh.detail) : undefined,
     topFail: topAppFailNote
@@ -282,7 +462,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
       ciReady: false,
     }),
     ...(options.suite?.readinessLabels ?? []),
-  ]);
+  ]).filter((label) => label !== 'observed' || !notTested || notTested.reachedApp); // never "observed" when the app wasn't reached
   const automationReadiness = automationReadinessForSession(session, {
     suiteRunnable: options.suite?.suiteRunnable,
     suiteReplayed: false,
@@ -296,7 +476,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     if (
       nativeHealth === 'error' ||
       appHealth === 'error' ||
-      high.some((f) => f.layer === 'app' || f.layer === 'native') ||
+      high.some((f) => (f.layer === 'app' || f.layer === 'native') && !isToolFinding(f)) ||
       appFailCount > 0
     ) {
       const summary = topHigh
@@ -306,19 +486,42 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
           : 'High severity app/native finding or failed app workflow observed.';
       return { status: 'BLOCKED', summary };
     }
+    if (notTested && !notTested.reachedApp) return { status: 'NOT_RUN', summary: `Not tested: ${notTested.reason}.` };
+    // E2E NEW-17: launched, but the only pass is the agent's claim: nothing Swipium ran judged the app.
+    if (unverifiedPassClaim)
+      return {
+        status: 'UNVERIFIED',
+        summary: 'App launched, but the only pass is an unverified qa_note claim: no Swipium check judged the app. Run qa_smoke or a flow.',
+      };
     if (appHealth === 'degraded')
       return { status: 'PASS_WITH_WARNING', summary: 'App launched, but medium-severity app findings were observed.' };
+    if (appHealth === 'unverified')
+      return {
+        status: 'UNVERIFIED',
+        summary: 'App launched, but app-layer health was not verified (visual-only: no UI tree was read). Check the screenshot.',
+      };
     return { status: 'PASS', summary: 'No high-severity app/native finding observed in this run.' };
   })();
   const coverageVerdict = (() => {
-    if (blockedCount > 0 || toolLimitationNotes.length > 0 || session.exploration?.state === 'blocked') {
+    if (notTested && !notTested.reachedApp) return { status: 'NONE', summary: `Nothing was tested: ${notTested.reason}.` };
+    if (blockedCount > 0 || toolLimitationNotes.length > 0 || driftFailCount > 0 || session.exploration?.state === 'blocked') {
       const summary =
         topBlockedNote?.recommendedSetup ??
         (toolLimitationNotes.length
           ? `A Swipium/tool limitation blocked ${toolLimitationNotes.length} workflow(s); see toolVerdict.`
-          : 'A setup or precondition blocker limited coverage.');
+          : driftFailCount
+            ? `${driftFailCount} generated flow(s) failed on a locator step (automation drift, not an app defect); repair with qa_flow_repair.`
+            : explorationBlocked
+              ? `Exploration was blocked: ${session.exploration!.stoppedReason} (${session.exploration!.summary.blockers} blocker(s), ${session.exploration!.summary.unsafeActionsSkipped} unsafe action(s) skipped).`
+              : 'A setup or precondition blocker limited coverage.');
       return { status: 'BLOCKED', summary };
     }
+    if (notTested) return { status: 'NOT_COVERED', summary: `Not covered: ${notTested.reason}.` };
+    if (budgetSkipped.length)
+      return {
+        status: 'PARTIAL',
+        summary: `${budgetSkipped.length} workflow(s) not run because the session budget ran out: ${budgetSkipped.join(', ')}.`,
+      };
     if (!automationBackend.structured) {
       return {
         status: 'PARTIAL',
@@ -340,7 +543,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     observed: readiness.includes('observed'),
     smokePassed:
       nativeHealth === 'OK' &&
-      appHealth !== 'error' &&
+      (appHealth === 'OK' || appHealth === 'degraded') &&
       high.length === 0 &&
       (passNotes > 0 || !!session.exploration || session.recordedActions.length > 0),
     suiteGenerated: readiness.includes('generated'),
@@ -394,14 +597,18 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   try {
     const now = new Date().toISOString();
     const hasKnowledge = session.recordedActions.length > 0 || notes.length > 0 || !!session.exploration;
+    // GOAL-10: actions/exploration recorded on a fatal error surface (RedBox, crash) are not app
+    // knowledge; only the recorded outcomes are folded into the canonical suite then.
+    const fatalSurface = nativeHealth === 'error' || appHealth === 'error';
     if (hasKnowledge) {
-      const { pom } = session.recordedActions.length ? pomForSession(session) : { pom: undefined };
+      const { pom } = session.recordedActions.length && !fatalSurface ? pomForSession(session) : { pom: undefined };
       const incoming = generateCanonicalCases({
         pom,
         appId: appId ?? undefined,
         fixtures: session.fixtures,
         notes: session.notes,
-        exploration: session.exploration,
+        exploration: fatalSurface ? undefined : session.exploration,
+        platforms: casePlatformsFor(session), // GOAL-22: the observed platform, not a default "android"
         source: 'report',
         now,
         replayStatus: suiteReplayStatus as ReplayStatus,
@@ -443,6 +650,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   const report = {
     sessionId: session.id,
     executiveSummary,
+    ...(notTested ? { notTested } : {}),
     appId,
     device: session.device ?? null,
     coverage,
@@ -456,7 +664,13 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     runTestCatalog,
     persistentSuite,
     mode: session.mode,
-    emulatorDisplay: session.headless === undefined ? 'pre-existing device' : session.headless ? 'headless' : 'visible window',
+    emulatorDisplay: !session.device
+      ? null
+      : session.headless === undefined
+        ? 'pre-existing device'
+        : session.headless
+          ? 'headless'
+          : 'visible window',
     environmentChanges: session.envChanges,
     ciMutations: session.envChanges,
     mutationLedger: session.mutations.map((m) => ({
@@ -505,7 +719,13 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
       screen: f.screen,
       screenshotUri: f.screenshotUri,
     })),
-    testOutcomes: notes.map((n) => ({ ...n, reason: n.reason ? redact(n.reason) : undefined })),
+    // E2E NEW-18: an agent's pass claim nothing backs is marked `unverified` (exports render it as a
+    // skipped / "pass (unverified)" case, never a passing test).
+    testOutcomes: notes.map((n) => ({
+      ...n,
+      reason: n.reason ? redact(n.reason) : undefined,
+      ...(unverifiedPassClaim && n.source === 'qa_note' && n.outcome === 'pass' ? { unverified: true } : {}),
+    })),
     outcomeTally,
     categoryTally,
     outcomeByCategory,
@@ -562,6 +782,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
       evidence: f.evidence ? redact(f.evidence) : undefined,
       screen: f.screen,
       screenshotUri: f.screenshotUri,
+      logUri: f.logUri,
       failureCode: f.failureCode,
     }));
     const bridgeNotes: BridgeNote[] = notes.map((n) => ({
@@ -775,6 +996,13 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     'application/json',
     'artifact manifest with SHA-256 hashes',
   );
+  // E2E NEW-9: an invalid policy (ignored: every failure blocks) or unknown keys are said out loud.
+  let releasePolicyNotice: string | null = null;
+  try {
+    releasePolicyNotice = policyNotice(session.root);
+  } catch {
+    /* best-effort */
+  }
   const noteSummaryLines = notes.map((n) => {
     const ev = evidenceByWorkflow.get(n.workflow);
     return `  • ${n.workflow}: ${n.outcome}${ev ? ` (evidence=${ev.kind}/${ev.authority})` : ''}${n.category ? ` [${n.category}]` : ''}${n.missingPrecondition ? ` (missing: ${n.missingPrecondition})` : n.reason ? `: ${redact(n.reason)}` : ''}${n.recommendedSetup ? ` · setup: ${n.recommendedSetup}` : ''}`;
@@ -786,6 +1014,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     `App status: ${appVerdict.status} - ${appVerdict.summary}`,
     `Coverage status: ${coverageVerdict.status} - ${coverageVerdict.summary}`,
     `Tool status: ${toolVerdict.status} - ${toolVerdict.summary}`,
+    releasePolicyNotice ? `⚠ release-gate policy: ${releasePolicyNotice}` : '',
     `PR summary:\n${prSummary.text}`,
     `backend: ${report.automationBackend.description} (${report.automationBackend.mode})`,
     `QA level: ${qaLevel.level.toUpperCase()}: ${qaLevel.rationale}${qaLevel.next ? ` · next: ${qaLevel.next} (${qaLevel.nextRequirement})` : ''}`,
@@ -801,7 +1030,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
       ? `top readiness fixes:\n  ${automationReadiness.topFixes.join('\n  ')}`
       : 'top readiness fixes: none',
     `${report.coverage}${report.visualOnly ? ' · VISUAL-ONLY (structured snapshots were poor, see screenshots)' : ''}`,
-    `emulator display: ${report.emulatorDisplay}`,
+    report.device ? `emulator display: ${report.emulatorDisplay}` : '', // AND-4: no device, no display line
     `network: ${finalNetwork}${networkRestore ? ` (${networkRestore})` : session.network?.changed ? ' ⚠ Swipium changed it and did NOT restore' : ''}`,
     report.activeRecording
       ? `A screen recording is still active (${report.activeRecording.backend}, ~${report.activeRecording.seconds}s). It will be stopped on shutdown.`
@@ -832,7 +1061,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
       ? `exploration: ${session.exploration.summary.screensVisited} screens, ${session.exploration.summary.workflowsFound} transitions, ${session.exploration.summary.visualOnlyScreens} visual-only, ${session.exploration.summary.unsafeActionsSkipped} unsafe skipped, ${session.exploration.summary.appErrors} app errors (graph: ${session.exploration.graphUri})`
       : '',
     `destructive/bundle-risk guardrail: ${destructiveGuardrail.status}`,
-    `health: native: ${nativeHealth === 'OK' ? '✅ OK' : '❌ error'} · app: ${appHealth === 'OK' ? '✅ OK' : appHealth === 'degraded' ? '⚠ degraded' : '❌ error'}`,
+    `health: native: ${nativeHealth === 'OK' ? '✅ OK' : nativeHealth === 'error' ? '❌ error' : nativeHealth} · app: ${appHealth === 'OK' ? '✅ OK' : appHealth === 'degraded' ? '⚠ degraded' : appHealth === 'error' ? '❌ error' : appHealth === 'unverified' ? '⚠ unverified (visual-only)' : appHealth}`,
     wdaReport
       ? `wda: ${wdaReport.status.reachable ? 'reachable' : 'unreachable'} ${wdaReport.webDriverAgentUrl} device=${wdaReport.device ?? 'unknown'}`
       : '',
@@ -879,7 +1108,9 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
 
   // report.md: the agent-readable report (this summary), what terminal results and the server
   // instructions point at. report.json stays the machine/CI copy.
-  const summaryText = redact(lines.join('\n')) ?? '';
+  // E2E NEW-12: run text (note reasons, logcat, Metro output) can carry ANSI escapes / NULs; neither the
+  // qa_report text nor report.md keeps them.
+  const summaryText = stripControls(redact(lines.join('\n')) ?? '');
   const reportMdUri = sessions.saveArtifact(
     session,
     'report',

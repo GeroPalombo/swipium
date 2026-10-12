@@ -13,6 +13,21 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
 import { LOOP_STEPS, BATCHING, CREDENTIALS, APP_CONTROL } from '../skills/content.js';
+import { isToolListed } from '../core/capabilityGroups.js';
+
+/** The shared skill snippets name qa_flow_check and qa_network; under SWIPIUM_TOOLS=core those are
+ *  hidden, so point at a listed tool instead (TOOL-9). Read at prompt time (env can change in tests). */
+function batching(): string {
+  return isToolListed('qa_flow_check')
+    ? BATCHING
+    : BATCHING.replace(
+        'with qa_flow_check.',
+        'with qa_flow_run { mode: "plan", flowYaml } (qa_flow_check is hidden because SWIPIUM_TOOLS=core).',
+      );
+}
+function appControl(): string {
+  return isToolListed('qa_network') ? APP_CONTROL : APP_CONTROL.replace(' qa_network for offline checks;', '');
+}
 
 function userText(text: string) {
   return { messages: [{ role: 'user' as const, content: { type: 'text' as const, text } }] };
@@ -53,7 +68,7 @@ export function registerPrompts(server: McpServer): void {
     'swipium_guardrail_validation',
     {
       title: 'Validate safety guardrails',
-      description: 'Confirm Swipium refuses an unsafe destructive action (bundle-loss) on a debug RN/Expo Android build.',
+      description: 'Confirm Swipium refuses an unsafe destructive action (bundle-loss) on a debug RN/Expo build (Android or iOS).',
       argsSchema: { projectRoot: z.string().optional() },
     },
     ({ projectRoot }) =>
@@ -61,9 +76,10 @@ export function registerPrompts(server: McpServer): void {
         `Validate Swipium's destructive-action guardrails (do NOT override them).\n\n` +
           `1. qa_start_session${projectRoot ? ` { projectRoot: "${projectRoot}", ` : ' { '}profile: "guardrail" }.\n` +
           `2. qa_resolve_target { sessionId, include: ["plan"] } and confirm fresh_start appears under UNSAFE with reason bundle_cache_loss for a debug RN/Expo build.\n` +
-          `3. qa_prepare_target { sessionId } to get the app running on an Android Emulator (approve consent for boot/install if prompted).\n` +
+          `3. Get the app running (approve consent for boot/install if prompted): qa_prepare_target { sessionId } on an Android Emulator, ` +
+          `or qa_prepare_ios_target { sessionId } on an iOS Simulator (it uses the project's simulator .app; pass app: "<path to .app>" if it reports launched:false). If it does not end with the app launched, stop and report the guardrail as NOT TESTED (not PASS).\n` +
           `4. Attempt qa_app_control { sessionId, action: "fresh_start" } WITHOUT acknowledgeBundleRisk. Expect a refusal (failureCode BUNDLE_LOSS_REFUSED), not execution.\n` +
-          `5. qa_report { sessionId } and confirm destructiveGuardrail shows the action was refused, not executed. Report PASS only if it was refused.`,
+          `5. qa_report { sessionId } and confirm destructiveGuardrail shows the action was refused, not executed. Report PASS only if it was refused on a launched app.`,
       ),
   );
 
@@ -106,9 +122,9 @@ export function registerPrompts(server: McpServer): void {
           `or one qa_flow_run {sessionId, flowYaml} for the known steps. At the failure call qa_check_health {sessionId} and qa_screenshot {sessionId, reason}, ` +
           `record qa_note {sessionId, workflow, outcome:"fail", category:"app_bug", reason, artifactUris}, then qa_report {sessionId}. ` +
           `Include exact reproduction steps and the evidence URIs so the report stands alone.\n\n` +
-          BATCHING +
+          batching() +
           '\n\n' +
-          APP_CONTROL,
+          appControl(),
       ),
   );
 
@@ -127,9 +143,9 @@ export function registerPrompts(server: McpServer): void {
         `Test this feature and report pass/fail/blocked per case with evidence:\n"${feature}"\n\n` +
           loop(`Call qa_test_feature ${args({ feature, mode: 'execute', projectRoot })} and note its sessionId and jobId.`) +
           `\n\nAuth, paywall or missing test data report blocked, not failed: say what the user must provide.\n\n` +
-          BATCHING +
+          batching() +
           '\n\n' +
-          APP_CONTROL +
+          appControl() +
           '\n\n' +
           CREDENTIALS,
       ),
@@ -146,7 +162,10 @@ export function registerPrompts(server: McpServer): void {
       userText(
         `Create a durable automated test suite for this app.\n\n` +
           loop(`Call qa_test_this ${args({ mode: 'execute', goal: 'create_automation_suite', projectRoot, waitForCompletion: true })}.`) +
-          `\n\nThen call qa_suite_generate {sessionId} to merge the cases into .swipium/test-suite.json and qa_suite_lint {sessionId} for brittle locators. ` +
+          (isToolListed('qa_suite_generate')
+            ? `\n\nThen call qa_suite_generate {sessionId} to merge the cases into .swipium/test-suite.json and qa_suite_lint {sessionId} for brittle locators. `
+            : // SWIPIUM_TOOLS=core hides the test-suite tools: never point at a tool the client cannot call.
+              `\n\nThen call qa_generate {sessionId, target: "suite", save: true} to write the suite (qa_suite_generate / qa_suite_lint are hidden because SWIPIUM_TOOLS=core; SWIPIUM_TOOLS=all enables them). `) +
           `Summarize what the suite covers, the coverage gaps it reports, and how to re-run it (qa_flow_run on the generated flows; \`npx swipium suite lint\` in CI).`,
       ),
   );
@@ -163,8 +182,8 @@ export function registerPrompts(server: McpServer): void {
         `Turn the workflow you just ran into a repeatable Swipium flow.\n\n` +
           `1. Call qa_generate { sessionId, target: "flow", name: "${name ?? 'my-flow'}" } to draft the flow YAML from the recorded actions (or write it by hand with: name, appId, budgetProfile, fixtures, and a steps list).\n` +
           `2. Use durable selectors: prefer text/id (e.g. tap: "Sign In") over @ref. Replace credentials with \${SWIPIUM_TEST_EMAIL}/\${SWIPIUM_TEST_PASSWORD} variables. Never inline secrets.\n` +
-          `   Common steps: prepareTarget, tap, tapAt, inputText, assertVisible, assertNotVisible, swipe, scrollTo, press, openUrl, wait, clearOverlay (full list: docs/tools.md#flow-steps).\n` +
-          `3. Validate it with qa_flow_check { flowYaml: "<your yaml>" } and fix any reported errors (qa_generate also reports a durability grade + brittle steps).\n` +
+          `   Common steps: prepareTarget, tap, tapAt, inputText, assertVisible, assertNotVisible, swipe, scrollTo, press, openUrl, wait, clearOverlay (full list: docs/flows.md#step-reference).\n` +
+          `3. Validate it with ${isToolListed('qa_flow_check') ? 'qa_flow_check { flowYaml: "<your yaml>" }' : 'qa_flow_run { mode: "plan", flowYaml: "<your yaml>" }'} and fix any reported errors (qa_generate also reports a durability grade + brittle steps).\n` +
           `4. Save it under .swipium/flows/${name ?? 'my-flow'}.yaml (qa_generate save:true does this) so the workflow plan lists it and qa_flow_run can replay it.`,
       ),
   );

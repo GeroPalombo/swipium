@@ -88,10 +88,18 @@ describe('qaOk / qaStop structured summary', () => {
     const r = qaStop('action budget (40) reached', { counters: { actions: 40 } });
     const s = sc(r);
     expect(Object.keys(s)[0]).toBe('summary');
-    expect(s).toMatchObject({ ok: true, stopped: true, reason: 'action budget (40) reached' });
-    expect(String(s.summary)).toContain('Stopped: action budget (40) reached');
+    // GOAL-12: a budget stop did nothing, so it is never ok:true (but not an isError either).
+    expect(r.isError).toBeFalsy();
+    expect(s).toMatchObject({
+      ok: false,
+      stopped: true,
+      performed: false,
+      failureCode: 'BUDGET_EXHAUSTED',
+      reason: 'action budget (40) reached',
+    });
+    expect(String(s.summary)).toContain('BUDGET_EXHAUSTED: action budget (40) reached');
     expect(textOf(r)).toContain('Call qa_report');
-    expect(s.next).toEqual(['qa_report to summarize what was verified']);
+    expect(s.next).toEqual(['qa_report to summarize what was verified', 'qa_start_session { budget: {...} } for a larger budget']);
   });
 });
 

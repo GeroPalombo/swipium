@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import type { CallToolResult } from '@modelcontextprotocol/client';
-import { elementsOf } from './actFixFake.js';
+import { elementsOf, fillTextField } from './actFixFake.js';
 
 const fakeHome = mkdtempSync(join(tmpdir(), 'swipium-device-act-home-'));
 process.env.HOME = fakeHome;
@@ -112,6 +112,9 @@ class Fake implements Driver {
   hideThrows?: Error;
   onSwipe?: () => void;
   asciiOnly = false;
+  /** When true, inputText fills the EditText under the last tap (qa_act reads a typed field back). */
+  reflectTyping = false;
+  private lastTap?: [number, number];
   constructor(xml: string) {
     this.xml = xml;
   }
@@ -170,6 +173,7 @@ class Fake implements Driver {
   }
   async tapXY(x: number, y: number) {
     this.rec('tapXY', x, y);
+    this.lastTap = [x, y];
   }
   async pressXY(x: number, y: number, ms: number) {
     this.rec('pressXY', x, y, ms);
@@ -179,9 +183,11 @@ class Fake implements Driver {
   }
   async inputText(text: string) {
     this.rec('inputText', text);
+    if (this.reflectTyping && this.lastTap) this.xml = fillTextField(this.xml, ...this.lastTap, text, true);
   }
   async clearFocusedText() {
     this.rec('clearFocusedText');
+    if (this.reflectTyping && this.lastTap) this.xml = fillTextField(this.xml, ...this.lastTap, '');
   }
   async typeBySelector(using: string, value: string, text: string) {
     this.rec('typeBySelector', using, value, text);
@@ -273,6 +279,7 @@ describe('qa_act smoke-test fixes (fake driver)', () => {
 
   it('A: a registered secret typed into a NON-secure field is recorded as secret, without plaintext', async () => {
     const fake = new Fake(formScreen());
+    fake.reflectTyping = true; // fields read back what was typed (AND-14 verification)
     const sessionId = await start(fake);
     const pw = await refOf(sessionId, (e) => e.id === 'password');
     const SECRET = 'Sup3r-S3cret!';

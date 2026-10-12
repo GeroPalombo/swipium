@@ -96,6 +96,7 @@ describe('#12 ${SWIPIUM_*} placeholders', () => {
   it('expands from the env, types the value, records the placeholder, never echoes the value', async () => {
     process.env.SWIPIUM_TEST_EMAIL = 'qa.person@example.com';
     const fake = new FakeDriver(form());
+    fake.reflectTyping = true; // the field reads back the typed value (AND-14 verification)
     const id = await h.start(fake);
     await h.call('qa_snapshot', { sessionId: id });
     const res = await h.call('qa_act', { sessionId: id, action: 'type', target: { id: 'email' }, text: '${SWIPIUM_TEST_EMAIL}' });
@@ -103,7 +104,12 @@ describe('#12 ${SWIPIUM_*} placeholders', () => {
     expect(s.ok).toBe(true);
     expect(s.placeholders).toEqual(['SWIPIUM_TEST_EMAIL']);
     expect(fake.got('inputText')[0].a).toEqual(['qa.person@example.com']);
-    expect(JSON.stringify(res)).not.toContain('qa.person@example.com');
+    // The call never echoes the value. Only the field itself shows it, as screen state (a
+    // non-secret input reads back in the tree, which qa_act verifies since AND-14).
+    const { elements, ...callFields } = s;
+    expect(JSON.stringify(callFields)).not.toContain('qa.person@example.com');
+    expect(textOf(res).split('\n')[0]).not.toContain('qa.person@example.com');
+    expect(elements).toEqual([expect.stringContaining('#email text="qa.person@example.com"')]);
     const rec = h.sessions.get(id)!.recordedActions.at(-1)!;
     expect(rec.text).toBe('${SWIPIUM_TEST_EMAIL}');
   }, 20_000);

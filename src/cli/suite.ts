@@ -3,9 +3,9 @@
 // which is a live MCP session, so the CLI points the user at it rather than guessing).
 
 import { isAbsolute, join } from 'node:path';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { lintSuitePages } from '../suite/lint.js';
-import { compileSuite } from '../suite/compile.js';
+import { compileSuite, flowSlug, writeCompiledFlow } from '../suite/compile.js';
 import { parseFlow } from '../flows/schema.js';
 
 function resolveRoot(arg?: string): string {
@@ -13,28 +13,28 @@ function resolveRoot(arg?: string): string {
   return isAbsolute(arg) ? arg : join(process.cwd(), arg);
 }
 
-/** Compile a suite into runnable Flow V2 files under .swipium/flows + .swipium/compiled. */
-function compileToFlows(root: string, suiteRel?: string): { ok: boolean; slugs: string[]; lines: string[] } {
+/** Compile a suite into runnable Flow V2 files under .swipium/flows + .swipium/compiled. A flows/
+ *  file edited by hand since the last compile is kept (new output > <slug>.yaml.new) unless force. */
+function compileToFlows(root: string, suiteRel?: string, force = false): { ok: boolean; slugs: string[]; lines: string[] } {
   const result = compileSuite(root, suiteRel ?? 'suites/smoke.yaml');
   const lines: string[] = [];
   if (result.errors.length && result.flows.length === 0) {
     return { ok: false, slugs: [], lines: [`No suite to compile: ${result.errors.join('; ')}`] };
   }
-  const flowsDir = join(root, '.swipium', 'flows');
-  const compiledDir = join(root, '.swipium', 'compiled');
-  mkdirSync(flowsDir, { recursive: true });
-  mkdirSync(compiledDir, { recursive: true });
   const slugs: string[] = [];
   let allOk = true;
   for (const f of result.flows) {
-    const slug = f.name.replace(/[^\w.-]+/g, '-');
+    const slug = flowSlug(f.name);
     const parse = f.yaml ? parseFlow(f.yaml) : { errors: ['empty'] };
     const ok = !!f.yaml && parse.errors.length === 0 && f.errors.length === 0;
     if (ok) {
-      writeFileSync(join(flowsDir, `${slug}.yaml`), f.yaml);
-      writeFileSync(join(compiledDir, `${slug}.flow.yaml`), f.yaml);
+      const w = writeCompiledFlow(root, slug, f.yaml, { force });
       slugs.push(slug);
-      lines.push(`✓ ${f.name} > .swipium/flows/${slug}.yaml`);
+      lines.push(
+        w.kept
+          ? `! ${f.name}: .swipium/flows/${slug}.yaml was edited by hand, kept it; new output > .swipium/flows/${slug}.yaml.new (pass --force to overwrite)`
+          : `✓ ${f.name} > .swipium/flows/${slug}.yaml${w.replaced ? ' (replaced previous compiled flow)' : ''}`,
+      );
     } else {
       allOk = false;
       lines.push(`✗ ${f.name}: ${[...f.errors, ...parse.errors].join('; ')}`);
@@ -43,9 +43,33 @@ function compileToFlows(root: string, suiteRel?: string): { ok: boolean; slugs: 
   return { ok: allOk, slugs, lines };
 }
 
+const SUITE_USAGE =
+  'Usage: swipium suite <lint|compile|init> [--suite suites/smoke.yaml] [--force] [--strict] [projectRoot]\n' +
+  '  lint exit codes: 0 no errors (warnings allowed unless --strict), 1 errors (or warnings with --strict), 2 no suite\n' +
+  '  compile exit codes: 0 all compiled, 2 nothing compiled or a test failed to compile\n' +
+  '  compile keeps hand-edited .swipium/flows/<slug>.yaml (writes <slug>.yaml.new); --force overwrites\n';
+
+/** Flags each subcommand accepts; anything else is a usage error (a typo'd --strict must not pass CI). */
+const SUITE_FLAGS: Record<string, string[]> = { lint: ['--strict'], compile: ['--suite', '--force'], init: [] };
+
 export async function runSuite(args: string[]): Promise<void> {
   const sub = args[0];
-  const root = resolveRoot(args.find((a, i) => i > 0 && !a.startsWith('--')));
+  const known = sub ? SUITE_FLAGS[sub] : undefined;
+  const unknown = known
+    ? args.slice(1).find((a, i, rest) => a.startsWith('-') && !known.includes(a) && rest[i - 1] !== '--suite')
+    : undefined;
+  if (unknown) {
+    process.stderr.write(`swipium suite ${sub}: unknown option ${unknown}\n\n${SUITE_USAGE}`);
+    process.exitCode = 2;
+    return;
+  }
+  // The positional projectRoot: skip flags and the value that follows --suite.
+  const root = resolveRoot(args.find((a, i) => i > 0 && !a.startsWith('--') && args[i - 1] !== '--suite'));
+  if (sub && sub !== 'init' && !existsSync(root)) {
+    process.stdout.write(`Project root not found: ${root}\n`);
+    process.exitCode = 2;
+    return;
+  }
 
   if (sub === 'lint') {
     const res = lintSuitePages(root);
@@ -58,13 +82,15 @@ export async function runSuite(args: string[]): Promise<void> {
     for (const i of res.items) {
       process.stdout.write(`${i.severity.toUpperCase()} ${i.page}.${i.element}: ${i.message}\n`);
     }
-    process.exitCode = res.items.some((i) => i.severity === 'error') ? 1 : 0;
+    // Exit codes: 0 clean (warnings allowed), 1 errors, or any finding with --strict; 2 no suite.
+    const strict = args.includes('--strict');
+    process.exitCode = res.items.some((i) => i.severity === 'error' || strict) ? 1 : 0;
     return;
   }
 
   if (sub === 'compile') {
     const suiteRel = args.includes('--suite') ? args[args.indexOf('--suite') + 1] : undefined;
-    const r = compileToFlows(root, suiteRel);
+    const r = compileToFlows(root, suiteRel, args.includes('--force'));
     r.lines.forEach((l) => process.stdout.write(l + '\n'));
     process.exitCode = r.ok && r.slugs.length ? 0 : 2;
     return;
@@ -87,6 +113,6 @@ export async function runSuite(args: string[]): Promise<void> {
     return;
   }
 
-  process.stdout.write('Usage: swipium suite <lint|compile|init> [--suite suites/smoke.yaml] [projectRoot]\n');
+  process.stdout.write(SUITE_USAGE);
   process.exitCode = 2;
 }

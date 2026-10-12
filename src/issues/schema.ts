@@ -87,6 +87,10 @@ export interface IssueClassification {
   confidence: number; // 0..1
   reason: string;
   releaseImpact: ReleaseImpact;
+  /** TOOL NEW-R3-2: the fallback filled in a default (no rule matched and the caller gave no
+   *  severity / category), so a re-observation keeps what the issue already has. */
+  severityDefaulted?: boolean;
+  categoryDefaulted?: boolean;
 }
 
 /** A lifecycle patch carried on a fixed/reopened/suppressed/triaged event. */

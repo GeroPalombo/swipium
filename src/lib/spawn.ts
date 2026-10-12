@@ -38,6 +38,10 @@ export interface RunOptions {
    * arg; a number[] redacts those arg indexes. Redacted values are also scrubbed from the
    * stderr echoed into the message (a failing tool may print its own argv back). */
   redactArgs?: boolean | number[];
+  /** Spawn the command as its own process group and signal the WHOLE group on abort / timeout, so
+   * grandchildren (gradle under `npx expo run:android`, xcodebuild's workers) stop with it instead
+   * of re-parenting to pid 1. POSIX only; ignored on Windows. For builds. */
+  processGroup?: boolean;
 }
 
 const REDACTED_ARG = '«redacted»';
@@ -141,6 +145,41 @@ export function assertNoGitScope(command: string, args: string[] = []): void {
   if (bad) throw new GitScopeForbiddenError(bad);
 }
 
+/** Process groups (leader pids) whose run was aborted and that got SIGTERM. The 2 s SIGKILL timer is
+ *  unref'd, so it never fires when the server exits right after cancelling (TOOL NEW-R3-3). */
+const abortedGroups = new Set<number>();
+
+function groupAlive(pgid: number): boolean {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Shutdown: wait up to `waitMs` for aborted process groups to exit, then SIGKILL the survivors (a
+ *  build that traps or ignores SIGTERM). Returns how many groups were force-killed. Never throws. */
+export async function killAbortedProcessGroups(waitMs = 2000): Promise<number> {
+  const deadline = Date.now() + waitMs;
+  const alive = (): number[] => {
+    for (const g of abortedGroups) if (!groupAlive(g)) abortedGroups.delete(g);
+    return [...abortedGroups];
+  };
+  while (alive().length && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+  let killed = 0;
+  for (const g of alive()) {
+    try {
+      process.kill(-g, 'SIGKILL');
+      killed++;
+    } catch {
+      /* already gone */
+    }
+    abortedGroups.delete(g);
+  }
+  return killed;
+}
+
 /** Run a command from an argv array. `opts.timeoutMs` defaults to DEFAULT_SPAWN_TIMEOUT_MS
  * (120s) when omitted; pass `timeoutMs: 0` (or `Infinity`) to disable the kill timer. */
 export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise<RunResult> {
@@ -150,16 +189,40 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
     return Promise.reject(e);
   }
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { cwd: opts.cwd, signal: opts.signal });
+    const group = !!opts.processGroup && process.platform !== 'win32';
+    if (group && opts.signal?.aborted) return reject(abortError());
+    // A group leader is signalled by us (killTree), not by spawn's `signal`, which only kills the child.
+    const child = group ? spawn(cmd, args, { cwd: opts.cwd, detached: true }) : spawn(cmd, args, { cwd: opts.cwd, signal: opts.signal });
     let stdout = '';
     let stderr = '';
     let timedOut = false;
+    const killTree = (sig: NodeJS.Signals) => {
+      try {
+        if (group && child.pid) process.kill(-child.pid, sig);
+        else child.kill(sig);
+      } catch {
+        /* already gone */
+      }
+    };
+    let aborted = false;
+    const onAbort = () => {
+      aborted = true;
+      killTree('SIGTERM');
+      const pgid = group ? child.pid : undefined;
+      if (pgid) abortedGroups.add(pgid); // shutdown SIGKILLs it if the timer below can't
+      // a build ignoring SIGTERM still goes
+      setTimeout(() => {
+        killTree('SIGKILL');
+        if (pgid) abortedGroups.delete(pgid);
+      }, 2000).unref?.();
+    };
+    if (group) opts.signal?.addEventListener('abort', onAbort, { once: true });
 
     const timeoutMs = effectiveTimeoutMs(opts.timeoutMs);
     const timer = timeoutMs
       ? setTimeout(() => {
           timedOut = true;
-          child.kill('SIGKILL');
+          killTree('SIGKILL');
         }, timeoutMs)
       : undefined;
 
@@ -168,11 +231,14 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
 
     child.on('error', (err) => {
       if (timer) clearTimeout(timer);
+      opts.signal?.removeEventListener('abort', onAbort);
       reject(sanitizedSpawnError(err, args, opts.redactArgs));
     });
 
     child.on('close', (code) => {
       if (timer) clearTimeout(timer);
+      opts.signal?.removeEventListener('abort', onAbort);
+      if (aborted) return reject(abortError()); // same outcome as spawn's own `signal` handling
       const result: RunResult = { code, stdout, stderr, timedOut };
       if (opts.rejectOnNonZero && code !== 0) {
         const errText = scrubSensitiveArgs(stderr.trim(), args, opts.redactArgs);
@@ -193,6 +259,11 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
       child.stdin.end();
     }
   });
+}
+
+/** The error a spawn `signal` abort rejects with (name AbortError, code ABORT_ERR). */
+function abortError(): Error {
+  return Object.assign(new Error('The operation was aborted'), { name: 'AbortError', code: 'ABORT_ERR' });
 }
 
 export interface BinaryRunResult {

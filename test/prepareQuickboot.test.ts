@@ -29,7 +29,8 @@ const { bootWasCold, ensureQuickbootSnapshot } = android;
 const { SessionStore } = await import('../src/session/store.js');
 const { actionSeq } = await import('../src/snapshot/fresh.js');
 
-const saves = () => env.calls.filter((a) => a.includes('emu'));
+// Snapshot saves only (`emu avd name`, which looks for an already-running AVD, is not a save).
+const saves = () => env.calls.filter((a) => a.includes('emu') && a.includes('snapshot'));
 
 beforeEach(() => {
   env.uptime = '25.0 30.0';
@@ -75,7 +76,11 @@ describe('ensureQuickbootSnapshot', () => {
 
 describe('prepareAndroid boot', () => {
   it('records the quick-boot outcome and marks the stored snapshot stale after boot and launch', async () => {
-    vi.spyOn(android, 'adbDevices').mockResolvedValueOnce(['emulator-5554']).mockResolvedValue(['emulator-5554', 'emulator-5556']);
+    // 1st call: is the AVD already running (bind it instead of booting)? 2nd: serials before the boot.
+    vi.spyOn(android, 'adbDevices')
+      .mockResolvedValueOnce(['emulator-5554'])
+      .mockResolvedValueOnce(['emulator-5554'])
+      .mockResolvedValue(['emulator-5554', 'emulator-5556']);
     vi.spyOn(android, 'bootEmulator').mockReturnValue({ kill: () => true } as never);
     vi.spyOn(android, 'waitForBoot').mockResolvedValue(true);
     env.uptime = '0.5 1.0'; // cold

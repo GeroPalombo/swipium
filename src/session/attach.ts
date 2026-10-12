@@ -9,9 +9,10 @@ import { SimctlDriver } from '../drivers/SimctlDriver.js';
 import { WdaDriver } from '../drivers/WdaDriver.js';
 import { listSimulators, type Simulator } from '../lib/simctl.js';
 import { checkWda } from '../lib/wda.js';
+import { wdaDeviceOwnership } from '../lib/wdaDevice.js';
 import { loadWdaConfig } from '../lib/wdaConfig.js';
 import { isEmulatorSerial } from '../core/targetPlan.js';
-import type { Session } from './store.js';
+import type { Session, SessionStore } from './store.js';
 import type { Driver } from '../drivers/Driver.js';
 import type { FailureCode } from '../oracle/failures.js';
 import type { CallToolResult } from '@modelcontextprotocol/server';
@@ -103,6 +104,37 @@ export function blockedDeviceResult(blocked?: AttachBlocked): CallToolResult | u
   });
 }
 
+/** IOS NEW-A: on the visual-only simulator backend, the answer for a session that DID run on WDA
+ *  for its simulator whose WDA no longer answers: WDA_UNREACHABLE with the restart steps, instead
+ *  of a BACKEND_UNSUPPORTED that hides the cause. Undefined when the session never had a WDA, or
+ *  its WDA answers again (then the caller's "attach WDA" advice is right). */
+export async function lostWdaResult(session: Session, what: string): Promise<CallToolResult | undefined> {
+  const udid = session.device;
+  if (!udid || !isSimulatorUdid(udid)) return undefined;
+  // Also a WDA that hung while prepare created its session (a `blocked` wda_attach in the ledger).
+  const tried = [...(session.mutations ?? [])]
+    .reverse()
+    .find(
+      (m) =>
+        ['wda_attach', 'wda_start', 'wda_reuse'].includes(m.action) &&
+        (m.status === 'executed' || m.status === 'blocked') &&
+        typeof m.target?.webDriverAgentUrl === 'string' &&
+        String(m.target?.udid ?? '').toUpperCase() === udid.toUpperCase(),
+    )?.target?.webDriverAgentUrl;
+  const url = session.transportFallback?.wdaUrl ?? session.wdaUrl ?? (typeof tried === 'string' ? tried : undefined);
+  if (!url) return undefined;
+  if ((await checkWda(url, 1500).catch(() => undefined))?.reachable) return undefined;
+  return qaError({
+    what: `${what}: this session's WebDriverAgent at ${url} is not responding (hung or stopped), so it runs visual-only`,
+    changedState: false,
+    retrySafe: true,
+    failureCode: 'WDA_UNREACHABLE',
+    nextSteps: [
+      `Restart WDA: qa_wda { action:"stop", device:"${udid}" }, then qa_wda { action:"setup", device:"${udid}" } and qa_wda { action:"attach" }, then retry.`,
+    ],
+  });
+}
+
 /** PURE: the typed refusal for a probed device, or null when it may be bound. Same policy
  * as core/targetPlan (PHYSICAL_DEVICE_UNSUPPORTED) plus a boot-completed gate. */
 export function attachBlocker(p: AndroidDeviceProbe): AttachBlocked | null {
@@ -130,9 +162,10 @@ export function attachBlocker(p: AndroidDeviceProbe): AttachBlocked | null {
 export interface DeviceResolution {
   sessionDevice?: string; // bound to the session AND still online
   available: string[]; // all online serials
-  effective?: string; // the device to act on (session > arg > single-online)
+  effective?: string; // the device to act on (session > arg > pin > single-online)
   needSelection: boolean; // >1 online and none chosen
-  source: 'session' | 'arg' | 'single-online' | 'none';
+  /** 'arg': the caller named it; 'pin': SWIPIUM_DEVICE picked it (the operator chose it, not the call). */
+  source: 'session' | 'arg' | 'pin' | 'single-online' | 'none';
 }
 
 /** TEST SEAM (P1 §6). When set, getDriver() binds the driver this factory returns instead of
@@ -141,6 +174,156 @@ export interface DeviceResolution {
 let testDriverFactory: ((session: Session) => Driver | undefined) | undefined;
 export function setDriverFactoryForTests(factory?: (session: Session) => Driver | undefined): void {
   testDriverFactory = factory;
+}
+
+/** Operator device pin (server env, never repo config): an adb serial, AVD name, or simulator
+ *  UDID/name. Used as the default target when a call names no device and the session has none,
+ *  and nothing else is ever auto-picked while it is set. */
+export const DEVICE_PIN_ENV = 'SWIPIUM_DEVICE';
+export function operatorDevicePin(): string | undefined {
+  const v = process.env[DEVICE_PIN_ENV]?.trim();
+  return v ? v : undefined;
+}
+
+/** CR-PIN: the one rule for "is this the pinned device": an exact match ignoring case, for every
+ *  kind of id (adb serial, AVD name, simulator UDID or name). Never a substring match. */
+export function pinMatches(pin: string, value: string | undefined): boolean {
+  return !!value && value.toLowerCase() === pin.toLowerCase();
+}
+
+/** E2E NEW-5: the NO_DEVICE text when the pin names no simulator (it names the pin, not "requested"). */
+export function pinNoSimulatorMessage(pin: string): string {
+  return `${DEVICE_PIN_ENV}=${pin} (server env) matches no available iOS simulator (UDID or exact name), so no other simulator was used.`;
+}
+export function pinFixStep(): string {
+  return `Fix or unset ${DEVICE_PIN_ENV} in the MCP server's env (an adb serial, AVD name, or simulator UDID / exact name), then restart the server.`;
+}
+
+/** E2E NEW-5: the one pin resolver for simulators: the simulator whose UDID the pin is, else every
+ *  simulator with exactly that name (pinMatches, ignoring case). More than one = ambiguous. */
+export function simulatorsForPin<T extends { udid: string; name: string }>(pin: string, sims: T[]): T[] {
+  const byUdid = sims.filter((s) => pinMatches(pin, s.udid));
+  return byUdid.length ? byUdid : sims.filter((s) => pinMatches(pin, s.name));
+}
+export function pinAmbiguousMessage(pin: string, matches: Array<{ udid: string; name: string }>): string {
+  return `${DEVICE_PIN_ENV}=${pin} (server env) names ${matches.length} simulators (${matches.map((s) => `${s.name} ${s.udid}`).join(', ')}), so none was used. Pin one by its UDID.`;
+}
+
+/** With SWIPIUM_DEVICE set, the refusal text for an explicitly requested device that is NOT the
+ *  pinned one (else undefined). Same device by another name passes: the pinned AVD running as the
+ *  requested serial (or vice versa), or a simulator's UDID vs its name (`sims`). */
+export async function devicePinConflict(
+  requested: string | undefined,
+  online: string[],
+  sims: Array<{ udid: string; name: string }> = [],
+): Promise<string | undefined> {
+  const pin = operatorDevicePin();
+  if (!pin || !requested || pinMatches(pin, requested)) return undefined;
+  const sameSim = (s: { udid: string; name: string }, v: string) => pinMatches(v, s.udid) || pinMatches(v, s.name);
+  if (sims.some((s) => sameSim(s, pin) && sameSim(s, requested))) return undefined;
+  const reqSerial = online.find((s) => pinMatches(requested, s));
+  const pinSerial = online.find((s) => pinMatches(pin, s));
+  const [reqAvd, pinAvd] = await Promise.all([
+    reqSerial ? emulatorAvdName(reqSerial) : undefined,
+    pinSerial ? emulatorAvdName(pinSerial) : undefined,
+  ]);
+  if (pinMatches(pin, reqAvd) || pinMatches(requested, pinAvd)) return undefined;
+  return `${DEVICE_PIN_ENV}=${pin} pins this server to that device; "${requested}" is a different device, so nothing was done on it.`;
+}
+
+/** The AVD name of a running emulator serial (`adb emu avd name`, else ro.boot.qemu.avd_name), or undefined. */
+export async function emulatorAvdName(serial: string): Promise<string | undefined> {
+  try {
+    const r = await run('adb', ['-s', serial, 'emu', 'avd', 'name'], { timeoutMs: 5000 });
+    const first = r.code === 0 ? r.stdout.split(/\r?\n/)[0]?.trim() : '';
+    // AVD names are [A-Za-z0-9._-]; anything else is console noise ("OK", "KO: ...", an auth banner).
+    if (first && first !== 'OK' && /^[\w.-]+$/.test(first)) return first;
+  } catch {
+    /* fall through to getprop */
+  }
+  try {
+    const r = await run('adb', ['-s', serial, 'shell', 'getprop', 'ro.boot.qemu.avd_name'], { timeoutMs: 5000 });
+    const v = r.code === 0 ? r.stdout.trim() : '';
+    return /^[\w.-]+$/.test(v) ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The online serial running AVD `avd` (a requested AVD that is already up is bound, never booted twice). */
+export async function onlineSerialForAvd(avd: string, online: string[]): Promise<string | undefined> {
+  const emus = await verifiedEmulatorSerials(online);
+  const names = await Promise.all(emus.map(emulatorAvdName));
+  const i = names.findIndex((n) => pinMatches(avd, n));
+  return i >= 0 ? emus[i] : undefined;
+}
+
+/** The AVD an Android plan targets: the AVD it boots, or the one its online emulator runs. Pins
+ *  `expo run:android --device` so the build installs on the consented emulator, not any device. */
+export async function androidTargetAvd(t: { device?: string; willBoot: boolean; bootTarget?: string }): Promise<string | undefined> {
+  if (t.willBoot) return t.bootTarget;
+  return t.device ? emulatorAvdName(t.device) : undefined;
+}
+
+/** The AVD Swipium booted for `serial` in this session (mutation ledger boot_emulator), so an
+ *  offline session device is re-booted as ITSELF, never replaced by another AVD. */
+export function sessionAvdFor(session: Pick<Session, 'mutations'>, serial: string | undefined): string | undefined {
+  if (!serial) return undefined;
+  for (let i = session.mutations.length - 1; i >= 0; i--) {
+    const m = session.mutations[i];
+    if ((m.action !== 'boot_emulator' && m.action !== 'bind_emulator') || m.status !== 'executed') continue;
+    const t = (m.target ?? {}) as { avd?: unknown; device?: unknown };
+    if (t.device === serial && typeof t.avd === 'string') return t.avd;
+  }
+  return undefined;
+}
+
+/** Is this session's bound device provably gone (Android serial not online, iOS simulator not
+ *  Booted)? 'unknown' when there is no device, discovery is off (tests), or the probe failed. Cheap
+ *  (one `adb devices` or `simctl list`), for qa_status. */
+export async function sessionDeviceState(session: Session): Promise<'online' | 'gone' | 'unknown'> {
+  const dev = session.device;
+  if (!dev || testDriverFactory || process.env.SWIPIUM_DISABLE_DEVICE_DISCOVERY) return 'unknown';
+  const kind = session.driver?.kind ?? session.driverKind;
+  const ios = kind === 'wda' || kind === 'simulator' || (kind !== 'direct' && isSimulatorUdid(dev));
+  if (ios) {
+    const sim = await listSimulators()
+      .then((l) => l.find((x) => x.udid === dev))
+      .catch(() => null);
+    if (sim === null) return 'unknown';
+    return sim?.state === 'Booted' ? 'online' : 'gone';
+  }
+  if (kind === 'remote') return 'unknown'; // Appium-managed: not ours to probe
+  return (await adbDevices()).includes(dev) ? 'online' : 'gone';
+}
+
+/** Remember the AVD of an emulator bound BY SERIAL (bind_emulator ledger row), so a later offline
+ *  session device is re-booted as that AVD, the same as one Swipium booted. No-op when the AVD is
+ *  already known for that serial, the serial is not an emulator, or its AVD name can't be read. */
+export async function rememberBoundAvd(
+  sessions: Pick<SessionStore, 'recordMutation'>,
+  session: Session,
+  serial: string,
+  tool: string,
+): Promise<void> {
+  if (!isEmulatorSerial(serial) || sessionAvdFor(session, serial)) return;
+  const avd = await emulatorAvdName(serial);
+  if (!avd) return;
+  sessions.recordMutation(session, {
+    tool,
+    action: 'bind_emulator',
+    risk: 'low',
+    target: { avd, device: serial },
+    consent: { required: false, approved: true },
+    status: 'executed',
+    detail: `bound ${serial} (AVD ${avd})`,
+  });
+}
+
+/** Other sessions of this process with a LIVE driver on `device`(two sessions on one device
+ *  fight over the foreground app and the WDA session). */
+export function otherLiveSessionsOn(all: Session[], self: Session, device: string): string[] {
+  return all.filter((o) => o.id !== self.id && o.device === device && !!o.driver).map((o) => o.id);
 }
 
 export async function resolveDevice(session: Session, prefer?: string): Promise<DeviceResolution> {
@@ -157,6 +340,15 @@ export async function resolveDevice(session: Session, prefer?: string): Promise<
       : { sessionDevice, available, effective: undefined, needSelection: false, source: 'none' };
   }
   if (sessionDevice) return { sessionDevice, available, effective: sessionDevice, needSelection: false, source: 'session' };
+  // A session already bound to a device that is now offline is never swapped for another online
+  // device ("a session is only re-bound to its own device").
+  if (session.device) return { sessionDevice, available, effective: undefined, needSelection: false, source: 'none' };
+  // Operator pin: only the pinned device (serial, or the serial running the pinned AVD) is eligible.
+  const pin = operatorDevicePin();
+  if (pin) {
+    const pinned = available.find((s) => pinMatches(pin, s)) ?? (await onlineSerialForAvd(pin, available));
+    return { sessionDevice, available, effective: pinned, needSelection: false, source: pinned ? 'pin' : 'none' };
+  }
   if (available.length === 1) return { sessionDevice, available, effective: available[0], needSelection: false, source: 'single-online' };
   if (available.length > 1) return { sessionDevice, available, effective: undefined, needSelection: true, source: 'none' };
   return { sessionDevice, available, effective: undefined, needSelection: false, source: 'none' };
@@ -170,7 +362,16 @@ export function bindDevice(session: Session, serial: string): DirectDriver {
   return driver;
 }
 
-export async function getDriver(session: Session): Promise<{
+export interface GetDriverOptions {
+  /** false: never bind a device to a session that has none (report / read-only callers must not
+   *  adopt and capture an online device the user never chose). Default true. */
+  autoBind?: boolean;
+}
+
+export async function getDriver(
+  session: Session,
+  opts: GetDriverOptions = {},
+): Promise<{
   driver?: Driver;
   rehydrated: boolean;
   needSelection?: boolean;
@@ -207,17 +408,22 @@ export async function getDriver(session: Session): Promise<{
   const persistedAndroid = session.driverKind === 'direct';
   if (session.device && (persistedIos || (!persistedAndroid && isSimulatorUdid(session.device))))
     return rebindIosSimulator(session, session.device);
+  if (!session.device && opts.autoBind === false) return { driver: undefined, rehydrated: false, needSelection: false };
   const res = await resolveDevice(session);
-  if (session.device && res.effective && res.effective !== session.device) {
+  if (session.device && res.effective !== session.device) {
+    const others = res.available.filter((s) => s !== session.device);
+    const avd = sessionAvdFor(session, session.device);
     return {
       driver: undefined,
       rehydrated: false,
       needSelection: false,
       blocked: {
         failureCode: 'DEVICE_NOT_READY',
-        detail: `This session's device ${session.device} is not online. It was NOT re-bound to ${res.effective} (a different device).`,
+        detail:
+          `This session's device ${session.device}${avd ? ` (AVD ${avd})` : ''} is not online. ` +
+          `It was NOT re-bound to ${others.length ? `another device (online: ${others.join(', ')})` : 'any other device'}.`,
         nextSteps: [
-          `Bring ${session.device} back online, or switch deliberately with qa_prepare_target device="${res.effective}" (or start a new session).`,
+          `Bring ${session.device} back online${avd ? ` (qa_prepare_target avd="${avd}")` : ''}, or switch deliberately with qa_prepare_target device="<serial>" (or start a new session).`,
         ],
       },
     };
@@ -227,6 +433,27 @@ export async function getDriver(session: Session): Promise<{
     // planTarget, enforced here too because this path bypasses the target planner).
     const blocked = attachBlocker(await probeAndroidDevice(res.effective));
     if (blocked) return { driver: undefined, rehydrated: false, needSelection: false, blocked };
+    // The lone online Android emulator is not "the single device" when iOS simulators are also
+    // booted: the session may be meant for one of those. Ask instead of adopting it.
+    if (res.source === 'single-online') {
+      const booted = (await iosProbe.listSimulators().catch(() => [] as Simulator[])).filter((s) => /^booted$/i.test(s.state));
+      if (booted.length) {
+        return {
+          driver: undefined,
+          rehydrated: false,
+          needSelection: true,
+          blocked: {
+            failureCode: 'MULTIPLE_DEVICES',
+            detail:
+              `Android emulator ${res.effective} and ${booted.length} iOS simulator(s) (${booted.map((s) => s.udid).join(', ')}) are online; ` +
+              'this session has no device, so none was auto-bound.',
+            nextSteps: [
+              `Bind one deliberately: qa_prepare_target { device:"${res.effective}", bindOnly:true } or qa_prepare_ios_target { device:"<udid>" }.`,
+            ],
+          },
+        };
+      }
+    }
     bindDevice(session, res.effective);
     session.lastSnapshot = undefined; // refs invalid after (re)bind
     return { driver: session.driver, rehydrated: true };
@@ -241,18 +468,31 @@ export function isSimulatorUdid(device: string | undefined): boolean {
   return !!device && SIMULATOR_UDID_RE.test(device);
 }
 
+/** A WDA that answers AND is not provably another simulator's (GOAL-5: every simulator's WDA
+ *  defaults to the same port, so "reachable" alone could re-bind this session to another device's
+ *  WDA). An unknown owner is accepted (external / remote WDA); only a proven mismatch is refused.
+ *  `unverified` (lsof / ps timed out) is accepted too: the only caller passes this session's own
+ *  recorded WDA URL for `udid`, the one case where every resolver accepts it (CR P10). */
+async function wdaReachableFor(url: string, udid?: string): Promise<boolean> {
+  const status = await checkWda(url, 1500).catch(() => undefined);
+  if (!status?.reachable) return false;
+  if (!udid) return true;
+  const own = await wdaDeviceOwnership(url, status, udid).catch(() => undefined);
+  return own?.owner !== 'other';
+}
+
 /** Test seams for the iOS rebind (listSimulators / WDA reachability). */
 let iosProbe: {
   listSimulators: () => Promise<Simulator[]>;
-  wdaReachable: (url: string) => Promise<boolean>;
+  wdaReachable: (url: string, udid?: string) => Promise<boolean>;
 } = {
   listSimulators,
-  wdaReachable: async (url) => !!(await checkWda(url, 1500).catch(() => ({ reachable: false }))).reachable,
+  wdaReachable: wdaReachableFor,
 };
 export function setIosProbeForTests(probe?: Partial<typeof iosProbe>): void {
   iosProbe = {
     listSimulators: probe?.listSimulators ?? listSimulators,
-    wdaReachable: probe?.wdaReachable ?? (async (url) => !!(await checkWda(url, 1500).catch(() => ({ reachable: false }))).reachable),
+    wdaReachable: probe?.wdaReachable ?? wdaReachableFor,
   };
 }
 
@@ -302,7 +542,7 @@ async function rebindIosSimulator(
         : lastWdaUrlFor(session, udid);
   let driver: Driver;
   let note: string | undefined;
-  if (wdaUrl && (await iosProbe.wdaReachable(wdaUrl))) {
+  if (wdaUrl && (await iosProbe.wdaReachable(wdaUrl, udid))) {
     driver = wdaDriverFor(session, wdaUrl, udid);
     session.transportFallback = undefined;
   } else {
@@ -352,7 +592,7 @@ async function retryWdaTransport(session: Session): Promise<Driver | undefined> 
   const now = Date.now();
   if (now - fb.lastProbeAt < WDA_RETRY_INTERVAL_MS) return undefined;
   fb.lastProbeAt = now;
-  if (!(await iosProbe.wdaReachable(fb.wdaUrl).catch(() => false))) return undefined;
+  if (!(await iosProbe.wdaReachable(fb.wdaUrl, session.device).catch(() => false))) return undefined;
   const driver = wdaDriverFor(session, fb.wdaUrl, session.device);
   session.driver = driver;
   session.transportFallback = undefined;
@@ -376,3 +616,16 @@ export function rehydrateNote(session?: Pick<Session, 'device' | 'driver'>): str
 export const REHYDRATE_NOTE =
   'Note: reattached the device transport after a restart. The app may not be in the ' +
   'foreground (relaunch with qa_prepare_target on Android, qa_prepare_ios_target on iOS) and previous @eN refs are invalid (re-run qa_snapshot).';
+
+/** GOAL-18: the NO_DEVICE "prepare first" step, platform-aware. An iOS session (iOS driver or
+ *  persisted iOS transport, a simulator UDID, or a qa_test_this run with platform "ios") is told to
+ *  use qa_prepare_ios_target, never the Android-only qa_prepare_target. */
+export function prepareFirstStep(session: Pick<Session, 'device' | 'driver' | 'driverKind' | 'lastTestThisArgs'>, then?: string): string {
+  const kind = session.driver?.kind ?? session.driverKind;
+  const ios =
+    kind === 'simulator' ||
+    kind === 'wda' ||
+    (kind === undefined && isSimulatorUdid(session.device)) ||
+    (kind === undefined && !session.device && session.lastTestThisArgs?.flags?.platform === 'ios');
+  return `Call ${ios ? 'qa_prepare_ios_target' : 'qa_prepare_target'} first${then ? `, then ${then}` : ''}.`;
+}

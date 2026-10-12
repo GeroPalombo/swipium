@@ -124,7 +124,7 @@ export function codexEnvChecks(input: CodexEnvCheckInput): CodexEnvCheck[] {
       detail: `${custom}${base}${seen}`,
       fix:
         `Add under [mcp_servers.swipium] in ~/.codex/config.toml: ${codexEnvVarsLine()} (or set values in env = { ... }), then restart Codex. ` +
-        'Approval grants (SWIPIUM_CONSENT_PREAPPROVE, SWIPIUM_ALLOW_REMOTE_WDA) are never forwarded: set them literally in env = { ... }.',
+        'Approval grants (SWIPIUM_CONSENT_PREAPPROVE, SWIPIUM_CONSENT_PREAPPROVE_RUN_CODE, SWIPIUM_ALLOW_REMOTE_WDA) are never forwarded: set them literally in env = { ... }.',
     },
     {
       name: 'codex-tool-timeout',

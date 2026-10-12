@@ -189,6 +189,17 @@ export function classifyObservation(obs: IssueObservation, ctx: ClassifyContext 
 
   // --- 5. App defects: React/JS/native + crashes ---
   const fc = obs.failureCode;
+  // A bundle-load RedBox / dev-client launcher tagged METRO_REQUIRED (or another project's Metro)
+  // is the dev-server environment, not an app defect: it gates the run (warn) but never files a
+  // blocker app bug through the "RedBox" text rule below.
+  if (fc === 'METRO_REQUIRED' || fc === 'METRO_WRONG_PROJECT') {
+    return mk('hard_gate', 'high', 'Metro dev server not serving this debug build: environment (start Metro), not an app bug', 'test_env');
+  }
+  // WebDriverAgent returning no UI source (a hung or dead WDA) is Swipium's tool / environment, never
+  // an app bug, even though the health finding behind it is high severity.
+  if (fc === 'WDA_UNREACHABLE') {
+    return mk('mcp_limitation', 'high', 'WebDriverAgent returned no UI source: a tool / environment failure, not an app bug');
+  }
   if (fc === 'REDBOX' || /red\s?box/.test(hay)) return mk('blocker_app_bug', 'blocker', 'React Native RedBox: fatal JS/runtime error');
   if (fc === 'NATIVE_CRASH' || /native crash|sigsegv|sigabrt/.test(hay)) return mk('blocker_app_bug', 'blocker', 'Fatal native crash');
   if (fc === 'ANR' || /\banr\b|not responding/.test(hay)) return mk('blocker_app_bug', 'blocker', 'Application not responding (ANR)');
@@ -241,9 +252,21 @@ export function classifyObservation(obs: IssueObservation, ctx: ClassifyContext 
   // Honor a caller-supplied category (e.g. an explicit qa_note category) when no built-in rule
   // matched. This is how hard-gate / store-compliance / improvement notes still land correctly.
   if (ctx.categoryHint) {
-    return mk(ctx.categoryHint, ctx.severityHint ?? 'medium', `classified from caller-supplied category "${ctx.categoryHint}"`);
+    return {
+      ...mk(ctx.categoryHint, ctx.severityHint ?? 'medium', `classified from caller-supplied category "${ctx.categoryHint}"`),
+      ...(ctx.severityHint ? {} : { severityDefaulted: true }),
+    };
   }
-  return mk('mcp_limitation', 'low', 'Unclassified observation, recorded for triage');
+  // TOOL NEW-2: an explicit caller severity is kept even without a category hint.
+  return {
+    ...mk(
+      'mcp_limitation',
+      ctx.severityHint ?? 'low',
+      'Unclassified observation (no category given and no built-in rule matched), filed as mcp_limitation for triage',
+    ),
+    categoryDefaulted: true,
+    ...(ctx.severityHint ? {} : { severityDefaulted: true }),
+  };
 
   function mk(category: IssueCategory, severity: IssueSeverity, reason: string, owner?: IssueOwner): IssueClassification {
     return {

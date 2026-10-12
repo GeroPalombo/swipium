@@ -15,7 +15,8 @@ export const QA_LEVELS: readonly QaLevel[] = ['observed', 'smoke_tested', 'autom
 export const QA_LEVEL_MEANING: Record<QaLevel, string> = {
   observed: 'Swipium launched the app and captured evidence.',
   smoke_tested: 'Launch + health guardrails passed (no native crash or fatal app-error surface).',
-  automation_candidate: 'A POM automation suite was generated from recorded actions.',
+  // The signal is "actions were recorded", not "a suite was written" (AND-18): say what it means.
+  automation_candidate: 'Recorded actions are enough to generate a POM automation suite (qa_suite_generate / qa_generate).',
   automation_runnable: 'The generated suite compiled and dry-run validated.',
   ci_ready: 'The suite replayed from a declared state profile. Safe to gate CI on.',
 };
@@ -116,7 +117,7 @@ export function deriveQaLevel(signals: QaLevelSignals): QaLevelAssessment {
   const notes: string[] = [];
   if (!signals.observed) notes.push('No evidence captured yet. The app may not have launched.');
   if (signals.suiteGenerated && !signals.suiteRunnable) {
-    notes.push('A suite was generated but has not compiled/dry-run. It is a candidate, not runnable.');
+    notes.push('Actions were recorded, but no suite has compiled/dry-run yet. It is a candidate, not runnable.');
   }
   if (signals.suiteRunnable && !signals.ciReplayed) {
     notes.push('Suite is runnable but has not replayed from a declared state, so it is not CI-ready yet.');

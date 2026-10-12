@@ -7,7 +7,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { z } from 'zod';
 import type { McpServer, CallToolResult } from '@modelcontextprotocol/server';
-import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
+import { MAX_ECHOED_INPUT_CHARS, qaAnnotate, qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { qaNeedsInput } from '../lib/needsInput.js';
 import { resolveProjectRoot, unresolvedProjectRootError } from '../context/projectRoot.js';
 import { buildAppMap, summarizeMap, type BuildMode } from '../appMap/build.js';
@@ -128,7 +128,23 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
       const m = (mode ?? 'full') as BuildMode;
       const exploreGraph = m === 'static_only' ? null : latestExploreGraph(sessions, session);
       try {
-        const res = buildAppMap(root, { mode: m, at: nowIso(), includeCodeIndex, forceRescan, sessionId, exploreGraph, persist: true });
+        // LOG-22: the session knows the app under test; fill appIdentity from it when the static scan
+        // could not (androidPackage stayed null on a known Android session).
+        const kind = session?.driver?.kind ?? session?.driverKind;
+        const ios = kind === 'wda' || kind === 'simulator';
+        const appIdentityHints = session?.appId
+          ? { androidPackage: ios ? null : session.appId, iosBundleId: ios ? session.appId : null }
+          : undefined;
+        const res = buildAppMap(root, {
+          mode: m,
+          at: nowIso(),
+          includeCodeIndex,
+          forceRescan,
+          sessionId,
+          exploreGraph,
+          persist: true,
+          ...(appIdentityHints ? { appIdentityHints } : {}),
+        });
         const summary = summarizeMap(res.map);
         const merge = res.mergeResult;
         const text =
@@ -208,6 +224,7 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
         if (!f)
           return qaError({
             what: `Unknown featureId ${featureId}`,
+            failureCode: 'INVALID_ARGUMENT',
             changedState: false,
             retrySafe: true,
             nextSteps: ['Call qa_app_map_read { section:"features" } to list ids.'],
@@ -223,6 +240,7 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
         if (!s && !r)
           return qaError({
             what: `Unknown screenId ${screenId}`,
+            failureCode: 'INVALID_ARGUMENT',
             changedState: false,
             retrySafe: true,
             nextSteps: ['Call qa_app_map_read { section:"screens" } to list ids.'],
@@ -291,9 +309,11 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
               appMapUri: uri,
               section: 'full',
               summary: summarizeMap(map),
-              note: 'Full map omitted from text to protect context. Read the appMapUri resource for everything.',
+              note:
+                'Full map omitted from text to protect context. Read the appMapUri resource for everything, or ' +
+                'qa_get_artifact { uri: appMapUri } when the client has no MCP resources.',
             },
-            `Full map at resource: ${uri}`,
+            `Full map at resource: ${uri} (or qa_get_artifact { uri: "${uri}" })`,
           );
       }
     },
@@ -314,7 +334,10 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
         limit: z.number().optional(),
       },
     },
-    async ({ query, projectRoot, sessionId, intent, limit }) => {
+    async ({ query: rawQuery, projectRoot, sessionId, intent, limit }) => {
+      // The query is echoed (summary, payload, fence): an over-long one is cut, with a note.
+      const query = rawQuery.length > MAX_ECHOED_INPUT_CHARS ? rawQuery.slice(0, MAX_ECHOED_INPUT_CHARS) : rawQuery;
+      const queryNotes = query === rawQuery ? [] : [`query cut to its first ${MAX_ECHOED_INPUT_CHARS} of ${rawQuery.length} characters`];
       const { root, hint, error } = await rootFor(server, sessions, { projectRoot, sessionId });
       if (!root) return error ?? unresolvedProjectRootError({ source: 'none', hint });
       remember(root);
@@ -336,7 +359,10 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
             `  ${i + 1}. [${r.type}] ${r.title} (score ${r.score}${r.confidence !== undefined ? `, conf ${r.confidence}` : ''}) > ${r.recommendedNextTool.tool}`,
         )
         .join('\n');
-      return qaOk({ ...out, appMapUri: appMapResourceUri(root) }, `🔎 "${query}": ${out.total} result(s)\n${top || '  (no matches)'}`);
+      return qaAnnotate(
+        qaOk({ ...out, appMapUri: appMapResourceUri(root) }, `🔎 "${query}": ${out.total} result(s)\n${top || '  (no matches)'}`),
+        queryNotes,
+      );
     },
   );
   // ----------------------------------------------------------- feature_scope
@@ -623,6 +649,7 @@ export function registerAppMap(server: McpServer, sessions: SessionStore): void 
         if (!applied.length)
           return qaError({
             what: 'No update fields provided',
+            failureCode: 'INVALID_ARGUMENT',
             changedState: false,
             retrySafe: true,
             nextSteps: ['Pass at least one of: note, testCases, automationSuite, environment, featureCoverage.'],

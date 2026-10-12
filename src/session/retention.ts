@@ -6,7 +6,12 @@
 //   - its last activity (newest mtime of the dir / its state.json) is older than `days`;
 //   - it is NOT listed in ~/.swipium/registry.json (reloadable prior sessions stay);
 //   - it is NOT live in this process;
-//   - it is NOT among the newest `keepPerProject` sessions of its project (kept regardless of age).
+//   - it is NOT among the newest `keepPerProject` sessions of its project (kept regardless of age),
+//     where the keep-N applies ONLY while the project's root (the `root` in its newest state.json)
+//     still exists. One-off roots (deleted temp dirs, removed worktrees/CI checkouts) age out by
+//     `days` alone; previously the keep-N protected every one-session project forever (SET-2/TOOL-7).
+// The automatic startup prune is bounded (time budget, random starting project) so a huge runs dir
+// never costs every server start a full scan; repeated starts converge. `swipium gc` is unbounded.
 // Thresholds: SWIPIUM_RETENTION_DAYS (default 30; "0"/"off" disables the automatic startup prune,
 // `swipium gc` still works) and SWIPIUM_RETENTION_KEEP (default 20 per project).
 // Async fs throughout so the background prune never blocks the server's event loop; every error is
@@ -30,6 +35,10 @@ export interface RetentionOptions {
   now?: number;
   /** Session dirs live in this process. Never deleted. */
   liveDirs?: Iterable<string>;
+  /** Stop scanning after this many ms (the startup prune); unbounded when omitted (`swipium gc`). */
+  budgetMs?: number;
+  /** Start at a random project dir (with budgetMs, so repeated bounded runs cover everything). */
+  randomStart?: boolean;
 }
 
 export interface RetentionResult {
@@ -44,6 +53,29 @@ export interface RetentionResult {
   errors: number;
   /** Set when the prune was skipped entirely (e.g. registry.json unreadable, so fail closed). */
   skipped?: string;
+  /** True when `budgetMs` ran out before every project dir was visited. */
+  truncated?: boolean;
+}
+
+/** The project root recorded in a session's state.json (`null` when unreadable). */
+async function recordedRoot(sessionDir: string): Promise<string | null> {
+  try {
+    const parsed = JSON.parse(await readFile(join(sessionDir, 'state.json'), 'utf8')) as { root?: unknown };
+    return typeof parsed.root === 'string' && parsed.root ? parsed.root : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether `p` exists. Errors other than ENOENT/ENOTDIR count as "exists" (fail safe: keep). */
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await stat(p);
+    return true;
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException)?.code;
+    return !(code === 'ENOENT' || code === 'ENOTDIR');
+  }
 }
 
 /** Positive integer from an env value, `null` for "off"/"0" (disabled), else `fallback`. */
@@ -150,7 +182,14 @@ export async function pruneSessionRuns(opts: RetentionOptions = {}): Promise<Ret
   } catch {
     return result; // no runs dir yet
   }
-  for (const p of projects) {
+  const startedAt = Date.now();
+  const offset = opts.randomStart && projects.length ? Math.floor(Math.random() * projects.length) : 0;
+  for (let i = 0; i < projects.length; i++) {
+    if (opts.budgetMs != null && Date.now() - startedAt > opts.budgetMs) {
+      result.truncated = true;
+      break;
+    }
+    const p = projects[(i + offset) % projects.length];
     if (!p.isDirectory()) continue;
     const projectDir = join(runsDir, p.name);
     let sessions: Array<{ dir: string; at: number }> = [];
@@ -172,9 +211,18 @@ export async function pruneSessionRuns(opts: RetentionOptions = {}): Promise<Ret
     }
     result.scanned += sessions.length;
     sessions = sessions.sort((a, b) => b.at - a.at);
-    const candidates = sessions
-      .slice(keepPerProject)
-      .filter((x) => x.at < cutoff && !registered.has(resolve(x.dir)) && !live.has(resolve(x.dir)));
+    // The keep-N protects only projects whose root still exists: read the root from the newest
+    // session's state.json, and only when the keep-N actually shields an old session (cheap path).
+    let keep = keepPerProject;
+    if (keep > 0 && sessions.slice(0, keep).some((x) => x.at < cutoff)) {
+      let root: string | null = null;
+      for (const s of sessions.slice(0, 3)) {
+        root = await recordedRoot(s.dir);
+        if (root) break;
+      }
+      if (root && !(await pathExists(root))) keep = 0; // unknown root: keep-N still applies (fail safe)
+    }
+    const candidates = sessions.slice(keep).filter((x) => x.at < cutoff && !registered.has(resolve(x.dir)) && !live.has(resolve(x.dir)));
     for (const c of candidates) {
       try {
         result.bytesReclaimed += await dirSize(c.dir);
@@ -193,6 +241,8 @@ export async function pruneSessionRuns(opts: RetentionOptions = {}): Promise<Ret
 }
 
 let startupPruneScheduled = false;
+/** Wall-clock cap on the automatic startup prune (see scheduleStartupPrune). */
+export const STARTUP_PRUNE_BUDGET_MS = 2_000;
 
 /** Schedule ONE background prune per process (called when the session store starts). Honors
  *  SWIPIUM_RETENTION_DAYS ("0"/"off" disables). Non-blocking; errors are logged, never thrown. */
@@ -202,14 +252,18 @@ export function scheduleStartupPrune(liveDirs: () => Iterable<string>, delayMs =
   const days = retentionDaysFromEnv();
   if (days == null) return;
   const timer = setTimeout(() => {
-    pruneSessionRuns({ days, liveDirs: liveDirs() })
+    // Bounded: at most STARTUP_PRUNE_BUDGET_MS of background disk work per start, from a random
+    // project, so a backlog of tens of thousands of dirs is cleared over a few starts instead of
+    // costing every start a full scan.
+    pruneSessionRuns({ days, liveDirs: liveDirs(), budgetMs: STARTUP_PRUNE_BUDGET_MS, randomStart: true })
       .then((r) => {
-        if (r.deleted.length)
+        if (r.deleted.length || r.truncated)
           log('info', 'retention: pruned old session dirs', {
             deleted: r.deleted.length,
             bytesReclaimed: r.bytesReclaimed,
             days: r.days,
             keepPerProject: r.keepPerProject,
+            truncated: r.truncated ?? false,
           });
       })
       .catch((e) => log('warn', 'retention: startup prune failed', { err: String(e) }));

@@ -11,10 +11,12 @@ import { makeRedactor, isSecureNode } from '../lib/redact.js';
 import { detectTreeOverlays, classifyForeground } from '../snapshot/overlays.js';
 import { detectAuthScreen } from '../oracle/auth.js';
 import { dumpRootPackage } from '../oracle/health.js';
-import { blockedDeviceResult, getDriver, rehydrateNote } from '../session/attach.js';
+import { blockedDeviceResult, getDriver, lostWdaResult, rehydrateNote, prepareFirstStep } from '../session/attach.js';
 import type { SessionStore } from '../session/store.js';
 import { isAbortError, runWithSignal } from '../lib/abortScope.js';
 import type { DumpOptions } from '../drivers/Driver.js';
+import { deviceGoneNextSteps, isDeviceGoneError } from '../lib/deviceGone.js';
+import { diagnoseIosOutage } from '../lib/iosOutage.js';
 
 /** The bounded structured-dump probe a visual-fallback session still attempts on each qa_snapshot /
  *  qa_act observation: one short try, so a still-busy screen costs seconds, not the full retry ladder. */
@@ -70,7 +72,7 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
             changedState: false,
             retrySafe: true,
             failureCode: 'NO_DEVICE',
-            nextSteps: ['Call qa_prepare_target first.'],
+            nextSteps: [prepareFirstStep(session)],
           })
         );
       }
@@ -78,6 +80,8 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
       // touches a concurrently running job's adb/WDA calls (and vice versa).
       return runWithSignal(ctx?.mcpReq.signal, async () => {
         if (driver.kind === 'simulator') {
+          const lost = await lostWdaResult(session, 'No structured UI tree');
+          if (lost) return lost;
           return qaError({
             what: 'A structured UI tree is not available on the iOS simulator backend',
             changedState: false,
@@ -100,6 +104,38 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
           // Cancelled (the MCP request was aborted): not a snapshot failure. No counter, no
           // mode switch, no tool error (the report's tool status is unaffected).
           if (isAbortError(e)) return cancelledResult('Snapshot cancelled: the call was aborted before the UI tree was captured');
+          // The device is gone: not a snapshot failure (no counter, no visual-fallback switch).
+          if (isDeviceGoneError(e))
+            return qaError({
+              what: `Device offline: ${String(e)}`,
+              changedState: false,
+              retrySafe: false,
+              failureCode: 'NO_DEVICE',
+              nextSteps: deviceGoneNextSteps(session.device),
+            });
+          // iOS: "fetch failed" from a shut-down simulator or a dead WDA is an outage, not a UI
+          // tree problem (no counter, no visual-fallback switch).
+          const outage = await diagnoseIosOutage(session, e);
+          if (outage)
+            return qaError({
+              what: `Snapshot failed: ${outage.what}`,
+              changedState: false,
+              retrySafe: true,
+              failureCode: outage.failureCode,
+              nextSteps: outage.nextSteps,
+            });
+          // AND NEW R4-4: a dump that got no answer at all (a stalled emulator) is a device problem,
+          // not a screen the tree can't describe: one bounded attempt, no counter, no mode switch.
+          if (/DEVICE_UNRESPONSIVE/.test(String(e)))
+            return qaError({
+              what: `Snapshot failed: ${String(e).replace(/^(?:Error:\s*)?DEVICE_UNRESPONSIVE:\s*/, '')}`,
+              changedState: false,
+              retrySafe: true,
+              failureCode: 'DEVICE_UNRESPONSIVE',
+              nextSteps: [
+                'Run qa_screenshot to see the screen. If the device stays unresponsive, restart the app, or the emulator, then qa_snapshot again.',
+              ],
+            });
           if (inFallback) {
             return qaError({
               what: 'Session is in visual-fallback mode; a structured UI tree is still unavailable on this screen.',
@@ -146,7 +182,15 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
         const prev = session.lastSnapshot;
         // persist for inspect + next diff (fullByRef keeps raw nodes; masking happens on emit). Refs
         // are stable across snapshots (X3), so the diff below compares refs.
-        const parsed = adoptSnapshot(session, parseSnapshot(xml, { interactiveOnly: true }));
+        let fresh = parseSnapshot(xml, { interactiveOnly: true });
+        // AND-18: a dialog window as the dump root (not anchored at [0,0]) gives the dialog's size,
+        // not the display's. Ask the driver for the real size then (cached, rare).
+        const rootBounds = fresh.allNodes[0]?.bounds;
+        if (rootBounds && (rootBounds[0] !== 0 || rootBounds[1] !== 0)) {
+          const size = await driver.screenSize().catch(() => null);
+          if (size) fresh = parseSnapshot(xml, { interactiveOnly: true, screen: [size.width, size.height] });
+        }
+        const parsed = adoptSnapshot(session, fresh);
         const redact = makeRedactor(session.secrets);
         const f = filter?.trim().toLowerCase();
         const pool = f
@@ -189,7 +233,9 @@ export function registerSnapshot(server: McpServer, sessions: SessionStore): voi
         ]);
         if (imeUp) overlays.push({ type: 'keyboard', detail: 'soft keyboard shown' });
         const fgOverlay = classifyForeground(session.appId, foreground);
-        if (fgOverlay) overlays.push(fgOverlay);
+        // An iOS system alert makes SpringBoard the foreground: the permission_dialog already says it.
+        if (fgOverlay && !(fgOverlay.type === 'foreign_app' && overlays.some((o) => o.type === 'permission_dialog')))
+          overlays.push(fgOverlay);
 
         const q = parsed.quality;
         const treeHint = weakTreeHint(parsed);

@@ -1,7 +1,10 @@
 # MCP server reference
 
 Swipium is a local stdio MCP server. Your MCP client starts it as a child process and talks
-JSON-RPC over its stdin and stdout. Nothing listens on the network.
+JSON-RPC over its stdin and stdout. The server itself listens on no network port. The one listener
+it can start is a managed WebDriverAgent for iOS: its control port binds the loopback address of
+its URL (`127.0.0.1` by default), but its MJPEG screen stream (WDA port + 1000) listens on every
+interface, because WebDriverAgent can't restrict it (see [qa_wda](tools.md#qa_wda)).
 
 This page covers client setup, the protocol, and how the server behaves. Sessions, consent and the
 project root are explained in [concepts.md](concepts.md); every tool is in [tools.md](tools.md);
@@ -56,21 +59,31 @@ instead. From a source checkout, run `npm run build` and use
 | Invocation | Behavior |
 | --- | --- |
 | `swipium` or `swipium serve` | Runs the stdio MCP server. |
-| `swipium --stdio` (flags only, no subcommand) | Runs the server and warns on stderr that the flags were ignored. |
+| `swipium --stdio` (flags only, no subcommand) | Runs the server and warns on stderr that the flags were ignored. `swipium serve <args>` does the same. |
 | `swipium init`, `verify`, `scan`, `suite`, `report`, `gc` | CLI subcommands. See `swipium --help`. |
+| `swipium <flags> <subcommand>` (for example `swipium -y init claude`) | Exits with status 2 and prints the corrected command (`swipium init claude`) instead of starting a server that ignores the subcommand. The suggestion keeps only flags that subcommand takes (`swipium --apply init claude` suggests `swipium init claude --apply`; `swipium --verbose init` suggests `swipium init`). |
 | `swipium <unknown word>` | Prints usage and exits with status 2 instead of starting a server. |
+
+On a Node.js older than 22.12 the server and every subcommand print a warning on stderr first, and
+`swipium verify` fails.
 
 ## Client setup
 
 `swipium init <client>` prints the exact registration and changes nothing. Add `--apply` to
 perform it. After a successful apply it runs `swipium verify`. Options: `--scope local|user|project`
-(default `local`) and `--cwd <app dir>` (default: the directory you run it from).
+(default `local`) and `--cwd <app dir>` (default: the directory you run it from), as `--flag value`
+or `--flag=value`. An unknown option, a flag without its value, an extra argument, or a `--cwd`
+that doesn't exist or isn't a directory exits with status 2 and changes nothing, in a preview too
+("Refusing to preview: cwd … does not exist"). `swipium init flows` takes only `--root` and
+`--force`; a registration flag there (`--scope`, `--apply`, `--cwd`, `--no-skill`,
+`--trust-local`) exits 2. A failed apply exits with status 1
+(2 for a config file it refuses to edit).
 
 | Client | `swipium init` does | Where it lands |
 | --- | --- | --- |
 | Claude Code | Runs `claude mcp add swipium [--scope …] -e SWIPIUM_MAX_WAIT_MS=110000 -- <command>` and installs the swipium-qa skill | `local` / `user`: `~/.claude.json`; `project`: `.mcp.json`. Skill: `~/.claude/skills/swipium-qa/SKILL.md` (user scope, or `$CLAUDE_CONFIG_DIR/skills/…`), `.claude/skills/swipium-qa/SKILL.md` (local and project scope) |
 | Codex | Appends a `[mcp_servers.swipium]` block with `cwd`, timeouts and `env_vars` (see [Codex](#codex)) and installs the skill | `~/.codex/config.toml` (`$CODEX_HOME/config.toml` when set). Skill: `.agents/skills/swipium-qa/SKILL.md` in `--cwd` |
-| Gemini CLI | Runs `gemini mcp add --scope project\|user swipium …`; prints a manual block if that fails | `.gemini/settings.json` (project, the default), `~/.gemini/settings.json` (`--scope user`) |
+| Gemini CLI | Runs `gemini mcp add --scope project\|user --timeout 600000 swipium …`; if that fails, merges the entry into the settings file directly (like Cursor) | `.gemini/settings.json` (project, the default), `~/.gemini/settings.json` (`--scope user`) |
 | Cursor | Merges a `swipium` entry under `mcpServers` | `.cursor/mcp.json` (for all projects, add the same entry to `~/.cursor/mcp.json` yourself) |
 | VS Code | Merges a `swipium` entry under `servers`; prints a `code --add-mcp …` line for the user profile | `.vscode/mcp.json` |
 | Claude Desktop | Not supported by `init`; configure manually | `claude_desktop_config.json` |
@@ -92,6 +105,16 @@ Which command gets written:
 canonical loop, batching with `qa_flow_run {flowYaml}`, credentials via env, app-control shortcuts
 and the CI CLI) and reports it as `created`, `updated` or `unchanged`; the preview prints the path.
 `--no-skill` skips it. The same file is served as the MCP resource `skill://swipium-qa/SKILL.md`.
+The Claude Code `local` scope is private to you, but its skill still lands in the repository's
+`.claude/skills/`, which is usually committed; add `.claude/skills/swipium-qa/` to `.gitignore`, or
+pass `--no-skill`, if you don't want it in the repository.
+
+**Re-running `init claude --apply`.** `claude mcp add` never overwrites an existing entry, so `init`
+first reads the registration for that scope (`~/.claude.json`, or `$CLAUDE_CONFIG_DIR/.claude.json`,
+for `local` and `user`; `.mcp.json` for `project`). A matching entry is reported as already
+registered (unchanged). A different one (for example after adding `--trust-local`) is left alone:
+`init` prints `claude mcp remove swipium --scope <scope>` followed by the add command, and exits
+with status 1. A missing `claude` binary is reported as `claude CLI not found on PATH` (status 1).
 
 **`--trust-local`** (Claude Code, `--scope local` or `user` only) adds
 `-e SWIPIUM_CONSENT_PREAPPROVE=<list>` with every consent action that runs no repository- or
@@ -100,9 +123,9 @@ and screen recordings then run without a prompt; builds, Metro, WebDriverAgent, 
 commands and destructive UI taps still ask. It is refused (exit 2) with `--scope project`, which writes the team-shared
 `.mcp.json`, and for other clients. Rules: [Operator pre-approval](concepts.md#operator-pre-approval).
 
-For Cursor and VS Code, `init` refuses to edit a file that isn't plain JSON (for example JSONC with
-comments), prints the entry to add by hand, and exits with status 2. An existing `swipium` entry
-is left unchanged.
+For Cursor, VS Code and the Gemini fallback, `init` refuses to edit a file that isn't plain JSON
+(for example JSONC with comments), prints the entry to add by hand, and exits with status 2. An
+existing `swipium` entry is left unchanged.
 
 ### Project root
 
@@ -170,11 +193,23 @@ never reach Swipium unless they are listed.
 - `env_vars` is config-only: `codex mcp add --env NAME=value` sets literal values but can't forward
   names, so after `codex mcp add`, add the `env_vars` line and the timeouts to `config.toml` by hand.
 
-What `swipium init codex --apply` does: it refuses if `--cwd` doesn't exist, and otherwise appends
-the block above (with this machine's `node`, the commented `enabled_tools` line, and a few comment
-lines). If `config.toml` already has a `[mcp_servers.swipium]` (or `[mcp_servers."swipium"]`)
-table, it leaves it alone: when that table has no `env_vars`, it prints just the line to add;
-otherwise it prints the expected block so you can compare.
+What `swipium init codex --apply` does: it refuses if `--cwd` doesn't exist, and refuses a
+`config.toml` that doesn't look like valid TOML (status 2, with the offending line and the block to
+add by hand). It is a conservative check, not a full TOML parser, so a rare malformed file can
+still pass. That check catches an unterminated `"…"` or `'…'` string (also inside a multi-line
+array), an invalid escape in a `"…"` string, a bare value that isn't a boolean, number or date, a
+key defined twice in one table (dotted and quoted keys included), a `[table]` header defined twice
+(`[[array]]` entries are fine), and a table redefined another way (`a.b = 1` and then `[a]`, or
+`[[t]]` and then `[t]`), or a header whose brackets don't pair (`[a]]`, `[[a]`). Quoted table names
+and keys are accepted with any characters, so the headers Codex writes itself for trusted folders
+and plugins (`[projects."/Users/me/app"]`, `[plugins."documents@openai-primary-runtime"]`) and
+`"KEY:WITH:COLON" = "x"` keys pass. Otherwise it appends the block above (with this
+machine's `node`, the commented `enabled_tools` line, and a few comment lines). If `config.toml`
+already has a `[mcp_servers.swipium]` (or `[mcp_servers."swipium"]`) table, it leaves it alone and
+says how it differs from the expected one: a different `command`, `args` or `cwd` (a different
+`cwd` means Codex keeps testing the other app), `startup_timeout_sec` or `tool_timeout_sec` missing
+or below 30 and 600, or no `env_vars` (then it prints just the line to add). A matching table is
+reported as matching.
 
 `qa_doctor` adds two rows when the client is Codex (or you pass `qa_doctor { client: "codex" }`):
 
@@ -200,11 +235,13 @@ Codex CLI.
 #### Gemini CLI
 
 ```bash
-gemini mcp add --scope project swipium npx -- -y swipium
+gemini mcp add --scope project --timeout 600000 swipium npx -- -y swipium
 ```
 
-The `--` keeps Gemini from reading `-y` as its own flag. `init gemini` also suggests
-`"timeout": 600000` in the settings entry.
+The `--` keeps Gemini from reading `-y` as its own flag. The settings entry `init gemini` writes
+(or suggests) carries `"timeout": 600000` too. At user scope (`~/.gemini/settings.json`, shared by
+every project) no `cwd` is written: Gemini starts the server in the directory you launch `gemini`
+from, so Swipium tests that directory.
 
 #### Cursor and VS Code
 
@@ -258,6 +295,11 @@ never be pre-approved) are in [concepts.md](concepts.md#consent). Where to set i
 - **`claude -p`**: in the `env` of the server entry you pass with `--mcp-config`. The
   [CI recipe](ci-reports.md#pre-approving-consents-in-ci) shows a complete config.
 
+Approving in the chat and re-calling doesn't help in these clients: the re-call's prompt is answered
+automatically again, so the operator setting is the only way. Pre-approval is not tied to a device;
+when more than one emulator or simulator can be online, also set `SWIPIUM_DEVICE` so approved
+actions only ever run on that device ([Device pin](concepts.md#device-pin)).
+
 ## Server settings
 
 Set these in the server's `env` (the complete list of variables is in the
@@ -265,9 +307,10 @@ Set these in the server's `env` (the complete list of variables is in the
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `SWIPIUM_MAX_WAIT_MS` | `50000` | The longest one `qa_job_status` long-poll or `qa_test_this {waitForCompletion:true}` may block, in ms, clamped to 1000 to 230000. The default `waitForCompletion` window is this minus 5000. Set it just under the client's tool timeout: `swipium init claude` and the plugin write `110000`; keep the default for Codex (60 s). `qa_wait` and `qa_act` keep their 50000 cap. Read on every call. |
-| `SWIPIUM_TOOLS` | `all` | `core` lists only the core tools (the set `swipium init codex` suggests for `enabled_tools`); a call to a hidden tool returns `INVALID_ARGUMENT` naming it and `SWIPIUM_TOOLS=all`. Read once per connection; no `list_changed` is sent, so restart the client after changing it. |
-| `SWIPIUM_ANDROID_DUMPER` | unset | `agent` reads Android UI trees through a persistent on-device agent instead of `uiautomator dump` (about 7x faster on a static screen). It pushes a 6 KB jar to `/data/local/tmp`, needs no APK, and falls back to `uiautomator dump` for 60 s on any failure (with a `warn` log line naming the error). Swipium removes the jar and its `adb forward` when it stops the agent and when the server shuts down. While it runs (up to 120 s after its last dump) other UiAutomation clients such as Appium UiAutomator2 and Maestro can't connect. See [android-agent/README.md](../android-agent/README.md). |
+| `SWIPIUM_MAX_WAIT_MS` | `50000` | The longest one `qa_job_status` long-poll or `qa_test_this {waitForCompletion:true}` may block, in ms, clamped to 1000 to 230000. The default `waitForCompletion` window is this minus 5000. Set it just under the client's tool timeout: `swipium init claude` and the plugin write `110000`; keep the default for Codex (60 s). `qa_wait` follows the same cap; `qa_act` keeps its 50000 cap. Read on every call. |
+| `SWIPIUM_TOOLS` | `all` | `core` lists only the core tools (the set `swipium init codex` suggests for `enabled_tools`); a call to a hidden tool returns `INVALID_ARGUMENT` naming it and `SWIPIUM_TOOLS=all`. Tool counts (`qa_start_session`, the `qa_doctor` freshness check, the `qa_status` orientation, the startup log) then count the listed tools, with the total alongside. Read once per connection; no `list_changed` is sent, so restart the client after changing it. |
+| `SWIPIUM_DEVICE` | unset | Pins the server to one device: an adb serial, AVD name, or simulator UDID or exact name (case-insensitive in every tool, never a substring; a simulator name several simulators share is refused with `MULTIPLE_DEVICES`, so pin by UDID). Plans, auto-binding and `qa_ios boot` use only that device, and a call naming another one (including `qa_ios install`, `privacy_reset` or `erase`, `qa_wda` setup, build, start or attach, and `qa_bundletool` install) is refused with `DEVICE_PINNED` before any consent prompt, so `SWIPIUM_CONSENT_PREAPPROVE` only ever applies to it. Set it on shared CI runners. Not in the default Codex `env_vars` list; add it, or set it in `env`. See [Device pin](concepts.md#device-pin). |
+| `SWIPIUM_ANDROID_DUMPER` | unset | `agent` reads Android UI trees through a persistent on-device agent instead of `uiautomator dump` (about 2x to 7x faster, depending on host load). It pushes a 6 KB jar to `/data/local/tmp`, needs no APK, and falls back to `uiautomator dump` for 60 s on any failure (with a `warn` log line naming the error). Swipium removes the jar and its `adb forward` when it stops the agent and when the server shuts down. While it runs (up to 120 s after its last dump) other UiAutomation clients such as Appium UiAutomator2 and Maestro can't connect. Set it for apps with screens that never go idle: there `uiautomator dump` gives up after one attempt of about 12 s, while the agent returns a dump within 2 s. See [android-agent/README.md](../android-agent/README.md). |
 | `SWIPIUM_EMULATOR_GPU` | `auto` | The `-gpu` mode for emulators Swipium boots. `swiftshader_indirect` (the pre-2.3.0 default) for hosts without a usable GPU, such as Linux CI runners without `/dev/dri`. |
 | `SWIPIUM_EMULATOR_COLD_BOOT` | unset | `1` adds `-no-snapshot-load`: a full cold boot that ignores the AVD's snapshot. By default Swipium quick-boots from the AVD's `default_boot` snapshot and never saves over it (`-no-snapshot-save`). When the AVD has no snapshot (or it no longer loads), that boot is cold and Swipium saves one right after `boot_completed` (about 3.5 s, roughly the AVD's RAM size on disk). Measured headless on an Apple Silicon Mac (API 36 AVD, 2 GB RAM): cold boot about 21 to 25 s, quick boot about 3.5 s to the launcher. |
 
@@ -312,7 +355,7 @@ is inlined instead of a `$ref`.
   `idempotentHint`. `qa_test_this`, `qa_status`, `qa_act` and `qa_snapshot` carry
   `_meta["anthropic/alwaysLoad"]: true`, so clients with tool search keep them loaded, and `qa_act`,
   `qa_snapshot`, `qa_job_status` and `qa_test_this` declare a permissive `outputSchema`. The tools
-  capability doesn't advertise `listChanged`.
+  capability is `{ listChanged: false }`: the list never changes while the server runs.
 - **Server instructions**: sent on `initialize` (2025) or `server/discover` (2026-07-28), under
   2,000 characters. They give the first call (`qa_test_this { waitForCompletion: true }`, which runs
   by default), the polling loop (`qa_job_status … waitMs: 45000` while the state is `running`),
@@ -375,8 +418,9 @@ by default, and long work runs as a background job:
   not rejected.
 - `qa_wait`, `qa_act` and `qa_test_this { waitForCompletion: true }` clamp `timeoutMs` to 50000
   with a note (`qa_wait` and `qa_test_this` default to 45000).
-- `SWIPIUM_MAX_WAIT_MS` moves the cap for `qa_job_status` and `qa_test_this` (1000 to 230000; the
-  `qa_test_this` default becomes the cap minus 5 s). Set it only when the client's tool timeout is
+- `SWIPIUM_MAX_WAIT_MS` moves the cap for `qa_job_status`, `qa_wait` and `qa_test_this` (1000 to
+  230000; the `qa_test_this` default becomes the cap minus 5 s, and the cap covers the whole
+  `qa_test_this` call, planning included). Set it only when the client's tool timeout is
   longer; `swipium init claude` writes 110000.
 - While `qa_job_status` or `qa_test_this { waitForCompletion: true }` waits, a request that carries
   a `progressToken` gets `notifications/progress` (at most one per second, only when the job's
@@ -452,13 +496,17 @@ pre-approval is checked first in both eras. The full model (mechanisms, outcomes
 
 ### Startup and shutdown
 
-At startup the version and tool count are logged to stderr, and processes left behind by a crashed
-earlier server are reaped in the background.
+At startup the version and tool count (the listed count under `SWIPIUM_TOOLS=core`) are logged to
+stderr, with one `warn` line for each setting that can't be used (an unparseable
+`SWIPIUM_MAX_WAIT_MS`, `SWIPIUM_TOOLS` or `SWIPIUM_LOG_LEVEL` falls back to its default). Processes
+left behind by a crashed earlier server are reaped in the background, and old session directories
+are pruned in the background with a 2 s budget ([Retention](concepts.md#sessions)).
 
 The server shuts down when the client closes stdin (even in the middle of a long call), on
 `SIGINT` or `SIGTERM`, or when the transport closes. It then cancels running jobs, restores network
-state it changed, and stops screen recorders and Metro. Managed WebDriverAgent keeps running so the
-next server can reuse it; `qa_wda stop` stops it.
+state it changed itself (never a change another server made), and stops screen recorders and
+Metro. Build jobs it cancels get up to 2 s to exit before their process groups are killed. Managed
+WebDriverAgent keeps running so the next server can reuse it; `qa_wda stop` stops it.
 
 ## Verification
 
@@ -467,9 +515,14 @@ swipium verify
 ```
 
 This starts a Swipium server over stdio, checks that every tool and prompt this version declares is
-listed, prints their names, count and schema hash, and calls `qa_doctor`. It exits with status 1 if
-a tool is missing or `qa_doctor` errors. It starts the copy of Swipium you ran it with, not the
-command your client is configured with.
+listed, prints their names, count and schema hash, and calls `qa_doctor`. Every failed `qa_doctor`
+check is printed as `[fail] <name>: <detail> -> <fix>`. It prints `✅ verify OK`, `⚠ verify OK with
+warnings` (the environment isn't fully ready), or `❌ verify FAILED`, and exits with status 1 if the
+server doesn't start, a tool is missing, `qa_doctor` errors, or Node.js is older than 22.12.
+`swipium verify --help` prints its usage; any other argument exits with status 2. It starts the copy
+of Swipium you ran it with, not the command your client is configured with. That short-lived
+server skips the startup sweep, so it never adopts or reaps a managed WebDriverAgent, Metro or
+emulator left by an earlier run.
 
 Inside the client, call `qa_doctor`. It checks both platforms by default on macOS (ready if either
 one is) and Android elsewhere. Pass `platform: "android" | "ios" | "both"` to be explicit.
@@ -495,6 +548,8 @@ secrets.
 
 | Symptom | Fix |
 | --- | --- |
+| `swipium: WARNING: Node.js v… is not supported`, or `verify` fails its `node` check | Install Node.js 22.12 or newer and point the client's server command at it (`swipium init` writes this machine's `node` path for local registrations). |
+| `swipium init … --apply` exits with status 1 after a re-run | The existing registration differs. Run the printed `claude mcp remove swipium --scope …` and the add command. |
 | The client lists fewer or different tools than `swipium verify`, or calls return `STALE_CLIENT` | The client is still running a server it started before the upgrade. Restart the client, or reload its MCP server list. |
 | `PROJECT_ROOT_UNRESOLVED` | Pass an absolute `projectRoot`, or set `SWIPIUM_PROJECT_ROOT` in the server `env` (needed on Claude Desktop and Windsurf). |
 | The server times out on first start (Codex, Gemini) | The first `npx` run downloads the package. Raise the startup timeout (Codex `startup_timeout_sec = 30`), or install globally and point the client at `swipium`. |
@@ -508,5 +563,5 @@ secrets.
 | `INVALID_ARGUMENT` listing accepted parameters | Remove the undeclared argument. If the tool list looks outdated, restart the client. |
 | Codex: test credentials, `ANDROID_HOME` or `JAVA_HOME` ignored | Codex only passes a fixed env whitelist to MCP servers. List the names in `env_vars` under `[mcp_servers.swipium]` (see [Codex](#codex)); `qa_doctor` prints the line. |
 | Tools missing in Codex Desktop threads | Known Codex Desktop issue ([openai/codex#19425](https://github.com/openai/codex/issues/19425)). Use the Codex CLI. |
-| `swipium init cursor --apply` or `init vscode --apply` exits with status 2 | The existing file isn't plain JSON. Add the printed entry by hand. |
+| `swipium init cursor`, `vscode`, `gemini` or `codex --apply` exits with status 2 | The existing file isn't plain JSON (or valid TOML for Codex), or an option was wrong. Add the printed entry by hand, or fix the option. |
 | `PHYSICAL_DEVICE_UNSUPPORTED` | A phone was the only device, or was requested explicitly. Start an emulator or simulator. See [physical-devices.md](physical-devices.md). |

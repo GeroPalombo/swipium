@@ -11,7 +11,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
 import { cancelledResult, qaOk, qaError, unknownSessionError } from '../lib/result.js';
-import { blockedDeviceResult, getDriver } from '../session/attach.js';
+import { blockedDeviceResult, getDriver, prepareFirstStep } from '../session/attach.js';
 import { runSmoke } from '../services/smoke.js';
 import type { SessionStore } from '../session/store.js';
 
@@ -39,9 +39,10 @@ export function registerSmoke(server: McpServer, sessions: SessionStore): void {
           blockedDeviceResult(blocked) ??
           qaError({
             what: 'No device attached to this session',
+            failureCode: 'NO_DEVICE',
             changedState: false,
             retrySafe: true,
-            nextSteps: ['Call qa_prepare_target first, then qa_smoke.'],
+            nextSteps: [prepareFirstStep(session, 'qa_smoke')],
           })
         );
       }
@@ -50,10 +51,11 @@ export function registerSmoke(server: McpServer, sessions: SessionStore): void {
       if (result.cancelled) return cancelledResult('qa_smoke cancelled: the remaining baseline/flows were skipped, not failed', true);
       const launchOutcome = (result.baseline.launch as { outcome?: string } | undefined)?.outcome ?? 'unknown';
       const summary =
-        `qa_smoke done: launch=${launchOutcome}, flows ${result.flowsPassed}/${result.flowsTotal} passed.\n` +
+        `qa_smoke done: launch=${launchOutcome}, flows ${result.flowsPassed}/${result.flowsTotal} passed` +
+        `${result.flowsSkipped ? `, ${result.flowsSkipped} skipped (need consent)` : ''}.\n` +
         `baseline: ${JSON.stringify(result.baseline.launch)}\n` +
         (result.flows.length
-          ? result.flows.map((f) => `${f.passed ? '✓' : '✗'} ${f.name}${f.passed ? '' : `: ${f.reason}`}`).join('\n')
+          ? result.flows.map((f) => `${f.passed ? '✓' : f.skipped ? '-' : '✗'} ${f.name}${f.passed ? '' : `: ${f.reason}`}`).join('\n')
           : 'no saved flows (.swipium/flows is empty)') +
         `\nCall qa_report to summarize.`;
 
@@ -63,6 +65,7 @@ export function registerSmoke(server: McpServer, sessions: SessionStore): void {
           flows: result.flows,
           flowsPassed: result.flowsPassed,
           flowsTotal: result.flowsTotal,
+          ...(result.flowsSkipped ? { flowsSkipped: result.flowsSkipped } : {}),
           counters: session.counters,
         },
         summary,

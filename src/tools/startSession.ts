@@ -7,6 +7,7 @@ import { qaOk, qaError } from '../lib/result.js';
 import { resolveProjectRoot, unresolvedProjectRootError } from '../context/projectRoot.js';
 import { loadProjectConfig } from '../cli/scan.js';
 import { SWIPIUM_VERSION, TOOL_COUNT } from '../version.js';
+import { coreToolsOnly, listedToolNames, listedToolsLabel } from '../core/capabilityGroups.js';
 import { getSchemaHash } from '../lib/schemaHash.js';
 import { BUDGET_PROFILES, type Fixture, type SessionStore } from '../session/store.js';
 
@@ -102,7 +103,7 @@ export function registerStartSession(server: McpServer, sessions: SessionStore):
       title: 'Start a QA session',
       description:
         'Open a QA session for the low-level tools (qa_snapshot, qa_act, flows); qa_test_this opens its own. projectRoot defaults to ' +
-        'MCP roots > SWIPIUM_PROJECT_ROOT > CLAUDE_PROJECT_DIR > a project-like cwd. Default budget: 8 min / 20 actions / 8 ' +
+        'MCP roots > SWIPIUM_PROJECT_ROOT > CLAUDE_PROJECT_DIR > a project-like cwd. Default budget: 30 min / 60 actions / 40 ' +
         'screenshots. fixtures declare preconditions; unmet ones report blocked, not failed.',
       inputSchema: {
         projectRoot: z.string().optional().describe('Absolute app path.'),
@@ -188,7 +189,9 @@ export function registerStartSession(server: McpServer, sessions: SessionStore):
           sessionId: session.id,
           swipiumVersion: SWIPIUM_VERSION,
           schemaHash: getSchemaHash(),
-          toolCount: TOOL_COUNT,
+          // The LISTED count (SWIPIUM_TOOLS=core lists fewer), so a core client is not told to restart.
+          toolCount: listedToolNames().length,
+          ...(coreToolsOnly() ? { toolCountTotal: TOOL_COUNT, toolsMode: 'core' } : {}),
           projectRoot: session.root,
           rootSource: resolved.source,
           artifactsDir: session.dir,
@@ -206,7 +209,7 @@ export function registerStartSession(server: McpServer, sessions: SessionStore):
           declaredPreconditions: mergedFixtures,
           warnings,
         },
-        `Session ${session.id} started (Swipium v${SWIPIUM_VERSION}, ${TOOL_COUNT} tools; if your client lists fewer, restart it).\n` +
+        `Session ${session.id} started (Swipium v${SWIPIUM_VERSION}, ${listedToolsLabel()}; if your client lists fewer, restart it).\n` +
           `projectRoot: ${session.root} (via ${resolved.source})\n` +
           `budget: ${JSON.stringify(session.budget)}${profile ? ` (profile=${profile})` : ''}\n` +
           (mergedFixtures.length ? `preconditions declared: ${mergedFixtures.map((f) => f.name).join(', ')}\n` : '') +

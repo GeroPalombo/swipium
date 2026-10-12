@@ -62,7 +62,8 @@ export async function executeBuild(
       }
       progress(step.label);
       logBuf += `\n=== ${step.label}: ${step.command} (cwd ${step.cwd}) ===\n`;
-      const r = await run(step.argv[0], step.argv.slice(1), { cwd: step.cwd, timeoutMs, signal });
+      // Own process group: a cancel / shutdown stops the whole build tree (npx > node > gradle/java).
+      const r = await run(step.argv[0], step.argv.slice(1), { cwd: step.cwd, timeoutMs, signal, processGroup: true });
       logBuf += r.stdout + r.stderr;
       if (r.code !== 0 || r.timedOut) {
         if (aborted()) return { ok: false, aborted: true };

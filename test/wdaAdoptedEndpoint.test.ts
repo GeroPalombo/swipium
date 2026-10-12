@@ -15,7 +15,10 @@ const { registeredWdaForSession } = await import('../src/session/processRegistry
 
 afterAll(() => rmSync(fakeHome, { recursive: true, force: true }));
 
-const entry = (pid: number, sessionId: string, serverPid: number, endpoint: string) => ({
+const SIM_A = '11111111-2222-3333-4444-555555555555';
+const SIM_B = 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE';
+
+const entry = (pid: number, sessionId: string, serverPid: number, endpoint: string, udid = SIM_A) => ({
   pid,
   kind: 'wda',
   serverPid,
@@ -23,11 +26,11 @@ const entry = (pid: number, sessionId: string, serverPid: number, endpoint: stri
   startedAt: 1,
   endpoint,
   procStart: `start-${pid}`,
-  command: 'xcodebuild test-without-building',
+  command: `xcodebuild test-without-building -project WebDriverAgent.xcodeproj -destination id=${udid}`,
 });
 
 describe('registeredWdaForSession with an endpoint', () => {
-  it('matches the session first, then a WDA this server owns at the endpoint, never another server', () => {
+  it('matches the session first, then a WDA this server owns at the endpoint for the same simulator, never another server', () => {
     mkdirSync(join(fakeHome, '.swipium'), { recursive: true });
     writeFileSync(
       join(fakeHome, '.swipium', 'processes.json'),
@@ -38,9 +41,13 @@ describe('registeredWdaForSession with an endpoint', () => {
       ]),
     );
     expect(registeredWdaForSession('new-session')).toBeUndefined();
-    expect(registeredWdaForSession('new-session', 'http://127.0.0.1:8100')?.pid).toBe(201);
+    // IOS NEW-1: the endpoint alone never matches; the entry must be this session's simulator.
+    expect(registeredWdaForSession('new-session', 'http://127.0.0.1:8100')).toBeUndefined();
+    expect(registeredWdaForSession('new-session', 'http://127.0.0.1:8100', SIM_A)?.pid).toBe(201);
+    expect(registeredWdaForSession('new-session', 'http://127.0.0.1:8100', SIM_A.toLowerCase())?.pid).toBe(201);
+    expect(registeredWdaForSession('new-session', 'http://127.0.0.1:8100', SIM_B)).toBeUndefined();
     expect(registeredWdaForSession('mine', 'http://127.0.0.1:8100')?.pid).toBe(203);
-    expect(registeredWdaForSession('new-session', 'http://127.0.0.1:8200')).toBeUndefined();
+    expect(registeredWdaForSession('new-session', 'http://127.0.0.1:8200', SIM_A)).toBeUndefined();
   });
 });
 
@@ -50,8 +57,9 @@ describe('WDA adoption re-owns the start time too', () => {
     const file = join(fakeHome, '.swipium', 'processes.json');
     const { readFileSync } = await import('node:fs');
     const DEAD = 777777;
-    writeFileSync(file, JSON.stringify([{ ...entry(301, 'old', DEAD, 'http://127.0.0.1:8100'), serverStart: 'old-start' }]));
-    const live: Record<number, string> = { 301: 'xcodebuild test-without-building', [process.pid]: 'node swipium' };
+    const orphan = entry(301, 'old', DEAD, 'http://127.0.0.1:8100');
+    writeFileSync(file, JSON.stringify([{ ...orphan, serverStart: 'old-start' }]));
+    const live: Record<number, string> = { 301: orphan.command, [process.pid]: 'node swipium' };
     const ops = {
       pidAlive: (pid: number) => pid in live,
       psCommand: (pid: number) => live[pid] ?? null,

@@ -5,7 +5,7 @@
 // long-lived canonical schema (creativity level, traceability, automation readiness, history seed).
 
 import type { PomResult } from '../suite/pom.js';
-import type { Fixture, TestNote, ExplorationRecord, TestOutcome } from '../session/store.js';
+import type { Fixture, TestNote, ExplorationRecord, TestOutcome, Session } from '../session/store.js';
 import {
   type CanonicalTestCase,
   type CasePlatform,
@@ -45,6 +45,27 @@ export interface GenerateInput {
   replayStatus?: ReplayStatus;
   includeManualOnly?: boolean;
 }
+
+/** GOAL-22 / LOG-20: the platform the session actually observed (live driver kind, else the
+ *  device id shape: iOS simulators are UUIDs). Undefined when unknown; callers fall back. */
+export function casePlatformsFor(
+  s: Pick<Session, 'device' | 'driver'> & { driverKind?: Session['driverKind'] },
+): CasePlatform[] | undefined {
+  const kind = s.driver?.kind ?? s.driverKind;
+  if (kind === 'simulator' || kind === 'wda') return ['ios'];
+  if (kind === 'direct') return ['android'];
+  if (!s.device) return undefined;
+  return /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i.test(s.device) ? ['ios'] : ['android'];
+}
+
+/** The one platform a session recorded on, when known (POM pages / testcases claim only it, LOG-20). */
+export function recordedPlatform(s: Pick<Session, 'device' | 'driver'> & { driverKind?: Session['driverKind'] }): CasePlatform | undefined {
+  const p = casePlatformsFor(s);
+  return p?.length === 1 ? p[0] : undefined;
+}
+
+/** Exploration feature statuses that carry no evidence the feature exists (no case is made). */
+const NO_EVIDENCE_COVERAGE = /^(not_found|none|unknown|missing)$/i;
 
 function kebab(s: string): string {
   return s
@@ -183,63 +204,82 @@ export function casesFromExploration(input: GenerateInput): CanonicalTestCase[] 
   const coverage = exp?.summary.featureCoverage;
   if (!coverage) return [];
   const platforms = input.platforms ?? ['android'];
-  return Object.entries(coverage).map(([feature, conf]) => {
-    const functionality = feature;
-    const featureId = functionalitySlug(functionality);
-    // "covered"/"verified" is active; "partial"/"seen"/anything weaker is draft.
-    const status: CaseStatus = /cover|verif|pass|done/i.test(conf) ? 'active' : 'draft';
-    return {
-      schemaVersion: TEST_SUITE_SCHEMA_VERSION,
-      id: '',
-      featureId,
-      functionality,
-      title: functionality,
-      description: `Exercise the "${functionality}" feature discovered during guided exploration.`,
-      objective: `Exercise the "${functionality}" feature.`,
-      priority: input.priority ?? 'P1',
-      type: 'functional' as CaseType,
-      creativityLevel: input.creativityLevel ?? 'standard',
-      platforms,
-      preconditions: ['app installed'],
-      fixtures: [],
-      testData: [],
-      steps: [
-        {
-          index: 1,
-          action: 'explore',
-          target: functionality,
-          expected: `${functionality} is reachable and renders without an error surface`,
+  // GOAL-22: a feature exploration never found is not a test case (and never a passing one).
+  return Object.entries(coverage)
+    .filter(([, conf]) => !NO_EVIDENCE_COVERAGE.test(String(conf)))
+    .map(([feature, conf]) => {
+      const functionality = feature;
+      const featureId = functionalitySlug(functionality);
+      // "covered"/"verified" is active; "partial"/"seen"/anything weaker is draft.
+      const covered = /cover|verif|pass|done/i.test(conf);
+      const status: CaseStatus = covered ? 'active' : 'draft';
+      // GOAL-22: these cases carry only a placeholder "explore" step and no evidence, so even a
+      // covered feature is not a pass: it stays not_run until real steps run (app errors still fail).
+      // blocked/needs_fixture/unsafe are not passes either.
+      const actualStatus: ActualStatus = covered
+        ? exp!.summary.appErrors > 0
+          ? 'fail'
+          : 'not_run'
+        : /block|fixture/i.test(conf)
+          ? 'blocked'
+          : /unsafe/i.test(conf)
+            ? 'skipped'
+            : 'not_run';
+      return {
+        schemaVersion: TEST_SUITE_SCHEMA_VERSION,
+        id: '',
+        featureId,
+        functionality,
+        title: functionality,
+        description: `Exercise the "${functionality}" feature discovered during guided exploration.`,
+        objective: `Exercise the "${functionality}" feature.`,
+        priority: input.priority ?? 'P1',
+        type: 'functional' as CaseType,
+        creativityLevel: input.creativityLevel ?? 'standard',
+        platforms,
+        preconditions: ['app installed'],
+        fixtures: [],
+        testData: [],
+        steps: [
+          {
+            index: 1,
+            action: 'explore',
+            target: functionality,
+            expected: `${functionality} is reachable and renders without an error surface`,
+          },
+        ],
+        expectedResult: [`${functionality} is reachable and renders without an error surface`],
+        actualResult: {
+          status: actualStatus,
+          summary:
+            covered && actualStatus === 'not_run'
+              ? `Exploration coverage: ${conf} (reached during exploration, not verified)`
+              : `Exploration coverage: ${conf}`,
+          lastRunAt: input.now,
+          evidence: [],
         },
-      ],
-      expectedResult: [`${functionality} is reachable and renders without an error surface`],
-      actualResult: {
-        status: (exp!.summary.appErrors > 0 ? 'fail' : 'pass') as ActualStatus,
-        summary: `Exploration coverage: ${conf}`,
-        lastRunAt: input.now,
+        automation: {
+          status: 'candidate',
+          framework: 'swipium_flow',
+          pageObjects: [],
+          testFiles: [],
+          locatorReadiness: 'D',
+          replayStatus: 'not_replayed',
+        },
+        status,
+        risk: [],
+        cleanup: [],
+        mapLinks: buildMapLinks({ featureId }),
+        ticketRefs: input.ticketRefs ?? [],
+        requirementRefs: input.requirementRefs ?? [],
         evidence: [],
-      },
-      automation: {
-        status: 'candidate',
-        framework: 'swipium_flow',
-        pageObjects: [],
-        testFiles: [],
-        locatorReadiness: 'D',
-        replayStatus: 'not_replayed',
-      },
-      status,
-      risk: [],
-      cleanup: [],
-      mapLinks: buildMapLinks({ featureId }),
-      ticketRefs: input.ticketRefs ?? [],
-      requirementRefs: input.requirementRefs ?? [],
-      evidence: [],
-      history: [],
-      tags: ['exploration', input.creativityLevel ?? 'standard'],
-      createdAt: input.now,
-      updatedAt: input.now,
-      provenance: [],
-    } satisfies CanonicalTestCase;
-  });
+        history: [],
+        tags: ['exploration', input.creativityLevel ?? 'standard'],
+        createdAt: input.now,
+        updatedAt: input.now,
+        provenance: [],
+      } satisfies CanonicalTestCase;
+    });
 }
 
 /** Fill a partial/manual case (e.g. from qa_suite_update input) into a complete CanonicalTestCase. */

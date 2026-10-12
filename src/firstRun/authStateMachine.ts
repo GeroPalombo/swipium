@@ -4,6 +4,7 @@
 
 import type { SnapshotElement } from '../drivers/Driver.js';
 import type { Session } from '../session/store.js';
+import { isThirdPartySignIn } from '../explore/policy.js';
 import type { InputPlan } from './inputPlanner.js';
 import type { ScreenClassification, PlannedAction, ScreenPurpose, InputRequirement } from './types.js';
 
@@ -32,8 +33,15 @@ export function chooseAuthIntent(purpose: ScreenPurpose, session: Session, gener
 
 function findSubmit(elements: SnapshotElement[], intent: AuthIntent): SnapshotElement | undefined {
   const re = intent === 'create_account' ? SUBMIT_CREATE : SUBMIT_LOGIN;
-  // Prefer a non-field clickable button matching the verb; exclude editable fields.
-  const buttons = elements.filter((e) => e.clickable && !/EditText|TextField|TextInput|text-field/i.test(e.role));
+  // Prefer a non-field clickable button matching the verb; exclude editable fields. Never a
+  // third-party / OS sign-in ("Sign up with Apple" opened the iOS Apple Account alert: GOAL NEW-R4-2).
+  const buttons = elements.filter(
+    (e) =>
+      e.clickable &&
+      !/EditText|TextField|TextInput|text-field/i.test(e.role) &&
+      !isThirdPartySignIn({ label: e.label ?? e.text, id: e.id }) &&
+      !isThirdPartySignIn({ label: e.text, id: e.id }),
+  );
   return (
     buttons.find((e) => re.test(`${e.label ?? ''} ${e.text ?? ''} ${e.id ?? ''}`)) ??
     buttons.find((e) => /\b(continue|next|done|submit)\b/i.test(`${e.label ?? ''} ${e.text ?? ''}`))

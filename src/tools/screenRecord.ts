@@ -79,6 +79,8 @@ export function registerScreenRecord(server: McpServer, sessions: SessionStore):
     async ({ sessionId, action, save, failed, consentId, approve }) => {
       const session = sessions.get(sessionId);
       if (!session) return unknownSessionError(sessionId);
+      // Before the device lookup, so a sensitive session never sees NO_DEVICE first (TOOL-19).
+      if (action === 'start' && session.sensitive) return sensitiveRefusal('Screen recording');
       const { driver, blocked } = await getDriver(session);
       const serial = driver?.currentDevice();
       if (!session || !driver || !serial) {
@@ -86,6 +88,7 @@ export function registerScreenRecord(server: McpServer, sessions: SessionStore):
           blockedDeviceResult(blocked) ??
           qaError({
             what: 'No device attached to this session',
+            failureCode: 'NO_DEVICE',
             changedState: false,
             retrySafe: true,
             nextSteps: ['Call qa_prepare_target / qa_ios boot first.'],
@@ -131,7 +134,6 @@ export function registerScreenRecord(server: McpServer, sessions: SessionStore):
 
       // ---- start ----
       if (action === 'start') {
-        if (session.sensitive) return sensitiveRefusal('Screen recording');
         if (active.has(sessionId)) {
           return qaError({
             what: 'A recording is already in progress for this session',

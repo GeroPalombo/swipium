@@ -8,12 +8,13 @@ import { isAbsolute, resolve as resolvePath, sep } from 'node:path';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, qaAnnotate, unknownSessionError } from '../lib/result.js';
+import { makeRedactor, scrubLogCredentials } from '../lib/redact.js';
 import { FAILURES, failureOwner, isSelfFixable, type FailureCode } from '../oracle/failures.js';
 import { progressLine } from '../session/progress.js';
 import { readinessForSession } from '../report/readiness.js';
 import { SWIPIUM_VERSION, TOOL_COUNT, PROMPT_COUNT } from '../version.js';
 import { TEST_GOALS, type TestGoal } from '../orchestration/goal.js';
-import { CAPABILITY_GROUPS } from '../core/capabilityGroups.js';
+import { CAPABILITY_GROUPS, coreToolsOnly, isToolListed, listedToolNames } from '../core/capabilityGroups.js';
 import type { Session, SessionStore } from '../session/store.js';
 import { recallTestThisIntent, markLoginDeclined } from '../orchestration/testThis/sessionIntent.js';
 import { SECRET_VAR_NAME } from '../flows/schema.js';
@@ -21,6 +22,13 @@ import { RECOMMENDED_JOB_WAIT_MS } from './jobs.js';
 import { handleTestThis } from '../orchestration/testThis/plan.js';
 import type { TestThisInput } from '../orchestration/testThis/types.js';
 import { burnConsent } from '../consent/consent.js';
+import { isSimulatorUdid, sessionDeviceState } from '../session/attach.js';
+import { orphanedNetworkChanges, orphanedNetworkWarning } from './network.js';
+
+/** nextBestAction steps that drive the device (pointless while the session's device is gone). */
+/** Next steps an offline device does NOT override: the run is already reported (IOS-6 R3: every
+ *  other step, qa_generate and qa_report included, waits until the device is back). */
+const OFFLINE_KEEPS_TOOLS = new Set(['qa_get_artifact']);
 
 function budgetRemaining(s: Session): { minutes: number; actions: number; screenshots: number } {
   const elapsedMin = (Date.now() - s.createdAt) / 60000;
@@ -249,9 +257,9 @@ export const SERVER_INSTRUCTIONS = [
   'Consent: with MCP elicitation the user is prompted; otherwise show requiresConsent, re-call with consentId + approve:true only after they agree. CONSENT_DECLINED/_CANCELLED/_REFUSED: nothing ran, do not retry unasked.',
   'Ask the user only on needs_input or consent; otherwise keep going. Logins: SWIPIUM_TEST_EMAIL / SWIPIUM_TEST_PASSWORD in server env.',
   '',
-  'Project root: projectRoot arg > MCP roots > SWIPIUM_PROJECT_ROOT > cwd; on PROJECT_ROOT_UNRESOLVED pass an absolute projectRoot.',
-  'iOS Simulator without WebDriverAgent is visual-only (BACKEND_UNSUPPORTED): qa_screenshot + qa_visual, or qa_wda setup.',
-  'INVALID_ARGUMENT: bad args, nothing ran. STALE_CLIENT: restart the client.',
+  'Project root: projectRoot arg > MCP roots > SWIPIUM_PROJECT_ROOT > CLAUDE_PROJECT_DIR > cwd; PROJECT_ROOT_UNRESOLVED: pass an absolute projectRoot.',
+  'iOS Simulator without WDA is visual-only (BACKEND_UNSUPPORTED): qa_screenshot + qa_visual, or qa_wda setup.',
+  'INVALID_ARGUMENT: bad args, nothing ran. STALE_CLIENT: restart client.',
   'By hand: batch 3+ known steps in one qa_flow_run {sessionId, flowYaml}. Reset/jump: qa_app_control (restart, clear_data), qa_act open_url (deep links); no raw adb.',
   'More: qa_status (state + nextBestAction). One feature: qa_test_feature.',
   'Low level: qa_snapshot, qa_act, qa_visual. Element lines omit empty names; trailing " -" = not clickable. Refs (@eN) are stable on screen; stale ref: STALE_REF + candidates. qa_snapshot diff:true: same-screen changes only.',
@@ -263,7 +271,9 @@ export function orientation(goal?: TestGoal) {
   return {
     orientation: true,
     swipiumVersion: SWIPIUM_VERSION,
-    tools: TOOL_COUNT,
+    // The LISTED surface: SWIPIUM_TOOLS=core lists (and allows) only the core tools.
+    tools: listedToolNames().length,
+    ...(coreToolsOnly() ? { toolsTotal: TOOL_COUNT, toolsMode: 'core' } : {}),
     prompts: PROMPT_COUNT,
     firstCall: {
       tool: 'qa_test_this',
@@ -294,7 +304,11 @@ export function orientation(goal?: TestGoal) {
       credentials: 'Prefer SWIPIUM_TEST_EMAIL / SWIPIUM_TEST_PASSWORD in the server env over typing secrets into the chat.',
     },
     // Names + purpose only: the tool names are already in tools/list (K5).
-    capabilityGroups: CAPABILITY_GROUPS.map((g) => ({ group: g.group, purpose: g.purpose })),
+    // Groups with no listed tool (SWIPIUM_TOOLS=core) are left out.
+    capabilityGroups: CAPABILITY_GROUPS.filter((g) => g.tools.some((t) => isToolListed(t))).map((g) => ({
+      group: g.group,
+      purpose: g.purpose,
+    })),
     nextBestAction: {
       tool: 'qa_test_this',
       why: goal ? `no session yet, run the autopilot for goal "${goal}"` : 'no session yet, start the autopilot',
@@ -340,18 +354,40 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
         ]);
       const remaining = budgetRemaining(s);
       const lastJob = [...s.jobs.values()].sort((a, b) => b.startedAt - a.startedAt)[0];
-      const { relaysBlocker, ...next } = nextBestAction(s, goal);
+      const { relaysBlocker, ...ladderNext } = nextBestAction(s, goal);
+      // The bound device died (emulator killed, simulator shut down): no device step can run, so
+      // the next step re-prepares the session's OWN device instead of driving a dead one.
+      const deviceState = await sessionDeviceState(s);
+      const kind = s.driver?.kind ?? s.driverKind;
+      const ios = kind === 'wda' || kind === 'simulator' || (!kind && isSimulatorUdid(s.device));
+      const next =
+        deviceState === 'gone' && !relaysBlocker && !OFFLINE_KEEPS_TOOLS.has(ladderNext.tool)
+          ? ios
+            ? {
+                tool: 'qa_prepare_ios_target',
+                why: `this session's simulator ${s.device} is not booted; boot it again (and re-attach WDA) before testing`,
+                args: { sessionId: s.id, device: s.device },
+              }
+            : {
+                tool: 'qa_prepare_target',
+                why: `this session's device ${s.device} is offline; re-boot its own emulator before testing`,
+                args: { sessionId: s.id },
+              }
+          : ladderNext;
       // The blocker's fix is relayed once; the next qa_status moves on to the normal ladder.
       if (relaysBlocker) {
         s.milestones[BLOCKER_EXPLAINED_MILESTONE] = Date.now();
         sessions.persist(s);
       }
+      // Airplane mode left on this device by a server that died without restoring it (CR: crashed owner).
+      const networkWarning = orphanedNetworkWarning(orphanedNetworkChanges(sessions, s.device), s.id);
       const status = {
         sessionId: s.id,
         root: s.root,
         device: s.device ?? null,
+        ...(deviceState === 'gone' ? { deviceOnline: false } : {}),
         appId: s.appId ?? null,
-        mode: effectiveMode(s),
+        mode: deviceState === 'gone' ? 'unknown' : effectiveMode(s),
         budgetRemaining: remaining,
         counters: s.counters,
         recordedActions: s.recordedActions.length,
@@ -370,16 +406,18 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
             }
           : null,
         nextBestAction: next,
+        ...(networkWarning ? { warnings: [networkWarning] } : {}),
       };
       const progLine = progressLine(lastJob?.progressDetail);
       const summary =
-        `session ${s.id}: ${s.device ?? 'no device'}${s.appId ? ` / ${s.appId}` : ''} (mode=${status.mode})\n` +
+        `session ${s.id}: ${s.device ?? 'no device'}${deviceState === 'gone' ? ' (offline)' : ''}${s.appId ? ` / ${s.appId}` : ''} (mode=${status.mode})\n` +
         `budget left: ${remaining.minutes}m / ${remaining.actions} actions / ${remaining.screenshots} shots\n` +
         `recorded=${s.recordedActions.length} findings=${s.findings.length} notes=${s.notes.length}` +
         (lastJob
           ? `\nlast job: ${lastJob.kind} [${lastJob.status}]${progLine ? `\n  ${progLine}` : lastJob.progress ? ` ${lastJob.progress}` : ''}`
           : '') +
         (s.workarounds.length ? `\nworkarounds: ${s.workarounds.length}` : '') +
+        (networkWarning ? `\nWARNING: ${networkWarning}` : '') +
         `\nnext: ${next.tool} ${JSON.stringify(next.args)} (${next.why})`;
       return qaOk(status, summary);
     },
@@ -407,6 +445,7 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
       if (!info) {
         return qaError({
           what: `Unknown failure code "${failureCode}"`,
+          failureCode: 'INVALID_ARGUMENT',
           changedState: false,
           retrySafe: true,
           nextSteps: ['Pass a code surfaced by a Swipium tool (the `failureCode` field of an error).'],
@@ -434,7 +473,9 @@ export function registerAgentTools(server: McpServer, sessions: SessionStore): v
         whatItMeans: info.summary,
         whoFixesIt: ownerText[owner],
         howToFix: info.recovery,
-        context: context ?? null,
+        // TOOL NEW-5: the caller's context is echoed back, so scrub the session's registered secrets,
+        // and credential-looking values (password=…, ghp_…) with or without a session.
+        context: context == null ? null : scrubLogCredentials(sess ? (makeRedactor(sess.secrets)(context) ?? context) : context),
       };
       const summary =
         `${code}: ${info.summary}\n` +

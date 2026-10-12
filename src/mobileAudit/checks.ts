@@ -8,8 +8,11 @@
 import { rankCandidates } from '../explore/candidates.js';
 import { allowsControlledLogout } from '../explore/policy.js';
 import { parseSnapshot } from '../snapshot/parse.js';
+import { waitForAppRender, type RenderWaitResult } from '../snapshot/renderWait.js';
 import type { IssueCategory, IssueSeverity } from '../issues/schema.js';
 import type { CheckStatus } from './results.js';
+import { isAbortError } from '../lib/abortScope.js';
+import { metroListening } from '../lib/metroState.js';
 import { captureScreenshot, foreground, health, snapshotText, type AuditEvidenceCtx } from './evidence.js';
 
 export interface RawCheckResult {
@@ -21,6 +24,8 @@ export interface RawCheckResult {
   workflow?: string;
   screenId?: string;
   nextStep?: string;
+  /** Stable failure code (src/oracle/failures.ts) for a blocked / failed check, e.g. BLANK_SCREEN. */
+  failureCode?: string;
 }
 
 const ok = (reason: string, evidenceUris: string[] = []): RawCheckResult => ({ status: 'pass', reason, evidenceUris });
@@ -44,9 +49,23 @@ export async function checkLaunch(ctx: AuditEvidenceCtx): Promise<RawCheckResult
       nextStep: 'Confirm the app is installed and (for debug builds) Metro is reachable.',
     };
   }
+  // The relaunched app shows its splash first: the health / navigation / readiness checks that follow
+  // read the tree, and judged an empty splash ("no interactive controls", GOAL-26).
+  const render = await renderWait(ctx);
   const fg = await foreground(ctx);
   const shot = await captureScreenshot(ctx, 'audit launch');
   const evidence = shot ? [shot] : [];
+  // `no_tree`: no UI tree was ever read, so nothing was judged; the foreground check below decides.
+  if (render && !render.ready && render.reason !== 'no_tree')
+    return {
+      status: 'blocked',
+      reason: render.loadingText
+        ? `app never finished rendering: "${render.loadingText}" still visible after ${Math.round(render.waitedMs / 1000)} s`
+        : `app showed only a blank / splash screen after ${Math.round(render.waitedMs / 1000)} s; launch not verified`,
+      evidenceUris: evidence,
+      failureCode: 'BLANK_SCREEN',
+      nextStep: 'For a debug RN/Expo build, wait until Metro finished bundling (qa_wait { for:"metro_ready" }) and re-run.',
+    };
   if (fg && ctx.appId && fg.includes(ctx.appId.split('/')[0])) return ok(`launched, foreground=${fg}`, evidence);
   return {
     status: 'fail',
@@ -55,6 +74,18 @@ export async function checkLaunch(ctx: AuditEvidenceCtx): Promise<RawCheckResult
     reason: `expected ${ctx.appId} foreground, saw ${fg}`,
     evidenceUris: evidence,
   };
+}
+
+/** Bounded wait for the app's first rendered screen (one dump when it already rendered). */
+async function renderWait(ctx: AuditEvidenceCtx): Promise<RenderWaitResult | undefined> {
+  return waitForAppRender(ctx.driver, {
+    visualOnly: ctx.session.mode === 'visual-fallback' || ctx.driver.kind === 'simulator',
+    timeoutMs: 20_000,
+    metroProbe: () => metroListening(),
+  }).catch((e) => {
+    if (isAbortError(e)) throw e;
+    return undefined;
+  });
 }
 
 export async function checkHealthScan(ctx: AuditEvidenceCtx): Promise<RawCheckResult> {
@@ -134,30 +165,29 @@ function found(text: string, ...needles: string[]): boolean {
   return needles.some((n) => text.includes(n));
 }
 
+/** GOAL-26: "no check passes without evidence" applies to failures too. Only the current screen is
+ *  inspected, so a link/path that is not on it is NOT VERIFIED (blocked, no issue recorded), never a
+ *  store-compliance fail: it usually lives under Settings / About / Profile. */
+function notVerifiedOnThisScreen(what: string, evidenceUris: string[] = []): RawCheckResult {
+  return {
+    status: 'blocked',
+    reason: `not verified: no ${what} on the inspected screen (only the current screen is checked; it is usually under Settings / About / Profile)`,
+    evidenceUris,
+    nextStep: `Navigate to Settings / About (qa_act) and re-run the audit there, or verify the ${what} manually.`,
+  };
+}
+
 export async function checkPrivacyLink(ctx: AuditEvidenceCtx, text: string): Promise<RawCheckResult> {
   const shot = await captureScreenshot(ctx, 'audit privacy');
   if (found(text, 'privacy policy', 'privacy notice')) return ok('Privacy Policy surface found', shot ? [shot] : []);
-  return {
-    status: 'fail',
-    category: 'store_compliance',
-    severity: 'high',
-    reason: 'no Privacy Policy link found on the inspected screens',
-    evidenceUris: shot ? [shot] : [],
-    nextStep: 'Expose a Privacy Policy link (required for app stores).',
-  };
+  return notVerifiedOnThisScreen('Privacy Policy link', shot ? [shot] : []);
 }
 
 export async function checkTermsLink(ctx: AuditEvidenceCtx, text: string): Promise<RawCheckResult> {
   const shot = await captureScreenshot(ctx, 'audit terms');
   if (found(text, 'terms of service', 'terms of use', 'terms and conditions', 'terms'))
     return ok('Terms surface found', shot ? [shot] : []);
-  return {
-    status: 'fail',
-    category: 'store_compliance',
-    severity: 'medium',
-    reason: 'no Terms link found on the inspected screens',
-    evidenceUris: shot ? [shot] : [],
-  };
+  return notVerifiedOnThisScreen('Terms link', shot ? [shot] : []);
 }
 
 export async function checkAccountDeletion(ctx: AuditEvidenceCtx, text: string): Promise<RawCheckResult> {
@@ -165,14 +195,7 @@ export async function checkAccountDeletion(ctx: AuditEvidenceCtx, text: string):
   if (!hasAccountContext) return na('no account/profile surface observed, account deletion not applicable here');
   if (found(text, 'delete account', 'delete your account', 'data deletion', 'close account', 'remove account'))
     return ok('account deletion / data-deletion path found');
-  return {
-    status: 'fail',
-    category: 'store_compliance',
-    severity: 'high',
-    reason: 'account surface present but no delete-account / data-deletion path found',
-    evidenceUris: [],
-    nextStep: 'Expose an account/data deletion flow (required where the app has accounts).',
-  };
+  return notVerifiedOnThisScreen('delete-account / data-deletion path (an account surface is present)');
 }
 
 export async function checkSubscriptionManagement(ctx: AuditEvidenceCtx, text: string): Promise<RawCheckResult> {
@@ -180,13 +203,7 @@ export async function checkSubscriptionManagement(ctx: AuditEvidenceCtx, text: s
   if (!hasSub) return na('no subscription/paywall surface observed');
   if (found(text, 'restore purchase', 'restore purchases', 'manage subscription', 'manage your subscription'))
     return ok('restore / manage-subscription path found');
-  return {
-    status: 'fail',
-    category: 'store_compliance',
-    severity: 'medium',
-    reason: 'subscription surface present but no restore-purchase / manage-subscription path found',
-    evidenceUris: [],
-  };
+  return notVerifiedOnThisScreen('restore-purchase / manage-subscription path (a subscription surface is present)');
 }
 
 export async function checkPaywall(ctx: AuditEvidenceCtx, text: string): Promise<RawCheckResult> {
@@ -366,9 +383,10 @@ export function checkForgotPassword(loggedOutText: string): RawCheckResult {
 // ---- readiness -----------------------------------------------------------------------------
 
 export async function checkLocatorReadiness(ctx: AuditEvidenceCtx): Promise<RawCheckResult> {
+  const render = await renderWait(ctx); // earlier checks may have relaunched / backgrounded the app
   let xml = '';
   try {
-    xml = await ctx.driver.dumpXml();
+    xml = render?.xml ?? (await ctx.driver.dumpXml());
   } catch {
     return skip('no UI tree available to assess locator readiness');
   }

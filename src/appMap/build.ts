@@ -195,6 +195,9 @@ export function buildAppMap(root: string, opts: BuildOptions): BuildResult {
   // so two builders can never load the same base map and clobber each other's merge.
   const willRescan = opts.mode === 'static_only' || opts.mode === 'full' || opts.forceRescan === true || !existsSync(appMapPath(root));
   const bundle = willRescan ? runStaticScan(root, opts.at) : null;
+  // persist:false (plan mode) writes nothing, so it needs no lock, and taking one would create an
+  // empty .swipium/ in the project.
+  if (opts.persist === false) return buildAppMapLocked(root, opts, bundle);
   return withAppMapLock(root, () => buildAppMapLocked(root, opts, bundle));
 }
 

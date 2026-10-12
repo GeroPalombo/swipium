@@ -9,6 +9,7 @@
 
 import type { Durability, PomResult, PomTestStep } from '../suite/pom.js';
 import { asciiFold } from './identifiers.js';
+import { capSlug } from '../lib/stableHash.js';
 
 export type AppiumStrategy = 'accessibilityId' | 'id' | 'name' | 'iosPredicate' | 'iosClassChain' | 'androidUiautomator' | 'coordinate';
 
@@ -206,9 +207,11 @@ function toStep(s: PomTestStep, secrets: Set<string>, variables: Set<string>): A
 }
 
 function kebab(s: string): string {
-  return asciiFold(s)
-    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
-    .replace(/[^A-Za-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .toLowerCase();
+  return capSlug(
+    asciiFold(s)
+      .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+      .replace(/[^A-Za-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .toLowerCase(),
+  );
 }

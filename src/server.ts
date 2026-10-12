@@ -28,6 +28,7 @@ import { SessionStore, decodeUriSegment, encodeUriSegment, isWithinRoot, type Se
 import {
   AUTO_ANSWER_MS,
   burnConsent,
+  declineConsent,
   issueConsentPrompt,
   noPromptDecision,
   operatorPolicyDecision,
@@ -50,7 +51,7 @@ import { registerScreenshot } from './tools/screenshot.js';
 import { registerSnapshot } from './tools/snapshot.js';
 import { registerAct } from './tools/act.js';
 import { registerCheckHealth } from './tools/health.js';
-import { registerNetwork, restoreAllNetwork } from './tools/network.js';
+import { registerNetwork, restoreAllNetwork, sessionsToRestoreOnShutdown } from './tools/network.js';
 import { registerScreenRecord, stopAllRecordings } from './tools/screenRecord.js';
 import { registerDevice } from './tools/device.js';
 import { registerMetro, stopAllMetro } from './tools/metro.js';
@@ -58,7 +59,7 @@ import { registerAppControl } from './tools/appControl.js';
 import { registerIos } from './tools/ios.js';
 import { registerWda } from './tools/wda.js';
 import { registerClearOverlay } from './tools/clearOverlay.js';
-import { registerJobs } from './tools/jobs.js';
+import { registerJobs, maxWaitSettingWarning } from './tools/jobs.js';
 import { registerGetArtifact, readArtifactResource } from './tools/getArtifact.js';
 import { registerNote } from './tools/note.js';
 import { registerVisual } from './tools/visual.js';
@@ -85,10 +86,10 @@ import { registerResolveTarget } from './tools/resolveTarget.js';
 import { registerBuild } from './tools/build.js';
 import { registerBundletool } from './tools/bundletool.js';
 import { registerPrompts } from './prompts/index.js';
-import { log, logEnabled } from './lib/logger.js';
+import { log, logEnabled, logLevelSettingWarning } from './lib/logger.js';
 import { rememberClientInfo } from './lib/clientInfo.js';
 import { qaAnnotate, qaError, runWithResponseMode } from './lib/result.js';
-import { recordToolErrorFromResult } from './report/toolHealth.js';
+import { recordThrownToolError, recordToolErrorFromResult } from './report/toolHealth.js';
 import { computeSchemaHash, describeZodField, setSchemaHash, type ToolSurfaceEntry } from './lib/schemaHash.js';
 import { REMOVED_TOOLS, STALE_CLIENT_HINT, SWIPIUM_VERSION, TOOL_COUNT, TOOL_NAMES, TOOL_NAME_SET, type ToolName } from './version.js';
 import { toolAnnotations } from './lib/toolAnnotations.js';
@@ -102,13 +103,14 @@ import {
   type ToolInputSchema,
   type ToolInputShape,
 } from './lib/toolSchema.js';
-import { CAPABILITY_GROUPS, codexCoreTools } from './core/capabilityGroups.js';
+import { CAPABILITY_GROUPS, codexCoreTools, toolsSettingWarning } from './core/capabilityGroups.js';
 import { ensureAndroidToolsOnPath } from './lib/android.js';
 import { annotateRootSource, clearClientRootsCache, clientRootUris, withRootResolutionRecording } from './context/projectRoot.js';
 import { markModernServer } from './context/protocolEra.js';
 import { reapOrphanedProcesses } from './session/processRegistry.js';
 import { shutdownAndroidDumpers } from './drivers/androidDumper.js';
 import { runWithSignal } from './lib/abortScope.js';
+import { killAbortedProcessGroups } from './lib/spawn.js';
 import { stableHash } from './lib/stableHash.js';
 import { progressSinkFromContext, runWithProgressSink } from './lib/progressNotify.js';
 import { SKILL_MD } from './skills/content.js';
@@ -202,6 +204,7 @@ function recordConsentRefusal(
   req: ConsentRequest | undefined,
   mechanism: ApprovalMechanism,
   detail: string,
+  failureCode: 'CONSENT_DECLINED' | 'CONSENT_CANCELLED' | 'CONSENT_REFUSED',
 ): void {
   if (!req || typeof sessionId !== 'string') return;
   const session = sessions.get(sessionId);
@@ -215,15 +218,51 @@ function recordConsentRefusal(
       consent: { required: true, consentId, approved: false, approvalMechanism: mechanism },
       status: 'refused',
       detail,
+      failureCode, // qa_report gates a run that tested nothing with this code (E2E NEW-13)
     });
   } catch (e) {
     log('warn', 'failed to ledger a consent refusal', { tool, consentId, err: String(e) });
   }
 }
 
+/** A re-call with `{consentId, approve:false}` for a still-pending consent is an explicit decline
+ * (concepts.md "Consent > Rules"): the challenge is burned, a `refused` ledger row written, and
+ * CONSENT_DECLINED returned without running the tool (never a silent fresh challenge). undefined
+ * when the call is not such a decline (the tool then runs and explains an unknown id). */
+function explicitDeclineResult(sessions: SessionStore, tool: string, args: unknown): CallToolResult | undefined {
+  const a = args as { consentId?: unknown; approve?: unknown; sessionId?: unknown } | undefined;
+  if (a?.approve !== false || typeof a.consentId !== 'string' || !a.consentId) return undefined;
+  const sessionId = typeof a.sessionId === 'string' && a.sessionId ? a.sessionId : undefined;
+  const req = declineConsent(a.consentId, sessionId);
+  if (!req) return undefined;
+  recordConsentRefusal(sessions, tool, sessionId, a.consentId, req, 'client-assertion', 'declined (approve:false)', 'CONSENT_DECLINED');
+  return qaError(
+    {
+      what: `Consent ${a.consentId} for "${req.action}" was declined (approve:false). Nothing ran.`,
+      changedState: false,
+      retrySafe: false,
+      failureCode: 'CONSENT_DECLINED',
+      nextSteps: ['Do not retry this action; ask the user before attempting it again (a re-call without consentId asks anew).'],
+    },
+    { action: req.action, declinedConsentId: a.consentId },
+  );
+}
+
 function pendingConsentId(result: unknown): string | undefined {
   const sc = (result as CallToolResult | null | undefined)?.structuredContent as Record<string, unknown> | undefined;
   return sc?.requiresConsent === true && typeof sc.consentId === 'string' ? sc.consentId : undefined;
+}
+
+/** E2E-7: the session a routed consent envelope belongs to. qa_test_this creates its session
+ *  before asking (the envelope carries `sessionId`), but the call's arguments do not, so a refusal
+ *  would otherwise lose it and the agent could not qa_note / qa_report. Bounded; dropped once the
+ *  consent is decided. */
+const consentEnvelopeSession = new Map<string, string>();
+function rememberEnvelopeSession(consentId: string, result: unknown): void {
+  const sc = (result as CallToolResult | null | undefined)?.structuredContent as Record<string, unknown> | undefined;
+  if (typeof sc?.sessionId !== 'string') return;
+  if (consentEnvelopeSession.size >= 500) consentEnvelopeSession.delete(consentEnvelopeSession.keys().next().value as string);
+  consentEnvelopeSession.set(consentId, sc.sessionId);
 }
 
 /** How the tool wrapper routes consents for one server instance (its protocol era + provider). */
@@ -314,6 +353,7 @@ async function routePendingConsent(
 ): Promise<unknown> {
   const consentId = pendingConsentId(result);
   if (!consentId) return result;
+  rememberEnvelopeSession(consentId, result);
   const first = (args[0] ?? {}) as Record<string, unknown>;
   const ctx = args[1] as ToolCallContext | undefined;
   const mcpReq = ctx?.mcpReq;
@@ -420,15 +460,24 @@ async function applyConsentDecision(
   reinvoke: (args: unknown[]) => unknown,
   ledger: { sessions: SessionStore; tool: string },
 ): Promise<unknown> {
+  // The session the refused call belongs to (its argument, else the one the envelope created), so
+  // the agent can still qa_note / qa_report after a refusal (E2E-7).
+  const envelopeSession = consentEnvelopeSession.get(consentId);
+  consentEnvelopeSession.delete(consentId);
+  const refusedSessionId = typeof first.sessionId === 'string' ? first.sessionId : envelopeSession;
+  const sessionExtra = refusedSessionId ? { sessionId: refusedSessionId } : {};
   if (decision.mechanism === 'refused') {
-    recordConsentRefusal(ledger.sessions, ledger.tool, first.sessionId, consentId, req, 'policy', decision.reason);
-    return qaError({
-      what: decision.reason,
-      changedState: false,
-      retrySafe: false,
-      failureCode: 'CONSENT_REFUSED',
-      nextSteps: ['Connect with an MCP client that supports elicitation, or unset SWIPIUM_REQUIRE_ELICITATION.'],
-    });
+    recordConsentRefusal(ledger.sessions, ledger.tool, refusedSessionId, consentId, req, 'policy', decision.reason, 'CONSENT_REFUSED');
+    return qaError(
+      {
+        what: decision.reason,
+        changedState: false,
+        retrySafe: false,
+        failureCode: 'CONSENT_REFUSED',
+        nextSteps: ['Connect with an MCP client that supports elicitation, or unset SWIPIUM_REQUIRE_ELICITATION.'],
+      },
+      sessionExtra,
+    );
   }
   if (!decision.approved) {
     // A failed elicitation (timeout, transport error, aborted call) is not an answer: ledger it
@@ -437,11 +486,12 @@ async function applyConsentDecision(
     recordConsentRefusal(
       ledger.sessions,
       ledger.tool,
-      first.sessionId,
+      refusedSessionId,
       consentId,
       req,
       'elicitation',
       failed ? `transport/abort: ${decision.reason}` : decision.reason,
+      decision.outcome === 'cancelled' ? 'CONSENT_CANCELLED' : 'CONSENT_DECLINED',
     );
     // Headless clients (codex exec, claude -p) answer prompts automatically: a near-instant
     // answer is flagged as likely automatic and only then carries the pre-approve hint (a real
@@ -449,9 +499,16 @@ async function applyConsentDecision(
     const action = req?.action ?? 'unknown';
     const likelyAutomatic = !failed && decision.elapsedMs < AUTO_ANSWER_MS;
     const extra = failed
-      ? { action, answeredInMs: decision.elapsedMs, likelyAutomatic: false, elicitationFailure: decision.failure }
-      : { action, answeredInMs: decision.elapsedMs, likelyAutomatic };
-    const hint = likelyAutomatic ? [preapproveHint(action, req)] : [];
+      ? { action, answeredInMs: decision.elapsedMs, likelyAutomatic: false, elicitationFailure: decision.failure, ...sessionExtra }
+      : { action, answeredInMs: decision.elapsedMs, likelyAutomatic, ...sessionExtra };
+    // E2E-8: under an auto-answering client a chat "go ahead" + re-call is auto-refused again, so
+    // say outright that only the operator setting helps (never offer an in-chat approval).
+    const hint = likelyAutomatic
+      ? [
+          preapproveHint(action, req),
+          'Approving in chat and re-calling will not work in this client (its prompts are answered automatically): tell the user the operator setting above is the only way to allow this here.',
+        ]
+      : [];
     if (decision.outcome === 'cancelled') {
       return qaError(
         {
@@ -463,7 +520,7 @@ async function applyConsentDecision(
             failed
               ? 'Nothing ran. The consent prompt failed (timeout, transport error or cancelled call) before anyone answered: re-call the tool (without consentId) to prompt again, or ask the user first.'
               : likelyAutomatic
-                ? 'Nothing ran. The prompt was answered too fast for a human: do not re-call in a loop, ask the user first.'
+                ? 'Nothing ran. The prompt was answered too fast for a human: do not re-call in a loop.'
                 : 'Nothing ran. Re-call the tool (without consentId) to show the user a fresh consent prompt, or ask them first.',
             ...hint,
           ],
@@ -489,13 +546,16 @@ async function applyConsentDecision(
   if (again) {
     burnConsent(again);
     burnConsent(consentId);
-    return qaError({
-      what: 'The action changed while the user was deciding, so the approval no longer matches it. Nothing ran.',
-      changedState: false,
-      retrySafe: true,
-      failureCode: 'CONSENT_CANCELLED',
-      nextSteps: ['Re-call the tool (without consentId) to prompt the user for the current action.'],
-    });
+    return qaError(
+      {
+        what: 'The action changed while the user was deciding, so the approval no longer matches it. Nothing ran.',
+        changedState: false,
+        retrySafe: true,
+        failureCode: 'CONSENT_CANCELLED',
+        nextSteps: ['Re-call the tool (without consentId) to prompt the user for the current action.'],
+      },
+      sessionExtra,
+    );
   }
   return out;
 }
@@ -803,7 +863,9 @@ function installResponseModeWrapper(
           if (typeof state !== 'string') throw invalidRequestState(name, 'not a string');
           routed = await resumeConsentPrompt(state, a, run, { sessions, tool: name });
         } else {
-          routed = await routePendingConsent(await run(a), a, run, { sessions, tool: name }, routing);
+          routed =
+            explicitDeclineResult(sessions, name, first) ??
+            (await routePendingConsent(await run(a), a, run, { sessions, tool: name }, routing));
         }
         // An InputRequiredResult is an interim answer (the client's user is being asked): no tool
         // status, no notes, it goes to the client as is.
@@ -814,6 +876,11 @@ function installResponseModeWrapper(
         out = routed as CallToolResult;
         recordToolErrorFromResult(sessions, name, a[0], out, callSignal); // qa_report tool status (report/toolHealth.ts)
         return jobNote ? annotateKeepingNotes(out, jobNote) : out;
+      } catch (e) {
+        // A tool that threw still counts against the TOOL status (LOG NEW-3: "Tool status: PASS"
+        // after a raw adb launch timeout). The error itself goes to the client unchanged.
+        recordThrownToolError(sessions, name, a[0], e, callSignal);
+        throw e;
       } finally {
         if (interim) log('debug', 'tool call', { tool: name, durationMs: Date.now() - startedAt, inputRequired: true });
         else logToolCall(name, first?.sessionId, startedAt, out, callSignal);
@@ -853,7 +920,8 @@ export function staleClientReplacement(name: string, args: Record<string, unknow
 function staleClientError(name: string, replacement: string): CallToolResult {
   return qaError(
     {
-      what: `${name} (this call shape) was removed in Swipium v${SWIPIUM_VERSION}; use ${replacement}`,
+      // Every legacy shape mapped here went away in the 2.0.0 surface redesign (tools.md "Migrating from 1.5.0").
+      what: `${name} (this call shape) no longer exists (removed in Swipium 2.0.0; this server is v${SWIPIUM_VERSION}); use ${replacement}`,
       changedState: false,
       retrySafe: true,
       failureCode: 'STALE_CLIENT',
@@ -1324,7 +1392,9 @@ export function createServer(options: CreateServerOptions = {}): ServerContext {
   return { server, sessions };
 }
 
-export async function startServer(): Promise<void> {
+/** `orphanSweep:false`: the throwaway server `swipium verify` / `init --apply` starts, which must
+ *  not adopt (re-own) or reap other runs' managed processes (SET-21). */
+export async function startServer(opts: { orphanSweep?: boolean } = {}): Promise<void> {
   // GUI MCP clients don't inherit the shell PATH: APPEND the Android SDK's platform-tools/ and
   // emulator/ to PATH, but only for a tool (adb / emulator) that is not already resolvable on PATH,
   // so the user's own copy is never shadowed. Idempotent; the CLI subcommands never need it.
@@ -1349,10 +1419,13 @@ export async function startServer(): Promise<void> {
   const restoreThenExit = async (code: number, why: string) => {
     if (restoring) return;
     restoring = true;
-    const changed = sessions.list().filter((s) => s.network?.changed).length;
+    const changed = sessionsToRestoreOnShutdown(sessions).length; // only sessions this process drives
     // Cancel every running job FIRST: a job left running could flip device network state (or
     // anything else) back after the restore below.
     const cancelledJobs = cancelAllRunningJobs(sessions);
+    // TOOL NEW-R3-3: cancelled build groups get <= 2 s (overlapping the restore below) to exit on
+    // SIGTERM; survivors are SIGKILLed before process.exit, which would skip the unref'd kill timer.
+    const reapingGroups = killAbortedProcessGroups(2000);
     log('info', 'shutdown: restoring network', { why, changed, cancelledJobs });
     try {
       if (cancelledJobs) await new Promise((r) => setImmediate(r)); // let aborted workers unwind
@@ -1366,6 +1439,8 @@ export async function startServer(): Promise<void> {
       log('warn', 'shutdown: restore failed', { err: String(e) });
     }
     await shutdownAndroidDumpers(); // drop the dumper's adb forwards + pushed jar (<= 1 s, never throws)
+    const forceKilled = await reapingGroups;
+    if (forceKilled) log('info', 'shutdown: force-killed build process groups that ignored SIGTERM', { forceKilled });
     sessions.flushAll(); // write any debounced session state before exiting
     process.exit(code);
   };
@@ -1373,7 +1448,14 @@ export async function startServer(): Promise<void> {
   process.once('SIGTERM', () => void restoreThenExit(143, 'SIGTERM'));
 
   // Startup banner (P1.8): version + tool count on stderr so a stale build is obvious in logs.
-  log('info', 'swipium starting', { version: SWIPIUM_VERSION, tools: TOOL_COUNT });
+  const listedTools = TOOL_COUNT - hiddenToolNames().size; // SWIPIUM_TOOLS=core lists fewer
+  log('info', 'swipium starting', {
+    version: SWIPIUM_VERSION,
+    tools: listedTools,
+    ...(listedTools !== TOOL_COUNT ? { toolsTotal: TOOL_COUNT, toolsMode: 'core' } : {}),
+  });
+  // Unusable settings fall back to defaults; say so once instead of ignoring them silently.
+  for (const w of [maxWaitSettingWarning(), toolsSettingWarning(), logLevelSettingWarning()]) if (w) log('warn', w);
 
   // Dual-era stdio (spec 2026-07-28 basic/versioning): serveStdio answers `server/discover` for
   // protocol 2026-07-28 clients (per-request `_meta`, no handshake) and `initialize` for
@@ -1400,7 +1482,9 @@ export async function startServer(): Promise<void> {
   // checks make this safe next to a live concurrent instance and against recycled PIDs. A managed
   // WDA < 12 h old whose /status is healthy is ADOPTED instead (re-owned by this server) so a
   // resumed iOS session keeps its WDA (shutdown intentionally leaves managed WDA running).
-  void startOrphanSweep();
+  // A `swipium verify` server lives for seconds: it would only take ownership and then exit.
+  if (opts.orphanSweep !== false) void startOrphanSweep();
+  else log('debug', 'orphaned-process sweep skipped (verify server)');
 }
 
 /** Shutdown: cancel (abort) every running job in every session. Returns how many were cancelled.

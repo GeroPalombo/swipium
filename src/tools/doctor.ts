@@ -9,10 +9,12 @@ import { getSchemaHash } from '../lib/schemaHash.js';
 import { run } from '../lib/spawn.js';
 import { which, firstLine, adbDevices, listAvds, deviceFreeDataBytes, fmtBytes, androidSdkCandidates } from '../lib/android.js';
 import { simctlAvailable, listSimulators } from '../lib/simctl.js';
-import { checkWda, discoverWdaProjects, xcodeAvailable } from '../lib/wda.js';
+import { checkWda, discoverAppiumWdaProjects, discoverWdaProjectsWithAppium, xcodeAvailable } from '../lib/wda.js';
 import { loadWdaConfig } from '../lib/wdaConfig.js';
+import { findOwnSimulatorWda } from '../lib/wdaDevice.js';
 import { resolveProjectRoot } from '../context/projectRoot.js';
-import { SWIPIUM_VERSION, TOOL_NAMES, TOOL_COUNT, STALE_CLIENT_HINT } from '../version.js';
+import { SWIPIUM_VERSION, TOOL_COUNT, STALE_CLIENT_HINT } from '../version.js';
+import { coreToolsOnly, listedToolNames, listedToolsLabel } from '../core/capabilityGroups.js';
 import { clientInfoOf } from '../lib/clientInfo.js';
 import { codexEnvChecks, codexEnvVarsLine, isCodexClient } from '../lib/codexEnv.js';
 
@@ -144,8 +146,10 @@ export function registerDoctor(server: McpServer): void {
       // Stale-client detection (P1.8 + 3.3 A): the agent (via docs) tells us what it expects; we are
       // the source of truth. Version is for humans; the schema hash catches "same count, different
       // surface" after a behavior/schema/description change.
+      // Compare against the LISTED surface: SWIPIUM_TOOLS=core lists fewer tools on purpose.
+      const listedTools = listedToolNames();
       const versionMismatch = expectedVersion != null && expectedVersion !== SWIPIUM_VERSION;
-      const toolCountMismatch = expectedToolCount != null && expectedToolCount !== TOOL_COUNT;
+      const toolCountMismatch = expectedToolCount != null && expectedToolCount !== listedTools.length;
       const schemaHashMismatch = expectedSchemaHash != null && expectedSchemaHash !== schemaHash;
       if (expectedToolCount != null || expectedVersion != null || expectedSchemaHash != null) {
         const ok = !versionMismatch && !toolCountMismatch && !schemaHashMismatch;
@@ -153,14 +157,30 @@ export function registerDoctor(server: McpServer): void {
           name: 'client-freshness',
           ok,
           detail: ok
-            ? `client matches running server (v${SWIPIUM_VERSION}, ${TOOL_COUNT} tools, schema ${schemaHash})`
-            : `STALE CLIENT: running v${SWIPIUM_VERSION}/${TOOL_COUNT} tools/schema ${schemaHash} but client expected ${expectedVersion ?? '?'}/${expectedToolCount ?? '?'}/${expectedSchemaHash ?? '?'}`,
+            ? `client matches running server (v${SWIPIUM_VERSION}, ${listedToolsLabel()}, schema ${schemaHash})`
+            : `STALE CLIENT: running v${SWIPIUM_VERSION}/${listedTools.length} tools/schema ${schemaHash} but client expected ${expectedVersion ?? '?'}/${expectedToolCount ?? '?'}/${expectedSchemaHash ?? '?'}`,
           fix: ok ? undefined : STALE_CLIENT_HINT,
         });
       }
 
       checks.push(nodeVersionCheck());
       const nodeOk = checks[checks.length - 1].ok;
+
+      // Which project the next tool call would use (and why none, with the fix). A [warn], not a
+      // [fail]: a client may pass projectRoot on every call, but `ready` alone must not hide that
+      // a call without it will fail with PROJECT_ROOT_UNRESOLVED.
+      const rootRes = await resolveProjectRoot(server);
+      checks.push({
+        name: 'project-root',
+        ok: !!rootRes.root,
+        optional: true,
+        detail: rootRes.root
+          ? `${rootRes.root} (via ${rootRes.source})`
+          : `not resolved: ${rootRes.hint ?? 'no projectRoot, MCP roots, SWIPIUM_PROJECT_ROOT, CLAUDE_PROJECT_DIR or app-like cwd'}`,
+        fix: rootRes.root
+          ? undefined
+          : 'Pass projectRoot="/absolute/path/to/app" on each call, or set SWIPIUM_PROJECT_ROOT in the MCP server "env" and restart the client.',
+      });
 
       let devices: string[] = [];
       let androidSdkFound: boolean | null = null;
@@ -287,22 +307,41 @@ export function registerDoctor(server: McpServer): void {
 
         // The WDA cache/config live under the PROJECT root (SWIPIUM_PROJECT_ROOT / MCP roots / cwd
         // marker), not blindly the server cwd.
-        const root = (await resolveProjectRoot(server)).root ?? process.cwd();
+        // Unresolved root: the server cwd (often `/` or $HOME) is never treated as a project, so the
+        // project-local WDA cache is not checked (only installed Appium WDA projects are).
+        const root = rootRes.root ?? process.cwd();
         const wdaConfig = loadWdaConfig(root);
-        const wda = await checkWda(wdaConfig.url, 1200);
-        const discovery = discoverWdaProjects(root);
-        const wdaProduct = wdaBuildProductStatus(wdaConfig.derivedDataPath);
+        let wda = await checkWda(wdaConfig.url, 1200);
+        let wdaUrl = wdaConfig.url;
+        // Managed WDAs run on per-simulator ports (8101-8900), so a configured URL that is not
+        // ready does not mean no WDA: look for a booted simulator's own one too.
+        if (!(wda.reachable && wda.ready)) {
+          for (const sim of booted.slice(0, 3)) {
+            const own = await findOwnSimulatorWda(wdaConfig.url, sim.udid).catch(() => undefined);
+            if (own?.status.ready) {
+              wda = own.status;
+              wdaUrl = `${own.url} (${sim.name})`;
+              break;
+            }
+          }
+        }
+        const discovery = rootRes.root
+          ? discoverWdaProjectsWithAppium(root)
+          : { candidates: discoverAppiumWdaProjects(), searchedRoots: ['(installed Appium WDA only; no project root resolved)'] };
+        const wdaProduct = rootRes.root
+          ? wdaBuildProductStatus(wdaConfig.derivedDataPath)
+          : { built: false, checkedPath: '(no project root resolved; project WDA cache not checked)' };
         iosChecks.push({
           name: 'wda-server',
           ok: wda.reachable && wda.ready,
           optional: true,
           detail: wda.reachable
-            ? `${wda.ready ? 'ready' : 'reachable but not ready'} at ${wdaConfig.url}`
-            : `not reachable at ${wdaConfig.url}`,
+            ? `${wda.ready ? 'ready' : 'reachable but not ready'} at ${wdaUrl}`
+            : `not reachable at ${wdaConfig.url}${booted.length ? " or a booted simulator's own port" : ''}`,
           fix:
             wda.reachable && wda.ready
               ? undefined
-              : 'For structured iOS flows, run qa_wda doctor/build/start or attach an external WDA URL.',
+              : 'For structured iOS flows, run qa_wda { action:"setup" } (build if needed + start), then qa_wda attach; or attach an external WDA URL.',
         });
         iosChecks.push({
           name: 'wda-project-cache',
@@ -322,8 +361,9 @@ export function registerDoctor(server: McpServer): void {
         checks.push(...iosChecks);
         iosReady = iosChecks.filter((c) => !c.optional).every((c) => c.ok);
         wdaSummary = {
-          projectRoot: root,
-          config: { url: wdaConfig.url, mode: wdaConfig.mode, derivedDataPath: wdaConfig.derivedDataPath },
+          // Unresolved root: no project-local paths derived from the server cwd (SET-13).
+          projectRoot: rootRes.root ?? null,
+          config: { url: wdaConfig.url, mode: wdaConfig.mode, derivedDataPath: rootRes.root ? wdaConfig.derivedDataPath : null },
           status: wda,
           projectDiscovery: discovery,
           buildProduct: wdaProduct,
@@ -351,25 +391,40 @@ export function registerDoctor(server: McpServer): void {
       const table = checks.map(checkLine).join('\n');
       const readyLabel = requested === 'both' && defaulted && !(androidReady && iosReady) ? (androidReady ? 'android' : 'ios') : requested;
 
+      const headline = `Swipium v${SWIPIUM_VERSION} · ${listedToolsLabel()} · schema ${schemaHash}`;
+      const readiness = requiredOk
+        ? `Environment ready for ${readyLabel} simulator QA.`
+        : `Environment NOT ready for ${requested} simulator QA${nodeOk ? '' : ` (unsupported Node.js ${process.version}, needs >= ${MIN_NODE_VERSION})`}. See [fail] rows.`;
       const summary =
-        `Swipium v${SWIPIUM_VERSION} · ${TOOL_COUNT} tools · schema ${schemaHash}\n${schemaHashMismatch ? `${STALE_CLIENT_HINT}\n` : ''}\n` +
-        `${requiredOk ? `Environment ready for ${readyLabel} simulator QA.` : `Environment NOT ready for ${requested} simulator QA. See [fail] rows.`}\n${table}` +
+        `${headline}\n${schemaHashMismatch ? `${STALE_CLIENT_HINT}\n` : ''}\n` +
+        readiness +
+        `${rootRes.root ? '' : ' No project root resolved: calls without projectRoot fail with PROJECT_ROOT_UNRESOLVED (see the project-root row).'}\n${table}` +
         (codex ? `\n\nCodex: forward shell env with this line under [mcp_servers.swipium]:\n${codexEnvVarsLine()}` : '');
 
       return qaOk(
         {
+          // structuredContent.summary (what clients show the model) carries the verdict too, not just
+          // the version headline, so an unsupported Node or a failed platform is visible there.
+          summary: `${headline} · ${readiness}`,
           swipiumVersion: SWIPIUM_VERSION,
           schemaHash,
-          toolSurface: { count: TOOL_COUNT, tools: TOOL_NAMES },
+          toolSurface: {
+            count: listedTools.length,
+            tools: listedTools,
+            ...(coreToolsOnly() ? { mode: 'core', totalCount: TOOL_COUNT } : {}),
+          },
           platform: requested,
           ready: requiredOk,
+          projectRoot: rootRes.root
+            ? { resolved: true, root: rootRes.root, source: rootRes.source }
+            : { resolved: false, hint: rootRes.hint ?? null },
           platformReady: { android: wantsAndroid ? androidReady : null, ios: wantsIos ? iosReady : null },
           clientFreshness:
             expectedToolCount != null || expectedVersion != null || expectedSchemaHash != null
               ? {
                   stale: versionMismatch || toolCountMismatch || schemaHashMismatch,
                   runningVersion: SWIPIUM_VERSION,
-                  runningToolCount: TOOL_COUNT,
+                  runningToolCount: listedTools.length,
                   runningSchemaHash: schemaHash,
                   expectedVersion: expectedVersion ?? null,
                   expectedToolCount: expectedToolCount ?? null,
@@ -389,6 +444,7 @@ export function registerDoctor(server: McpServer): void {
             : {}),
         },
         summary,
+        { textOmit: ['summary'] }, // the text block already is the summary
       );
     },
   );

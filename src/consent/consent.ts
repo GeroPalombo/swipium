@@ -58,7 +58,9 @@ interface PendingConsent {
 
 // The calling tool invocation's sessionId, set once per call by the server's tool wrapper
 // (src/server.ts) so every consent-gated tool is session-bound with zero per-tool changes.
-const consentScope = new AsyncLocalStorage<{ sessionId?: string }>();
+// `refused`: a consentId this call supplied that consumeConsent could not apply; the next
+// requireConsent of the same call reports it (consentNote) instead of silently replacing it.
+const consentScope = new AsyncLocalStorage<{ sessionId?: string; refused?: { consentId: string; reason: string } }>();
 
 /** Run `fn` as part of a tool call made in `sessionId` (undefined = no session). */
 export function runWithConsentScope<T>(sessionId: string | undefined, fn: () => T): T {
@@ -67,6 +69,25 @@ export function runWithConsentScope<T>(sessionId: string | undefined, fn: () => 
 
 function currentConsentSession(): string | undefined {
   return consentScope.getStore()?.sessionId;
+}
+
+/** Remember (for this tool call) why a supplied consentId was not applied. */
+function noteRefusedConsent(consentId: string, reason: string): void {
+  const store = consentScope.getStore();
+  if (store) store.refused = { consentId, reason };
+}
+
+/**
+ * An explicit decline (approve:false) of a still-pending consent: burns it and returns its
+ * request so the caller can ledger the refusal and answer CONSENT_DECLINED. undefined when the
+ * id is unknown/expired or was issued for another session (never burned then).
+ */
+export function declineConsent(consentId: string, sessionId: string | undefined): ConsentRequest | undefined {
+  const entry = pending.get(consentId);
+  if (!entry || Date.now() - entry.createdAt > CONSENT_TTL_MS) return undefined;
+  if (entry.sessionId !== undefined && entry.sessionId !== sessionId) return undefined;
+  forget(consentId);
+  return entry.req;
 }
 
 // Pending challenges are bounded (review §4): a consent that is never resumed must not live
@@ -434,14 +455,22 @@ export function requireConsent(req: ConsentRequest): CallToolResult {
   // model that JSON, not the text block, for non-error results. An explain that embeds the
   // exactCommand (test_this preflight) drops that copy: exactCommand already carries it.
   const explain = req.exactCommand && req.explain.includes(req.exactCommand) ? stripCommand(req.explain, req.exactCommand) : req.explain;
+  // concepts.md "Consent > Rules": a supplied consentId that could not be used is explained, never
+  // silently replaced. qa_test_this (test_this_plan) words its own consentNote (execute.ts).
+  const scope = consentScope.getStore();
+  const refused = req.action !== 'test_this_plan' ? scope?.refused : undefined;
+  if (scope) scope.refused = undefined;
+  const consentNote = refused ? `consent ${refused.consentId} not applied (${refused.reason}); new challenge issued` : undefined;
   const payload = {
     requiresConsent: true,
     consentId,
     ...req,
     explain,
+    ...(refused ? { consentNote, previousConsentId: refused.consentId } : {}),
     next: [`To approve, re-call this tool with consentId="${consentId}" and approve=true`],
   };
   const head =
+    (consentNote ? `⚠️ ${consentNote}.\n` : '') +
     `🔐 Consent required (${req.risk}): ${explain}\n` +
     (req.exactCommand ? `Will run: ${req.exactCommand}\n` : '') +
     `To approve, re-call this tool with consentId="${consentId}" and approve=true.`;
@@ -451,12 +480,15 @@ export function requireConsent(req: ConsentRequest): CallToolResult {
   return { content: [{ type: 'text', text }], structuredContent: payload };
 }
 
-/** `explain` without its embedded copy of `cmd` (blank lines left behind are collapsed). */
+/** `explain` without its embedded copy of `cmd` (blank lines left behind are collapsed). The text
+ *  that introduced the list ("…these privileged steps (…):") points at exactCommand instead of
+ *  ending in a dangling colon (SET-19). */
 function stripCommand(explain: string, cmd: string): string {
-  return explain
-    .replace(cmd, '')
-    .replace(/\n{2,}/g, '\n')
-    .trim();
+  const at = explain.indexOf(cmd);
+  if (at < 0) return explain;
+  const before = explain.slice(0, at).replace(/:\s*$/, '').trimEnd();
+  const after = explain.slice(at + cmd.length);
+  return `${before}${before ? ' ' : ''}(listed in exactCommand).${after}`.replace(/\n{2,}/g, '\n').trim();
 }
 
 export type ConsentDecision =
@@ -634,6 +666,17 @@ export function consumeConsent(
   approve?: boolean,
   expected?: { action?: string; affects?: Record<string, unknown> },
 ): ConsentOutcome {
+  const out = consumeConsentOnce(consentId, approve, expected);
+  // A supplied id that was not applied is reported by this call's next requireConsent.
+  if (consentId && !out.approved) noteRefusedConsent(consentId, out.reason ?? 'not usable');
+  return out;
+}
+
+function consumeConsentOnce(
+  consentId?: string,
+  approve?: boolean,
+  expected?: { action?: string; affects?: Record<string, unknown> },
+): ConsentOutcome {
   if (!consentId) return { approved: false, reason: 'no consentId supplied' };
   const entry = pending.get(consentId);
   if (entry && Date.now() - entry.createdAt > CONSENT_TTL_MS) {
@@ -655,6 +698,15 @@ export function consumeConsent(
   if (expected?.affects && JSON.stringify(req.affects ?? {}) !== JSON.stringify(expected.affects)) {
     return { approved: false, req, reason: 'consent does not match the affected target' };
   }
+  // A re-call that carries the id but no approve at all is not an answer: keep the challenge
+  // (the user's approval must not be lost to a malformed re-call). approve:false is a decline
+  // (the tool wrapper answers CONSENT_DECLINED for it before the tool runs).
+  if (approve === undefined)
+    return {
+      approved: false,
+      req,
+      reason: `approve:true missing; consent ${consentId} is still pending, re-call with it and approve:true`,
+    };
   const wasElicited = elicitationApproved.has(consentId);
   const byOperator = operatorApproved.has(consentId);
   const routed = awaitingElicitation.has(consentId);

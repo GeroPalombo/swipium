@@ -163,6 +163,7 @@ export function registerGenerate(server: McpServer, sessions: SessionStore): voi
       if (!sessionId) {
         return qaError({
           what: `qa_generate target:"${target}" needs a sessionId with recorded actions`,
+          failureCode: 'INVALID_ARGUMENT',
           changedState: false,
           retrySafe: true,
           nextSteps: ['Call qa_start_session, drive the app with qa_act/qa_smoke/qa_explore, then re-run qa_generate.'],

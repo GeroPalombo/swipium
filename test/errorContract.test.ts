@@ -50,6 +50,11 @@ const ARG_OVERRIDES: Record<string, Record<string, unknown>> = {
   qa_start_session: { projectRoot: MISSING_ROOT },
   // An unknown sessionId would fall back to the server cwd — force the project-root failure path.
   qa_flow_compile: { projectRoot: MISSING_ROOT },
+  // TOOL-4: the suite tools resolve a root like every root-aware tool, and an empty suite there is
+  // a legit ok:true. A missing projectRoot is their failure path.
+  qa_suite_read: { projectRoot: MISSING_ROOT },
+  qa_suite_export: { projectRoot: MISSING_ROOT },
+  qa_suite_lint: { projectRoot: MISSING_ROOT },
   qa_get_artifact: { uri: MISSING_URI },
 };
 

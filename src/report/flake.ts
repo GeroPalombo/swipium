@@ -1,7 +1,19 @@
 import type { FlowRunResult } from '../flows/run.js';
 
 export type FlakeClassificationKind = 'not_repeated' | 'deterministic-pass' | 'deterministic-fail' | 'flaky';
-export type FlakeLikelyCause = 'none' | 'selector_weakness' | 'backend_timing' | 'environment_setup' | 'app_nondeterminism' | 'mixed';
+export type FlakeLikelyCause =
+  'none' | 'selector_weakness' | 'backend_timing' | 'environment_setup' | 'app_nondeterminism' | 'wrong_start_state' | 'mixed';
+
+const RESET_KINDS = new Set(['prepareTarget', 'restartApp', 'waitForIdle', 'clearOverlay']);
+
+/** LOG-11: the run failed on its FIRST locator step (everything before it only launched/reset the
+ *  app): the app was not on the screen the flow starts from (leftover state from a previous run),
+ *  not a timing problem. */
+function failedAtStart(result: FlowRunResult): boolean {
+  const failed = result.steps.find((s) => !s.ok);
+  if (!failed || !['waitForVisible', 'tap', 'inputText', 'assertVisible', 'wait'].includes(failed.kind)) return false;
+  return result.steps.filter((s) => s.index < failed.index).every((s) => RESET_KINDS.has(s.kind));
+}
 
 export interface FlakeTriage {
   likelyCause: FlakeLikelyCause;
@@ -21,6 +33,7 @@ export interface FlakeClassification {
 
 function bucket(result: FlowRunResult): Exclude<FlakeLikelyCause, 'none' | 'mixed'> {
   const code = String(result.failureCode ?? '').toUpperCase();
+  if (failedAtStart(result) && !/MISSING_FIXTURE|MISSING_SECRET|NO_DEVICE|NO_ARTIFACT/.test(code)) return 'wrong_start_state';
   const text = `${result.reason ?? ''} ${result.steps.find((s) => !s.ok)?.detail ?? ''}`.toLowerCase();
   if (
     /ELEMENT_NOT_FOUND|ELEMENT_NOT_HITTABLE|AMBIGUOUS_SELECTOR|MISSING_DURABLE_LOCATOR|COORDINATE_ONLY_FLOW/.test(code) ||
@@ -28,7 +41,7 @@ function bucket(result: FlowRunResult): Exclude<FlakeLikelyCause, 'none' | 'mixe
   )
     return 'selector_weakness';
   if (
-    /UI_IDLE_TIMEOUT|SNAPSHOT_FAILED|WDA_UNREACHABLE|DEVICE_NOT_READY|BACKEND_UNSUPPORTED/.test(code) ||
+    /UI_IDLE_TIMEOUT|SNAPSHOT_FAILED|WDA_UNREACHABLE|DEVICE_NOT_READY|DEVICE_UNRESPONSIVE|BACKEND_UNSUPPORTED/.test(code) ||
     /timed out|idle|wda|snapshot|not ready|backend|simulator|emulator/.test(text)
   )
     return 'backend_timing';
@@ -49,6 +62,8 @@ function nextStep(cause: FlakeLikelyCause): string {
     return 'Stabilize fixtures, secrets, device availability, artifacts, and seed setup before treating this as an app failure.';
   if (cause === 'app_nondeterminism')
     return 'Inspect app-side async state, backend responses, feature flags, and assertion evidence across passing and failing runs.';
+  if (cause === 'wrong_start_state')
+    return 'The first screen check failed right after launch: the app did not start on the screen the flow expects (state left by a previous run?). Start the flow with restartApp (or a reset/teardown that returns to it), then rerun.';
   if (cause === 'mixed') return 'Split the flow or rerun with targeted evidence; multiple failure classes appeared across repeats.';
   return 'No flake triage needed.';
 }

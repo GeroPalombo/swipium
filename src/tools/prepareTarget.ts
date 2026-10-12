@@ -13,22 +13,39 @@ import { createHash } from 'node:crypto';
 import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, invalidArgumentError, isInvalidArgumentError, unknownSessionError } from '../lib/result.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
-import { listAvds, resolveApk, apkPackageId } from '../lib/android.js';
+import { listAvds, resolveApk, apkPackageId, adbDevices, emulatorBootArgs } from '../lib/android.js';
+import { resolveArtifact } from '../artifacts/resolve.js';
+import { run } from '../lib/spawn.js';
 import { DirectDriver, assertAndroidAppId } from '../drivers/DirectDriver.js';
 import { detectFramework } from '../context/detect.js';
-import { metroReadiness, reverseSet } from '../lib/metroState.js';
-import { resolveDevice, bindDevice, verifiedEmulatorSerials } from '../session/attach.js';
-import { prepareAndroid } from '../services/prepareAndroid.js';
+import { METRO_PORT, isProjectAndroidApp, metroReadiness, reverseSet, wrongProjectMetroMessage } from '../lib/metroState.js';
+import {
+  resolveDevice,
+  bindDevice,
+  verifiedEmulatorSerials,
+  onlineSerialForAvd,
+  sessionAvdFor,
+  devicePinConflict,
+  rememberBoundAvd,
+} from '../session/attach.js';
+import { launchFailureCode, prepareAndroid } from '../services/prepareAndroid.js';
 import { planTarget } from '../core/targetPlan.js';
 import type { Session, SessionStore, JobRecord } from '../session/store.js';
-import { runWithSignal } from '../lib/abortScope.js';
+import { isAbortError, runWithSignal } from '../lib/abortScope.js';
 import { waitForLaunch } from '../lib/launchWait.js';
 import { noteScreenMutation } from '../snapshot/fresh.js';
+import { isMetroRequiredFinding } from '../oracle/health.js';
+import { qaFail } from '../oracle/failures.js';
+import { checkLaunchErrorSurface, launchErrorText } from '../oracle/record.js';
 
 /** RN/Expo debug builds load JS from Metro; launching before Metro is SERVING > RedBox. */
-function needsMetro(root: string): boolean {
+function needsMetro(root: string, appId?: string, apk?: string): boolean {
   const fw = detectFramework(root);
-  return fw === 'expo' || fw === 'bare-react-native';
+  if (fw !== 'expo' && fw !== 'bare-react-native') return false;
+  // AND-15: the gate is for THIS project's debug build. An explicit appId with no APK that is not
+  // the project's package (e.g. a system app) never loads this project's bundle: no gate, no reverse.
+  if (appId && !apk) return isProjectAndroidApp(root, appId);
+  return true;
 }
 
 export function registerPrepareTarget(server: McpServer, sessions: SessionStore): void {
@@ -58,19 +75,33 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
       if (!session) {
         return unknownSessionError(sessionId);
       }
-      const rnDebug = needsMetro(session.root);
+
+      // The operator pin first: naming another device is refused before any artifact lookup.
+      const pinConflict = await devicePinConflict(device ?? avd, await adbDevices());
+      if (pinConflict)
+        return qaError({
+          what: pinConflict,
+          changedState: false,
+          retrySafe: false,
+          failureCode: 'DEVICE_PINNED',
+          nextSteps: ['Re-call without device/avd: the pinned device is used.'],
+        });
 
       // ---- appId (+apk if needed for detection); not needed for bindOnly ----
       let resolvedAppId = appId;
       let apkPath: string | undefined = apk;
       if (!bindOnly && !resolvedAppId) {
-        const r = resolveApk(session.root, apk);
+        const r = await findProjectApk(session.root, apk);
         if (!r.apk)
           return qaError({
             what: r.error ?? 'No APK to detect appId',
             changedState: false,
             retrySafe: true,
-            nextSteps: ['Pass appId= or apk=, or drop a build under apps/android/, or use bindOnly:true to just bind a device.'],
+            failureCode: 'NO_ARTIFACT',
+            nextSteps: [
+              'Pass appId= or apk=, or drop a build under apps/android/, or use bindOnly:true to just bind a device.',
+              'qa_prepare_target is the Android path; for an iOS app use qa_prepare_ios_target.',
+            ],
           });
         apkPath = r.apk;
         resolvedAppId = (await apkPackageId(apkPath)) ?? undefined;
@@ -79,6 +110,7 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
             what: 'Could not determine applicationId from the APK',
             changedState: false,
             retrySafe: true,
+            failureCode: 'NO_ARTIFACT',
             nextSteps: ['Pass appId explicitly.'],
           });
       }
@@ -93,9 +125,21 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
           throw e;
         }
       }
+      const rnDebug = needsMetro(session.root, appId, apk);
+      // An explicit appId without apk: only an APK whose package IS that appId may be installed for it
+      // (never offer to install the project's unrelated APK under another app's name).
+      if (!bindOnly && appId && !apkPath) {
+        const cand = await findProjectApk(session.root);
+        if (cand.apk && (await apkPackageId(cand.apk).catch(() => null)) === appId) apkPath = cand.apk;
+      }
 
       // ---- device resolution (centralized; binds single online, asks on >1) ----
-      const res = await resolveDevice(session, device);
+      // An explicit `avd` means "use/boot THIS AVD": bind its running instance, else boot it. It never
+      // falls back to an unrelated online device (or the session's other device).
+      const avdRequested = !!avd && !device;
+      const avdSerial = avdRequested ? await onlineSerialForAvd(avd!, await adbDevices()) : undefined;
+      const resolved = await resolveDevice(session, device ?? avdSerial);
+      const res = avdRequested && !avdSerial ? { ...resolved, effective: undefined, needSelection: false } : resolved;
       if (device && !res.effective) {
         return qaError({
           what: `Device "${device}" is not online`,
@@ -142,19 +186,58 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
       //      (risk low). Only an already-installed app on a live emulator skips the prompt. ----
       let installNeeded = false;
       if (!bindOnly) {
-        if (needBoot) installNeeded = true;
+        // After a boot an app that is already present is just launched: only an APK we actually have
+        // is an install step (no "install from (resolved APK)" for a preinstalled system app).
+        if (needBoot) installNeeded = !!apkPath;
         else if (res.effective) {
           const probe = new DirectDriver();
           probe.useDevice(res.effective);
           installNeeded = !!force || !(await probe.isInstalled(resolvedAppId!).catch(() => false));
         }
       }
+      // Fail fast BEFORE consent: an install is needed but there is no APK for this appId.
+      if (installNeeded && !apkPath) {
+        const near = res.effective ? await nearestInstalledPackage(res.effective, resolvedAppId!) : undefined;
+        return qaError({
+          what: `${resolvedAppId} is ${force ? 'to be reinstalled' : `not installed on ${res.effective}`}, and no APK for it was found (any APK under the project root is a different app).`,
+          changedState: false,
+          retrySafe: true,
+          failureCode: 'NO_ARTIFACT',
+          nextSteps: [
+            ...(near ? [`Did you mean appId="${near}"? It is installed on ${res.effective}.`] : []),
+            'Pass apk="<path to the APK for this app>", or check the package name.',
+          ],
+        });
+      }
 
       // ---- COMBINED plan consent (Phase 2.1): all privileged steps approved at once,
       //      so boot + external-APK don't ping-pong across calls. ----
       const hl = headless ?? true;
       const avds = needBoot ? await listAvds() : [];
-      const bootTarget = avd ?? avds[0];
+      // Boot the requested AVD, else the AVD of this session's own (offline) emulator. A session bound
+      // to a device is never moved to some other AVD implicitly.
+      const sessionAvd = sessionAvdFor(session, session.device);
+      const bootTarget = avd ?? sessionAvd ?? (session.device ? undefined : avds[0]);
+      if (needBoot && avd && avds.length && !avds.includes(avd)) {
+        return qaError({
+          what: `AVD "${avd}" not found`,
+          changedState: false,
+          retrySafe: true,
+          failureCode: 'NO_DEVICE',
+          nextSteps: [`Available AVDs: ${avds.join(', ')}`],
+        });
+      }
+      if (needBoot && avds.length && !bootTarget) {
+        return qaError({
+          what: `This session's device ${session.device} is not online, and Swipium does not know its AVD; it is NOT replaced by another device.`,
+          changedState: false,
+          retrySafe: true,
+          failureCode: 'DEVICE_NOT_READY',
+          nextSteps: [
+            `Bring ${session.device} back online, or choose deliberately: qa_prepare_target avd="<AVD>" (available: ${avds.join(', ')}) or device="<serial>".`,
+          ],
+        });
+      }
       if (needBoot && avds.length === 0) {
         return qaError({
           what: 'No device online and no AVD to boot',
@@ -181,6 +264,7 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
       const privileged = needBoot || !!externalApk || installNeeded;
       const planAffects = {
         plan,
+        device: res.effective ?? null,
         boot: needBoot ? { avd: bootTarget, headless: hl } : null,
         externalApkSha256: externalApk?.sha256 ?? null,
         install: installNeeded ? { appId: resolvedAppId ?? null, apk: apkPath ?? null } : null,
@@ -198,14 +282,16 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
             consent: { required: true, approved: false, payloadHash: externalApk?.sha256 },
             status: 'requested',
           });
+          // Name the device every command runs against (the bound serial, or the AVD this plan boots).
+          const adbS = res.effective ? `adb -s ${res.effective}` : `adb -s <${bootTarget} once booted>`;
           const lines = [
             needBoot
-              ? `• boot emulator "${bootTarget}" (${hl ? 'headless' : 'visible'}): emulator -avd ${bootTarget}${hl ? ' -no-window' : ''}`
+              ? `• boot emulator "${bootTarget}" (${hl ? 'headless' : 'visible'}): emulator ${emulatorBootArgs(bootTarget!, hl).join(' ')}`
               : '',
             externalApk
-              ? `• install EXTERNAL apk (outside project root), sha256 ${externalApk.sha256.slice(0, 16)}…: adb install -r -g ${externalApk.path}`
+              ? `• install EXTERNAL apk (outside project root), sha256 ${externalApk.sha256.slice(0, 16)}…: ${adbS} install -r -g ${externalApk.path}`
               : installNeeded
-                ? `• install ${resolvedAppId ?? 'the app'} from ${apkPath ?? '(resolved APK)'}: adb install -r -g ${apkPath ?? '<apk>'}`
+                ? `• install ${resolvedAppId ?? 'the app'} from ${apkPath ?? '(resolved APK)'}: ${adbS} install -r -g ${apkPath ?? '<apk>'}`
                 : '',
           ]
             .filter(Boolean)
@@ -235,6 +321,16 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
       if (!needBoot && res.effective) {
         const serial = res.effective;
         const driver = bindDevice(session, serial); // bind now (also fixes device:null across tools)
+        if (avdSerial)
+          sessions.recordMutation(session, {
+            tool: 'qa_prepare_target',
+            action: 'bind_emulator',
+            risk: 'low',
+            target: { avd, device: serial },
+            consent: { required: false, approved: true },
+            status: 'executed',
+          });
+        else await rememberBoundAvd(sessions, session, serial, 'qa_prepare_target'); // bound by serial: remember its AVD too
         await driver.disableAnimations().catch(() => {});
         // Set reverse for RN/Expo (cheap, non-destructive) so the bundle path is wired.
         if (rnDebug && !(await reverseSet(serial))) {
@@ -246,7 +342,7 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
           }
         }
         if (bindOnly) {
-          const rd = await metroReadiness(serial);
+          const rd = await metroReadiness(serial, METRO_PORT, session.root);
           sessions.persist(session);
           return qaOk(
             { device: serial, bound: true, metro: rd },
@@ -259,14 +355,26 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
           // reverse is not fatal (emulators reach the host via 10.0.2.2), so serving is the
           // real signal. allowLaunchWithoutMetro overrides.
           if (rnDebug && !allowLaunchWithoutMetro) {
-            const rd = await metroReadiness(serial);
+            const rd = await metroReadiness(serial, METRO_PORT, session.root);
+            if (rd.wrongProject) {
+              return qaError({
+                what: wrongProjectMetroMessage(rd, session.root),
+                changedState: false,
+                retrySafe: true,
+                failureCode: 'METRO_WRONG_PROJECT',
+                nextSteps: [
+                  `Stop the Metro serving ${rd.metroProjectRoot ?? 'the other project'}, then qa_metro action="start" and retry.`,
+                ],
+              });
+            }
             if (!rd.serving) {
               return qaError({
                 what: `Debug RN/Expo build; Metro is not SERVING the bundle yet (listening=${rd.listening} reverse=${rd.reverseSet} serving=${rd.serving}). Launching now risks the "Unable to load script" RedBox.`,
                 changedState: false,
                 retrySafe: true,
+                failureCode: 'METRO_REQUIRED',
                 nextSteps: [
-                  'Start Metro/dev server manually, wait for serving=true, then re-run qa_prepare_target.',
+                  'Start Metro: qa_metro action="start" (consent-gated), then qa_wait {for:"metro_ready"}, then re-run qa_prepare_target.',
                   'If this is a release build with an embedded bundle, OR you accept the risk, pass allowLaunchWithoutMetro:true.',
                 ],
               });
@@ -275,13 +383,36 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
           if (rnDebug && allowLaunchWithoutMetro)
             sessions.addEnvChange(session, 'OVERRIDE allowLaunchWithoutMetro: launched without confirmed Metro readiness');
           sessions.milestone(session, 'app_launch_start');
-          await driver.launchApp(resolvedAppId!);
-          noteScreenMutation(session); // a snapshot taken before the launch is stale
-          const foreground = await waitForLaunch(driver, resolvedAppId!);
-          sessions.milestone(session, 'app_launch_end');
+          let foreground: string;
+          try {
+            await driver.launchApp(resolvedAppId!);
+            noteScreenMutation(session); // a snapshot taken before the launch is stale
+            foreground = await waitForLaunch(driver, resolvedAppId!);
+          } catch (e) {
+            // A launch that throws (adb timed out under load) gets a coded failure, not a raw error.
+            if (isAbortError(e)) throw e;
+            if (isInvalidArgumentError(e))
+              return invalidArgumentError(e, ['Pass a valid Android application id, e.g. appId="com.example.app".']);
+            const code = launchFailureCode(e);
+            return qaError({
+              what: `Could not launch ${resolvedAppId} on ${serial}: ${String(e).replace(/^Error:\s*/, '')}`,
+              changedState: true,
+              retrySafe: true,
+              failureCode: code,
+              nextSteps:
+                code === 'DEVICE_UNRESPONSIVE'
+                  ? [
+                      `The device answered adb too slowly (still booting or the host is overloaded). Run qa_wait {for:"device_online"}, then retry qa_prepare_target.`,
+                    ]
+                  : ['Check the app starts by hand (adb logcat for a crash on start), then retry qa_prepare_target.'],
+            });
+          }
           session.appId = resolvedAppId;
-          sessions.persist(session);
           const launchedOk = foreground.startsWith(resolvedAppId!);
+          // CR P3: app_launch_end is the report's "reached the app" evidence: only when the app under
+          // test is confirmed in front (a launch that never reached the foreground proves nothing).
+          if (launchedOk) sessions.milestone(session, 'app_launch_end');
+          sessions.persist(session);
           sessions.recordMutation(session, {
             tool: 'qa_prepare_target',
             action: 'launch_app',
@@ -300,6 +431,18 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
               status: 'executed',
             });
           }
+          // E2E NEW-17: a debug RN/Expo build is checked once (one dump) for a RedBox / the Expo dev
+          // launcher, so a launch onto one never reads as a plain success.
+          const { appError } = rnDebug && launchedOk ? await checkLaunchErrorSurface(sessions, session, driver) : {};
+          if (appError && isMetroRequiredFinding(appError))
+            return qaFail('METRO_REQUIRED', {
+              what: `${resolvedAppId} launched on ${serial}, but ${launchErrorText(appError)}: the debug build has no JS bundle, so it is not ready to test.`,
+              changedState: true,
+              nextSteps: [
+                'Start Metro for this project (qa_metro { action:"start" }), wait until it is serving (qa_wait { for:"metro_ready" }), then re-run qa_prepare_target.',
+              ],
+              extra: { device: serial, appId: resolvedAppId, launchedOk, appError },
+            });
           return qaOk(
             {
               device: serial,
@@ -308,8 +451,11 @@ export function registerPrepareTarget(server: McpServer, sessions: SessionStore)
               foreground,
               launchedOk,
               launchedWithoutMetro: !!(rnDebug && allowLaunchWithoutMetro) || undefined,
+              ...(appError ? { ready: false, appError } : {}),
             },
-            `${launchedOk ? '✅' : '⚠️'} ${resolvedAppId} on ${serial} (already present); foreground=${foreground}.`,
+            appError
+              ? `⚠️ ${resolvedAppId} on ${serial} launched, but ${launchErrorText(appError)}: recorded as an app finding, not ready to test.`
+              : `${launchedOk ? '✅' : '⚠️'} ${resolvedAppId} on ${serial} (already present); foreground=${foreground}.`,
           );
         }
         // install needed > JOB
@@ -394,7 +540,14 @@ async function runHeavy(sessions: SessionStore, session: Session, driver: Direct
         detail: res.error ?? res.failureCode ?? 'prepare failed',
       });
     }
-    upd({ status: 'failed', error: res.error ?? 'prepare failed', endedAt: Date.now() });
+    // Coded error (like other jobs: "<CODE>: detail") and no stale in-flight progress text.
+    upd({
+      status: 'failed',
+      error: `${res.failureCode ? `${res.failureCode}: ` : ''}${res.error ?? 'prepare failed'}`,
+      progress: 'failed',
+      ...(res.failureCode ? { result: { failureCode: res.failureCode } } : {}),
+      endedAt: Date.now(),
+    });
     return;
   }
   if (a.preparePlanMutation) {
@@ -407,7 +560,31 @@ async function runHeavy(sessions: SessionStore, session: Session, driver: Direct
       status: 'executed',
     });
   }
-  upd({ status: 'done', progress: 'done', result: res.result, resultText: res.resultText, endedAt: Date.now() });
+  // E2E NEW-17: same one-dump RedBox / Expo dev launcher check as the in-call launch path.
+  const { appError } =
+    a.rnDebug && res.launchedOk
+      ? await checkLaunchErrorSurface(sessions, session, driver).catch(() => ({}) as { appError?: undefined })
+      : {};
+  if (signal?.aborted) return;
+  if (appError && isMetroRequiredFinding(appError)) {
+    upd({
+      status: 'failed',
+      error: `METRO_REQUIRED: ${a.resolvedAppId} launched, but ${launchErrorText(appError)}: the debug build has no JS bundle. Start Metro (qa_metro { action:"start" }), then re-run qa_prepare_target.`,
+      progress: 'failed',
+      result: { ...res.result, failureCode: 'METRO_REQUIRED', appError },
+      endedAt: Date.now(),
+    });
+    return;
+  }
+  upd({
+    status: 'done',
+    progress: 'done',
+    result: appError ? { ...res.result, ready: false, appError } : res.result,
+    resultText: appError
+      ? `⚠️ ${a.resolvedAppId} launched, but ${launchErrorText(appError)}: recorded as an app finding, not ready to test.`
+      : res.resultText,
+    endedAt: Date.now(),
+  });
 }
 
 function realOr(p: string): string {
@@ -438,4 +615,46 @@ export async function physicalDeviceRefusalFor(serial: string): Promise<{ what: 
   });
   if (plan.blocked?.failureCode !== 'PHYSICAL_DEVICE_UNSUPPORTED') return null;
   return { what: plan.reason };
+}
+
+/** The project's installable APK: an explicit path, else the shallow resolveApk scan, else the same
+ *  artifact resolver qa_test_this uses (standard Gradle outputs such as android/app/build/outputs/apk/debug). */
+async function findProjectApk(root: string, explicit?: string): Promise<{ apk?: string; error?: string }> {
+  const r = resolveApk(root, explicit);
+  if (r.apk || explicit) return r;
+  const art = await resolveArtifact({ projectRoot: root, platform: 'android' }).catch(() => undefined);
+  return art?.best?.type === 'apk' ? { apk: art.best.path } : r;
+}
+
+/** An installed package within a small edit distance of a mistyped appId (cheap: one `pm list packages`). */
+async function nearestInstalledPackage(serial: string, appId: string): Promise<string | undefined> {
+  try {
+    const r = await run('adb', ['-s', serial, 'shell', 'pm', 'list', 'packages'], { timeoutMs: 8000 });
+    const pkgs = r.stdout
+      .split(/\r?\n/)
+      .map((l) => l.replace(/^package:/, '').trim())
+      .filter(Boolean);
+    let best: { p: string; d: number } | undefined;
+    for (const p of pkgs) {
+      const d = editDistance(p, appId);
+      if (!best || d < best.d) best = { p, d };
+    }
+    return best && best.d > 0 && best.d <= 3 ? best.p : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function editDistance(a: string, b: string): number {
+  const dp = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = dp[0];
+    dp[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const tmp = dp[j];
+      dp[j] = Math.min(dp[j] + 1, dp[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = tmp;
+    }
+  }
+  return dp[b.length];
 }

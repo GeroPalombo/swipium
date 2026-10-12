@@ -4,11 +4,11 @@
 // resolves while a live session for that root exists. This stores the mapping under ~/.swipium so any
 // later server process can resolve it. Best-effort + defensive: a read/write failure is never fatal.
 
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { log } from '../lib/logger.js';
-import { withFileLock, writeFileAtomicSync } from '../lib/lockfile.js';
+import { mkdirPrivateSync, PRIVATE_STATE_FILE_MODE, withFileLock, writeFileAtomicSync } from '../lib/lockfile.js';
 import { projectId, appMapPath } from './store.js';
 
 export interface ProjectRegistryEntry {
@@ -72,10 +72,19 @@ function pruneEntries(projects: Record<string, ProjectRegistryEntry>, keep?: str
 
 /** Read-modify-write projects.json under its lock (another server may be writing too); compact JSON. */
 function mutateRegistry(fn: (reg: RegistryFile) => RegistryFile | null): RegistryFile | null {
-  mkdirSync(registryDir(), { recursive: true });
+  mkdirPrivateSync(registryDir()); // 0700/0600: projects.json lists every project root (TOOL-20)
   return withFileLock(`${registryPath()}.lock`, () => {
     const next = fn(loadRegistry());
-    if (next) writeFileAtomicSync(registryPath(), JSON.stringify(next));
+    if (next) {
+      // A corrupt file is moved aside (not silently replaced) so a hand edit or a foreign file survives.
+      const corrupt = existsSync(registryPath()) ? registryCorruption() : null;
+      if (corrupt) {
+        const backup = `${registryPath()}.corrupt-${Date.now()}`;
+        renameSync(registryPath(), backup);
+        log('warn', 'projects.json is not a valid registry; moved it aside and started a new one', { corrupt, backup });
+      }
+      writeFileAtomicSync(registryPath(), JSON.stringify(next), { mode: PRIVATE_STATE_FILE_MODE });
+    }
     return next;
   });
 }
@@ -120,10 +129,29 @@ export function rememberProject(root: string, info: { packageName?: string | nul
   }
 }
 
-/** `swipium gc`: prune projects.json (missing roots, cap) under the lock. Never throws. */
-export function compactProjectRegistry(opts: { dryRun?: boolean } = {}): { before: number; after: number; removed: number } {
+/** Why projects.json can't be read as a registry (not JSON, or no `projects` object), or null. */
+function registryCorruption(): string | null {
+  try {
+    const raw: unknown = JSON.parse(readFileSync(registryPath(), 'utf8'));
+    const projects = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as { projects?: unknown }).projects : undefined;
+    return projects && typeof projects === 'object' && !Array.isArray(projects) ? null : 'it has no "projects" object';
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  }
+}
+
+/** `swipium gc`: prune projects.json (missing roots, cap) under the lock. Never throws. A corrupt
+ *  file is left untouched and reported (`corrupt`), never silently replaced with an empty registry. */
+export function compactProjectRegistry(opts: { dryRun?: boolean } = {}): {
+  before: number;
+  after: number;
+  removed: number;
+  corrupt?: string;
+} {
   try {
     if (!existsSync(registryPath())) return { before: 0, after: 0, removed: 0 };
+    const corrupt = registryCorruption();
+    if (corrupt) return { before: 0, after: 0, removed: 0, corrupt };
     if (opts.dryRun) {
       const reg = loadRegistry();
       const before = Object.keys(reg.projects).length;

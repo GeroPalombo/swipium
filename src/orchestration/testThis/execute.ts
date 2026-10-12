@@ -8,6 +8,7 @@ import { qaNeedsInput, NeedsInput } from '../../lib/needsInput.js';
 import { buildPlan, type BuildPlatform } from '../../build/plan.js';
 import { requireConsent, consumeConsent } from '../../consent/consent.js';
 import { buildTestThisPreflight } from '../../services/preflight.js';
+import { androidTargetAvd } from '../../session/attach.js';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -15,10 +16,10 @@ import type { SessionStore } from '../../session/store.js';
 import type { Session } from '../../session/store.js';
 import type { ExecuteArgs } from './types.js';
 import { runExecutePipeline } from './pipeline.js';
-import { hasUsableCredentials, credentialsLostOnRestart, isLoginDeclined } from './sessionIntent.js';
+import { hasUsableCredentials, credentialsLostOnRestart, isLoginDeclined, seedEnvCredentials } from './sessionIntent.js';
 import { currentSignal, runWithSignal, sleepOrCancel } from '../../lib/abortScope.js';
 import { jobProgressReporter } from '../../lib/progressNotify.js';
-import { defaultWaitMs, maxWaitMs } from '../../tools/jobs.js';
+import { defaultWaitMs, maxWaitMs, waitBudgetUsedMs } from '../../tools/jobs.js';
 
 /** waitForCompletion window: default and cap when SWIPIUM_MAX_WAIT_MS is unset (it raises or
  *  lowers both, see tools/jobs.ts maxWaitMs). Kept under common client tool timeouts (Codex: 60 s);
@@ -46,6 +47,8 @@ export function isWithinRoot(p: string, root: string): boolean {
  *  build/convert > prepare > smoke > report pipeline as a job. */
 export async function runExecuteMode(server: McpServer, sessions: SessionStore, session: Session, a: ExecuteArgs): Promise<CallToolResult> {
   // 1. Auth question: interactive (or stopOnNeedsInput / goal:test_login) asks; execute proceeds pre-login.
+  //    Credentials in the server env answer it without a prompt (GOAL-17).
+  seedEnvCredentials(sessions, session);
   if (
     a.scan.likelyAuth &&
     !isLoginDeclined(session) &&
@@ -82,7 +85,11 @@ export async function runExecuteMode(server: McpServer, sessions: SessionStore, 
   // Resolve the EXACT build command so the consent shows what will run (not just "build_from_source").
   let buildCommand: string | undefined;
   if (a.needBuild) {
-    const bp = await buildPlan({ projectRoot: session.root, platform: buildPlatform });
+    const bp = await buildPlan({
+      projectRoot: session.root,
+      platform: buildPlatform,
+      device: a.isAndroid ? await androidTargetAvd(a.target) : undefined,
+    });
     buildCommand = bp.build?.command;
   }
   // Hash an external (outside-root) APK so the consent shows what is being installed.
@@ -102,6 +109,7 @@ export async function runExecuteMode(server: McpServer, sessions: SessionStore, 
     buildCommand,
     willBoot: a.target.willBoot,
     bootTarget: a.target.bootTarget,
+    device: a.target.device,
     isAab: a.isAab,
     apkPath: a.isAndroid ? a.effectiveApk : undefined,
     externalApk,
@@ -176,7 +184,13 @@ export async function runExecuteMode(server: McpServer, sessions: SessionStore, 
 
   // Optional blocking mode for short paths (Milestone D). Default = return the running job.
   if (a.waitForCompletion) {
-    const windowMs = Math.min(Math.max(0, a.timeoutMs ?? defaultWaitMs()), maxWaitMs());
+    // The cap bounds the WHOLE call: time already spent resolving/scanning/planning is deducted, and
+    // a tail reserve (10% of the cap, at most 2 s) covers building the response and a late timer on a
+    // busy event loop, so the call returns at or under the cap (TOOL-11). Pre-window work longer than
+    // a tiny cap still overruns it: nothing can be given back.
+    const cap = maxWaitMs();
+    const tailReserveMs = Math.min(2_000, Math.round(cap * 0.1));
+    const windowMs = Math.max(0, Math.min(Math.max(0, a.timeoutMs ?? defaultWaitMs()), cap - tailReserveMs - waitBudgetUsedMs()));
     // The window wakes early when THIS call is cancelled (the job keeps running in its own scope).
     const windowCtl = new AbortController();
     const callSignal = currentSignal();

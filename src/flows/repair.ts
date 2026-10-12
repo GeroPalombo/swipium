@@ -343,12 +343,185 @@ export function textSimilarity(a: string | undefined, b: string | undefined): nu
   return (2 * hits) / (bx.length + by.length);
 }
 
+/** Common UI wording that a rename swaps freely. Each word/phrase maps to one canonical token. */
+const UI_SYNONYMS: Array<[string[], string]> = [
+  [['sign in', 'signin', 'log in', 'login', 'logon', 'log on'], 'login'],
+  [['sign out', 'signout', 'log out', 'logout', 'log off'], 'logout'],
+  [['sign up', 'signup', 'register', 'create account'], 'signup'],
+  [['apps', 'app', 'applications', 'application'], 'apps'],
+  [['delete', 'remove', 'trash'], 'delete'],
+  [['close', 'dismiss'], 'close'],
+  [['ok', 'okay'], 'ok'],
+  [['next', 'continue', 'proceed'], 'next'],
+  [['back', 'previous', 'prev'], 'back'],
+  [['search', 'find'], 'search'],
+  [['settings', 'preferences', 'options'], 'settings'],
+  [['edit', 'modify'], 'edit'],
+  // Deliberately not folded (too broad, R3 code review): new/add/create, change, apply/save,
+  // join/signup, account/profile. "New message" is not "Add contact".
+];
+/** Opposite actions: a candidate that swaps one side for the other is never proposed
+ *  ("Sign out" missing because the user is logged out must not become "Sign in"). */
+const ANTONYMS: Array<[string, string]> = [
+  ['login', 'logout'],
+  ['on', 'off'],
+  ['enable', 'disable'],
+  ['next', 'back'],
+  ['open', 'close'],
+  ['show', 'hide'],
+  ['start', 'stop'],
+  ['yes', 'no'],
+  ['allow', 'deny'],
+  ['accept', 'decline'],
+  ['add', 'delete'],
+  ['play', 'pause'],
+  ['expand', 'collapse'],
+  ['increase', 'decrease'],
+];
+const STOP_WORDS = new Set(['and', 'the', 'a', 'an', 'of', 'to', 'your', 'my', 'for', 'in', 'on']);
+/** Words that say little about which control it is ("Display settings" vs "Search Settings"). */
+const GENERIC_WORDS = new Set(['settings', 'button', 'menu', 'page', 'screen', 'tab', 'item', 'view']);
+
+function canonicalTokens(s: string): string[] {
+  let t = ` ${s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()} `;
+  for (const [forms, canon] of UI_SYNONYMS) {
+    for (const f of forms) t = t.split(` ${f} `).join(` ${canon} `);
+  }
+  return t
+    .split(' ')
+    .filter((w) => w && !STOP_WORDS.has(w))
+    .map((w) => (w.length > 3 && w.endsWith('s') && !w.endsWith('ss') ? w.slice(0, -1) : w))
+    .map((w) => UI_SYNONYMS.find(([forms]) => forms.includes(w))?.[1] ?? w);
+}
+
+/** Weighted word overlap in [0,1] after synonym folding and plural stripping. */
+function wordSimilarity(a: string, b: string): number {
+  const x = new Set(canonicalTokens(a));
+  const y = new Set(canonicalTokens(b));
+  if (!x.size || !y.size) return 0;
+  const w = (t: string) => (GENERIC_WORDS.has(t) || GENERIC_WORDS.has(`${t}s`) ? 0.3 : 1);
+  let shared = 0;
+  for (const t of x) if (y.has(t)) shared += w(t);
+  const total = [...x].reduce((s, t) => s + w(t), 0) + [...y].reduce((s, t) => s + w(t), 0);
+  return total ? (2 * shared) / total : 0;
+}
+
+const isGeneric = (t: string) => GENERIC_WORDS.has(t) || GENERIC_WORDS.has(`${t}s`);
+
+const NEGATIONS = new Set(['not', 'no', 'never', 'dont', 'doesnt', 'didnt', 'cannot', 'cant', 'wont', 'isnt', 'without']);
+/** "Don't", "Do not", "Not now", "No": straight or curly apostrophes. */
+function hasNegation(s: string): boolean {
+  return s
+    .toLowerCase()
+    .replace(/['‘’ʼ`]/g, '')
+    .split(/[^a-z0-9]+/)
+    .some((w) => NEGATIONS.has(w));
+}
+
+/** True when one label is the opposite action of the other (login/logout, lock/unlock, ...). */
+export function isAntonymPair(a: string, b: string): boolean {
+  // Raw words too: "on" is a stop word for ranking but matters here ("Turn on" vs "Turn off").
+  const raw = (s: string) =>
+    s
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean);
+  const x = new Set([...canonicalTokens(a), ...raw(a)]);
+  const y = new Set([...canonicalTokens(b), ...raw(b)]);
+  const swaps = (p: string, q: string) => x.has(p) && !x.has(q) && y.has(q) && !y.has(p);
+  // A negated label is the opposite of the bare one ("Don't allow" vs "Allow", "Do not save").
+  if (hasNegation(a) !== hasNegation(b)) return true;
+  for (const [p, q] of ANTONYMS) if (swaps(p, q) || swaps(q, p)) return true;
+  for (const t of x) for (const pre of ['un', 'dis']) if (swaps(t, `${pre}${t}`)) return true;
+  for (const t of y) for (const pre of ['un', 'dis']) if (swaps(`${pre}${t}`, t)) return true;
+  return false;
+}
+
+/** True when the two labels share a word (after synonym folding) that is not a generic one. */
+function sharesKeyToken(a: string, b: string): boolean {
+  const y = new Set(canonicalTokens(b));
+  return canonicalTokens(a).some((t) => y.has(t) && !isGeneric(t));
+}
+
+/** Character similarity with the generic words dropped, so a shared "settings" alone does not
+ *  make "Battery settings" look like "Search Settings". */
+function coreTextSimilarity(a: string, b: string): number {
+  const core = (s: string) =>
+    s
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w && !isGeneric(w))
+      .join(' ');
+  return textSimilarity(core(a) || a, core(b) || b);
+}
+
+/** A low-confidence guess also needs real evidence: a shared non-generic word or synonym, or a high
+ *  character similarity on the non-generic text (LOG-17: "Logout" > "Google", "Purchase history" >
+ *  "Storage" share only a few bigrams). Opposite actions never qualify. */
+function plausibleRename(value: string, selector: string): boolean {
+  if (isAntonymPair(value, selector)) return false;
+  return sharesKeyToken(value, selector) || coreTextSimilarity(value, selector) >= 0.5;
+}
+
+/** Lowercase words, camelCase split, plural-insensitive ("Notification" = "Notifications"). */
+function containmentWords(s: string): string {
+  return s
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+    .map((w) => (w.length > 3 && w.endsWith('s') && !w.endsWith('ss') ? w.slice(0, -1) : w))
+    .join(' ');
+}
+
+/** Word-boundary containment with a 4-char minimum for the shorter side: "OK" is not inside
+ *  "Book now", and "Go" or "On" do not match half the screen. */
+function containsAsWords(a: string, b: string): boolean {
+  const [x, y] = [containmentWords(a), containmentWords(b)];
+  const [short, long] = x.length <= y.length ? [x, y] : [y, x];
+  if (norm(short).length < 4) return false;
+  return ` ${long} `.includes(` ${short} `);
+}
+
+/** Same words up to case, punctuation, camelCase and plurals: the only containment safe to auto-apply. */
+function sameWords(a: string, b: string): boolean {
+  const x = containmentWords(a);
+  return !!x && x === containmentWords(b);
+}
+
+/** Repair ranking score: character similarity plus word/synonym overlap, so "Sign in" > "Log in"
+ *  and "Applications" > "Apps" rank above look-alike strings ("Notifications"). */
+function candidateSimilarity(value: string | undefined, selector: string | undefined): number {
+  if (!value || !selector) return 0;
+  return 0.5 * textSimilarity(value, selector) + 0.5 * wordSimilarity(value, selector);
+}
+
+/** Below this score a no-text-match guess is unrelated and is not proposed (LOG-17). Sits between
+ *  real renames ("Sign in" > "Log in" ~0.6) and noise ("Network and internet" > "Clear text" ~0.04). */
+const MIN_GUESS_SIMILARITY = 0.15;
+
+function boundsCenterOfBucket(bucket: string | undefined): { x: number; y: number } | undefined {
+  const n = bucket?.split(',').map(Number);
+  if (!n || n.length !== 4 || n.some((v) => !Number.isFinite(v))) return undefined;
+  return { x: (n[0] + n[2]) / 2, y: (n[1] + n[3]) / 2 };
+}
+
 function chooseReplacement(
   selector: string | undefined,
   elements: SnapshotElement[],
   platform: LocatorPlatform,
   expected?: RoleClass,
-): { element?: SnapshotElement; suggestion?: LocatorSuggestion; confidence: FlowRepairSuggestion['confidence'] } {
+  recordedBounds?: string,
+): {
+  element?: SnapshotElement;
+  suggestion?: LocatorSuggestion;
+  confidence: FlowRepairSuggestion['confidence'];
+  /** A word-containment match with extra words: related, but maybe a different action. */
+  partial?: boolean;
+} {
   const scored = elements.map((el) => ({ el, suggestion: suggestLocator(el, { platform }) }));
   const compatible = (el: SnapshotElement): boolean => {
     if (!expected) return true;
@@ -362,20 +535,49 @@ function chooseReplacement(
     const n = norm(selector);
     const exact = scored.find(({ el }) => [el.id, el.label, el.text].some((v) => v && norm(v) === n));
     if (exact) return { element: exact.el, suggestion: exact.suggestion, confidence: 'high' };
-    const contains = scored.find(
-      ({ el }) => compatible(el) && [el.id, el.label, el.text].some((v) => v && (norm(v).includes(n) || n.includes(norm(v)))),
+    // Medium confidence is auto-applied, so only a same-words match (case, punctuation, plural:
+    // "Notification" > "Notifications") gets it. Containment with extra words changes what the
+    // control does ("Delete" > "Delete account", "Settings" > "Search Settings", "Turn on X" > "X"),
+    // so it is a low-confidence proposal only, and only with real evidence. Opposites never qualify.
+    const same = scored.find(
+      ({ el }) => compatible(el) && [el.id, el.label, el.text].some((v) => v && sameWords(v, selector) && !isAntonymPair(v, selector)),
     );
-    if (contains) return { element: contains.el, suggestion: contains.suggestion, confidence: 'medium' };
+    if (same) return { element: same.el, suggestion: same.suggestion, confidence: 'medium' };
+    const contains = scored.find(
+      ({ el }) =>
+        compatible(el) && [el.id, el.label, el.text].some((v) => v && containsAsWords(v, selector) && plausibleRename(v, selector)),
+    );
+    if (contains) return { element: contains.el, suggestion: contains.suggestion, confidence: 'low', partial: true };
   }
   // No text match: rank same-role candidates by text similarity to the failed selector, then
   // durability. Never fall back to "first stable element" of an unrelated role (a renamed
   // "Sign in" button must not become the "Email" field).
   const durable = (s: LocatorSuggestion) => !!s.locator && (s.tier === 'accessibility' || s.tier === 'resource_id');
   const pool = scored.filter(({ el }) => compatible(el));
+  // Position is a small tie-breaker only (it never lifts an unrelated control over the cutoff):
+  // a renamed control usually stays where it was recorded.
+  const anchor = boundsCenterOfBucket(recordedBounds);
+  const nearness = (el: SnapshotElement): number => {
+    if (!anchor || !el.bounds) return 0;
+    const dx = (el.bounds[0] + el.bounds[2]) / 2 - anchor.x;
+    const dy = (el.bounds[1] + el.bounds[3]) / 2 - anchor.y;
+    return 0.05 / (1 + Math.hypot(dx, dy) / 200);
+  };
   const ranked = pool
-    .map((c, i) => ({ ...c, i, sim: Math.max(0, ...[c.el.id, c.el.label, c.el.text].map((v) => textSimilarity(v, selector))) }))
-    .sort((a, b) => b.sim - a.sim || Number(durable(b.suggestion)) - Number(durable(a.suggestion)) || a.i - b.i);
+    .map((c, i) => {
+      const sim = Math.max(
+        0,
+        ...[c.el.id, c.el.label, c.el.text].map((v) =>
+          v && selector && !plausibleRename(v, selector) ? 0 : candidateSimilarity(v, selector),
+        ),
+      );
+      return { ...c, i, sim, rank: sim + nearness(c.el) };
+    })
+    .sort((a, b) => b.rank - a.rank || Number(durable(b.suggestion)) - Number(durable(a.suggestion)) || a.i - b.i);
   const best = ranked[0];
+  // With a failed selector to compare against, a candidate with negligible text similarity is
+  // noise ("Network and internet" -> "Clear text"): propose nothing rather than an unrelated element.
+  if (best && selector && best.sim < MIN_GUESS_SIMILARITY) return { confidence: 'low' };
   if (best) return { element: best.el, suggestion: best.suggestion, confidence: 'low' };
   return { confidence: 'low' };
 }
@@ -556,7 +758,13 @@ export function repairFlow(opts: {
     };
   }
   const provenance = provenanceForStep(src.yaml, opts.failedStep, originalSelector);
-  const picked = chooseReplacement(originalSelector, opts.elements, platform, expectedRoleClass(at.step, provenance));
+  const picked = chooseReplacement(
+    originalSelector,
+    opts.elements,
+    platform,
+    expectedRoleClass(at.step, provenance),
+    provenance?.boundsBucket,
+  );
   const replacementSelector = selectorForSuggestion(picked.suggestion, picked.element, platform);
   const drift = driftFindings(provenance, opts.elements, picked);
   const label = picked.element?.label ?? picked.element?.text ?? originalSelector ?? 'target';
@@ -574,7 +782,9 @@ export function repairFlow(opts: {
     confidence: picked.confidence,
     rationale: replacementSelector
       ? `Replace the failed selector with a ${picked.suggestion?.tier ?? 'visible'} locator from the current ${platform} screen.${driftRationale(drift)}`
-      : `No durable locator was available on the current screen.${driftRationale(drift)}`,
+      : originalSelector && !picked.element
+        ? `No element on the current screen resembles "${originalSelector}"; no replacement proposed (is the app on the right screen?).${driftRationale(drift)}`
+        : `No durable locator was available on the current screen.${driftRationale(drift)}`,
     appCodeSuggestion,
     platform,
     driftFindings: drift.length ? drift : undefined,
@@ -593,10 +803,12 @@ export function repairFlow(opts: {
   if (replacementSelector) {
     proposedYaml = applyReplacement(src.yaml, at.phase, at.phaseIndex, at.step, replacementSelector) ?? undefined;
     if (opts.apply && proposedYaml && src.writable) {
-      // Never auto-apply a guess: low confidence means no text match to the failed selector.
+      // Never auto-apply a guess: low confidence means no exact-words match to the failed selector.
       if (picked.confidence === 'low')
         notes.push(
-          `apply refused: the proposal is low confidence (no text match for "${originalSelector ?? 'target'}"). Review proposedYaml and apply it manually if correct.`,
+          picked.partial
+            ? `apply refused: the proposal only contains "${originalSelector ?? 'target'}" with extra words, so it may be a different action. Review proposedYaml and apply it manually if correct.`
+            : `apply refused: the proposal is low confidence (no text match for "${originalSelector ?? 'target'}"). Review proposedYaml and apply it manually if correct.`,
         );
       else {
         writeFileSync(src.source, proposedYaml);

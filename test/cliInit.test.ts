@@ -39,10 +39,12 @@ describe('cli init cwd handling', () => {
     expect(block).not.toContain('<your repo>');
   });
 
-  it('geminiBlock embeds the resolved cwd, never the placeholder', () => {
-    const block = geminiBlock('/usr/bin/node', '/Users/me/my-app');
-    expect(block).toContain('"cwd": "/Users/me/my-app"');
+  it('geminiBlock pins no cwd (Gemini starts the server in its launch dir) and sets the timeout', () => {
+    const block = geminiBlock('/usr/bin/node', '/x/dist/index.js');
+    expect(block).not.toContain('"cwd"');
     expect(block).not.toContain('<your repo>');
+    expect(block).toContain('"command": "/usr/bin/node"');
+    expect(block).toContain('"timeout": 600000');
   });
 
   it('resolveTargetCwd defaults to process.cwd() and resolves --cwd', () => {
@@ -120,6 +122,8 @@ describe('cli init portability + new clients', () => {
       'add',
       '--scope',
       'project',
+      '--timeout',
+      '600000',
       'swipium',
       'npx',
       '--',
@@ -131,6 +135,8 @@ describe('cli init portability + new clients', () => {
       'add',
       '--scope',
       'user',
+      '--timeout',
+      '600000',
       'swipium',
       '/opt/node',
       '/x/dist/index.js',

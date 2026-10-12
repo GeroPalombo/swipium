@@ -256,12 +256,18 @@ export function qaNeedsInput(p: NeedsInputPayload, extra?: Record<string, unknow
     args: { ...(typeof sessionId === 'string' ? { sessionId } : {}), ...p.resume.args },
   };
   const enriched: NeedsInputPayload = { ...p, attempted, resume };
-  const payload = { ok: true, ...enriched, ...(extra ?? {}) };
+  // GOAL-18: the resume call IS the next recommended action (docs/tools.md#qa_test_this needs_input).
+  const nextRecommendedAction = {
+    tool: resume.tool,
+    args: resume.args,
+    why: `Ask the user exactly this one question, then resume with their answer: ${p.question}`,
+  };
+  const payload = { ok: true, ...enriched, nextRecommendedAction, ...(extra ?? {}) };
   const head = renderQuestion(enriched);
   // Compact fence of what the head does not render (the question, field names, fallback options
   // and ifDeclined are above it); compact mode drops it.
   const rest: Record<string, unknown> = { ...payload };
-  for (const k of ['ok', 'question', 'fallbackOptions', 'ifDeclined']) delete rest[k];
+  for (const k of ['ok', 'question', 'fallbackOptions', 'ifDeclined', 'nextRecommendedAction']) delete rest[k];
   const text = currentResponseMode() === 'compact' ? head : `${head}\n\`\`\`json\n${JSON.stringify(rest)}\n\`\`\``;
   return { content: [{ type: 'text', text }], structuredContent: payload };
 }

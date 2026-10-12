@@ -23,7 +23,7 @@ import { isAbsolute, join, resolve, sep } from 'node:path';
 import type { McpServer, CallToolResult } from '@modelcontextprotocol/server';
 import { qaOk, qaError, qaStop, unknownSessionError } from '../lib/result.js';
 import { isSecureNode, makeRedactor, type Redactor } from '../lib/redact.js';
-import { parseSnapshot } from '../snapshot/parse.js';
+import { parseSnapshot, type RawNode } from '../snapshot/parse.js';
 import { freshSnapshot } from '../snapshot/fresh.js';
 import { displayArgv } from '../lib/commandTemplate.js';
 import { GitScopeForbiddenError, run } from '../lib/spawn.js';
@@ -129,9 +129,10 @@ export type SecureScreenState = 'secure' | 'clear' | 'unknown';
 /** secure/clear from a FRESH UI tree; unknown when there is none (WDA-less simulator, no
  * qa_snapshot yet) or it predates any action or screen change since (a visual tap, qa_app_control,
  * qa_clear_overlay, ...: the shared freshness rule in snapshot/fresh.ts, without an age limit). */
-export function secureScreenState(session: Session): SecureScreenState {
+export function secureScreenState(session: Session, seen?: { nodes?: RawNode[] }): SecureScreenState {
   const snap = freshSnapshot(session, Number.POSITIVE_INFINITY);
   if (!snap) return 'unknown';
+  if (seen) seen.nodes = snap.allNodes;
   return [...snap.fullByRef.values()].some((n) => isSecureNode(n)) ? 'secure' : 'clear';
 }
 
@@ -139,13 +140,15 @@ export function secureScreenState(session: Session): SecureScreenState {
  * (Android adb / WDA) can simply re-dump it: a qa_visual tap must not, by itself, turn the next
  * qa_visual call into an "unverified" one there. The fresh dump only informs the secure gate:
  * session.lastSnapshot (the agent's @ref numbering) is left untouched. WDA-less simulators
- * cannot dump a tree, so they stay 'unknown'. */
-export async function refreshSecureState(session: Session, driver: Driver): Promise<SecureScreenState> {
-  const cached = secureScreenState(session);
+ * cannot dump a tree, so they stay 'unknown'. `seen.nodes` receives the tree the answer came from
+ * (qa_screenshot checks it for a RedBox at no extra cost). */
+export async function refreshSecureState(session: Session, driver: Driver, seen?: { nodes?: RawNode[] }): Promise<SecureScreenState> {
+  const cached = secureScreenState(session, seen);
   if (cached !== 'unknown' || driver.kind === 'simulator') return cached;
   try {
     const parsed = parseSnapshot(await driver.dumpXml());
     if (parsed.allNodes.length === 0) return 'unknown';
+    if (seen) seen.nodes = parsed.allNodes;
     return parsed.allNodes.some((n) => isSecureNode(n)) ? 'secure' : 'clear';
   } catch {
     return 'unknown';
@@ -707,7 +710,9 @@ async function assertVisual(ctx: VisualContext): Promise<CallToolResult> {
     outcome: pass ? 'pass' : 'fail',
     reason: args.reason,
     method: 'visual',
-    evidenceKind: 'visual_match',
+    // IOS-16: the verdict is the agent's; Swipium never compared the image, so the report must not
+    // count this as visual-match evidence. manual_review = judged by the caller from the screenshot.
+    evidenceKind: 'manual_review',
     artifactUris: uri ? [uri] : [],
     verifiedVisually: true,
   });
@@ -728,6 +733,9 @@ async function assertVisual(ctx: VisualContext): Promise<CallToolResult> {
       },
     });
   }
+  // IOS-16: Swipium does not inspect the image here. The verdict is the CALLER's (and `pass`
+  // defaults to true), so the response must not read as a machine-checked visual match.
+  const passDefaulted = args.pass === undefined;
   return qaOk(
     {
       mode: 'assert',
@@ -735,12 +743,14 @@ async function assertVisual(ctx: VisualContext): Promise<CallToolResult> {
       pass,
       verifiedVisually: true,
       method: 'visual',
-      evidenceKind: 'visual_match',
+      evidenceKind: 'agent_assertion',
+      checkedBySwipium: false,
+      ...(passDefaulted ? { passDefaulted: true } : {}),
       screenshotUri: uri ?? null,
       coordinateSpace,
       ...unverifiedNote(ctx),
     },
-    `visual assertion ${pass ? '✅ PASS' : '❌ FAIL'}: "${assertion}"\n${uri ? `evidence: ${uri}` : WITHHELD_EVIDENCE}`,
+    `visual assertion recorded (agent-asserted, the screenshot was NOT checked by Swipium): ${pass ? 'pass' : 'fail'}${passDefaulted ? ' (pass defaulted to true; pass pass:false if the expected result is not visible)' : ''}: "${assertion}"\n${uri ? `evidence: ${uri}` : WITHHELD_EVIDENCE}`,
   );
 }
 
@@ -783,19 +793,21 @@ export function registerVisual(server: McpServer, sessions: SessionStore): void 
     async (args) => {
       const session = sessions.get(args.sessionId);
       if (!session) return unknownSessionError(args.sessionId);
+      // Before the device lookup, so a sensitive session never sees NO_DEVICE first (TOOL-19).
+      if (session.sensitive) return sensitiveRefusal('Visual capture');
       const { driver, blocked } = await getDriver(session);
       if (!session || !driver) {
         return (
           blockedDeviceResult(blocked) ??
           qaError({
             what: 'No device attached to this session',
+            failureCode: 'NO_DEVICE',
             changedState: false,
             retrySafe: true,
             nextSteps: ['Call qa_prepare_target (Android) or qa_prepare_ios_target (iOS) first.'],
           })
         );
       }
-      if (session.sensitive) return sensitiveRefusal('Visual capture');
 
       // Budget gate (B7): same rule as qa_act / qa_screenshot: no new capture or tap once spent.
       const stopReason = sessions.budgetStop(session);
