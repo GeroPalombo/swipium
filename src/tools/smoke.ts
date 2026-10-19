@@ -11,9 +11,30 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
 import { cancelledResult, qaOk, qaError, unknownSessionError } from '../lib/result.js';
-import { blockedDeviceResult, getDriver, prepareFirstStep } from '../session/attach.js';
+import { blockedDeviceResult, getDriver, isSimulatorUdid, prepareFirstStep } from '../session/attach.js';
 import { runSmoke } from '../services/smoke.js';
-import type { SessionStore } from '../session/store.js';
+import type { Session, SessionStore } from '../session/store.js';
+import { checkWda } from '../lib/wda.js';
+
+/** What hung, when the latest WDA record for this session's simulator is prepare's `blocked`
+ *  wda_attach (its WDA hung) and that WDA still does not answer. Exported for tests. */
+export async function hungWdaAtPrepare(session: Session): Promise<string | undefined> {
+  const udid = session.device;
+  if (!udid || !isSimulatorUdid(udid)) return undefined;
+  const last = [...(session.mutations ?? [])]
+    .reverse()
+    .find(
+      (m) =>
+        ['wda_attach', 'wda_start', 'wda_reuse'].includes(m.action) &&
+        (m.status === 'executed' || m.status === 'blocked') &&
+        String(m.target?.udid ?? '').toUpperCase() === udid.toUpperCase(),
+    );
+  // Only prepare's hang verdict (qa_wda attach failures are ledgered as blocked too, for other reasons).
+  if (last?.action !== 'wda_attach' || last.status !== 'blocked' || last.tool !== 'qa_prepare_ios_target') return undefined;
+  const url = typeof last.target?.webDriverAgentUrl === 'string' ? last.target.webDriverAgentUrl : undefined;
+  if (url && (await checkWda(url, 1500).catch(() => undefined))?.reachable) return undefined; // answers again
+  return last.detail ?? `WebDriverAgent${url ? ` at ${url}` : ''} hung during prepare`;
+}
 
 export function registerSmoke(server: McpServer, sessions: SessionStore): void {
   server.registerTool(
@@ -47,7 +68,10 @@ export function registerSmoke(server: McpServer, sessions: SessionStore): void {
         );
       }
 
-      const result = await runSmoke(sessions, session, d, { launch, runFlows, variables });
+      // Prepare found this simulator's WDA hung (a blocked wda_attach is the latest WDA record): the
+      // same WDA_UNREACHABLE verdict qa_test_this gives, never a visual-only "launch pass".
+      const wdaUnreachable = d.kind === 'wda' ? undefined : await hungWdaAtPrepare(session);
+      const result = await runSmoke(sessions, session, d, { launch, runFlows, variables, ...(wdaUnreachable ? { wdaUnreachable } : {}) });
       if (result.cancelled) return cancelledResult('qa_smoke cancelled: the remaining baseline/flows were skipped, not failed', true);
       const launchOutcome = (result.baseline.launch as { outcome?: string } | undefined)?.outcome ?? 'unknown';
       const summary =

@@ -10,7 +10,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
-import { run } from '../lib/spawn.js';
+import { childEnv, run } from '../lib/spawn.js';
 import { detectFramework } from '../context/detect.js';
 import { METRO_PORT, metroReadiness, wrongProjectMetroMessage } from '../lib/metroState.js';
 import { parseSnapshot } from '../snapshot/parse.js';
@@ -27,7 +27,12 @@ import { log } from '../lib/logger.js';
  * we report "not ours" so we never signal a stranger. */
 function metroProcessLooksAlive(pid: number): boolean {
   try {
-    const out = spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', env: psEnv() });
+    const out = spawnSync('ps', ['-o', 'command=', '-p', String(pid)], {
+      encoding: 'utf8',
+      env: psEnv(),
+      timeout: 4000,
+      killSignal: 'SIGKILL',
+    });
     if (out.status !== 0 || !out.stdout) return false;
     // `npm exec …`: npx retitles itself after spawn (the launcher we recorded as metroPid).
     return /metro|expo|react-native|node|npm exec/i.test(out.stdout);
@@ -382,9 +387,9 @@ export function registerMetro(server: McpServer, sessions: SessionStore): void {
         logPath = session.artifacts.find((a) => a.uri === logUri)?.path ?? join(session.dir, artifactDirectoryName('metro'), 'metro.log');
         const fd = openSync(logPath, 'a');
         try {
-          child = spawn(cmd, args, { cwd: session.root, detached: true, stdio: ['ignore', fd, fd] });
+          child = spawn(cmd, args, { cwd: session.root, detached: true, stdio: ['ignore', fd, fd], env: childEnv() });
         } finally {
-          closeSync(fd); // child inherited the fd; the parent must not keep it open (review #2)
+          closeSync(fd); // child inherited the fd; the parent must not keep it open
         }
         // A missing `npx` surfaces as an async 'error' event; unhandled, it would crash the server.
         child.on('error', (err) => {

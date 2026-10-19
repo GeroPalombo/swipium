@@ -12,7 +12,7 @@
 
 import { isTextFieldClass, parseSnapshot } from './parse.js';
 import type { Driver } from '../drivers/Driver.js';
-import { isAbortError } from '../lib/abortScope.js';
+import { isAbortError, sleepOrCancel } from '../lib/abortScope.js';
 
 /** RN/Expo loading surfaces that mean "the app's JS has not rendered yet". A bare "Bundling" only
  *  counts with a percent or a trailing ellipsis, so app copy doesn't match. */
@@ -55,8 +55,6 @@ export const RENDER_WAIT_MS = 30_000;
 // A cold Metro bundle keeps the splash up for 10-20 s; image-only first screens pay this once.
 const EMPTY_TREE_WAIT_MS = 15_000;
 const VISUAL_WAIT_MS = 8_000;
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function treeState(xml: string): { content: number; interactive: number; loadingText?: string } {
   const nodes = parseSnapshot(xml).allNodes;
@@ -162,7 +160,7 @@ export async function waitForAppRender(
           xml,
         };
       }
-      await sleep(pollMs);
+      await sleepOrCancel(pollMs);
     }
   }
   return waitForStableScreenshot(d, t0, timeoutMs, pollMs);
@@ -183,7 +181,7 @@ async function waitForStableScreenshot(d: Driver, t0: number, timeoutMs: number,
     }
     if (prev && prev.equals(png)) return { ready: true, waitedMs: elapsed(), reason: 'visual_only_stable' };
     prev = png;
-    await sleep(Math.max(pollMs, 1000));
+    await sleepOrCancel(Math.max(pollMs, 1000));
   }
   // Never a verdict in visual-only mode (an animated screen never stabilizes): only a bounded wait.
   return { ready: true, waitedMs: elapsed(), reason: 'visual_only_unstable' };

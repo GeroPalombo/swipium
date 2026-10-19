@@ -3,12 +3,13 @@
 // steps that need testIDs. Optionally saves it to .swipium/flows/<name>.yaml so it shows up
 // in the workflow plan (qa_resolve_target include:["plan"]) and can be replayed with qa_flow_run. Registered through src/tools/generate.ts.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { CallToolResult } from '@modelcontextprotocol/server';
 import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { generateFlow } from '../flows/generate.js';
 import { capSlug } from '../lib/stableHash.js';
+import { writeFileNoFollow } from '../lib/noFollowFs.js';
 import { loadProjectConfig } from '../cli/scan.js';
 import type { Session, SessionStore } from '../session/store.js';
 import { actionsWithRelaunches } from './suiteGenerate.js';
@@ -117,11 +118,10 @@ export async function runFlowGenerate(
   let overwrote = false;
   if (save) {
     const dir = join(session.root, '.swipium', 'flows');
-    mkdirSync(dir, { recursive: true });
     savedTo = join(dir, `${flowName}.yaml`);
     // Say so when a same-named flow with different content is replaced.
     if (existsSync(savedTo) && readFileSync(savedTo, 'utf8') !== gen.yaml) overwrote = true;
-    writeFileSync(savedTo, gen.yaml);
+    writeFileNoFollow(session.root, savedTo, gen.yaml); // never through a committed symlink
   }
 
   const summary =

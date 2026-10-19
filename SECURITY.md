@@ -64,13 +64,18 @@ describes the full model, including its residual risks. In short:
   consent prompt. Flows and fixtures read only `SWIPIUM_*` environment variables. The repository
   cannot pre-approve a remote WebDriverAgent; only your own `SWIPIUM_ALLOW_REMOTE_WDA` can. An
   approved script still runs with your privileges, and the refusal to run `git` guards against
-  accidents. It is not a sandbox.
+  accidents. It is not a sandbox. Swipium never writes or deletes through a symlink committed
+  under `.swipium/`, so a cloned repo can't redirect its writes or evidence pruning outside the
+  project.
 - **Redaction.** Registered secrets of 3 or more characters are redacted from text artifacts,
   reports, state and generated code. Shorter ones are not, and the artifact is marked
   `redaction: "partial"`. Screenshots and recordings are pixels and are never redacted, so a
   screenshot with a secure field on screen is refused (`CAPTURE_WITHHELD_SECURE`) unless the call
   passes `force: true`. Use sensitive mode (`qa_start_session { sensitive: true }`) to refuse all
-  pixel and log capture. See [docs/concepts.md](docs/concepts.md#secrets-and-redaction).
+  pixel and log capture. See [docs/concepts.md](docs/concepts.md#secrets-and-redaction). Test
+  credentials (`SWIPIUM_TEST_*`, `SWIPIUM_SECRET_*` and other secret-named `SWIPIUM_*` variables)
+  are not passed to the tools Swipium starts, such as builds, Metro and adb; only fixture seed
+  scripts get them.
 - **Local only.** Session data lives under `~/.swipium/runs/` with owner-only permissions on POSIX.
   Swipium opens no network listener, and it exits when the client closes stdin.
 - **Bounded responses.** Errors cap any caller input they echo, and `resources/read` and

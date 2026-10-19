@@ -4,7 +4,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import { run } from './spawn.js';
+import { childEnv, run } from './spawn.js';
 import { CancelledError, currentSignal, isAbortError, sleepOrCancel, throwIfCancelled } from './abortScope.js';
 import { registerManagedProcess } from '../session/processRegistry.js';
 import type { FailureCode } from '../oracle/failures.js';
@@ -99,14 +99,59 @@ export function ensureAndroidToolsOnPath(
   return add;
 }
 
+/** PURE: build-tools version dirs newest first, compared numerically per dot segment (a string
+ *  sort puts 9.0.0 above 34.0.0); a pre-release suffix (35.0.0-rc1) sorts below its release. */
+export function sortBuildToolsVersions(versions: string[]): string[] {
+  const key = (v: string) => {
+    const [core, pre] = v.split('-', 2);
+    return { nums: core.split('.').map((n) => (/^\d+$/.test(n) ? Number(n) : -1)), pre: pre ?? null };
+  };
+  return [...versions].sort((a, b) => {
+    const ka = key(a);
+    const kb = key(b);
+    for (let i = 0; i < Math.max(ka.nums.length, kb.nums.length); i++) {
+      const d = (kb.nums[i] ?? 0) - (ka.nums[i] ?? 0);
+      if (d) return d;
+    }
+    if (ka.pre === kb.pre) return b.localeCompare(a);
+    if (ka.pre === null) return -1;
+    if (kb.pre === null) return 1;
+    return kb.pre.localeCompare(ka.pre);
+  });
+}
+
 export function findAapt2(): string | null {
   const bt = join(androidHome(), 'build-tools');
   if (!existsSync(bt)) return null;
-  for (const v of readdirSync(bt).sort().reverse()) {
+  for (const v of sortBuildToolsVersions(readdirSync(bt))) {
     const p = join(bt, v, 'aapt2');
     if (existsSync(p)) return p;
   }
   return null;
+}
+
+/** `aapt2 dump badging` output per APK, keyed by path + size + mtime: one prepare asks for the
+ *  package id, min SDK and ABIs of the same APK, each a separate aapt2 run otherwise. */
+const badgingCache = new Map<string, string>();
+const BADGING_CACHE_MAX = 16;
+
+/** `aapt2 dump badging <apk>` stdout (cached while the APK is unchanged). Throws when aapt2 fails. */
+async function badgingStdout(aapt2: string, apk: string): Promise<string> {
+  let key: string | undefined;
+  try {
+    const st = statSync(apk);
+    key = `${aapt2}\0${apk}\0${st.size}\0${st.mtimeMs}`;
+  } catch {
+    /* unreadable: run aapt2 uncached and let it report the error */
+  }
+  const hit = key ? badgingCache.get(key) : undefined;
+  if (hit !== undefined) return hit;
+  const r = await run(aapt2, ['dump', 'badging', apk], { timeoutMs: 30000 });
+  if (key && r.code === 0) {
+    if (badgingCache.size >= BADGING_CACHE_MAX) badgingCache.delete(badgingCache.keys().next().value as string);
+    badgingCache.set(key, r.stdout);
+  }
+  return r.stdout;
 }
 
 /** Extract the applicationId from an APK via aapt2 badging. */
@@ -114,8 +159,7 @@ export async function apkPackageId(apk: string): Promise<string | null> {
   const aapt2 = findAapt2();
   if (!aapt2) return null;
   try {
-    const r = await run(aapt2, ['dump', 'badging', apk], { timeoutMs: 30000 });
-    return r.stdout.match(/package: name='([^']+)'/)?.[1] ?? null;
+    return (await badgingStdout(aapt2, apk)).match(/package: name='([^']+)'/)?.[1] ?? null;
   } catch {
     return null;
   }
@@ -169,12 +213,35 @@ export function emulatorBootArgs(avd: string, headless = true, env: NodeJS.Proce
  * (track + kill booted emulators on session-close) is a follow-up lifecycle pass.
  */
 export function bootEmulator(avd: string, headless = true): ChildProcess {
-  const child = spawn(resolveAndroidTool('emulator'), emulatorBootArgs(avd, headless), { detached: true, stdio: 'ignore' });
+  const child = spawn(resolveAndroidTool('emulator'), emulatorBootArgs(avd, headless), {
+    detached: true,
+    stdio: 'ignore',
+    env: childEnv(),
+  });
+  // A missing `emulator` binary (ENOENT) or a bad AVD surfaces as an 'error' event / an early
+  // non-zero exit. Without a listener, 'error' is an uncaught exception that kills the server;
+  // record it instead so the caller's boot wait can fail fast with the reason (emulatorFailure).
+  child.on('error', (err) => {
+    if (!emulatorFailures.has(child)) emulatorFailures.set(child, `could not start the Android emulator: ${err.message}`);
+  });
+  child.on('exit', (code, signal) => {
+    if (code && !emulatorFailures.has(child)) emulatorFailures.set(child, `the Android emulator exited with code ${code} before booting`);
+    else if (signal && signal !== 'SIGKILL' && signal !== 'SIGTERM' && !emulatorFailures.has(child))
+      emulatorFailures.set(child, `the Android emulator was killed by ${signal} before booting`);
+  });
   child.unref();
   // Tracked for crash visibility only: the orphan reaper ADOPTS emulators (never kills them),
   // since an orphaned emulator stays booted and remains usable via adb for the next run.
-  registerManagedProcess(child.pid, 'emulator');
+  if (child.pid) registerManagedProcess(child.pid, 'emulator');
   return child;
+}
+
+const emulatorFailures = new WeakMap<ChildProcess, string>();
+
+/** Why an emulator started by bootEmulator failed (spawn error such as ENOENT, or an exit with a
+ *  non-zero code), or undefined while it is still running / exited cleanly. Poll it in a boot wait. */
+export function emulatorFailure(child: ChildProcess | undefined): string | undefined {
+  return child ? emulatorFailures.get(child) : undefined;
 }
 
 /** PURE: was this a cold boot? A snapshot restore keeps the guest uptime of the saved session, so
@@ -272,8 +339,7 @@ export async function apkBadging(apk: string): Promise<ApkBadging | null> {
   const aapt2 = findAapt2();
   if (!aapt2) return null;
   try {
-    const r = await run(aapt2, ['dump', 'badging', apk], { timeoutMs: 30000 });
-    return parseAaptBadging(r.stdout);
+    return parseAaptBadging(await badgingStdout(aapt2, apk));
   } catch {
     return null;
   }
@@ -284,8 +350,7 @@ export async function apkMinSdk(apk: string): Promise<number | null> {
   const aapt2 = findAapt2();
   if (!aapt2) return null;
   try {
-    const r = await run(aapt2, ['dump', 'badging', apk], { timeoutMs: 30000 });
-    const m = r.stdout.match(/sdkVersion:'(\d+)'/);
+    const m = (await badgingStdout(aapt2, apk)).match(/sdkVersion:'(\d+)'/);
     return m ? Number(m[1]) : null;
   } catch {
     return null;
@@ -338,8 +403,7 @@ export async function apkNativeAbis(apk: string): Promise<string[]> {
   const aapt2 = findAapt2();
   if (!aapt2) return [];
   try {
-    const r = await run(aapt2, ['dump', 'badging', apk], { timeoutMs: 30000 });
-    const m = r.stdout.match(/native-code:\s*(.*)/);
+    const m = (await badgingStdout(aapt2, apk)).match(/native-code:\s*(.*)/);
     if (!m) return [];
     return [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]);
   } catch {

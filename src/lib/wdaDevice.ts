@@ -59,12 +59,6 @@ async function inspectWdaListener(url: string): Promise<{ udid?: string; inspect
   return { inspected };
 }
 
-/** The simulator whose process listens on a loopback WDA URL's port (lsof + ps, macOS only).
- *  Undefined when it cannot be told (not loopback, no listener, not a simulator process). */
-export async function wdaListenerSimulatorUdid(url: string): Promise<string | undefined> {
-  return (await inspectWdaListener(url)).udid;
-}
-
 export interface WdaOwnership {
   /** match: this WDA runs in the expected simulator; other: it provably belongs to another device;
    *  unverified: a local listener could not be inspected (lsof / ps failed or timed out), so it may

@@ -182,14 +182,27 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
         await d.pressXY(x, y, 80);
         cleared.push({ type: 'unknown', action: 'tap_outside' });
       };
+      // LogBox's own buttons are exactly "Minimize" / "Dismiss": app copy that merely contains the
+      // word is never tapped.
       const doMinimizeLogbox = async () => {
-        const ok = await tapByText(d, nodes, /minimize/i);
+        const ok = await tapByText(d, nodes, /^\s*minimize\s*$/i);
         cleared.push({ type: 'rn_logbox', action: ok ? 'minimized' : 'minimize_not_found' });
       };
       const doDismissLogbox = async () => {
-        const ok = await tapByText(d, nodes, /dismiss/i);
+        const ok = await tapByText(d, nodes, /^\s*dismiss\s*$/i);
         cleared.push({ type: 'rn_logbox', action: ok ? 'dismissed' : 'dismiss_not_found' });
       };
+      // A permission dialog in the tree with bounds (an iOS alert): only its own buttons are tapped.
+      const dialogBounds = treeOverlays.find((o) => o.type === 'permission_dialog' && o.bounds)?.bounds;
+      const dialogNodes = dialogBounds
+        ? nodes.filter(
+            (n) =>
+              n.bounds[0] >= dialogBounds[0] &&
+              n.bounds[1] >= dialogBounds[1] &&
+              n.bounds[2] <= dialogBounds[2] &&
+              n.bounds[3] <= dialogBounds[3],
+          )
+        : nodes;
       const doAllowPermission = async () => {
         if (await handleNativeAlert(d, 'accept')) {
           cleared.push({ type: 'permission_dialog', action: 'allowed_native_alert' });
@@ -197,7 +210,7 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
         }
         const ok = await tapByText(
           d,
-          nodes,
+          dialogNodes,
           /allow|while using/i,
           /^(allow|allow (once|all|all the time)|(allow )?(only )?while using( the)? app)$/i,
           /permission_allow(_foreground_only|_one_time)?_button$/,
@@ -211,7 +224,7 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
         }
         const ok = await tapByText(
           d,
-          nodes,
+          dialogNodes,
           /deny|don.?t allow/i,
           /^(deny|don.?t allow|deny (&|and) don.?t ask again)$/i,
           /permission_deny(_and_dont_ask_again)?_button$/,
@@ -311,12 +324,20 @@ export function registerClearOverlay(server: McpServer, sessions: SessionStore):
       const attemptedTypes = new Set(cleared.map((c) => c.type));
       const sameTypeRemains = remaining.some((t) => attemptedTypes.has(t));
       const triedDismiss = cleared.some((c) => /minimized|dismissed|hidden|allowed|denied|tap_outside|press_back/.test(c.action));
+      // Nothing was tapped: the strategy's control was not found (or a toast cannot be targeted).
+      const noEffect = (c: { action: string }) => /_not_found$|^cannot_target\b/.test(c.action);
       let outcome: 'cleared' | 'reappeared' | 'not_dismissible' | 'still_obstructing_target' | 'nothing_to_clear' | 'needs_decision';
       if (targetRef && after) outcome = 'still_obstructing_target';
       // auto only reported a dialog it leaves for the caller to answer (allow vs deny): nothing was cleared.
       else if (cleared.length && cleared.every((c) => c.action.startsWith('present;'))) outcome = 'needs_decision';
       // A hide_keyboard with no keyboard up acted on nothing.
       else if (!cleared.some((c) => c.action !== 'not_visible_or_unsupported')) outcome = 'nothing_to_clear';
+      // Never "cleared" when nothing was tapped: the overlay is there but its control is not, or
+      // there was no such overlay to begin with.
+      else if (cleared.every((c) => noEffect(c) || c.action === 'not_visible_or_unsupported'))
+        outcome = cleared.some((c) => c.action.startsWith('cannot_target') || overlaysBefore.includes(c.type))
+          ? 'not_dismissible'
+          : 'nothing_to_clear';
       else if (sameTypeRemains && triedDismiss)
         outcome = overlaysBefore.length && remaining.length >= overlaysBefore.length ? 'reappeared' : 'not_dismissible';
       else outcome = 'cleared';

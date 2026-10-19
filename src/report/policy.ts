@@ -11,8 +11,10 @@
 //     "ignoreKnown": ["REVENUECAT_BILLING_UNAVAILABLE_ON_EMULATOR"]
 //   }
 //
-// Tokens are matched case-insensitively against failure codes (e.g. NATIVE_CRASH ↔ "native_crash")
-// and a few synonyms; `failed_required_flow` matches any failed flow regardless of code.
+// Tokens are matched case-insensitively against failure codes (e.g. NATIVE_CRASH and "native_crash")
+// and a few synonyms; `failed_required_flow` matches any failed flow regardless of code, and
+// `visual_diff` matches only a failed visual-template / OCR / screenshot-diff check (FlowVerdict.visual),
+// never a structured assertion such as assertVisible or waitForVisible.
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -96,7 +98,6 @@ const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
 // Map policy synonyms > the normalized failure-code form.
 const SYNONYMS: Record<string, string> = {
   appbug: 'assertionfailed',
-  visualdiff: 'assertionfailed',
   crash: 'nativecrash',
   errorboundary: 'errorboundary',
 };
@@ -108,6 +109,9 @@ export interface FlowVerdict {
   failureCode?: string;
   /** The recorded outcome when known: a blocked/skipped workflow is not a failure, but not a pass either. */
   outcome?: string;
+  /** The failure is a Swipium visual comparison (image template, OCR text, screenshot diff): the
+   *  only kind of failure the `visual_diff` token matches. */
+  visual?: boolean;
 }
 
 export interface PolicyDecision {
@@ -124,10 +128,11 @@ export function applyPolicy(verdicts: FlowVerdict[], policy: Policy | null): Pol
   const warned: string[] = [];
   const suppressed: string[] = [];
 
-  const inList = (list: string[], code: string) => {
+  const inList = (list: string[], code: string, v: FlowVerdict) => {
     const c = norm(code);
     return list.some((tok) => {
       const t = norm(tok);
+      if (t === 'visualdiff') return v.visual === true;
       return t === c || SYNONYMS[t] === c || t === 'failedrequiredflow';
     });
   };
@@ -144,8 +149,8 @@ export function applyPolicy(verdicts: FlowVerdict[], policy: Policy | null): Pol
       continue;
     }
     // failed_required_flow blocks any failure; otherwise match the specific code.
-    if (policy.blockOn.length === 0 || inList(policy.blockOn, code)) blocked.push(`${v.flow}: ${code}`);
-    else if (inList(policy.warnOn, code)) warned.push(`${v.flow}: ${code}`);
+    if (policy.blockOn.length === 0 || inList(policy.blockOn, code, v)) blocked.push(`${v.flow}: ${code}`);
+    else if (inList(policy.warnOn, code, v)) warned.push(`${v.flow}: ${code}`);
     else blocked.push(`${v.flow}: ${code}`); // default: an unclassified failure blocks
   }
 

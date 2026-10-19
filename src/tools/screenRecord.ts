@@ -15,7 +15,7 @@ import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { sensitiveRefusal } from '../lib/sensitive.js';
-import { run } from '../lib/spawn.js';
+import { childEnv, run } from '../lib/spawn.js';
 import { blockedDeviceResult, getDriver } from '../session/attach.js';
 import { registerManagedProcess, unregisterManagedProcess } from '../session/processRegistry.js';
 import type { SessionStore } from '../session/store.js';
@@ -176,12 +176,18 @@ export function registerScreenRecord(server: McpServer, sessions: SessionStore):
         let rec: Recording;
         if (backend === 'direct') {
           const remotePath = `/sdcard/swipium-rec-${Date.now()}.mp4`;
-          const child = spawn('adb', ['-s', serial, 'shell', 'screenrecord', '--time-limit', '180', remotePath], { stdio: 'ignore' });
+          const child = spawn('adb', ['-s', serial, 'shell', 'screenrecord', '--time-limit', '180', remotePath], {
+            stdio: 'ignore',
+            env: childEnv(),
+          });
           child.unref();
           rec = { child, backend, serial, saveMode, remotePath, startedAt: Date.now() };
         } else {
           const hostPath = join(tmpdir(), `swipium-iosrec-${Date.now()}.mp4`);
-          const child = spawn('xcrun', ['simctl', 'io', serial, 'recordVideo', '--codec', 'h264', hostPath], { stdio: 'ignore' });
+          const child = spawn('xcrun', ['simctl', 'io', serial, 'recordVideo', '--codec', 'h264', hostPath], {
+            stdio: 'ignore',
+            env: childEnv(),
+          });
           child.unref();
           rec = { child, backend, serial, saveMode, hostPath, startedAt: Date.now() };
         }

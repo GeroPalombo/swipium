@@ -17,6 +17,7 @@ import { hasDisposableState } from '../fixtures/catalog.js';
 import { generateAndCompileSuite, type SuiteGenerationResult } from '../services/suiteGenerate.js';
 import { startProgress } from '../session/progress.js';
 import { log } from '../lib/logger.js';
+import { failCrashedJob } from '../orchestration/jobCrash.js';
 import type { Session, SessionStore, JobRecord, ExplorationRecord, RecordedAction } from '../session/store.js';
 import type { ExploreGraph } from '../explore/graph.js';
 import type { SuitePromotionCandidate } from '../explore/suite.js';
@@ -76,10 +77,15 @@ export function registerExplore(server: McpServer, sessions: SessionStore): void
       inputSchema: {
         sessionId: z.string(),
         goal: z.string().optional().describe('Focus, e.g. "exercise the main tabs".'),
-        depth: z.number().optional().describe('Max navigation depth (default 3).'),
-        maxActions: z.number().optional().describe('Default 20.'),
-        maxScreens: z.number().optional().describe('Default 12.'),
-        maxDurationMs: z.number().optional().describe('Default 360000.'),
+        depth: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe('Default 3. Not a depth limit: 1 turns off going back from a dead-end screen.'),
+        maxActions: z.number().int().positive().optional().describe('Default 20.'),
+        maxScreens: z.number().int().positive().optional().describe('Default 12.'),
+        maxDurationMs: z.number().int().positive().optional().describe('Default 360000.'),
         strategy: z
           .enum(['crawl', 'task_planner', 'hybrid'])
           .optional()
@@ -261,7 +267,7 @@ export function registerExplore(server: McpServer, sessions: SessionStore): void
           accountCycle: accountCycleCtx,
           allowGeneratedData,
         }),
-      );
+      ).catch((e: unknown) => failCrashedJob(sessions, session, job, 'exploration', e));
       return qaOk(
         { sessionId: session.id, state: 'running', jobId: job.jobId, kind: job.kind },
         `🧭 guided exploration started as job ${job.jobId}. Poll qa_job_status { sessionId:"${session.id}", jobId:"${job.jobId}" } for the screen graph + terminal state.`,

@@ -9,7 +9,7 @@
 import { z } from 'zod';
 import { join, resolve, sep } from 'node:path';
 import type { CallToolResult, McpServer } from '@modelcontextprotocol/server';
-import { qaOk, qaError } from '../lib/result.js';
+import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { resolveProjectRoot, unresolvedProjectRootError } from '../context/projectRoot.js';
 import { loadProjectConfig } from '../cli/scan.js';
 import { pomForSession } from '../services/suiteGenerate.js';
@@ -37,6 +37,9 @@ async function resolveRoot(
   projectRoot?: string,
 ): Promise<Resolved | { error: CallToolResult }> {
   const session = sessionId ? sessions.get(sessionId) : undefined;
+  // A typo'd / expired sessionId is an error, never silently another root (the cwd's suite).
+  if (sessionId && !session)
+    return { error: unknownSessionError(sessionId, ['Omit sessionId to use projectRoot, or pass a valid session.']) };
   let root = session?.root;
   if (!root) {
     const resolved = await resolveProjectRoot(server, projectRoot);

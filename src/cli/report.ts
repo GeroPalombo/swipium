@@ -8,16 +8,19 @@
 // (.swipium/policy.json blockOn/warnOn/ignoreKnown) into the process exit code.
 //
 // Exit codes: 0 = written (gate passed or not checked), 1 = --fail-on-gate and the gate blocks,
-// 2 = usage error / no persisted report found. runReport() returns the code; it never exits.
+// 2 = usage error / no persisted report found / --fail-on-gate would gate an older session's report /
+// the --out file could not be written. runReport() returns the code; it never exits.
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
-import { createHash } from 'node:crypto';
+import { dirname, isAbsolute, join } from 'node:path';
 import { reportPolicyVerdicts, toGithubSummary, toJUnit, toMarkdown, toSarif, type ReportData } from '../report/export.js';
 import { applyPolicy, loadPolicy as loadReleasePolicy, policyFileProblem, policyUnknownKeys } from '../report/policy.js';
 import { loadReport } from '../report/history.js';
 import { resolveSarifSources } from '../report/sarifSources.js';
+import { findProjectSessions } from '../report/sessions.js';
+
+export { findProjectSessions } from '../report/sessions.js';
 
 export const REPORT_FORMATS = ['junit', 'sarif', 'github-summary', 'markdown', 'json'] as const;
 export type CliReportFormat = (typeof REPORT_FORMATS)[number];
@@ -36,11 +39,13 @@ Options:
   --out <file>       write to a file instead of stdout (parent dirs are created)
   --max-age <min>    refuse (exit 2) a report older than this many minutes, so CI never publishes a
                      stale report from an earlier run when the agent step produced none
-  --fail-on-gate     exit 1 when the release-gate policy (.swipium/policy.json) blocks
+  --fail-on-gate     exit 1 when the release-gate policy (.swipium/policy.json) blocks. With
+                     --latest, a newer session that saved no report is exit 2 (the gate would
+                     judge an older run) unless --max-age accepts the older report
   -h, --help         show this help
 
 Exit codes: 0 ok · 1 release gate blocked (with --fail-on-gate) · 2 usage error / invalid
-.swipium/policy.json / no (fresh enough) report found.
+.swipium/policy.json / no (fresh enough) report found / --out could not be written.
 `;
 
 export interface ReportCliIo {
@@ -79,6 +84,9 @@ function parseArgs(args: string[]): ParsedArgs {
     const a = args[i];
     const eq = a.indexOf('=');
     const flag = a.startsWith('--') && eq > 0 ? a.slice(0, eq) : a;
+    // A boolean flag takes no value: `--fail-on-gate=false` must not silently turn the gate on.
+    if (eq > 0 && a.startsWith('--') && (flag === '--help' || flag === '--fail-on-gate' || flag === '--latest'))
+      return { ...out, error: `${flag} takes no value (got "${a}"); omit the flag to turn it off` };
     if (flag === '-h' || flag === '--help') out.help = true;
     else if (flag === '--fail-on-gate') out.failOnGate = true;
     else if (flag === '--latest') out.session = undefined;
@@ -89,79 +97,6 @@ function parseArgs(args: string[]): ParsedArgs {
     } else return { ...out, error: `Unknown argument: ${a}` };
   }
   return out;
-}
-
-function canonical(p: string): string {
-  try {
-    return realpathSync(p);
-  } catch {
-    return resolve(p);
-  }
-}
-
-interface SessionCandidate {
-  id: string;
-  dir: string;
-  createdAt: number;
-  reportPath?: string;
-}
-
-/** Newest persisted report JSON of a session (the qa_report "report" artifact, not an export). */
-function latestReportJson(
-  dir: string,
-  state: { artifacts?: Array<{ kind?: string; mime?: string; path?: string; createdAt?: number }> },
-): string | undefined {
-  const isReportJson = (p: string) => /(^|[\\/])report-\d+\.json$/.test(p);
-  const fromState = (state.artifacts ?? [])
-    .filter((a) => a.kind === 'report' && a.mime === 'application/json' && a.path && isReportJson(a.path) && existsSync(a.path))
-    .sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0));
-  if (fromState.length) return fromState[fromState.length - 1].path;
-  const reportDir = join(dir, 'report');
-  if (!existsSync(reportDir)) return undefined;
-  const files = readdirSync(reportDir)
-    .filter((f) => isReportJson(f))
-    .sort((a, b) => Number(a.match(/\d+/)?.[0] ?? 0) - Number(b.match(/\d+/)?.[0] ?? 0));
-  return files.length ? join(reportDir, files[files.length - 1]) : undefined;
-}
-
-/**
- * Sessions persisted for `root`: the registry (~/.swipium/registry.json, which also covers custom
- * session dirs) plus a scan of the default per-project runs dir (the registry is capped). A session
- * belongs to the project when its state.json `root` resolves to the same directory.
- */
-export function findProjectSessions(root: string, home = homedir()): SessionCandidate[] {
-  const base = join(home, '.swipium');
-  const dirs = new Set<string>();
-  try {
-    const reg = JSON.parse(readFileSync(join(base, 'registry.json'), 'utf8')) as Array<{ dir?: string }>;
-    for (const e of reg) if (typeof e.dir === 'string') dirs.add(e.dir);
-  } catch {
-    /* no registry yet */
-  }
-  // Mirrors SessionStore's default session dir: ~/.swipium/runs/<sha256(resolve(root))[:16]>/<id>.
-  const projectRuns = join(base, 'runs', createHash('sha256').update(resolve(root)).digest('hex').slice(0, 16));
-  try {
-    for (const d of readdirSync(projectRuns, { withFileTypes: true })) if (d.isDirectory()) dirs.add(join(projectRuns, d.name));
-  } catch {
-    /* no runs for this project */
-  }
-  const want = canonical(root);
-  const out: SessionCandidate[] = [];
-  for (const dir of dirs) {
-    try {
-      const st = JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8')) as {
-        id?: string;
-        root?: string;
-        createdAt?: number;
-        artifacts?: Array<{ kind?: string; mime?: string; path?: string; createdAt?: number }>;
-      };
-      if (typeof st.id !== 'string' || typeof st.root !== 'string' || canonical(st.root) !== want) continue;
-      out.push({ id: st.id, dir, createdAt: st.createdAt ?? 0, reportPath: latestReportJson(dir, st) });
-    } catch {
-      /* unreadable / partial session: skip */
-    }
-  }
-  return out.sort((a, b) => a.createdAt - b.createdAt);
 }
 
 /** When a report JSON was saved: the `report-<ms>.json` timestamp, else the file's mtime. */
@@ -228,12 +163,21 @@ export async function runReport(args: string[], io: ReportCliIo = defaultIo): Pr
     // may have failed before qa_report), instead of silently rendering an older run.
     const newerWithoutReport = pick && !parsed.session ? sessions.filter((s) => s.createdAt > pick.createdAt && !s.reportPath) : [];
     if (newerWithoutReport.length) {
-      io.stderr(
-        `Warning: ${newerWithoutReport.length} newer session(s) (${newerWithoutReport
-          .map((s) => s.id)
-          .slice(-3)
-          .join(', ')}) saved no report; rendering the older session ${pick!.id}.\n`,
-      );
+      const newer = `${newerWithoutReport.length} newer session(s) (${newerWithoutReport
+        .map((s) => s.id)
+        .slice(-3)
+        .join(', ')}) saved no report`;
+      // Gating on an older run's report would pass CI on a run that never reported. --max-age is
+      // the explicit opt-in: an older report that is still fresh enough is accepted (checked below).
+      if (parsed.failOnGate && maxAgeMin === undefined) {
+        io.stderr(
+          `❌ ${newer}, so the latest run has no report and the release gate cannot judge it. ` +
+            `Refusing to gate on the older session ${pick!.id}. Make sure the agent step calls qa_report, ` +
+            'or pass --session <id> to gate a specific session (or --max-age <min> to accept a recent older report).\n',
+        );
+        return 2;
+      }
+      io.stderr(`Warning: ${newer}; rendering the older session ${pick!.id}.\n`);
     }
     if (!pick) {
       io.stderr(
@@ -299,8 +243,14 @@ export async function runReport(args: string[], io: ReportCliIo = defaultIo): Pr
   const { body, block, reason } = rendered;
   if (parsed.out) {
     const outPath = isAbsolute(parsed.out) ? parsed.out : join(cwd, parsed.out);
-    mkdirSync(dirname(outPath), { recursive: true });
-    writeFileSync(outPath, body.endsWith('\n') ? body : `${body}\n`);
+    // A failed write is an I/O error (exit 2), never read as "gate blocked" (exit 1).
+    try {
+      mkdirSync(dirname(outPath), { recursive: true });
+      writeFileSync(outPath, body.endsWith('\n') ? body : `${body}\n`);
+    } catch (e) {
+      io.stderr(`Could not write ${outPath}: ${String((e as Error).message ?? e)}\n`);
+      return 2;
+    }
     io.stderr(`Wrote ${format} for session ${data.sessionId} > ${outPath}\n`);
   } else {
     io.stdout(body.endsWith('\n') ? body : `${body}\n`);

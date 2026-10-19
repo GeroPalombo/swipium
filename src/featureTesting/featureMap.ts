@@ -5,8 +5,9 @@
 // and outcomes, blockers, automation readiness, evidence) for fast re-display. It can be deleted and
 // regenerated at any time without losing QA knowledge. Best-effort + bounded.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { writeFileAtomicNoFollow } from '../lib/noFollowFs.js';
 
 export type FeatureCoverageStatus = 'covered' | 'partial' | 'blocked' | 'not_tested';
 
@@ -81,8 +82,7 @@ export function upsertFeatureCoverage(root: string, appId: string | undefined, c
   if (idx >= 0) map.features[idx] = coverage;
   else map.features.push(coverage);
   map.features = map.features.slice(-200);
-  mkdirSync(featureCoverageCacheDir(root), { recursive: true });
-  writeFileSync(path, JSON.stringify(map, null, 2));
+  writeFileAtomicNoFollow(root, path, JSON.stringify(map, null, 2));
   return path;
 }
 

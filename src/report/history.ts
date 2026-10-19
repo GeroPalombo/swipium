@@ -1,8 +1,10 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ReportData, ReportNote } from './export.js';
 import { evidenceTaxonomyForNotes } from './evidence.js';
 import { isAutomationDriftNote } from '../oracle/failures.js';
+import { findProjectSessions } from './sessions.js';
 
 export interface ReportCompare {
   current: string;
@@ -20,6 +22,8 @@ export interface ReportCompare {
 
 export interface TrendSummary {
   reports: number;
+  /** Report files that could not be read or are not a Swipium report (skipped, never fatal). */
+  unreadableReports: string[];
   passRate: Record<string, number>;
   passRateByAppPlatformBackend: Record<string, number>;
   medianRuntimeMs: number | null;
@@ -142,12 +146,14 @@ function outcomeMap(r: ReportData): Map<string, string> {
   return new Map(r.testOutcomes.map((o) => [o.workflow, o.outcome]));
 }
 
+/** A failure's identity across runs: the workflow (or finding kind) plus its reason with volatile
+ *  tokens (timestamps, ids, uuids) scrubbed, so the same failure in two runs is not "new". */
 function failureKeys(r: ReportData): string[] {
   const fromOutcomes = r.testOutcomes
     .filter((o) => o.outcome === 'fail' || o.outcome === 'blocked')
-    .map((o) => `${o.workflow}: ${o.reason ?? o.missingPrecondition ?? o.category ?? o.outcome}`);
-  const fromFindings = r.findings.filter((f) => f.severity === 'high').map((f) => `${f.kind}: ${f.detail}`);
-  return [...fromOutcomes, ...fromFindings].sort();
+    .map((o) => `${o.workflow}: ${scrubReason(o.reason ?? o.missingPrecondition ?? o.category ?? o.outcome)}`);
+  const fromFindings = r.findings.filter((f) => f.severity === 'high').map((f) => `${f.kind}: ${scrubReason(f.detail)}`);
+  return [...new Set([...fromOutcomes, ...fromFindings])].sort();
 }
 
 function screenshotUris(r: ReportData): string[] {
@@ -179,7 +185,9 @@ export function compareReports(currentPath: string, baselinePath: string, opts: 
         return workflow ? trend.flakyFlows.includes(workflow) : false;
       })
     : [];
-  const flakeStatus: ReportCompare['flakeStatus'] = trend ? (knownFlakyFailures.length ? 'known_flaky' : 'not_flaky') : 'not_checked';
+  // Flakiness needs history: with fewer than two reports in the trend nothing was checked.
+  const flakeStatus: ReportCompare['flakeStatus'] =
+    trend && trend.reports >= 2 ? (knownFlakyFailures.length ? 'known_flaky' : 'not_flaky') : 'not_checked';
   const curOut = outcomeMap(current);
   const baseOut = outcomeMap(baseline);
   const changedOutcomes: ReportCompare['changedOutcomes'] = [];
@@ -582,23 +590,73 @@ function confidenceCalibrationForReports(reports: Array<{ file: string; report: 
   };
 }
 
-export function findReportJsonFiles(root: string): string[] {
+/** Report JSON files for the project at `root`, oldest first: the latest qa_report JSON of every
+ *  persisted session (~/.swipium/runs/<project-hash>/<id>/report/report-<ms>.json, plus registry
+ *  sessions in custom dirs), then report files copied into the project (`.swipium/runs` or
+ *  `.swipium/ci`, e.g. downloaded CI artifacts). One file per session, so a session that called
+ *  qa_report twice is one run, not two. */
+/** Strip run-specific tokens from a failure reason so the same failure matches across runs:
+ *  timestamps, UUIDs, long hex ids and long numbers (ms, pids). Short numbers such as HTTP status
+ *  codes are kept, so "HTTP 500" and "HTTP 404" stay different failures. */
+function scrubReason(text: string): string {
+  return text
+    .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z?/g, ':ts')
+    .replace(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/gi, ':uuid')
+    .replace(/\b(?=[a-f0-9]*\d)[a-f0-9]{8,}\b/gi, ':id')
+    .replace(/\b\d{5,}\b/g, ':n')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function findReportJsonFiles(root: string, home = homedir()): string[] {
   const out: string[] = [];
+  try {
+    for (const s of findProjectSessions(root, home)) if (s.reportPath) out.push(s.reportPath);
+  } catch {
+    /* no readable session history */
+  }
+  const copied: string[] = [];
+  const isReportFile = (name: string) => name === 'report.json' || /^report-\d+\.json$/.test(name);
   const walk = (dir: string) => {
-    for (const ent of readdirSync(dir, { withFileTypes: true })) {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const ent of entries) {
       const p = join(dir, ent.name);
       if (ent.isDirectory()) walk(p);
-      else if (ent.isFile() && ent.name === 'report.json') out.push(p);
+      else if (ent.isFile() && isReportFile(ent.name)) copied.push(p);
     }
   };
   for (const base of [join(root, '.swipium', 'runs'), join(root, '.swipium', 'ci')]) {
     if (existsSync(base)) walk(base);
   }
-  return out.sort();
+  return [...new Set([...out, ...copied.sort()])];
+}
+
+/** A report file as trend input, or null when it is unreadable or not a Swipium report. */
+function loadTrendReport(file: string): ReportData | null {
+  try {
+    const r = loadReport(file);
+    if (!r || typeof r !== 'object' || !Array.isArray(r.testOutcomes) || !Array.isArray(r.findings)) return null;
+    if (!r.testOutcomes.every((o) => o && typeof o === 'object' && typeof o.workflow === 'string')) return null;
+    if (!r.findings.every((f) => f && typeof f === 'object')) return null;
+    return r;
+  } catch {
+    return null;
+  }
 }
 
 export function trendForReports(files: string[]): TrendSummary {
-  const reports = files.map((f) => ({ file: f, report: loadReport(f) }));
+  const unreadableReports: string[] = [];
+  const reports: Array<{ file: string; report: ReportData }> = [];
+  for (const file of files) {
+    const report = loadTrendReport(file);
+    if (report) reports.push({ file, report });
+    else unreadableReports.push(file);
+  }
   const byFlow = new Map<string, string[]>();
   const byContext = new Map<string, string[]>();
   const codeCounts = new Map<string, number>();
@@ -748,6 +806,7 @@ export function trendForReports(files: string[]): TrendSummary {
       .map(([code, count]) => ({ code, count }));
   return {
     reports: reports.length,
+    unreadableReports,
     passRate,
     passRateByAppPlatformBackend,
     medianRuntimeMs: median(times),

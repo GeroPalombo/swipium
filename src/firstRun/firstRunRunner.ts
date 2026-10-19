@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { parseSnapshot } from '../snapshot/parse.js';
 import { settle } from '../snapshot/settle.js';
 import { waitForAppRender } from '../snapshot/renderWait.js';
+import { isForegroundOf } from '../lib/launchWait.js';
 import { iosAlertCancel, permissionDeniedNote } from '../snapshot/overlays.js';
 import { structuredSignature } from '../explore/signatures.js';
 import { resolveFixtureValue, hasDisposableState } from '../fixtures/catalog.js';
@@ -257,7 +258,7 @@ export async function runFirstRun(
   const executeAction = async (action: PlannedAction, screen: string): Promise<'done' | 'blocked' | 'no_change'> => {
     // `screen` is the foreground owner the action was planned on. qa_report counts a recorded
     // action as evidence only when the app under test was in front.
-    const appForeground = !!session.appId && screen.split('/')[0].startsWith(session.appId) ? { appForeground: true } : {};
+    const appForeground = isForegroundOf(screen, session.appId) ? { appForeground: true } : {};
     const cx = Math.round((action.bounds?.[0] ?? 0) + ((action.bounds?.[2] ?? 0) - (action.bounds?.[0] ?? 0)) / 2);
     const cy = Math.round((action.bounds?.[1] ?? 0) + ((action.bounds?.[3] ?? 0) - (action.bounds?.[1] ?? 0)) / 2);
     if (action.type === 'type') {

@@ -24,7 +24,12 @@ export interface Overlay {
   dismissible?: boolean; // best-effort: does it carry a close/dismiss affordance?
 }
 
-const LOGBOX_RE = /open debugger|view warnings|LogBox|\b\d+ (warning|error)s?\b/i;
+// LogBox: its own wording ("Open debugger", "Log 1 of 3", "Console Error"), or a warning/error
+// count only together with LogBox's Minimize / Dismiss buttons. A count alone is app copy too
+// ("2 errors in your form").
+const LOGBOX_RE = /open debugger|view warnings|LogBox|\blog \d+ of \d+\b|\bconsole (?:error|warning)\b/i;
+const LOGBOX_COUNT_RE = /\b\d+ (?:warning|error)s?\b/i;
+const LOGBOX_BUTTON_RE = /^\s*(?:minimize|dismiss)\s*$/i;
 const REDBOX_RE =
   /unhandled (js|javascript) exception|render error|reload\b.*\bdismiss|EarlyJsError|\[runtime not ready\]|cannot find native module|app entry not found|entry point named .{1,40} (?:was|has) not (?:been )?registered/i;
 
@@ -126,6 +131,9 @@ export function detectTreeOverlays(allNodes: RawNode[], screen?: [number, number
     out.push({ type: 'rn_redbox', detail: 'React Native redbox (fatal JS error) overlay' });
   } else if (LOGBOX_RE.test(joined)) {
     const node = allNodes.find((n) => LOGBOX_RE.test(text(n)));
+    out.push({ type: 'rn_logbox', detail: 'React Native LogBox warning/error overlay', bounds: node?.bounds });
+  } else if (LOGBOX_COUNT_RE.test(joined) && allNodes.some((n) => LOGBOX_BUTTON_RE.test(n.text) || LOGBOX_BUTTON_RE.test(n.desc))) {
+    const node = allNodes.find((n) => LOGBOX_COUNT_RE.test(text(n)));
     out.push({ type: 'rn_logbox', detail: 'React Native LogBox warning/error overlay', bounds: node?.bounds });
   }
 

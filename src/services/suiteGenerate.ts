@@ -4,8 +4,9 @@
 // produces REAL files (not a note). Honest: when there are no recorded actions it returns a typed
 // `skipped` result rather than pretending a suite was created.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { writeFileNoFollow } from '../lib/noFollowFs.js';
 import { generatePom, mergePomFile, type GeneratedFile, type PomResult } from '../suite/pom.js';
 import { generateTestCases } from '../suite/testcase.js';
 import { compileSuite, flowSlug, writeCompiledFlow } from '../suite/compile.js';
@@ -26,6 +27,9 @@ export interface CompiledFlowInfo {
   /** The flows/ copy had hand edits and was kept; the new output is at newOutputPath. */
   keptEditedFlow?: boolean;
   newOutputPath?: string;
+  /** The file holding THIS run's compiled output (compiled/<slug>.flow.yaml). Replay reads it,
+   *  never flowPath: a kept hand-edited flows/ copy is not what was just generated. */
+  replayPath?: string;
 }
 
 export interface SuiteGenerationResult {
@@ -58,9 +62,9 @@ export function writeSuiteFiles(session: Session, files: GeneratedFile[]): strin
   const written: string[] = [];
   for (const f of files) {
     const abs = join(base, f.path);
-    mkdirSync(dirname(abs), { recursive: true });
-    // merge into existing page objects / suite files instead of dropping what earlier suites use
-    writeFileSync(abs, mergePomFile(f.path, existsSync(abs) ? readFileSync(abs, 'utf8') : undefined, f.content));
+    // merge into existing page objects / suite files instead of dropping what earlier suites use;
+    // no-follow, so a committed symlink under .swipium/ never redirects the write
+    writeFileNoFollow(session.root, abs, mergePomFile(f.path, existsSync(abs) ? readFileSync(abs, 'utf8') : undefined, f.content));
     written.push(abs);
   }
   return written;
@@ -182,11 +186,13 @@ export function generateAndCompileSuite(sessions: SessionStore, session: Session
       let flowPath: string | undefined;
       let compiledPath: string | undefined;
       let kept: string | undefined;
+      let replayPath: string | undefined;
       if (ok) {
         // A hand-edited .swipium/flows/<slug>.yaml is kept; the new output goes to <slug>.yaml.new.
         const w = writeCompiledFlow(session.root, slug, f.yaml);
         flowPath = w.flowPath;
         compiledPath = w.compiledPath;
+        replayPath = w.compiledPath;
         if (w.kept && w.newPath) kept = w.newPath;
         written.push(w.kept && w.newPath ? w.newPath : flowPath, compiledPath);
       }
@@ -197,6 +203,7 @@ export function generateAndCompileSuite(sessions: SessionStore, session: Session
         flowPath,
         compiledPath,
         errors: [...f.errors, ...parse.errors],
+        ...(replayPath ? { replayPath } : {}),
         ...(kept ? { keptEditedFlow: true, newOutputPath: kept } : {}),
       });
     }
@@ -209,7 +216,8 @@ export function generateAndCompileSuite(sessions: SessionStore, session: Session
   let manifestPath: string | undefined;
   if (save) {
     manifestPath = join(session.root, '.swipium', 'suites', 'smoke.manifest.json');
-    writeFileSync(
+    writeFileNoFollow(
+      session.root,
       manifestPath,
       JSON.stringify(
         {

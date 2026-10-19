@@ -7,6 +7,7 @@ import { existsSync } from 'node:fs';
 import { lintSuitePages } from '../suite/lint.js';
 import { compileSuite, flowSlug, writeCompiledFlow } from '../suite/compile.js';
 import { parseFlow } from '../flows/schema.js';
+import { didYouMean } from './main.js';
 
 function resolveRoot(arg?: string): string {
   if (!arg) return process.cwd();
@@ -51,22 +52,37 @@ const SUITE_USAGE =
 
 /** Flags each subcommand accepts; anything else is a usage error (a typo'd --strict must not pass CI). */
 const SUITE_FLAGS: Record<string, string[]> = { lint: ['--strict'], compile: ['--suite', '--force'], init: [] };
+const SUITE_SUBCOMMANDS = Object.keys(SUITE_FLAGS);
+const HELP_FLAGS = ['--help', '-h'];
+
+function usageError(message: string): void {
+  process.stderr.write(`swipium suite: ${message}\n\n${SUITE_USAGE}`);
+  process.exitCode = 2;
+}
 
 export async function runSuite(args: string[]): Promise<void> {
-  const sub = args[0];
-  const known = sub ? SUITE_FLAGS[sub] : undefined;
-  const unknown = known
-    ? args.slice(1).find((a, i, rest) => a.startsWith('-') && !known.includes(a) && rest[i - 1] !== '--suite')
-    : undefined;
-  if (unknown) {
-    process.stderr.write(`swipium suite ${sub}: unknown option ${unknown}\n\n${SUITE_USAGE}`);
-    process.exitCode = 2;
+  // --help / -h prints usage and exits 0 for every subcommand (and for bare `swipium suite --help`).
+  if (args.some((a, i) => HELP_FLAGS.includes(a) && args[i - 1] !== '--suite')) {
+    process.stdout.write(SUITE_USAGE);
+    process.exitCode = 0;
     return;
   }
+  const sub = args[0];
+  const known = sub ? SUITE_FLAGS[sub] : undefined;
+  if (!known) {
+    if (!sub) return usageError('missing subcommand');
+    const hint = didYouMean(sub, SUITE_SUBCOMMANDS);
+    return usageError(`unknown subcommand "${sub}"${hint ? ` (did you mean "${hint}"?)` : ''}`);
+  }
+  const unknown = args.slice(1).find((a, i, rest) => a.startsWith('-') && !known.includes(a) && rest[i - 1] !== '--suite');
+  if (unknown) return usageError(`${sub}: unknown option ${unknown}`);
+  const suiteIdx = args.indexOf('--suite');
+  const suiteRel = suiteIdx >= 0 ? args[suiteIdx + 1] : undefined;
+  if (suiteIdx >= 0 && (!suiteRel || suiteRel.startsWith('-'))) return usageError(`${sub}: --suite expects a value`);
   // The positional projectRoot: skip flags and the value that follows --suite.
-  const root = resolveRoot(args.find((a, i) => i > 0 && !a.startsWith('--') && args[i - 1] !== '--suite'));
-  if (sub && sub !== 'init' && !existsSync(root)) {
-    process.stdout.write(`Project root not found: ${root}\n`);
+  const root = resolveRoot(args.find((a, i) => i > 0 && !a.startsWith('-') && args[i - 1] !== '--suite'));
+  if (sub !== 'init' && !existsSync(root)) {
+    process.stderr.write(`swipium suite ${sub}: project root not found: ${root}\n`);
     process.exitCode = 2;
     return;
   }
@@ -89,7 +105,6 @@ export async function runSuite(args: string[]): Promise<void> {
   }
 
   if (sub === 'compile') {
-    const suiteRel = args.includes('--suite') ? args[args.indexOf('--suite') + 1] : undefined;
     const r = compileToFlows(root, suiteRel, args.includes('--force'));
     r.lines.forEach((l) => process.stdout.write(l + '\n'));
     process.exitCode = r.ok && r.slugs.length ? 0 : 2;
@@ -110,9 +125,5 @@ export async function runSuite(args: string[]): Promise<void> {
       ].join('\n'),
     );
     process.exitCode = 0;
-    return;
   }
-
-  process.stdout.write(SUITE_USAGE);
-  process.exitCode = 2;
 }

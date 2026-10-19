@@ -9,6 +9,7 @@ import { queryIssues } from '../issues/index.js';
 import type { IssueEnvironment, IssuePlatform, SourceRevision } from '../issues/schema.js';
 import { restoreNetwork } from '../tools/network.js';
 import { runWithSignal, throwIfCancelled } from '../lib/abortScope.js';
+import { makeRedactor } from '../lib/redact.js';
 import { runFirstRun } from '../firstRun/firstRunRunner.js';
 import type { Driver } from '../drivers/Driver.js';
 import type { Session, SessionStore } from '../session/store.js';
@@ -107,10 +108,20 @@ export async function runMobileAudit(
   };
 
   const checks: MobileAuditCheckResult[] = [];
-  const finalize = async (id: string, title: string, raw: RawCheckResult): Promise<void> => {
+  // Check reasons can quote screen text and first-run stop reasons (a typed credential, an OTP):
+  // redacted with the session's secrets before they reach the issue ledger or the result.
+  const redactor = makeRedactor(session.secrets);
+  const redact = (s: string | undefined): string | undefined => (s === undefined ? s : (redactor(s) ?? s));
+  const finalize = async (id: string, title: string, given: RawCheckResult): Promise<void> => {
     // Cancelled call: a check that errored/fell short because it was aborted is not evidence about
     // the app. Unwind (CancelledError) instead of recording a fail/blocked check or an issue.
     throwIfCancelled();
+    const raw: RawCheckResult = {
+      ...given,
+      reason: redact(given.reason),
+      nextStep: redact(given.nextStep),
+      workflow: redact(given.workflow),
+    };
     const issueId = await recordIssue(title, raw);
     if (issueId) issueIds.push(issueId);
     checks.push({
@@ -354,10 +365,14 @@ async function runAccountCycle(
     // stored generated credentials and hide the forgot-password entrypoint (account-cycle bug).
     const ev: AuditEvidenceCtx = { sessions, session, driver, appId: session.appId };
     let loggedOutText = '';
+    // Login-again only means something after a logout that passed (else there is no logged-out
+    // state to log back in from, and re-running first-run would "pass" on the still-logged-in home).
+    let loggedOut = false;
     try {
       const lo = await C.findAndTapLogout(ev, true);
       loggedOutText = lo.loggedOutText;
-      if (lo.tapped && lo.authSurface)
+      loggedOut = lo.tapped && lo.authSurface;
+      if (loggedOut)
         await finalize('logout', 'Logout', {
           status: 'pass',
           reason: 'logged out: reached a logged-out auth surface',
@@ -399,54 +414,62 @@ async function runAccountCycle(
 
     // Login again: re-run first-run, which now reuses the generated credentials (hasProvidedCredentials
     // > login intent). Pass ONLY when an authenticated/home state is observed; OTP/MFA > needs_input.
-    try {
-      const fr2 = await runFirstRun(sessions, session, driver, { mode: 'until_home', allowGeneratedAccount: true });
-      let login: RawCheckResult;
-      if (fr2.state === 'completed')
-        login = {
-          status: 'pass',
-          reason: `re-authenticated to home with the generated account (${fr2.pathTaken ?? 'login'})`,
-          evidenceUris: fr2.evidenceUris,
-          workflow: 'account_cycle',
-        };
-      else if (fr2.accountOutcome === 'reached_verification')
-        login = {
-          status: 'blocked',
-          category: 'hard_gate',
-          severity: 'medium',
-          reason: 'login-again hit an OTP/verification gate (needs a real code)',
-          evidenceUris: fr2.evidenceUris,
-          workflow: 'account_cycle',
-        };
-      else if (fr2.needsInput)
-        login = {
-          status: 'blocked',
-          category: 'hard_gate',
-          severity: 'medium',
-          reason: `login-again needs input: ${fr2.needsInput.reason}`,
-          evidenceUris: fr2.evidenceUris,
-          workflow: 'account_cycle',
-        };
-      else
-        login = {
-          status: 'fail',
-          category: 'app_bug',
-          severity: 'high',
-          reason: `could not log back in with the generated account (${fr2.state}: ${fr2.stoppedReason})`,
-          evidenceUris: fr2.evidenceUris,
-          workflow: 'account_cycle',
-        };
-      await finalize('login_again', 'Login again', login);
-    } catch (e) {
+    if (!loggedOut)
       await finalize('login_again', 'Login again', {
-        status: 'fail',
-        category: 'app_bug',
-        severity: 'high',
-        reason: `login-again errored: ${String((e as Error).message ?? e)}`,
+        status: 'skipped',
+        reason: 'logout did not pass this run, so there was no logged-out state to log back in from',
         evidenceUris: [],
         workflow: 'account_cycle',
       });
-    }
+    else
+      try {
+        const fr2 = await runFirstRun(sessions, session, driver, { mode: 'until_home', allowGeneratedAccount: true });
+        let login: RawCheckResult;
+        if (fr2.state === 'completed')
+          login = {
+            status: 'pass',
+            reason: `re-authenticated to home with the generated account (${fr2.pathTaken ?? 'login'})`,
+            evidenceUris: fr2.evidenceUris,
+            workflow: 'account_cycle',
+          };
+        else if (fr2.accountOutcome === 'reached_verification')
+          login = {
+            status: 'blocked',
+            category: 'hard_gate',
+            severity: 'medium',
+            reason: 'login-again hit an OTP/verification gate (needs a real code)',
+            evidenceUris: fr2.evidenceUris,
+            workflow: 'account_cycle',
+          };
+        else if (fr2.needsInput)
+          login = {
+            status: 'blocked',
+            category: 'hard_gate',
+            severity: 'medium',
+            reason: `login-again needs input: ${fr2.needsInput.reason}`,
+            evidenceUris: fr2.evidenceUris,
+            workflow: 'account_cycle',
+          };
+        else
+          login = {
+            status: 'fail',
+            category: 'app_bug',
+            severity: 'high',
+            reason: `could not log back in with the generated account (${fr2.state}: ${fr2.stoppedReason})`,
+            evidenceUris: fr2.evidenceUris,
+            workflow: 'account_cycle',
+          };
+        await finalize('login_again', 'Login again', login);
+      } catch (e) {
+        await finalize('login_again', 'Login again', {
+          status: 'fail',
+          category: 'app_bug',
+          severity: 'high',
+          reason: `login-again errored: ${String((e as Error).message ?? e)}`,
+          evidenceUris: [],
+          workflow: 'account_cycle',
+        });
+      }
 
     // Finalize forgot-password with the evidence captured on the logged-out surface (above).
     await finalize('forgot_password', 'Forgot password surface', forgotResult);

@@ -5,8 +5,7 @@
 // compile the flow against backend capabilities without touching a device.
 
 import { z } from 'zod';
-import { existsSync, readFileSync } from 'node:fs';
-import { join, isAbsolute } from 'node:path';
+import { existsSync } from 'node:fs';
 import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, qaStop, qaAnnotate, unknownSessionError } from '../lib/result.js';
 import {
@@ -21,6 +20,7 @@ import {
 } from '../flows/schema.js';
 import { seedExactCommand } from '../flows/seedExec.js';
 import { withinRootOrNull } from '../flows/paths.js';
+import { loadFlowSource, type FlowSourceErrorCode } from '../flows/source.js';
 import { makeRedactor } from '../lib/redact.js';
 import type { FixtureSeed } from '../session/store.js';
 import { lintFlowObjectWithOptions } from '../flows/lint.js';
@@ -34,6 +34,7 @@ import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { displayArgv } from '../lib/commandTemplate.js';
 import { stableHash } from '../lib/stableHash.js';
 import { isToolListed } from '../core/capabilityGroups.js';
+import { currentSignal } from '../lib/abortScope.js';
 import { GitScopeForbiddenError } from '../lib/spawn.js';
 import { configuredOcrCommand } from '../visual/ocr.js';
 import { resolveMaskProvider, resolveVisualProvider } from '../visual/provider.js';
@@ -47,81 +48,6 @@ import { resolveProjectRoot } from '../context/projectRoot.js';
 const ALL_BACKENDS: AutomationBackend[] = ['android-direct', 'ios-raw-simulator', 'ios-wda', 'appium-uiautomator2', 'appium-xcuitest'];
 
 const STATUS_ICON: Record<string, string> = { ready: '✅', candidate: '🟡', blocked: '⛔' };
-
-export type FlowSourceErrorCode = 'FLOW_NOT_FOUND' | 'INVALID_ARGUMENT' | 'INVALID_FLOW' | 'UNSAFE_ACTION_REFUSED';
-
-/** Flow files are YAML (JSON is valid YAML). Explicit paths must carry one of these extensions so a
- *  read-only check/plan can't be pointed at `.env`, keys or other non-flow files. */
-const FLOW_FILE_EXT = /\.(ya?ml|json)$/i;
-
-/** Resolve a flow's YAML from explicit text, a path, or a name under .swipium/flows.
- *  Paths are confined to the project root (after realpath, like templates/baselines and
- *  qa_flow_repair targets): an absolute or `..` path outside it is refused with
- *  UNSAFE_ACTION_REFUSED and never read. */
-export function loadFlowSource(
-  root: string | undefined,
-  flow?: string,
-  flowYaml?: string,
-): { yamlText?: string; source?: string; error?: string; errorCode?: FlowSourceErrorCode } {
-  if (flowYaml && flowYaml.trim()) return { yamlText: flowYaml, source: 'inline' };
-  if (!flow) return { error: 'Provide a flow name, a path, or flowYaml.', errorCode: 'INVALID_ARGUMENT' };
-  if (!root) {
-    return {
-      error: `Flow "${flow}" can't be resolved without a project root (flow files are confined to the project root). Pass projectRoot or set SWIPIUM_PROJECT_ROOT, or pass inline flowYaml.`,
-      errorCode: isAbsolute(flow) ? 'UNSAFE_ACTION_REFUSED' : 'FLOW_NOT_FOUND',
-    };
-  }
-  const explicitPath = isAbsolute(flow) || /[\\/]/.test(flow) || FLOW_FILE_EXT.test(flow);
-  if (explicitPath && !FLOW_FILE_EXT.test(flow)) {
-    return {
-      error: `Refusing to read "${flow}": flow files must be .yaml, .yml or .json.`,
-      errorCode: 'UNSAFE_ACTION_REFUSED',
-    };
-  }
-  const raw: string[] = [];
-  if (explicitPath) raw.push(isAbsolute(flow) ? flow : join(root, flow));
-  if (!isAbsolute(flow)) {
-    raw.push(
-      join(root, '.swipium', 'flows', `${flow}.yaml`),
-      join(root, '.swipium', 'flows', `${flow}.yml`),
-      join(root, '.swipium', 'flows', `${flow}.json`),
-    );
-    if (FLOW_FILE_EXT.test(flow)) raw.push(join(root, '.swipium', 'flows', flow));
-  }
-  const candidates: string[] = [];
-  for (const p of raw) {
-    const confined = withinRootOrNull(root, p);
-    if (confined) candidates.push(confined);
-    else if (p === raw[0] && explicitPath) {
-      return {
-        error: `Refusing to read "${flow}": it resolves outside the project root (${root}). Flow files must live under the project root (normally .swipium/flows).`,
-        errorCode: 'UNSAFE_ACTION_REFUSED',
-      };
-    }
-  }
-  for (const p of candidates) {
-    if (existsSync(p)) {
-      try {
-        const text = readFileSync(p, 'utf8');
-        // A POM test (page/element steps) is not a flow; point at its compiled flow.
-        if (/^#\s*Swipium test \(POM\)/m.test(text)) {
-          const slug = (text.match(/^name:\s*["']?([^"'\n]+)["']?\s*$/m)?.[1] ?? '').trim().replace(/[^\w.-]+/g, '-');
-          return {
-            error: `${p} is a POM test (page/element steps), not a runnable flow.${slug ? ` Run its compiled flow instead: qa_flow_run flow:"${slug}" (.swipium/flows/${slug}.yaml; regenerate with qa_flow_compile).` : ' Compile it with qa_flow_compile and run the flow under .swipium/flows.'}`,
-            errorCode: 'INVALID_FLOW',
-          };
-        }
-        return { yamlText: text, source: p };
-      } catch (e) {
-        return { error: `Could not read ${p}: ${String(e)}`, errorCode: 'INVALID_FLOW' };
-      }
-    }
-  }
-  return {
-    error: `Flow not found. Looked for: ${candidates.join(', ') || '(no project root; pass projectRoot or set SWIPIUM_PROJECT_ROOT)'}`,
-    errorCode: 'FLOW_NOT_FOUND',
-  };
-}
 
 /**
  * The project root a flow tool reads from: explicit projectRoot arg > the session's root >
@@ -175,7 +101,7 @@ function openUrlPreview(url: string, vars: Record<string, string>, secrets: Iter
   return { url, resolvedUrl: makeRedactor(secrets)(resolved) ?? resolved, variables };
 }
 
-function flowMutationAffects(
+export function flowMutationAffects(
   flow: Flow,
   session: { appId?: string; fixtures: Array<{ name: string; seed?: FixtureSeed }>; secrets?: Iterable<string> },
   source: string | undefined,
@@ -214,7 +140,7 @@ function flowMutationAffects(
 }
 
 /** One line per mutating step for the consent's exactCommand (seeds show their argv/URL). */
-function mutationCommandLines(affects: ReturnType<typeof flowMutationAffects>): string[] {
+export function mutationCommandLines(affects: ReturnType<typeof flowMutationAffects>): string[] {
   return affects.mutations.map((m) => {
     if (m.kind === 'seed' && 'fixture' in m)
       return `${m.step}:seed ${m.fixture} [${m.seedType}] > ${m.command ?? '(no seed spec, step will fail)'}  (repo-supplied, unreviewed)`;
@@ -224,7 +150,7 @@ function mutationCommandLines(affects: ReturnType<typeof flowMutationAffects>): 
   });
 }
 
-function flowMutationRisk(affects: ReturnType<typeof flowMutationAffects>): 'low' | 'medium' | 'high' {
+export function flowMutationRisk(affects: ReturnType<typeof flowMutationAffects>): 'low' | 'medium' | 'high' {
   if (affects.mutations.some((m) => m.kind === 'seed' && m.seedType === 'script')) return 'high';
   if (
     affects.externalProviders.length ||
@@ -243,7 +169,7 @@ function ocrSteps(flow: Flow): Array<{ step: number; kind: 'tapOcrText' | 'asser
   return out;
 }
 
-/** Record a qa_flow_run result as the session's outcome for the flow (round-3 note: a failed run
+/** Record a qa_flow_run result as the session's outcome for the flow (a failed run
  *  left qa_report at SHIP / COVERED). Filed like a saved flow in qa_smoke (classifyFlowFailure):
  *  locator drift of a generated flow > fail + other (CAUTION), an app failure > fail + app_bug
  *  (BLOCK), missing data > blocked, a budget stop > skipped. A cancelled run records nothing.
@@ -769,11 +695,25 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
       // Flake detection: run N times and classify (deterministic-pass | deterministic-fail | flaky).
       if (runs > 1) {
         const results = [];
+        // A cancelled call stops the batch: the cancelled run is not a flake signal, so it is
+        // left out of the classification and the remaining runs are skipped.
+        let cancelled = false;
         for (let i = 0; i < runs; i++) {
           const b = sessions.budgetStop(session);
           if (b) break;
-          results.push(await runFlow(sessions, session, driver, parsed, { variables: runVariables, mutationConsent }));
+          const r = await runFlow(sessions, session, driver, parsed, { variables: runVariables, mutationConsent });
+          if (r.failureCode === 'CANCELLED') {
+            cancelled = true;
+            if (!results.length) return qaAnnotate(qaOk({ ...r }, `flow "${r.name}" cancelled before any run completed`), notes);
+            break;
+          }
+          results.push(r);
+          if (currentSignal()?.aborted) {
+            cancelled = true;
+            break;
+          }
         }
+        if (cancelled) notes.push(`cancelled after ${results.length} of ${runs} run(s); the remaining runs were skipped`);
         const flake = classifyFlakeResults(results, runs);
         // One outcome for the batch: the first failure (a flaky flow is not a pass), else a pass.
         const firstFail = results.find((r) => !r.passed);
@@ -790,6 +730,7 @@ export function registerFlow(server: McpServer, sessions: SessionStore): void {
             {
               flow: parsed.name,
               runs: results.length,
+              ...(cancelled ? { cancelled: true } : {}),
               passes: flake.passed,
               fails: flake.failed,
               passRate: flake.passRate,

@@ -8,6 +8,7 @@ import { statSync } from 'node:fs';
 import {
   adbDevices,
   bootEmulator,
+  emulatorFailure,
   waitForBoot,
   BOOT_POLL_MS,
   ensureQuickbootSnapshot,
@@ -129,6 +130,8 @@ export async function prepareAndroid(
       // Same ~120 s budget as before, polled every BOOT_POLL_MS instead of 2 s.
       for (const deadline = Date.now() + 120_000; !serial && Date.now() < deadline;) {
         if (aborted()) return { ok: false, aborted: true };
+        const failed = emulatorFailure(emu);
+        if (failed) return { ok: false, failureCode: 'EMULATOR_BOOT_FAILED', error: `${failed} (AVD "${a.bootTarget}")` };
         const fresh = (await adbDevices()).filter((s) => !before.has(s));
         if (fresh.length) {
           const { emulators } = await classifyAndroidSerials(fresh);

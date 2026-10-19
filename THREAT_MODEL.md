@@ -1,6 +1,6 @@
 # Swipium Threat Model
 
-Last updated: 2026-10-11 (Swipium 2.3.0)
+Last updated: 2026-10-19 (Swipium 2.3.5)
 
 This document describes what Swipium protects, where its trust boundaries are, who it defends
 against, and which controls enforce each defense. Every control listed here is implemented in the
@@ -173,7 +173,11 @@ A developer clones an untrusted repository and points Swipium at it.
   by the repository (.swipium/config.json), unreviewed". This covers seed scripts, build
   commands, `ocrCommand` and `visualMaskCommand`. The OCR consent names both the mask command and
   the OCR command, so a harmless-looking OCR command cannot hide an arbitrary mask command. The
-  `qa_flow_run` seed consent lists each seed's argv or URL.
+  `qa_flow_run` seed consent lists each seed's argv or URL. Replaying a generated suite
+  (`qa_generate target:"suite"` with `replay: same_session` or `fresh_state`) runs this run's
+  compiled output, never a kept hand-edited `flows/` copy, and asks the same `flow_mutation_run`
+  consent before any replayed flow with seed, `openUrl` or other mutating steps runs (folded into
+  the `suite_fresh_state_replay` challenge for fresh-state replay).
 - **Environment allowlist** (`src/flows/schema.ts`, `src/fixtures/catalog.ts`). Flows and fixtures
   resolve `${VAR}` from the environment only for names that start with `SWIPIUM_`. A repo flow
   cannot read `${AWS_SECRET_ACCESS_KEY}` or `${HOME}`. Values read from the environment are
@@ -216,13 +220,32 @@ A developer clones an untrusted repository and points Swipium at it.
   read, reported as `loadRepairs` and flagged by `qa_suite_lint` (`unsafe_id`), and
   `qa_suite_export` skips any YAML path that would resolve outside
   `.swipium/test-suite-export/yaml/`. Ids given to `qa_suite_update` are validated as before.
-  Suite writes (`test-suite.json`, the `test-suite/` mirror, `test-runs/` and
-  `test-suite-export/`) refuse to write through a symlink: every path component below the project
-  root is checked with `lstat`, and a symlinked file or folder fails the write with
-  `ARTIFACT_PATH_UNWRITABLE` instead of following it out of the project.
-  Not yet covered: a committed symlink at `.swipium/issues-log.jsonl` makes the issue log append
-  through it, outside the project. Check a cloned repo's `.swipium/` for symlinks before running
-  Swipium on it.
+  A `test-suite.json` that exists but does not parse is never replaced by an empty suite: merges
+  and saves refuse with an error until it is fixed or moved aside. Suite saves are atomic and run
+  under a cross-process lock (`.swipium/test-suite.lock`).
+- **No-follow writes under `.swipium/`** (`src/lib/noFollowFs.ts`). A cloned repo can commit
+  `.swipium/`, any folder below it, or a single file (`issues-log.jsonl`, `test-suite.json`,
+  `.gitignore`) as a symlink to a path outside the project. Every Swipium write, append and delete
+  in the project checks each path component below the project root with `lstat` and refuses a
+  symlink (an `ELOOP` error; suite tools report it as `ARTIFACT_PATH_UNWRITABLE`) instead of
+  following it. That covers the issue log, index, lock and evidence retention, the app map and its
+  history and index folders, the persistent suite and its mirror, run ledgers and export, the
+  feature-coverage cache, explore memory, compiled and generated flows, flow templates, generated
+  page objects and suite manifests, `.swipium/automation/`, `swipium scan`'s `config.json`,
+  `fixtures.json` and `flows/README.md` (now written atomically), the `.swipium/` line Swipium
+  appends to `.gitignore`, and `qa_bundletool`'s APKs and APK sets under `.swipium/artifacts`
+  (refused with `ARTIFACT_PATH_UNWRITABLE` before bundletool or `unzip` runs). Deletes are the same: evidence retention and app-map history pruning
+  do nothing when any folder on the way is a symlink, and never follow or remove a symlinked entry.
+  The repo-committable `pruneEvidenceAfterDays` is honoured down to 1 day only, so a tiny value
+  cannot turn every ledger write into "delete all evidence". Generated Appium files written into
+  the project's own test folder (outside `.swipium/`) are created with an exclusive create (`wx`),
+  so an existing file or a planted symlink is never overwritten or followed, and only when the real
+  path of the target folder is inside the real project root. The source walkers (static scan,
+  code and feature index) do not follow symlinks.
+  Not covered: reads still follow symlinks (a linked `config.json` or `policy.json` is read, and a
+  file that does not parse falls back to defaults). The check and the write are separate steps, so
+  another local process racing to swap a folder for a symlink in between is out of scope; a
+  committed symlink is caught.
 - **git refusal**. Swipium refuses to spawn `git` itself or through `sh -c`-style payloads
   (`src/lib/spawn.ts`). This is a speed bump against accidental repository changes, not a security
   boundary: a consented script or build can run anything the user can, git included.
@@ -294,6 +317,15 @@ their limits.
   through secret-named variables, `qa_continue_from_blocker` or a secure field so they are
   registered and redacted. A typing read-back mismatch (`TEXT_INPUT_MISMATCH`, also in
   flows) reports lengths only, never the typed or the read-back value.
+- **Child process environment** (`childEnv` in `src/lib/spawn.ts`). The tools Swipium starts
+  (builds, Metro, xcodebuild and managed WDA, adb, the emulator, screen recorders, OCR and mask
+  commands) get the server's environment minus `SWIPIUM_TEST_*`, `SWIPIUM_SECRET_*` and any
+  `SWIPIUM_*` name with a credential part by the flow secret-name rule (`SWIPIUM_API_KEY`,
+  `SWIPIUM_VERIFICATION_CODE`; not `SWIPIUM_SHIPPING_ADDRESS`), so a child
+  that dumps its environment into a crash report or verbose log can't leak the test account.
+  Fixture seed scripts are the one exception: they are the project's own code and may sign in
+  with that account, so they still inherit those variables. A credential in a variable without the
+  `SWIPIUM_` prefix, or under a name with no credential part, is passed on.
 - **Log scrubbing** (`scrubLogCredentials` in `src/lib/redact.ts`). Text artifacts in a session's
   `logs/` folder (logcat, Metro and WDA logs) are also scrubbed of credential-looking values that were
   never registered: `Bearer`/`Basic` tokens, JWTs, `password=`/`token:`/`api_key=`-style pairs, and

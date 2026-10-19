@@ -141,7 +141,7 @@ const XCODE_SIGNATURES: Signature[] = [
   },
   {
     name: 'compile',
-    test: /error: .*\.(?:m|mm|swift|h|c|cpp):|Command CompileC failed|Swift Compiler Error|fatal error: '.*' file not found/i,
+    test: /error: .*\.(?:m|mm|swift|h|c|cpp):|\.(?:m|mm|swift|h|c|cpp):\d+:\d+: error:|Command CompileC failed|Swift Compiler Error|fatal error: '.*' file not found/i,
     failureCode: 'XCODEBUILD_FAILED',
     owner: 'app',
     reason: 'A compile error in the iOS sources failed the build.',

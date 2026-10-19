@@ -17,7 +17,8 @@ import { existsSync } from 'node:fs';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { log } from '../lib/logger.js';
-import { run } from '../lib/spawn.js';
+import { CancelledError, currentSignal } from '../lib/abortScope.js';
+import { childEnv, run } from '../lib/spawn.js';
 
 export const DEVICE_JAR = '/data/local/tmp/swipium-dumper.jar';
 export const SOCKET_NAME = 'swipium-dumper';
@@ -75,22 +76,35 @@ function base(serial?: string): string[] {
   return serial ? ['-s', serial] : [];
 }
 
-/** One request per connection: write the line, read to EOF. */
-export function agentRequest(port: number, line: string, timeoutMs: number): Promise<string> {
+/** One request per connection: write the line, read to EOF. A `signal` abort (the tool call was
+ *  cancelled) destroys the socket and rejects with CancelledError at once. */
+export function agentRequest(port: number, line: string, timeoutMs: number, signal?: AbortSignal): Promise<string> {
+  if (signal?.aborted) return Promise.reject(new CancelledError());
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     const sock = net.connect(port, '127.0.0.1', () => sock.write(`${line}\n`));
+    const finish = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      finish();
+      sock.destroy();
+      reject(new CancelledError());
+    };
     const timer = setTimeout(() => {
+      finish();
       sock.destroy();
       reject(new Error(`android dumper: no answer to ${line.split(' ')[0]} in ${timeoutMs} ms`));
     }, timeoutMs);
+    signal?.addEventListener('abort', onAbort, { once: true });
     sock.on('data', (c: Buffer) => chunks.push(c));
     sock.on('end', () => {
-      clearTimeout(timer);
+      finish();
       resolve(Buffer.concat(chunks).toString('utf8'));
     });
     sock.on('error', (e) => {
-      clearTimeout(timer);
+      finish();
       reject(e);
     });
   });
@@ -146,7 +160,7 @@ async function launchAgent(serial: string | undefined, port: number): Promise<Ag
   const child = spawn(
     'adb',
     [...base(serial), 'shell', `CLASSPATH=${DEVICE_JAR} exec app_process / ${MAIN_CLASS} ${SOCKET_NAME} ${AGENT_IDLE_EXIT_MS}`],
-    { stdio: ['ignore', 'pipe', 'pipe'] },
+    { stdio: ['ignore', 'pipe', 'pipe'], env: childEnv() },
   );
   child.unref();
   child.on('error', () => undefined); // a spawn failure surfaces as "not ready"/exit below, never an uncaught 'error'
@@ -208,7 +222,7 @@ export function androidDumperUsable(serial?: string, env: NodeJS.ProcessEnv = pr
 export async function agentDump(serial: string | undefined, timeoutMs = 10_000): Promise<string> {
   const st = await ensureAgent(serial);
   const idleTimeout = Math.max(0, Math.min(DUMP_IDLE_TIMEOUT_MS, timeoutMs - 1000));
-  return parseAgentResponse(await agentRequest(st.port, `DUMP ${DUMP_IDLE_MS} ${idleTimeout}`, timeoutMs));
+  return parseAgentResponse(await agentRequest(st.port, `DUMP ${DUMP_IDLE_MS} ${idleTimeout}`, timeoutMs, currentSignal()));
 }
 
 /** Stop the agent (frees the UiAutomation slot), drop the forward and the jar. Best-effort. */

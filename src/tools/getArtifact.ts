@@ -1,5 +1,5 @@
 // qa_get_artifact: portable fallback for clients without MCP resource support.
-// To protect the context budget (review #7), images and other binaries (recordings) default to
+// To protect the context budget, images and other binaries (recordings) default to
 // METADATA (uri/mime/size/path); fetch bytes explicitly with mode:"inline". Text defaults to inline.
 // Both this tool and resources/read apply the same size caps (head, or tail for logs, + marker).
 

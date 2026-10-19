@@ -80,6 +80,26 @@ describe('swipium gc', () => {
     expect(parseGcArgs(['--days', 'x'], {}).error).toMatch(/--days/);
   });
 
+  it('rejects an empty, blank, negative or fractional --days/--keep instead of reading it as 0', async () => {
+    for (const argv of [
+      ['--days='],
+      ['--days', ''],
+      ['--days= '],
+      ['--days=-1'],
+      ['--days', '1.5'],
+      ['--keep='],
+      ['--days', '0x10'],
+      ['--days'],
+    ])
+      expect(parseGcArgs(argv, {}).error, argv.join(' ')).toMatch(/expects a non-negative integer/);
+    expect(parseGcArgs(['--days='], {}).error).toMatch(/got nothing/);
+    expect(parseGcArgs(['--days=0'], {})).toMatchObject({ days: 0 });
+    rmSync(runs, { recursive: true, force: true });
+    const dir = sessionDir('projE', 'recent', 1);
+    expect(await runGc(['--days=', '--keep', '0'], () => {})).toBe(2);
+    expect(existsSync(dir)).toBe(true);
+  });
+
   it('reports reclaimed space; --dry-run deletes nothing', async () => {
     rmSync(runs, { recursive: true, force: true });
     const dir = sessionDir('projD', 'ancient', 100);

@@ -32,9 +32,11 @@ export function parseGcArgs(argv: string[], env: NodeJS.ProcessEnv = process.env
     else if (a === '--days' || a === '--keep' || a.startsWith('--days=') || a.startsWith('--keep=')) {
       const [flag, inline] = a.split('=', 2);
       const raw = inline ?? argv[++i];
-      const n = Number(raw);
-      if (raw == null || !Number.isInteger(n) || n < 0) {
-        out.error = `${flag} expects a non-negative integer (got ${raw ?? 'nothing'})`;
+      // Digits only: Number('') and Number(' ') are 0, so `--days=` would otherwise mean "delete
+      // everything older than today".
+      const n = raw != null && /^\d+$/.test(raw) ? Number(raw) : NaN;
+      if (!Number.isSafeInteger(n)) {
+        out.error = `${flag} expects a non-negative integer (got ${raw ? JSON.stringify(raw) : 'nothing'})`;
         return out;
       }
       if (flag === '--days') out.days = n;
@@ -54,7 +56,7 @@ export function formatBytes(n: number): string {
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
-/** Run gc; returns the process exit code. */
+/** Run gc; returns the process exit code (0 ok, 1 some entries could not be processed, 2 usage). */
 export async function runGc(argv: string[], out: (s: string) => void = (s) => void process.stdout.write(s)): Promise<number> {
   const args = parseGcArgs(argv);
   if (args.help) {
@@ -83,5 +85,6 @@ export async function runGc(argv: string[], out: (s: string) => void = (s) => vo
       (r.skipped ? `  prune skipped: ${r.skipped}\n` : '') +
       (r.errors ? `  ${r.errors} entr${r.errors === 1 ? 'y' : 'ies'} could not be processed (see logs)\n` : ''),
   );
-  return 0;
+  // Non-zero when gc could not do all of its job, so scripts and CI notice.
+  return r.errors ? 1 : 0;
 }

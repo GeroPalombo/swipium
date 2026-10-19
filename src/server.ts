@@ -449,6 +449,18 @@ async function resumeConsentPrompt(
   return applyConsentDecision(decision, handle.consentId, req, first, args, reinvoke, ledger);
 }
 
+/** The arguments of the single approved re-invocation. A call that created its session before
+ * asking (qa_test_this without sessionId) is re-run IN that session: without it the handler would
+ * create a second session and orphan the first with its requested ledger row. Exported for tests. */
+export function consentReinvokeArgs(
+  first: Record<string, unknown>,
+  consentId: string,
+  envelopeSession: string | undefined,
+): Record<string, unknown> {
+  const hasSession = typeof first.sessionId === 'string' && first.sessionId !== '';
+  return { ...first, ...(!hasSession && envelopeSession ? { sessionId: envelopeSession } : {}), consentId, approve: true };
+}
+
 /** The outcome of a consent decision (shared by both eras): an envelope for a refusal, or the
  * tool re-invoked once with the consent attached for an approval. */
 async function applyConsentDecision(
@@ -541,7 +553,7 @@ async function applyConsentDecision(
       extra,
     );
   }
-  const out = await reinvoke([{ ...first, consentId, approve: true }, ...args.slice(1)]);
+  const out = await reinvoke([consentReinvokeArgs(first, consentId, envelopeSession), ...args.slice(1)]);
   const again = pendingConsentId(out);
   if (again) {
     burnConsent(again);
@@ -846,7 +858,11 @@ function installResponseModeWrapper(
         const { value, resolved } = await runWithSignal(callSignal, () =>
           runWithProgressSink(progressSink, () =>
             withRootResolutionRecording(async () =>
-              runWithConsentScope(first?.sessionId, () => runWithResponseMode(mode, () => handler(...callArgs))),
+              // The scope follows the args actually run: an approved re-invocation may carry the
+              // session its envelope created (consentReinvokeArgs).
+              runWithConsentScope((callArgs[0] as { sessionId?: string } | undefined)?.sessionId, () =>
+                runWithResponseMode(mode, () => handler(...callArgs)),
+              ),
             ),
           ),
         );

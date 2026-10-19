@@ -8,6 +8,7 @@
 import { run, runBinary } from '../lib/spawn.js';
 import { currentSignal, isAbortError, sleepOrCancel } from '../lib/abortScope.js';
 import { adbDevices } from '../lib/android.js';
+import { androidDumperEnabled } from './androidDumper.js';
 import type { DumpOptions, Driver, ImeState, TextDeliverability } from './Driver.js';
 import { fingerprintRawScreencap, type PixelFingerprint } from '../lib/screenFingerprint.js';
 import { isTextFieldClass, parseSnapshot } from '../snapshot/parse.js';
@@ -226,6 +227,12 @@ const KEYCODE: Record<'back' | 'home' | 'enter', string> = {
 export const SCREEN_SIZE_TTL_MS = 30_000;
 /** A dump younger than this may answer screenSize() from its root bounds (no adb round trip). */
 export const DUMP_SCREEN_FRESH_MS = 5_000;
+
+/** PURE: the `Error: ...` line(s) `am start` printed (it exits 0 on a failed start), or undefined. */
+export function amStartError(stdout: string): string | undefined {
+  const lines = stdout.split('\n').filter((l) => /^Error/.test(l));
+  return lines.length ? lines.map((l) => l.trim()).join('; ') : undefined;
+}
 
 /** Serials whose cached screen size must be dropped (Swipium changed the orientation). Global so
  * the orientation tool can invalidate every DirectDriver bound to that device. */
@@ -464,7 +471,11 @@ export class DirectDriver implements Driver {
       else if (typeof value === 'number') extras.push('--ef', deviceShellQuote(key), String(value));
       else extras.push('--es', deviceShellQuote(key), deviceShellQuote(String(value)));
     }
-    await this.adb(['shell', 'am', 'start', '-W', '-S', '-n', deviceShellQuote(component), ...extras], { timeoutMs: 30000 });
+    const r = await this.adb(['shell', 'am', 'start', '-W', '-S', '-n', deviceShellQuote(component), ...extras], { timeoutMs: 30000 });
+    // `am start` exits 0 even when the activity could not start; the reason is an `Error:` line.
+    // `am start` prints its Error lines on stderr on Android 7+ (adb shell v2 keeps it separate).
+    const err = amStartError(`${r.stdout}\n${r.stderr}`);
+    if (err) throw new Error(`Could not launch ${pkg} with arguments: ${err}`);
   }
 
   async terminateApp(pkg: string): Promise<void> {
@@ -535,7 +546,7 @@ export class DirectDriver implements Driver {
     const deadline = opts.timeoutMs ? Date.now() + opts.timeoutMs : undefined;
     // Opt-in (SWIPIUM_ANDROID_DUMPER=agent): persistent on-device dumper, ~7x faster. Any
     // failure stops it (it holds the UiAutomation slot exec-out needs) and falls through.
-    if (process.env.SWIPIUM_ANDROID_DUMPER) {
+    if (androidDumperEnabled()) {
       const agent = await import('./androidDumper.js');
       if (agent.androidDumperUsable(this.serial)) {
         try {
@@ -590,14 +601,14 @@ export class DirectDriver implements Driver {
       await sleepOrCancel(400);
     }
     const hint =
-      /could not get idle state/i.test(lastErr) && !process.env.SWIPIUM_ANDROID_DUMPER
+      /could not get idle state/i.test(lastErr) && !androidDumperEnabled()
         ? ' (the screen never goes idle, e.g. a looping animation; SWIPIUM_ANDROID_DUMPER=agent dumps such screens without waiting for idle)'
         : '';
     throw new Error(`uiautomator dump failed after ${attempt} attempt(s): ${lastErr}${hint}`);
   }
 
   /** Last dump's root-derived screen size (see dumpRootScreen), for screenSize(). */
-  private dumpScreen?: { at: number; serial?: string; size: { width: number; height: number } };
+  private dumpScreen?: { at: number; epoch: number; serial?: string; size: { width: number; height: number } };
 
   /** Keep the screen-size cache honest from every dump: a rotation change drops it, and a
    * [0,0]-anchored root gives a free current-axes size. */
@@ -605,7 +616,7 @@ export class DirectDriver implements Driver {
     const rotation = dumpRotation(xml);
     if (rotation !== null && this.sizeCache && this.sizeCache.rotation !== rotation) this.sizeCache = undefined;
     const size = dumpRootScreen(xml);
-    this.dumpScreen = size ? { at: Date.now(), serial: this.serial, size } : undefined;
+    this.dumpScreen = size ? { at: Date.now(), epoch: epochOf(this.serial), serial: this.serial, size } : undefined;
   }
 
   /** When the last tap went out (clearFocusedText waits CLEAR_AFTER_TAP_MS past it). */
@@ -847,14 +858,18 @@ export class DirectDriver implements Driver {
     const c = this.sizeCache;
     if (c && c.serial === this.serial && c.epoch === epochOf(this.serial) && Date.now() - c.at < SCREEN_SIZE_TTL_MS) return { ...c.size };
     const ds = this.dumpScreen;
-    if (ds && ds.serial === this.serial && Date.now() - ds.at < DUMP_SCREEN_FRESH_MS) return { ...ds.size };
+    // A dump taken before a Swipium orientation change describes the old axes.
+    if (ds && ds.serial === this.serial && ds.epoch === epochOf(this.serial) && Date.now() - ds.at < DUMP_SCREEN_FRESH_MS)
+      return { ...ds.size };
     const epoch = epochOf(this.serial);
     const read = await this.readScreenSize();
-    this.sizeCache = read ? { at: Date.now(), epoch, serial: this.serial, rotation: read.rotation, size: read.size } : undefined;
+    // An unknown rotation (dumpsys input failed) answers with natural axes this once, uncached.
+    this.sizeCache =
+      read && read.rotation !== null ? { at: Date.now(), epoch, serial: this.serial, rotation: read.rotation, size: read.size } : undefined;
     return read ? { ...read.size } : null;
   }
 
-  private async readScreenSize(): Promise<{ size: { width: number; height: number }; rotation: number } | null> {
+  private async readScreenSize(): Promise<{ size: { width: number; height: number }; rotation: number | null } | null> {
     try {
       const r = await this.adb(['shell', 'wm', 'size']);
       // prefer "Override size:" if present, else "Physical size:"
@@ -863,8 +878,8 @@ export class DirectDriver implements Driver {
       const size = { width: Number(m[1]), height: Number(m[2]) };
       // `wm size` reports the NATURAL orientation; swap for a 90°/270° rotation so gestures
       // and keyboard/obstruction geometry use the current screen axes.
-      const rotation = await this.rotation();
-      return { rotation, size: rotation % 2 === 1 ? { width: size.height, height: size.width } : size };
+      const rotation = await this.readRotation();
+      return { rotation, size: (rotation ?? 0) % 2 === 1 ? { width: size.height, height: size.width } : size };
     } catch {
       return null;
     }
@@ -872,11 +887,17 @@ export class DirectDriver implements Driver {
 
   /** Current display rotation 0-3 (0 when unknown). */
   async rotation(): Promise<number> {
+    return (await this.readRotation()) ?? 0;
+  }
+
+  /** Current display rotation 0-3, or null when `dumpsys input` failed or did not report one. */
+  private async readRotation(): Promise<number | null> {
     try {
       const r = await this.adb(['shell', 'dumpsys', 'input'], { timeoutMs: 8000 });
-      return parseInputRotation(r.stdout) ?? 0;
-    } catch {
-      return 0;
+      return parseInputRotation(r.stdout);
+    } catch (e) {
+      if (isAbortError(e)) throw e;
+      return null;
     }
   }
 
@@ -920,7 +941,11 @@ export class DirectDriver implements Driver {
 
   async openUrl(url: string): Promise<void> {
     // Single-quoted for the device shell: `a=1&b=2` or spaces would otherwise split/background.
-    await this.adb(['shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', deviceShellQuote(url)]);
+    const r = await this.adb(['shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', deviceShellQuote(url)]);
+    // e.g. "Error: Activity not started, unable to resolve Intent" when no app handles the URL.
+    // `am start` prints its Error lines on stderr on Android 7+ (adb shell v2 keeps it separate).
+    const err = amStartError(`${r.stdout}\n${r.stderr}`);
+    if (err) throw new Error(`Could not open ${url}: ${err}`);
   }
 
   async disableAnimations(): Promise<void> {

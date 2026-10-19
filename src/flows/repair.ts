@@ -1,7 +1,6 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
-import { withinRootOrNull } from './paths.js';
+import { loadFlowSource, type FlowSourceErrorCode } from './source.js';
 import { parse as parseYaml, stringify } from 'yaml';
 import { suggestLocator, type LocatorPlatform, type LocatorSuggestion } from '../oracle/locator.js';
 import { signature } from '../snapshot/parse.js';
@@ -69,26 +68,22 @@ export interface FlowRepairProposal {
   };
 }
 
+/** Error codes repairFlow returns: the shared flow loader's (UNSAFE_ACTION_REFUSED for a path
+ *  outside the project root or without a .yaml/.yml/.json extension) plus INVALID_FLOW for a flow
+ *  that does not parse and INVALID_ARGUMENT for a failedStep outside the flow. */
+export type FlowRepairErrorCode = FlowSourceErrorCode;
+
+/** The flow to repair, read with the same loader (and the same root/extension confinement) as
+ *  qa_flow_run. A file source is writable by `apply`; inline YAML is not. */
 export function resolveFlowSource(
   root: string,
   flow?: string,
   flowYaml?: string,
-): { source: string; yaml: string; writable: boolean } | { error: string; errorCode?: 'PATH_OUTSIDE_ROOT' | 'FLOW_NOT_FOUND' } {
-  if (flowYaml && flowYaml.trim()) return { source: 'inline', yaml: flowYaml, writable: false };
-  if (!flow) return { error: 'Provide flow or flowYaml.' };
-  // Confined to the project root (realpath + within-root): `apply` writes this file, so an
-  // absolute path or ../ escape must never let a repair overwrite YAML elsewhere on disk.
-  const raw = [flow, join('.swipium', 'flows', `${flow}.yaml`), join('.swipium', 'flows', `${flow}.yml`), join('.swipium', 'flows', flow)];
-  const candidates = raw.map((p) => withinRootOrNull(root, p));
-  if (candidates.every((p) => p === null) || candidates[0] === null)
-    return {
-      error: `Flow path "${flow}" resolves outside the project root (${root}). qa_flow_repair only reads and patches flows under the project root.`,
-      errorCode: 'PATH_OUTSIDE_ROOT',
-    };
-  const path = candidates.find((p): p is string => !!p && existsSync(p));
-  return path
-    ? { source: path, yaml: readFileSync(path, 'utf8'), writable: true }
-    : { error: `Flow not found: ${flow}`, errorCode: 'FLOW_NOT_FOUND' };
+): { source: string; yaml: string; writable: boolean } | { error: string; errorCode: FlowRepairErrorCode } {
+  const src = loadFlowSource(root, flow, flowYaml);
+  if (src.error || src.yamlText == null)
+    return { error: src.error ?? 'Flow could not be loaded', errorCode: src.errorCode ?? 'FLOW_NOT_FOUND' };
+  return { source: src.source ?? 'inline', yaml: src.yamlText, writable: src.source !== 'inline' };
 }
 
 function stepAt(flow: Flow, failedStep: number): { phase: FlowRepairSuggestion['phase']; phaseIndex: number; step: FlowStep } | null {
@@ -616,7 +611,7 @@ function applyReplacement(
       list[phaseIndex] = {
         inputText:
           typeof v === 'object' && v
-            ? { ...(v as Record<string, unknown>), into: replacement }
+            ? { ...(v as Record<string, unknown>), into: replacement, text: step.value }
             : { into: replacement, text: step.value, secret: step.secret },
       };
       break;
@@ -700,13 +695,13 @@ export function repairFlow(opts: {
   elements: SnapshotElement[];
   apply?: boolean;
   platform?: LocatorPlatform;
-}): FlowRepairResult | { error: string; errorCode?: 'PATH_OUTSIDE_ROOT' | 'FLOW_NOT_FOUND' } {
+}): FlowRepairResult | { error: string; errorCode: FlowRepairErrorCode } {
   const src = resolveFlowSource(opts.root, opts.flow, opts.flowYaml);
   if ('error' in src) return src;
   const parsed = parseFlow(src.yaml);
-  if (parsed.errors.length || !parsed.flow) return { error: `Flow is invalid: ${parsed.errors.join('; ')}` };
+  if (parsed.errors.length || !parsed.flow) return { error: `Flow is invalid: ${parsed.errors.join('; ')}`, errorCode: 'INVALID_FLOW' };
   const at = stepAt(parsed.flow, opts.failedStep);
-  if (!at) return { error: `failedStep ${opts.failedStep} is outside the flow step range.` };
+  if (!at) return { error: `failedStep ${opts.failedStep} is outside the flow step range.`, errorCode: 'INVALID_ARGUMENT' };
   const platform = opts.platform ?? 'generic';
   const originalSelector = selectorOf(at.step);
   const currentSig = currentScreenSignature(opts.elements);
@@ -811,7 +806,8 @@ export function repairFlow(opts: {
             : `apply refused: the proposal is low confidence (no text match for "${originalSelector ?? 'target'}"). Review proposedYaml and apply it manually if correct.`,
         );
       else {
-        writeFileSync(src.source, proposedYaml);
+        // A .json flow stays JSON (the loader reads it as YAML, but its author expects JSON back).
+        writeFileSync(src.source, /\.json$/i.test(src.source) ? `${JSON.stringify(parseYaml(proposedYaml), null, 2)}\n` : proposedYaml);
         patched = true;
       }
     }

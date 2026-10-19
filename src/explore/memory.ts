@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { writeFileAtomicNoFollow } from '../lib/noFollowFs.js';
 import type { ExploreSummary } from './runner.js';
 import type { SerializedGraph } from './graph.js';
 
@@ -59,7 +60,6 @@ export function appendExploreMemory(root: string, appId: string | undefined, ent
   memory.appId = appId ?? 'unknown-app';
   memory.entries.push(entry);
   memory.entries = memory.entries.slice(-50);
-  mkdirSync(join(root, '.swipium', 'explore-history'), { recursive: true });
-  writeFileSync(path, JSON.stringify(memory, null, 2));
+  writeFileAtomicNoFollow(root, path, JSON.stringify(memory, null, 2));
   return path;
 }

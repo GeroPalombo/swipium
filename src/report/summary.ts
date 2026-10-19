@@ -12,10 +12,14 @@ export interface RiskInput {
   highSeverityCount: number;
   failCount: number;
   blockedCount: number;
+  /** Failed workflows that are not app failures (missing_test_data, destructive_refused, intentionally_skipped). The
+   *  release gate blocks on them by default, so the headline is never SHIP: a CAUTION. */
+  otherFailCount?: number;
   overrideCount: number;
   topHighFinding?: string; // detail of the first high-severity finding
   topFail?: { workflow: string; reason?: string };
   topBlocked?: { workflow: string; recommendedSetup?: string };
+  topOtherFail?: { workflow: string; category?: string; reason?: string };
   /**
    * The run did not test what it set out to. `reachedApp:false` (stopped before the app was
    * launched/exercised, or nothing at all was captured) is a BLOCK; `reachedApp:true` (the app was
@@ -65,6 +69,8 @@ export function releaseAssessment(i: RiskInput): ReleaseAssessment {
   if (i.appHealth === 'unverified')
     cautions.push('app health unverified (visual-only: no UI tree was read, so an error screen could be missed; check the screenshot)');
   if (i.blockedCount > 0) cautions.push(`${i.blockedCount} workflow(s) blocked by missing preconditions`);
+  if ((i.otherFailCount ?? 0) > 0)
+    cautions.push(`${i.otherFailCount} workflow(s) failed for a non-app reason (the release gate fails on them unless the policy warns)`);
   if (i.overrideCount > 0) cautions.push(`${i.overrideCount} guardrail override(s) used`);
   for (const g of i.coverageGaps ?? []) cautions.push(g.reason);
   if (cautions.length) {
@@ -72,7 +78,9 @@ export function releaseAssessment(i: RiskInput): ReleaseAssessment {
       ? `Not tested: ${i.notTested.reason}. Exercise it (or provide the missing setup), then re-run.`
       : i.topBlocked
         ? `Provide setup for "${i.topBlocked.workflow}"${i.topBlocked.recommendedSetup ? `: ${i.topBlocked.recommendedSetup}` : ''}, then re-run.`
-        : (i.coverageGaps?.[0]?.next ?? 'Review the cautions below before shipping.');
+        : i.topOtherFail
+          ? `Resolve "${i.topOtherFail.workflow}"${i.topOtherFail.category ? ` (${i.topOtherFail.category})` : ''}${i.topOtherFail.reason ? `: ${i.topOtherFail.reason}` : ''}, then re-run.`
+          : (i.coverageGaps?.[0]?.next ?? 'Review the cautions below before shipping.');
     return { risk: 'caution', reasons: cautions, nextAction: next };
   }
 

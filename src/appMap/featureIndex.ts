@@ -7,7 +7,7 @@
 // v1 is intentionally deterministic (Non-Goals): regex + name heuristics, not semantic analysis.
 // The schema carries tokens so synonym/locale expansion can happen at query time later.
 
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative, extname, basename } from 'node:path';
 
 export type SymbolKind = 'screen' | 'component' | 'service' | 'hook' | 'function' | 'class' | 'constant';
@@ -186,7 +186,9 @@ export function buildFeatureIndex(root: string, opts: { maxFiles?: number; maxBy
       const full = join(dir, name);
       let st;
       try {
-        st = statSync(full);
+        // lstat: a symlink is neither followed nor indexed (a link to an ancestor would loop
+        // forever, and one pointing out of the project would index files that are not its own).
+        st = lstatSync(full);
       } catch {
         continue;
       }

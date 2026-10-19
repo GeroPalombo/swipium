@@ -30,7 +30,7 @@ steps:
   - assertVisible: "Home"
 ```
 
-Validate it with `qa_flow_check {flow:"login-smoke"}`, then run it on a prepared session with `qa_flow_run {sessionId, flow:"login-smoke"}`. The password is typed but treated as a secret, because its variable name contains `pass`.
+Validate it with `qa_flow_check {flow:"login-smoke"}`, then run it on a prepared session with `qa_flow_run {sessionId, flow:"login-smoke"}`. The password is typed but treated as a secret, because `PASSWORD` in its variable name marks it as a credential.
 
 ## File format
 
@@ -44,7 +44,7 @@ A flow is a YAML map with a non-empty `name` and a non-empty `steps` list, saved
 | `teardown` | Steps that always run afterwards, even after a failure. |
 | `mode` | `structured` (default: needs a UI tree), `visual` (screenshot-based), or `auto`. A structured flow on an iOS Simulator without WDA, or in a visual-fallback session, is refused with `BACKEND_UNSUPPORTED`. |
 | `appId` | The app `prepareTarget` and `restartApp` act on (default: the session's app). |
-| `fixtures` | Names of fixtures the flow needs (from `qa_start_session` or `.swipium/fixtures.json`). |
+| `fixtures` | A list of names of fixtures the flow needs (from `qa_start_session` or `.swipium/fixtures.json`). Anything other than a list of strings is a parse error. |
 | `budgetProfile` | A budget profile label, such as `guardrail` or `full_smoke`. |
 
 Each step is either a bare word (`prepareTarget`, `restartApp`, `waitForIdle`, `clearOverlay`, `networkOffline`, `networkOnline`) or a map with exactly one key. Variables are referenced inline as `${NAME}`; there is no top-level variables block.
@@ -52,6 +52,7 @@ Each step is either a bare word (`prepareTarget`, `restartApp`, `waitForIdle`, `
 **Selectors** (in `tap`, `inputText into`, `assertVisible`, `waitForVisible`, and similar steps):
 
 - Plain text matches an element's text, content description, or id (case-insensitive substring; curly and straight quotes and apostrophes count as equal, so `Don't allow` matches `Don’t allow`). `assertVisible` and `waitForVisible` text matches work the same way.
+- In `assertVisible`, `assertNotVisible`, `waitForVisible`, and `scrollTo`, plain text matches an Android resource id without its package prefix, so in `com.acme.checkout` the query `Checkout` no longer matches every element. A full `com.acme.checkout:id/pay` query still matches the whole id.
 - `id=<resource-id>` matches an Android resource id.
 - `accessibility id=…`, `name=…`, `predicate string=…`, and `class chain=…` are native WDA selectors on iOS.
 
@@ -83,13 +84,15 @@ Prefer durable ids (`testID`, `accessibilityIdentifier`, resource ids) over visi
 | `waitForVisible` | `waitForVisible: "<selector>"` or `{text` / `id` / `"accessibility id", timeoutMs}` | Waits for an element to appear. |
 | `clearOverlay` | bare | Clears a blocking overlay (see below). |
 | `networkOffline`, `networkOnline` | bare | Turns airplane mode on or off (Android 11+). Mutating. |
-| `seed` | `seed: <fixture>` | Runs the fixture's `seed` spec (deeplink, script, or API call). Mutating. |
+| `seed` | `seed: <fixture>` | Runs the fixture's `seed` spec (deeplink, script, or API call). A script seed times out after 60 s and an API call after 30 s. Mutating. |
 | `note` | `note: "<reason>"` or `{outcome, reason}` | Records a workflow outcome (`pass` by default). |
 | `screenshot` | `screenshot: "<reason>"` | Captures evidence. |
 
-Wait times and `timeoutMs` values must be non-negative numbers; anything else is a schema error.
+Wait times and `timeoutMs` values must be non-negative numbers; anything else is a schema error. Other option values are checked the same way instead of falling back to a default: `minScore`, `minConfidence`, and `threshold` must be numbers from 0 to 1, a swipe `distance` greater than 0 and at most 1, `area` one of the five areas, a `note` `outcome` one of `pass`, `fail`, `blocked`, `skipped`, or `not_applicable`, `secret` `true` or `false`, and `into` a selector string. Before 2.3.5 an unknown `note` outcome silently became `pass`. A number where a step takes text (`tap: 1`, `inputText: 007`) is used exactly as written, so `inputText: 007` types `007`, not `7`.
 
 **Typing**: `inputText` on Android types long text in verified pieces and clears a field fully in replace mode, the same way `qa_act type` does ([details](tools.md#qa_act)). With `into`, the field is cleared first and, after the screen settles, the focused field under the tap is read back like `qa_act` replace mode (its value, not a label after it): a field that holds other text is cleared and retyped once (in short, paced bursts on Android, like `qa_act`), and fails the step with `TEXT_INPUT_MISMATCH` only if it still holds other text (the detail gives lengths only, never the value), while a reformatted or cut-short value passes. On iOS, `into` with a native selector is read back too, from WDA's element value, without a retry. `secret` steps and secure fields are not read back. An adb timeout while typing on a stalled emulator fails the step with `DEVICE_UNRESPONSIVE` (it used to be reported as `WDA_UNREACHABLE`). Without `into`, the text goes to whatever has focus, uncleared, and is not read back.
+
+**Cancelling**: a cancelled `qa_flow_run` call stops at once, including in the middle of a `scrollTo`, an `assertNotVisible`, a seed script or API seed, or a `repeat` batch. The run returns `CANCELLED` and records nothing.
 
 **Budget**: steps count against the session budget. A flow that runs out of budget stops with `BUDGET_EXHAUSTED` on that step; `qa_smoke` records it as a `skipped` workflow ("stopped at step N"), not a flow or app failure.
 
@@ -108,7 +111,7 @@ Flows wait for their targets, so most flows need no explicit waits:
 - `tap` and `inputText into` poll for the target (every 300 ms) for up to 5 s before failing, and `assertVisible` polls for up to 5 s.
 - `inputText into` types as soon as the soft keyboard is up after focusing the field, capped at 600 ms (before 2.3.0 it always slept 600 ms).
 - After every step the screen settles (see [Screens, refs, and settling](concepts.md#screens-refs-and-settling)), and the first lookup of the next step reuses that settled dump instead of taking a new one.
-- `assertNotVisible` checks once. Use `waitForVisible {text, timeoutMs}` for anything slower than 5 s, such as a login round trip.
+- `assertNotVisible` checks once. Use `waitForVisible {text, timeoutMs}` for anything slower than 5 s, such as a login round trip. `waitForVisible {timeoutMs: 0}` checks once too, meaning "visible right now".
 
 ## Batching steps
 
@@ -135,7 +138,7 @@ A failure returns the failed step, a screenshot, and the `failureCode`, like any
 
 A missing variable is not locator drift, so the failure does not point at `qa_flow_repair`.
 
-**Secret names**: a variable whose name contains `pass`, `secret`, `token`, `otp`, `pin`, `cvv`, `key`, or `code` (case-insensitive) is a credential. Its resolved value joins the session's redaction set and is scrubbed everywhere, and `inputText` treats it as secret. So `SWIPIUM_TEST_PASSWORD` and `SWIPIUM_VERIFICATION_CODE` are secrets; `SWIPIUM_TEST_EMAIL` is not. See [Secrets and redaction](concepts.md#secrets-and-redaction).
+**Secret names**: a variable name is split into parts (on `_`, `-`, digits, and camelCase, case-insensitive). It is a credential when a part contains `password`, `passwd`, `passcode`, `passphrase`, `secret`, `token`, or `apikey`; when a whole part is `pass`, `pwd`, `otp`, `totp`, `pin`, `cvv`, `cvc`, `key`, or `code` (or its plural); or when a part is a run-together form such as `OTPCODE`, `PINCODE`, `AUTHCODE`, or `SECRETKEY`. Its resolved value joins the session's redaction set and is scrubbed everywhere, and `inputText` treats it as secret. So `SWIPIUM_TEST_PASSWORD`, `SWIPIUM_VERIFICATION_CODE`, and `SWIPIUM_CLIENTSECRET` are secrets; `SWIPIUM_TEST_EMAIL`, `SWIPIUM_SHIPPING_ADDRESS`, and `SWIPIUM_KEYWORD` are not (before 2.3.5 any name containing `pin` or `key` counted). See [Secrets and redaction](concepts.md#secrets-and-redaction).
 
 Set `SWIPIUM_*` test data in the MCP server's `env` ([environment variables](../README.md#configuration--environment-variables)).
 
@@ -199,6 +202,8 @@ Compiling turns each test into `.swipium/flows/<test name>.yaml` (run it with `q
   "ignoreKnown": ["REVENUECAT_BILLING_UNAVAILABLE_ON_EMULATOR"]
 }
 ```
+
+In `warnOn`, `visual_diff` matches only a failed visual comparison (`assertImage`, `assertOcrText` or `assertDiff`), never a failing `assertVisible` or `waitForVisible`. See [ci-reports.md](ci-reports.md#release-gate-policy) for how the gate matches tokens.
 
 ### Mutations in CI
 

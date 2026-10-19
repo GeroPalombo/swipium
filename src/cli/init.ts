@@ -22,6 +22,7 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve, join, delimiter } from 'node:path';
 import { runVerify } from './verify.js';
+import { didYouMean } from './main.js';
 import { initFlowTemplates } from '../flows/templates.js';
 import { codexEnvVarsLine } from '../lib/codexEnv.js';
 import { codexCoreTools } from '../core/capabilityGroups.js';
@@ -585,6 +586,9 @@ function isDir(p: string): boolean {
   }
 }
 
+/** MCP clients `swipium init <client>` registers with (`init flows` is the separate template scaffold). */
+const INIT_CLIENTS: readonly string[] = ['claude', 'gemini', 'codex', 'cursor', 'vscode'];
+
 const CWD_NOTE = '(cwd should be your mobile app repo: run init from it, or pass --cwd <dir>)';
 
 export const INIT_USAGE =
@@ -646,7 +650,7 @@ export async function runInit(args: string[]): Promise<void> {
     }
     const root = parsed.root != null ? resolve(parsed.root) : process.cwd();
     if (!isDir(root)) {
-      process.stdout.write(`Path not found: ${root}\n`);
+      process.stderr.write(`swipium init flows: path not found: ${root}\n`);
       process.exitCode = 2;
       return;
     }
@@ -667,13 +671,15 @@ export async function runInit(args: string[]): Promise<void> {
     return;
   }
 
-  if (!['claude', 'gemini', 'codex', 'cursor', 'vscode'].includes(client)) {
-    process.stdout.write(INIT_USAGE);
+  if (!INIT_CLIENTS.includes(client)) {
+    const hint = client ? didYouMean(client, [...INIT_CLIENTS, 'flows']) : undefined;
+    const why = client ? `unknown client "${client}"${hint ? ` (did you mean "${hint}"?)` : ''}` : 'missing client';
+    process.stderr.write(`swipium init: ${why}\n\n${INIT_USAGE}`);
     process.exitCode = 2;
     return;
   }
   if (!['local', 'user', 'project'].includes(scope)) {
-    process.stdout.write(`Unknown --scope "${scope}" (expected local, user, or project).\n${INIT_USAGE}`);
+    process.stderr.write(`swipium init: unknown --scope "${scope}" (expected local, user, or project).\n\n${INIT_USAGE}`);
     process.exitCode = 2;
     return;
   }

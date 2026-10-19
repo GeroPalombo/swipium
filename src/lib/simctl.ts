@@ -6,7 +6,7 @@
 // All spawns use arg arrays (injection-safe). Tool/binary names (xcrun/simctl/plutil) are CLI
 // invocations, not configuration to surface.
 
-import { readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { run } from './spawn.js';
@@ -187,12 +187,23 @@ export async function shutdown(udid: string): Promise<void> {
   if (r.code !== 0 && !/current state: Shutdown/i.test(r.stderr)) throw new Error(`shutdown failed: ${r.stderr.trim()}`);
 }
 
-export async function installApp(udid: string, appPath: string): Promise<void> {
-  await run(X, ['simctl', 'install', udid, appPath], { timeoutMs: 120000, rejectOnNonZero: true });
+export async function installApp(udid: string, appPath: string, opts: { signal?: AbortSignal } = {}): Promise<void> {
+  await run(X, ['simctl', 'install', udid, appPath], { timeoutMs: 120000, rejectOnNonZero: true, signal: opts.signal });
 }
 
+/** PURE: does a failed `simctl uninstall` only say the app was not installed (nothing to remove)? */
+export function uninstallNotInstalled(stderr: string): boolean {
+  return /not installed|no such (?:app|bundle)|could not (?:be )?f(?:ind|ound)|unknown (?:app|bundle)/i.test(stderr);
+}
+
+/** Uninstall `bundleId`. An app that was not installed counts as done; any other failure (the
+ *  simulator is not booted, simctl hung) throws instead of silently leaving the app in place. */
 export async function uninstallApp(udid: string, bundleId: string): Promise<void> {
-  await run(X, ['simctl', 'uninstall', udid, bundleId], { timeoutMs: 60000 });
+  const r = await run(X, ['simctl', 'uninstall', udid, bundleId], { timeoutMs: 60000 });
+  if (r.code === 0 || (!r.timedOut && uninstallNotInstalled(r.stderr))) return;
+  throw new Error(
+    `\`xcrun simctl uninstall ${udid} ${bundleId}\` failed${r.timedOut ? ' (timed out)' : ''}: ${r.stderr.trim() || `exit ${r.code}`}`,
+  );
 }
 
 export function classifyIosInstallFailure(message: string): FailureCode {
@@ -301,13 +312,16 @@ export async function erase(udid: string): Promise<void> {
 export async function screenshot(udid: string): Promise<Buffer> {
   // NOTE: `simctl io screenshot -` (stdout) is unreliable across toolchain versions (it can try to
   // "save" to a file literally named "-" on a read-only volume). Write to a temp file + read back.
-  const tmp = join(tmpdir(), `swipium-ios-${udid}-${Date.now()}.png`);
+  // A private temp dir (0700, unpredictable name): a fixed path under the shared tmpdir could be
+  // pre-created as a symlink by another local user.
+  const dir = mkdtempSync(join(tmpdir(), 'swipium-ios-shot-'));
+  const tmp = join(dir, 'screen.png');
   try {
     await run(X, ['simctl', 'io', udid, 'screenshot', '--type', 'png', tmp], { timeoutMs: 20000, rejectOnNonZero: true });
     return readFileSync(tmp);
   } finally {
     try {
-      rmSync(tmp, { force: true });
+      rmSync(dir, { recursive: true, force: true });
     } catch {
       /* best-effort cleanup */
     }

@@ -91,7 +91,8 @@ describe('DirectDriver select-all clear', () => {
     expect(Date.now() - t0).toBeGreaterThanOrEqual(800);
     const t1 = Date.now();
     await d.clearFocusedText(); // no tap since: no wait
-    expect(Date.now() - t1).toBeLessThan(400);
+    // A wait would be about 900 ms; 700 leaves room for a loaded host without hiding one.
+    expect(Date.now() - t1).toBeLessThan(700);
   });
 });
 

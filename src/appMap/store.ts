@@ -5,10 +5,11 @@
 // (Non-Goals), but we DO keep `.swipium/` out of the user's VCS via ensureGitignored().
 
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { ensureGitignored } from '../lib/gitignore.js';
-import { cleanupOrphanTmpFiles, withFileLock, writeFileAtomicSync } from '../lib/lockfile.js';
+import { cleanupOrphanTmpFiles, withFileLock } from '../lib/lockfile.js';
+import { isNoFollowPath, mkdirNoFollow, rmNoFollow, writeFileAtomicNoFollow } from '../lib/noFollowFs.js';
 import { migrateAppMap, type MigrationResult } from './migrations.js';
 import type { AppKnowledgeMap, ProjectIdentity } from './schema.js';
 import type { CodeIndex } from './codeIndex.js';
@@ -39,7 +40,7 @@ export function appMapResourceUri(root: string): string {
  *  whole cycle in this. Locking only the save would still let two writers load the same base map
  *  and clobber each other. saveAppMap itself never locks, so there is no nested acquisition. */
 export function withAppMapLock<T>(root: string, fn: () => T): T {
-  mkdirSync(join(root, SWIPIUM), { recursive: true }); // the lock dir's parent must exist before mkdir(lock)
+  mkdirNoFollow(root, join(root, SWIPIUM)); // the lock dir's parent must exist before mkdir(lock)
   return withFileLock(join(root, SWIPIUM, 'app-map.lock'), fn);
 }
 
@@ -103,30 +104,33 @@ export interface SaveResult {
 /** Write the canonical map + a timestamped history snapshot. Keeps the last 30 snapshots.
  *  Lock-free by design: callers hold withAppMapLock() across their full load > mutate > save cycle. */
 export function saveAppMap(root: string, map: AppKnowledgeMap): SaveResult {
-  mkdirSync(join(root, SWIPIUM), { recursive: true });
-  mkdirSync(appMapHistoryDir(root), { recursive: true });
+  // No-follow: a cloned repo can commit .swipium/ or app-map.history/ as a symlink out of the project.
+  mkdirNoFollow(root, appMapHistoryDir(root));
   ensureGitignored(root);
   const path = appMapPath(root);
   const json = JSON.stringify(map, null, 2);
   // Atomic write (unique tmp + rename, retried on transient Windows sharing violations) so a crash
   // mid-write never leaves a truncated app-map.json. Tmp residue from a writer that crashed between
   // write and rename is swept once it is old enough not to belong to a live writer.
-  writeFileAtomicSync(path, json);
+  writeFileAtomicNoFollow(root, path, json);
   cleanupOrphanTmpFiles(join(root, SWIPIUM), 'app-map.json');
   const historyPath = join(appMapHistoryDir(root), `${safeStamp(map.updatedAt)}.json`);
-  writeFileAtomicSync(historyPath, json);
+  writeFileAtomicNoFollow(root, historyPath, json);
   pruneHistory(root);
   return { path, historyPath, resourceUri: appMapResourceUri(root) };
 }
 
-function pruneHistory(root: string): void {
+/** Keep the newest 30 snapshots. Never deletes through a symlinked .swipium/ or app-map.history/,
+ *  and only removes regular files (rmNoFollow re-checks each entry). */
+export function pruneHistory(root: string): void {
   try {
     const dir = appMapHistoryDir(root);
-    if (!existsSync(dir)) return;
-    const snaps = readdirSync(dir)
-      .filter((f) => f.endsWith('.json'))
+    if (!existsSync(dir) || !isNoFollowPath(root, dir)) return;
+    const snaps = readdirSync(dir, { withFileTypes: true })
+      .filter((e) => e.isFile() && e.name.endsWith('.json'))
+      .map((e) => e.name)
       .sort();
-    for (const stale of snaps.slice(0, Math.max(0, snaps.length - 30))) rmSync(join(dir, stale), { force: true });
+    for (const stale of snaps.slice(0, Math.max(0, snaps.length - 30))) rmNoFollow(root, join(dir, stale));
   } catch {
     /* best-effort */
   }
@@ -134,9 +138,12 @@ function pruneHistory(root: string): void {
 
 export function saveIndexes(root: string, codeIndex: CodeIndex | null, features: FeatureNode[]): void {
   try {
-    mkdirSync(appMapIndexDir(root), { recursive: true });
-    if (codeIndex) writeFileSync(join(appMapIndexDir(root), 'code-symbols.json'), JSON.stringify(codeIndex, null, 2));
-    writeFileSync(join(appMapIndexDir(root), 'feature-index.json'), JSON.stringify({ schemaVersion: 1, features }, null, 2));
+    if (codeIndex) writeFileAtomicNoFollow(root, join(appMapIndexDir(root), 'code-symbols.json'), JSON.stringify(codeIndex, null, 2));
+    writeFileAtomicNoFollow(
+      root,
+      join(appMapIndexDir(root), 'feature-index.json'),
+      JSON.stringify({ schemaVersion: 1, features }, null, 2),
+    );
   } catch {
     /* best-effort: indexes are a cache, not the source of truth */
   }

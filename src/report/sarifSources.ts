@@ -159,6 +159,12 @@ interface RawMap {
   features?: Array<{ id?: string; title?: string; sourceFiles?: string[] }>;
 }
 
+/** A lookup table keyed by app screen / workflow names: no prototype, so a name such as
+ *  "constructor" or "__proto__" is an ordinary key. */
+function nameTable(): Record<string, string> {
+  return Object.create(null) as Record<string, string>;
+}
+
 /**
  * Build the SARIF anchor map for a report: manifest fallback + app-map screen/feature source files
  * (read-only; a missing or corrupt map just means manifest anchoring). Only screens/workflows the
@@ -169,13 +175,18 @@ export function resolveSarifSources(root: string, r: Pick<ReportData, 'findings'
   const out = resolveRootRelativeSources(root, r);
   const prefix = repositoryPrefix(root);
   if (!prefix) return out;
-  const re = (rec?: Record<string, string>) => (rec ? Object.fromEntries(Object.entries(rec).map(([k, v]) => [k, prefix + v])) : rec);
+  const re = (rec?: Record<string, string>) => {
+    if (!rec) return rec;
+    const out = nameTable();
+    for (const [k, v] of Object.entries(rec)) out[k] = prefix + v;
+    return out;
+  };
   return { defaultUri: prefix + out.defaultUri, byScreen: re(out.byScreen), byWorkflow: re(out.byWorkflow) };
 }
 
 /** resolveSarifSources before the repository-root prefix is applied (paths relative to `root`). */
 function resolveRootRelativeSources(root: string, r: Pick<ReportData, 'findings' | 'testOutcomes'>): SarifSourceMap {
-  const out: SarifSourceMap = { defaultUri: projectManifestUri(root), byScreen: {}, byWorkflow: {} };
+  const out: SarifSourceMap = { defaultUri: projectManifestUri(root), byScreen: nameTable(), byWorkflow: nameTable() };
   let map: RawMap | null = null;
   try {
     const p = appMapPath(root);

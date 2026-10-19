@@ -14,11 +14,11 @@
 // log's size/mtime it was derived from. A cache whose stamp no longer matches the log (another
 // process appended) is rebuilt instead of trusted.
 
-import { randomUUID } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { ensureGitignored } from '../lib/gitignore.js';
 import { withFileLock } from '../lib/lockfile.js';
+import { appendFileNoFollow, isNoFollowPath, mkdirNoFollow, writeFileAtomicNoFollow } from '../lib/noFollowFs.js';
 import type { ClassifierPolicy } from './classify.js';
 import { liftSuppression, rebuildRecords, suppressionExpired } from './recurrence.js';
 import type { IssueEvent, IssueIndex, IssueRecord } from './schema.js';
@@ -95,11 +95,13 @@ export function readEvents(root: string): IssueEvent[] {
 /** Append one or more events to the canonical log (creating dirs + gitignore on first write). */
 export function appendEvents(root: string, events: IssueEvent[]): { path: string; count: number } {
   if (events.length === 0) return { path: issuesLogPath(root), count: 0 };
-  mkdirSync(join(root, SWIPIUM), { recursive: true });
+  mkdirNoFollow(root, join(root, SWIPIUM));
   ensureGitignored(root);
   const path = issuesLogPath(root);
   const payload = events.map((e) => JSON.stringify(e)).join('\n') + '\n';
-  appendFileSync(path, payload);
+  // A torn earlier append (crash mid-write) leaves no trailing newline: terminate it first so the
+  // new events start on their own line instead of corrupting the first one.
+  appendFileNoFollow(root, path, payload, { ensureLeadingNewline: true });
   // Retention (policy.retention.pruneEvidenceAfterDays, default 90): large evidence files under
   // .swipium/issues/artifacts/ older than N days are pruned on ledger write. The append-only event
   // log itself is never pruned here (keepIssueEvents).
@@ -107,12 +109,20 @@ export function appendEvents(root: string, events: IssueEvent[]): { path: string
   return { path, count: events.length };
 }
 
+/** Smallest retention honored, in days. policy.json is repo-committable, so a tiny value would
+ *  turn every ledger write into "delete all evidence". */
+export const MIN_EVIDENCE_RETENTION_DAYS = 1;
+
 /** Delete evidence files under `.swipium/issues/artifacts/` whose mtime is older than `days`
- *  (recursively; emptied sub-dirs removed). `days` ≤ 0 / non-finite = disabled. Best-effort: returns
- *  the number of files deleted and never throws. */
+ *  (recursively; emptied sub-dirs removed). `days` <= 0 / non-finite = disabled; a positive value
+ *  below MIN_EVIDENCE_RETENTION_DAYS is raised to it. Never follows a symlink: nothing is walked
+ *  when any folder from the project root down to artifacts/ is one, and a symlinked entry inside it
+ *  is neither followed nor deleted. Best-effort: returns the number of files deleted, never throws. */
 export function pruneEvidence(root: string, days: number | undefined, now: number = Date.now()): number {
   if (typeof days !== 'number' || !Number.isFinite(days) || days <= 0) return 0;
-  const cutoff = now - days * 24 * 60 * 60 * 1000;
+  const cutoff = now - Math.max(days, MIN_EVIDENCE_RETENTION_DAYS) * 24 * 60 * 60 * 1000;
+  const top = issuesArtifactsDir(root);
+  if (!isNoFollowPath(root, top)) return 0;
   let deleted = 0;
   const walk = (dir: string): boolean => {
     let entries;
@@ -125,12 +135,15 @@ export function pruneEvidence(root: string, days: number | undefined, now: numbe
     for (const e of entries) {
       const p = join(dir, e.name);
       try {
+        // Dirent types come from lstat semantics: a symlink is neither a directory nor a file here,
+        // and is left alone (deleting the link would be safe, but it is not ours to clean up).
+        if (e.isSymbolicLink()) continue;
         if (e.isDirectory()) {
           if (walk(p)) {
             rmSync(p, { recursive: true, force: true });
             remaining--;
           }
-        } else if (statSync(p).mtimeMs < cutoff) {
+        } else if (e.isFile() && lstatSync(p).mtimeMs < cutoff) {
           rmSync(p, { force: true });
           deleted++;
           remaining--;
@@ -141,7 +154,7 @@ export function pruneEvidence(root: string, days: number | undefined, now: numbe
     }
     return remaining === 0; // caller may remove an emptied sub-dir
   };
-  walk(issuesArtifactsDir(root));
+  walk(top);
   return deleted;
 }
 
@@ -150,7 +163,7 @@ export function pruneEvidence(root: string, days: number | undefined, now: numbe
  * (`.swipium/issues/.lock`). NOT re-entrant: call it once at the outermost mutation.
  */
 export function withLedgerLock<T>(root: string, fn: () => T): T {
-  mkdirSync(issuesDir(root), { recursive: true });
+  mkdirNoFollow(root, issuesDir(root));
   return withFileLock(join(issuesDir(root), '.lock'), fn);
 }
 
@@ -170,14 +183,12 @@ export function saveIndex(
   index: IssueIndex,
   stamp: { logSize: number; logMtimeMs: number } | null = logStamp(root),
 ): { path: string } {
-  mkdirSync(issuesDir(root), { recursive: true });
+  mkdirNoFollow(root, issuesDir(root));
   ensureGitignored(root);
   const path = issuesIndexPath(root);
   if (stamp) Object.assign(index, stamp);
-  // Unique per writer: two processes sharing `index.json.tmp` could rename each other's half-file.
-  const tmp = `${path}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
-  writeFileSync(tmp, JSON.stringify(index, null, 2));
-  renameSync(tmp, path);
+  // Unique tmp per writer (two processes sharing `index.json.tmp` could rename each other's half-file).
+  writeFileAtomicNoFollow(root, path, JSON.stringify(index, null, 2));
   return { path };
 }
 

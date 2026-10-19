@@ -30,7 +30,8 @@ export type ParsedCommand =
   | { kind: 'help' }
   | { kind: 'version' }
   | { kind: 'sub'; cmd: Subcommand; rest: string[] }
-  | { kind: 'unknown'; cmd: string }
+  /** suggestion: the subcommand one edit away from `cmd` (`swipium sutie` > suite), if any. */
+  | { kind: 'unknown'; cmd: string; suggestion?: Subcommand }
   /** Flags placed BEFORE a subcommand (`swipium -y init claude`): exit 2 with the corrected command
    *  rather than starting a stdio server that ignores the subcommand and waits on stdin. */
   | { kind: 'misplaced'; cmd: Subcommand; flags: string[]; suggestion: string };
@@ -47,14 +48,19 @@ Usage:
   swipium verify              Start the server over stdio, list its tools, run qa_doctor
   swipium scan [path]         Inspect a project; scaffold .swipium/ unless BLOCKED
                               options: [--check | --dry-run | --no-write]
+  swipium init flows [--root <dir>] [--force]
+                              Scaffold Flow V2 templates under .swipium/flows (--force overwrites)
   swipium suite <lint|compile|init> [projectRoot] [--suite suites/smoke.yaml]
+                              options: [--strict] (lint: warnings fail too) [--force] (compile: overwrite hand edits)
   swipium report --format junit|sarif|github-summary|markdown|json
                               options: [--latest | --session <id> | --report <file>] [--root <dir>]
-                                       [--out <file>] [--fail-on-gate]   (swipium report --help)
+                                       [--out <file>] [--fail-on-gate] [--max-age <min>]
   swipium gc [--dry-run] [--days N] [--keep N]
                               Delete old ~/.swipium/runs session dirs + stale projects.json entries
   swipium --help | -h         Show this help
   swipium --version | -v      Print the version
+
+Run \`swipium <command> --help\` for details.
 
 Docs: https://github.com/GeroPalombo/swipium#readme
 `;
@@ -100,7 +106,32 @@ export function parseCommand(argv: string[], warn: (msg: string) => void = (m) =
     warn(`swipium: ignoring unrecognized flag(s) ${ignoredFlags.join(' ')}, starting the stdio MCP server (see swipium --help)\n`);
     return { kind: 'serve', ignoredFlags, ...(verifyChild ? { orphanSweep: false as const } : {}) };
   }
-  return { kind: 'unknown', cmd };
+  const suggestion = didYouMean(cmd, SUBCOMMANDS);
+  return suggestion ? { kind: 'unknown', cmd, suggestion } : { kind: 'unknown', cmd };
+}
+
+/** True when `a` and `b` differ by at most one insertion, deletion, substitution, or swap of two
+ *  adjacent characters (`lnt`/`lint`, `scna`/`scan`). */
+function withinOneEdit(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (Math.abs(a.length - b.length) > 1) return false;
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  if (a.length === b.length) {
+    if (a.slice(i + 1) === b.slice(i + 1)) return true; // substitution
+    return a[i] === b[i + 1] && a[i + 1] === b[i] && a.slice(i + 2) === b.slice(i + 2); // adjacent swap
+  }
+  const [long, short] = a.length > b.length ? [a, b] : [b, a];
+  return long.slice(i + 1) === short.slice(i); // insertion / deletion
+}
+
+/** The single candidate one edit away from `input` (case-insensitive), or undefined when there is
+ *  none or more than one (an ambiguous guess is worse than none). */
+export function didYouMean<T extends string>(input: string, candidates: readonly T[]): T | undefined {
+  const needle = input.toLowerCase();
+  if (needle.length < 2) return undefined;
+  const hits = candidates.filter((c) => c !== input && withinOneEdit(needle, c.toLowerCase()));
+  return hits.length === 1 ? hits[0] : undefined;
 }
 
 /** Minimum supported Node.js, mirrored from package.json "engines.node" (and MIN_NODE_VERSION in

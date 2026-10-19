@@ -83,7 +83,7 @@ Swipium checks these in order for every gated call:
 2. **Elicitation**: when the client supports MCP form elicitation, the server asks the user directly and the tool continues on approval. The model never sees a `consentId`, and the prompt times out after 10 minutes. How the prompt travels depends on the protocol era ([mcp-server.md](mcp-server.md#protocol-versions)):
    - MCP 2025-06-18 / 2025-11-25 (`initialize`): an `elicitation/create` request while the tool call waits.
    - MCP 2026-07-28 (`server/discover`): the tool call answers with an `InputRequiredResult` carrying the same one-checkbox form, and the client retries the call with the user's answer. Swipium sends it only when the request's `_meta` client capabilities declare form elicitation. The `requestState` in that result is an opaque single-use handle: Swipium keeps what it stands for (the consent, the tool, a digest of the arguments, the session) on its side, so an answer can't be replayed or moved to another call. A retry without an answer gets the same prompt again.
-3. **Consent envelope** (client assertion): otherwise the tool returns `{requiresConsent:true, consentId, action, risk, explain, exactCommand, affects}`. The agent shows it to the user and, only after they agree, re-calls the same tool with the same arguments plus `consentId` and `approve:true`. Only `qa_test_this`'s envelope also carries `sessionId`, so its approving re-call reuses the session without `projectRoot`; for every other tool, re-call with the `sessionId` you already passed.
+3. **Consent envelope** (client assertion): otherwise the tool returns `{requiresConsent:true, consentId, action, risk, explain, exactCommand, affects}`. The agent shows it to the user and, only after they agree, re-calls the same tool with the same arguments plus `consentId` and `approve:true`. `qa_test_this`'s envelope, and `qa_test_feature`'s when it bootstraps a device, also carry `sessionId`, and the approving re-call must pass it (the consent is bound to that session; without it the call gets a new challenge); for every other tool, re-call with the `sessionId` you already passed.
 
 With `SWIPIUM_REQUIRE_ELICITATION=1` in the server environment, step 3 is closed: a client that can't elicit gets `CONSENT_REFUSED` for every gated action, before the model sees a `consentId`. The setting has no effect on clients that support elicitation, and it doesn't block operator pre-approval.
 
@@ -142,7 +142,7 @@ Do not retry any of them without asking the user. Every consent refusal carries 
 | `geo_set` | Medium | `qa_geolocation` |
 | `screen_record` | Medium | `qa_screen_record start` |
 | `ocr_run` | Medium | `qa_visual find_text` |
-| `flow_mutation_run` | High with a script seed; medium with another seed, a network toggle, a variable `openUrl`, or an OCR provider; low when `restartApp` is the only mutating step | `qa_flow_run` |
+| `flow_mutation_run` | High with a script seed; medium with another seed, a network toggle, a variable `openUrl`, or an OCR provider; low when `restartApp` is the only mutating step | `qa_flow_run`, and `qa_generate target:"suite" replay:"same_session"` when a replayed flow has seed, network, or variable `openUrl` steps |
 | `destructive_ui_candidate` | High | `qa_explore safeMode:"approved_destructive_candidate"` |
 | `suite_fresh_state_replay` | Highest of its prepare and teardown steps | `qa_generate target:"suite" replay:"fresh_state"` |
 | `automation_project_write` | Medium | `qa_generate target:"appium" integrateIntoProject:true` |
@@ -155,7 +155,7 @@ Booting a simulator with `qa_ios boot` is not gated (low-risk and reversible). I
 
 - Text typed into a secure field. A field is secure when it is a password field (`password="true"` on Android, a `SecureTextField` on iOS), or an input field (text field, search field, text view) whose label or id reads like password, OTP, PIN, CVV, card number, secret, token, or security code. Buttons, rows, and labels are never secure, so a "Passwords" settings row or app icon doesn't withhold screenshots. This applies to native-selector typing too.
 - Values answered through `qa_continue_from_blocker` whose field names match the credential-name rule below, plus any field listed in `secretFields` (which adds to the rule; it does not replace it).
-- Resolved flow variables and `${SWIPIUM_*}` values from the environment whose names match the credential-name rule: a case-insensitive substring match on `pass`, `secret`, `token`, `otp`, `pin`, `cvv`, `key`, or `code` (so `SWIPIUM_VERIFICATION_CODE` is a secret).
+- Resolved flow variables and `${SWIPIUM_*}` values from the environment whose names match the credential-name rule: the name is split into parts (on `_`, `-`, digits, and camelCase) and a part must contain `password`, `secret`, `token`, or a similar word, or be a whole short word such as `pass`, `otp`, `pin`, `cvv`, `key`, or `code` (so `SWIPIUM_VERIFICATION_CODE` is a secret, `SWIPIUM_SHIPPING_ADDRESS` is not). The full rule is in [Flows: variables](flows.md#variables).
 - Fixture field values read from the environment (`fields.<name>.var`).
 - A typed value that equals or contains a value already registered as a secret, even in an ordinary text field.
 

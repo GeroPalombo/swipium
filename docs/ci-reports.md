@@ -38,12 +38,16 @@ swipium report --format <junit|sarif|github-summary|markdown|json>
 - **`--latest`** is the default. It picks the newest session for `--root` (default: the current
   directory) that has a saved report, and skips sessions that never produced one. When newer
   sessions saved no report (the latest agent step probably failed before `qa_report`), it prints a
-  warning on stderr naming them and the older session it renders.
+  warning on stderr naming them and the older session it renders. With `--fail-on-gate` it refuses
+  instead (exit 2): the gate would otherwise judge an older run. Pass `--max-age` to accept an
+  older report that is still recent enough, or `--session <id>` to gate a specific session.
 - **`--max-age <minutes>`** refuses (exit 2) a report saved longer ago than that, so a job never
   publishes an earlier run's report when this run's agent step produced none. Use it on persistent
   or self-hosted runners, where `~/.swipium/runs` survives between jobs.
 - **`--session <id>`** picks one session. **`--report <file>`** renders a report JSON you copied
   yourself, for example from a downloaded artifact.
+- **Boolean flags** (`--fail-on-gate`, `--latest`, `--help`) take no value: `--fail-on-gate=false`
+  is a usage error (exit 2). Leave the flag out to turn it off.
 - **Output.** The file goes to stdout, or to `--out` (parent directories are created). The verdict
   line `Release gate: PASS|BLOCK: <reason> (session <id>, report saved <ISO time>)` always goes to
   stderr.
@@ -53,7 +57,7 @@ swipium report --format <junit|sarif|github-summary|markdown|json>
   | --- | --- |
   | `0` | The file was written. The gate passed, or it blocked but `--fail-on-gate` was not set. |
   | `1` | `--fail-on-gate` was set and the release-gate policy blocks. |
-  | `2` | Usage error, unknown format, no session or report found, the file is not a Swipium report, the report is older than `--max-age`, `.swipium/policy.json` is invalid, or the format could not be rendered. |
+  | `2` | Usage error, unknown format, no session or report found, the file is not a Swipium report, the report is older than `--max-age`, `--fail-on-gate --latest` found newer sessions without a report (and no `--max-age`), `.swipium/policy.json` is invalid, the format could not be rendered, or the `--out` file could not be written. |
 
 - **Secrets.** Raw secret values are never written to disk, so the CLI can't scrub them later.
   Instead, `qa_report` deep-redacts the whole report with the session's registered secrets before
@@ -182,9 +186,10 @@ jobs:
           path: /home/runner/.swipium/runs/ # $HOME on GitHub-hosted ubuntu runners
           retention-days: 14
 
-      # Last step, so every report above is published before the job fails.
+      # Last step, so every report above is published before the job fails. --max-age keeps a
+      # persistent runner from gating on an earlier job's report.
       - name: Release gate
-        run: npx -y swipium report --latest --format json --out swipium/report.json --fail-on-gate
+        run: npx -y swipium report --latest --max-age 120 --format json --out swipium/report.json --fail-on-gate
 ```
 
 `.github/scripts/swipium-agent.sh`:
@@ -305,7 +310,8 @@ per finding (empty, with `tests="0"`, when there are none).
 - A failure that the release-gate policy only warns on (`warnOn`) or suppresses (`ignoreKnown`)
   becomes `<skipped message="policy warned|suppressed (release gate not blocked): …">`, so a gate
   PASS never shows up as a failed test.
-- The gate verdict (`swipium.releaseGate`, `pass` or `fail`) and reason
+- The gate verdict (`swipium.releaseGate`, `pass` or `fail`), the same verdict in the SARIF
+  vocabulary (`swipium.releaseGate.verdict`, `pass` or `block`, since 2.3.5) and the reason
   (`swipium.releaseGate.reason`) are testsuite `<properties>`.
 - Evidence URIs appear in each testcase's `<system-out>`.
 - XML-illegal control characters, such as ANSI escapes and NULs from logcat, are replaced with
@@ -334,8 +340,10 @@ Other SARIF details:
 - The level follows severity: high is `error`, medium is `warning`, low is `note`. Failed workflows
   are `error`, except a Swipium or tool limitation (category `mcp_limitation`), which is `note`: it
   is not a defect in your code. A `WDA_UNREACHABLE` finding is `note` too, with
-  `properties.layer:"tool"`.
-- A run that never reached the app is gated (see below) but adds no SARIF result.
+  `properties.layer:"tool"`. As in JUnit, a failure the release-gate policy only warns on
+  (`warnOn`) is `warning`, and one it suppresses (`ignoreKnown`) is `note`.
+- A run that tested nothing adds a `swipium: not tested` result (rule id: the blocker's code, or
+  `NOT_TESTED`), the same failed case JUnit and the Playwright export show.
 - Screenshots and other `swipium://` evidence go in `relatedLocations` and `properties`.
 - Each result carries its own `partialFingerprints.primaryLocationLineHash`. Volatile ids and
   timestamps are removed before hashing. This keeps distinct results on the same manifest line from
@@ -377,6 +385,7 @@ note.
 | --- | --- | --- |
 | CLI stderr verdict line | `PASS` | `BLOCK` |
 | JUnit `swipium.releaseGate` property | `pass` | `fail` |
+| JUnit `swipium.releaseGate.verdict` property | `pass` | `block` |
 | SARIF `runs[0].properties.releaseGateVerdict` | `pass` | `block` |
 | GitHub summary gate line | `✅ PASS` | `❌ BLOCK` |
 
@@ -425,9 +434,11 @@ finding:
   visual-only screen. These only show that the app was reached (risk `caution` instead of `block`),
   and the gate fails with `NOT_TESTED` (for an unverified pass claim: "only an unverified qa_note
   pass claim on a launched app ... run qa_smoke or a flow"). A pass claim with no evidence at all
-  leaves the run not tested (`block`). An agent's fail note counts as exercised (it can only
-  block); a `blocked` or `skipped` note, a fail note under `mcp_limitation` (such as "baseline
-  failed: device offline") and the report's own exports don't count.
+  leaves the run not tested (`block`). An agent's fail note doesn't count either: it still reaches
+  the gate as a failed workflow, so it can block, but a run whose only outcome is that note is not
+  tested and also gates with `NOT_TESTED` (so a `warnOn` entry for the note's category can't turn
+  it into a PASS). A `blocked` or `skipped` note, a fail note under `mcp_limitation` (such as
+  "baseline failed: device offline") and the report's own exports don't count.
 - **The verdict sticks.** A not-tested verdict is saved on the session, so every later `qa_report`
   call keeps its reason and code (a Metro-blocked run stays `METRO_REQUIRED`, not `NOT_TESTED`)
   until one of the healthy Swipium checks above is recorded after it. An agent note, a `qa_visual`
@@ -488,5 +499,10 @@ Each failure is checked in this order:
 5. **Anything else blocks.** A failure the policy doesn't mention is not ignored.
 
 Tokens match failure codes case-insensitively, with punctuation ignored (`native_crash` matches
-`NATIVE_CRASH`). A few synonyms also work: `crash` means `NATIVE_CRASH`, `app_bug` and
-`visual_diff` mean `ASSERTION_FAILED`. `ciAllowMutations` does not affect the gate.
+`NATIVE_CRASH`). A few synonyms also work: `crash` means `NATIVE_CRASH`, and `app_bug`
+also matches `ASSERTION_FAILED`. `visual_diff` matches only a failed visual comparison: a flow
+step `assertImage`, `assertOcrText` or `assertDiff`, or (without step detail) an outcome whose
+evidence is Swipium's own `visual_match`, `ocr_locator` or `ocr_text`. A failing `assertVisible`,
+`waitForVisible` or other structured assertion is never a visual diff, nor is an agent's
+`qa_visual` assert, so `warnOn: ["visual_diff"]` can't downgrade them. `ciAllowMutations` does not
+affect the gate.

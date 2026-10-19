@@ -2,6 +2,79 @@
 
 All notable public changes to Swipium are documented here.
 
+## 2.3.5 - 2026-10-19
+
+Swipium 2.3.5 is a fix release. It closes a way for a cloned repo to delete files outside the project, closes several ways the CI release gate could pass a run that tested nothing or a real failure, and fixes a crash, text corruption and wrong-device bugs in the drivers. Releases are published from CI again, with npm provenance. No tools were added or removed (still 55).
+
+### Upgrade checklist
+
+Items tagged **You** need an action from you. Items tagged **Automatic** happen on their own and are listed so they don't surprise you.
+
+1. **You:** restart your MCP client. The schema hash changed (corrected parameter descriptions on `qa_wda`, `qa_explore`, `qa_test_feature` and `qa_prepare_ios_target`), so update any `qa_doctor { expectedSchemaHash }` check.
+2. **You (CI using `swipium report --latest --fail-on-gate`):** when a newer session of the project saved no report, the command now exits 2 instead of gating on the older report. Add `--max-age <minutes>` to accept a recent older report, or pass `--session <id>`. A failed `--out` write also exits 2 (it exited 1, which read as "gate blocked"), and boolean flags such as `--fail-on-gate=false` are now a usage error.
+3. **You (policies with `warnOn: ["visual_diff"]`):** `visual_diff` now matches only visual checks (`assertImage`, `assertOcrText`, `assertDiff`). A failing `assertVisible` or `waitForVisible` is no longer turned into a warning, so a run that passed the gate with that policy can now block.
+4. **You (hand-written flows):** invalid option values are now parse errors instead of silently falling back to defaults: an unknown `note.outcome` (it became `pass`), an unknown `swipe.area`, `minScore`/`minConfidence`/`threshold` outside 0..1, a swipe `distance` outside (0, 1], a non-boolean `secret`, a non-string `into`, a `fixtures` value that isn't a list of strings. Run `qa_flow_check` on your flows. Numbers are now accepted for `tap` and `inputText` and typed as written (`inputText: 007` types `007`).
+5. **You (`qa_bundletool`):** a physical device is refused, and several online devices with none chosen return `MULTIPLE_DEVICES`. Pass `device` or set `SWIPIUM_DEVICE`.
+6. **Automatic:** child processes (builds, Metro, xcodebuild, adb, OCR helpers) no longer inherit `SWIPIUM_TEST_*`, `SWIPIUM_SECRET_*` or other `SWIPIUM_*` variables whose name reads like a credential by the flow secret-name rule (for example `SWIPIUM_API_KEY`, `SWIPIUM_VERIFICATION_CODE`). Seed scripts still get them.
+7. **Automatic:** the `qa_test_this` plan consent and the `qa_test_feature` bootstrap consent are bound to their session. A re-call with `consentId` and `approve` must pass the same `sessionId` (the consent envelope already includes it).
+
+### Security
+
+- **No symlink following under `.swipium/`.** Evidence pruning followed a symlinked `.swipium/issues/artifacts` folder, and its retention came from a `policy.json` the repo can commit, so a cloned repo could make Swipium delete files elsewhere on the machine. App-map history pruning had the same gap. Every write, append and delete under `.swipium/` now refuses a symlink anywhere below the project root, and evidence retention has a minimum of 1 day. This also closes the 2.3.0 known issue about the issue ledger (`issues-log.jsonl`).
+- **Bundletool output** under `.swipium/artifacts` is refused when that path goes through a symlink.
+- **Generated test files** in the project are created exclusively and only inside the real project root, never through an existing file or symlink.
+- **Suite replay** runs the newly compiled flow (not a kept hand-edited copy) and asks for the `flow_mutation_run` consent before running seeds, network toggles or `openUrl` steps with variables (a `restartApp` still runs without a prompt, as before).
+- **Test credentials** no longer reach child processes (see the upgrade checklist).
+
+### Release gate and reports
+
+- An agent `qa_note` failure no longer makes a run count as tested. With a `warnOn` policy, a run that contained only that note passed the gate; it is now `NOT_TESTED` and blocks.
+- SARIF and Playwright exports include the not-tested failure (a `METRO_REQUIRED` run had 0 SARIF results), and SARIF levels follow the policy like JUnit (`warning` for warned, `note` for ignored).
+- The release-risk headline no longer says SHIP while the gate blocks on a non-app failure (`missing_test_data`, `destructive_refused`); it says CAUTION.
+- Trend and flake history read the real per-session reports. Before, they looked for a `report.json` that is never written, so `knownFlaky` was never true. With fewer than 2 reports, `flakeStatus` is `not_checked`, and unreadable reports are listed instead of failing the trend.
+- The report manifest lists and hashes `report.md`.
+- JUnit gets a `swipium.releaseGate.verdict` property (`pass` | `block`) that matches the other formats; `swipium.releaseGate` keeps `pass`/`fail`.
+- The Markdown export can't be broken out of its code fence by app text, and HTML in any field is escaped.
+- A corrupt `test-suite.json` is no longer replaced with an empty suite. Saves are atomic and locked, and the report says the suite was not updated.
+- The test-suite JUnit export strips characters that are illegal in XML.
+
+### Fixed
+
+- **Server crash** when the `emulator` binary is missing; prepare now fails fast with `EMULATOR_BOOT_FAILED`. Background jobs (`qa_wda`, `qa_test_this`, `qa_explore`, `qa_test_feature`, `qa_bundletool`, `qa_build`, `qa_prepare_target`, `qa_prepare_ios_target`) are marked failed if they crash instead of staying `running`.
+- **Text corruption:** non-ASCII text (accents, CJK, emoji) that fell on an output chunk boundary turned into replacement characters, breaking text selectors and read-backs.
+- **iOS element order:** the page source kept children grouped by element type, so an alert and a sheet were layered wrong (buttons on top marked not tappable) and reading order was off.
+- **Android:** screen size is correct right after `qa_orientation`; `openUrl` and launch with arguments report `am start` errors; build-tools versions sort numerically when picking `aapt2`, and APK badging is read once.
+- **Foreground checks** match the exact package, so `com.acme.app.debug` in front no longer counts as `com.acme.app`.
+- **Flows:** `assertVisible`/`assertNotVisible`/`waitForVisible`/`scrollTo` no longer match words from the app's package name in resource ids (in `com.acme.checkout`, "Checkout" was visible on every screen). `waitForVisible { timeoutMs: 0 }` checks once. Cancel stops `scrollTo`, `assertNotVisible`, seed scripts and `repeat` batches; API seeds time out after 30 s.
+- **Secret-name detection** matches whole name parts: `SHIPPING`, `KEYWORD` and `BARCODE` are no longer treated as secrets, and lint no longer flags text like "secret santa".
+- **`qa_flow_repair`** refuses non-flow files, reports `FLOW_NOT_FOUND`/`INVALID_FLOW` instead of `UNKNOWN`, and keeps `.json` flows as JSON.
+- **iOS:** typing no longer types the text twice after a WebDriverAgent timeout; `simctl uninstall` failures are reported; cancelling `prepare_ios` stops it between install, launch and WDA steps.
+- **Consent:** approving `qa_test_this` consent no longer re-runs it in a second, orphaned session. `qa_test_feature` on an existing session reuses it.
+- **`qa_wda setup`** over this simulator's own hung WebDriverAgent returns `WDA_UNREACHABLE` ("run `qa_wda stop`") instead of starting a second one. A standalone `qa_smoke` after a prepare that found WDA hung reports `WDA_UNREACHABLE` instead of running visual-only.
+- **Mobile audit:** `login_again` is skipped unless logout passed, logout is judged after the screen settles and needs sign-in wording plus an input field, and audit issues are redacted before they reach the ledger.
+- **First run:** prices like "$9.99" and the ✕ close button are recognised on paywalls, and "Go Premium" on a freemium home is no longer a paywall.
+- **`qa_clear_overlay`** no longer reports `cleared` when it tapped nothing, and app text like "2 errors in your form" is no longer taken for LogBox.
+- `ps`/`lsof` probes have a timeout, so a stalled one can't freeze the server.
+- `qa_suite_*` returns the unknown-session error for an unknown `sessionId`; `qa_explore` bounds must be positive integers.
+- Xcode compile errors in the usual `File.swift:10:5: error:` form are classified as compile errors.
+
+### CLI
+
+- `swipium suite <sub> --help` exits 0. `init` and `suite` usage errors name the problem on stderr, with a "did you mean" hint for one-letter typos. `suite compile --suite` without a value is an error.
+- `swipium gc --days=` (empty) or a non-integer is a usage error (it meant 0 days and deleted almost everything); gc exits 1 when entries fail.
+- `swipium --help` lists `init flows`, the suite `--strict`/`--force` options and report `--max-age`.
+
+### Release and CI
+
+- Releases publish from CI with npm provenance, through npm trusted publishing (OIDC) once it is configured for the package, with an npm token as the fallback until then. Prerelease versions publish to the `next` dist-tag and skip the MCP Registry.
+- CI also checks formatting and `npm pack`, runs on macOS (Node 24) and Node 22.12, and Dependabot watches actions and npm. Actions are pinned to current major versions.
+- `zod` 4.6.7, `eslint` 10.13, `typescript-eslint` 8.72.
+
+### Known issues
+
+- `visual_diff` in a policy doesn't yet match a failing `assertImage` in `qa_flow_run` or `qa_smoke` (their results don't record the step kind), so those still block. That errs on the safe side.
+- The 2.3.0 known issues not listed above as fixed still apply.
+
 ## 2.3.0 - 2026-10-12
 
 Swipium 2.3.0 makes the core loop faster, more precise and cheaper in tokens. `qa_test_this` now runs by default, so a typical session is three calls: `qa_test_this {waitForCompletion:true}`, `qa_job_status` if the run is still going, and a read of the new `report.md`. Android actions settle about one UI dump sooner, app launches no longer sleep a fixed 2.5 s, iOS page source is about 14x faster, element refs stay stable across snapshots, and results, errors and reports are about half their 2.2.0 size. It ships an agent skill, two new prompts, a Claude Code plugin skeleton and an MCP Registry entry, and needs Node.js 22.12 or newer. No tools were added or removed (still 55). Work through the upgrade checklist before upgrading.

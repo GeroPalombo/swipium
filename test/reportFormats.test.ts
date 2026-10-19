@@ -142,6 +142,7 @@ describe('toJUnit', () => {
     expect(props[0]['@_name']).toBe('swipium.releaseGate');
     expect(props[0]['@_value']).toBe('fail');
     expect(props[1]['@_value']).toContain('release blocked');
+    expect(props[2]).toMatchObject({ '@_name': 'swipium.releaseGate.verdict', '@_value': 'block' });
   });
 });
 
@@ -183,7 +184,8 @@ describe('toSarif', () => {
     expect(levelByRule.NATIVE_CRASH).toBe('error'); // high
     expect(levelByRule.anr).toBe('warning'); // medium
     expect(levelByRule.log_noise).toBe('note'); // low
-    expect(levelByRule.app_bug).toBe('error'); // failed workflow
+    // The failed workflow is app_bug, which gatePolicy only warns on: a warning, as in JUnit.
+    expect(levelByRule.app_bug).toBe('warning');
     expect(run.results[0].message.text).toContain(NASTY); // escaping survives JSON round-trip
     // executionSuccessful means "the tool ran"; the gate verdict lives in run.properties.
     expect(run.invocations[0].executionSuccessful).toBe(true);
