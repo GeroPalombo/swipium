@@ -451,6 +451,8 @@ describe.skipIf(process.platform === 'win32')('stdio conformance, protocol 2026-
     const devicesCalls = () => adbLines(/\sdevices\b/);
     const before = devicesCalls();
     const pending = srv.start('tools/call', { name: 'qa_wait', arguments: { sessionId, for: 'device_online', timeoutMs: 30_000 } });
+    // A cancelled request may never get a reply; its no-reply timeout must not surface as an unhandled rejection.
+    pending.reply.catch(() => {});
     await sleep(2_500);
     expect(devicesCalls()).toBeGreaterThan(before);
     srv.notify('notifications/cancelled', { requestId: pending.id, reason: 'test cancel' });
@@ -551,7 +553,10 @@ describe.skipIf(process.platform === 'win32')('stdio conformance, protocol 2026-
     try {
       await one.request('server/discover');
       const s = await one.request('tools/call', { name: 'qa_start_session', arguments: { projectRoot: f.project } });
-      one.start('tools/call', { name: 'qa_wait', arguments: { sessionId: sc(s).sessionId, for: 'device_online', timeoutMs: 30_000 } });
+      // The process exits mid-call, so this request never gets a reply: ignore its no-reply timeout.
+      one
+        .start('tools/call', { name: 'qa_wait', arguments: { sessionId: sc(s).sessionId, for: 'device_online', timeoutMs: 30_000 } })
+        .reply.catch(() => {});
       await sleep(500);
       const exited = new Promise<number>((res) => one.child.once('exit', () => res(Date.now())));
       const closedAt = Date.now();
