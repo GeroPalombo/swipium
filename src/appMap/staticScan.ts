@@ -361,6 +361,26 @@ function asArray<T>(v: T | T[] | undefined): T[] {
   return v === undefined ? [] : Array.isArray(v) ? v : [v];
 }
 
+// The subset of a parsed AndroidManifest.xml (fast-xml-parser, attributes prefixed '@_') that the
+// scan reads. Every field is optional: real manifests omit any of them, and a repeated element
+// parses to an array while a single one parses to an object.
+interface ManifestIntentData {
+  '@_android:scheme'?: string;
+  '@_android:host'?: string;
+}
+interface ManifestActivity {
+  '@_android:name'?: string;
+  'intent-filter'?: { data?: ManifestIntentData | ManifestIntentData[] } | { data?: ManifestIntentData | ManifestIntentData[] }[];
+}
+interface ManifestNode {
+  '@_package'?: string;
+  application?: { activity?: ManifestActivity | ManifestActivity[] };
+  'uses-permission'?: { '@_android:name'?: string } | { '@_android:name'?: string }[];
+}
+interface ManifestDoc {
+  manifest?: ManifestNode;
+}
+
 function scanNativeAndroid(root: string, topo: StaticTopology, result: StaticScanResult): void {
   topo.router = topo.router ?? 'android';
   const manifestPath = findManifest(root);
@@ -369,7 +389,7 @@ function scanNativeAndroid(root: string, topo: StaticTopology, result: StaticSca
     if (text) {
       try {
         const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' });
-        const doc = parser.parse(text) as Record<string, any>;
+        const doc = parser.parse(text) as ManifestDoc;
         const manifest = doc.manifest ?? {};
         result.appIdentity.androidPackage = result.appIdentity.androidPackage ?? manifest['@_package'] ?? null;
         const app = manifest.application ?? {};

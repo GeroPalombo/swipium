@@ -71,8 +71,8 @@ export async function recordHealthFindings(
  *  screen. A bundle-load RedBox / the Expo dev launcher marks the session not tested with
  *  METRO_REQUIRED (an environment blocker, cleared by a later Swipium outcome, so a qa_note pass
  *  can't turn it into a tested run); any other RedBox is recorded as the same app finding
- *  qa_check_health records. The same tree also names an iOS alert left on top of the app (round-4
- *  note: prepare said "ready" under a SpringBoard "Sign in to your Apple Account" alert).
+ *  qa_check_health records. The same tree also names an iOS alert left on top of the app
+ *  (prepare said "ready" under a SpringBoard "Sign in to your Apple Account" alert).
  *  Best-effort: a failed dump is no verdict. */
 export async function checkLaunchErrorSurface(
   sessions: SessionStore,

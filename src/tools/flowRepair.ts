@@ -69,11 +69,15 @@ export function registerFlowRepair(server: McpServer, sessions: SessionStore): v
           what: repaired.error,
           changedState: false,
           retrySafe: true,
-          ...(repaired.errorCode === 'PATH_OUTSIDE_ROOT' ? { failureCode: 'UNSAFE_ACTION_REFUSED' as const } : {}),
+          failureCode: repaired.errorCode,
           nextSteps: [
-            repaired.errorCode === 'PATH_OUTSIDE_ROOT'
-              ? 'Pass a flow name or a path under the project root (.swipium/flows/*.yaml).'
-              : 'Pass a valid flow and failedStep from qa_flow_run.',
+            repaired.errorCode === 'UNSAFE_ACTION_REFUSED'
+              ? 'Pass a flow name or a .yaml/.yml/.json path under the project root (.swipium/flows/*.yaml).'
+              : repaired.errorCode === 'FLOW_NOT_FOUND'
+                ? 'Pass an existing flow name/path under .swipium/flows, or inline flowYaml.'
+                : repaired.errorCode === 'INVALID_FLOW'
+                  ? 'Fix the flow (qa_flow_check lists the errors), then retry qa_flow_repair.'
+                  : 'Pass a valid flow and failedStep from qa_flow_run.',
           ],
         });
       const proposalArtifactUri = repaired.proposal

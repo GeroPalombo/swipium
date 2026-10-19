@@ -7,11 +7,12 @@
 // parseFlow(). writeCompiledFlow is the one writer, shared by the CLI and the MCP tools, and it
 // never clobbers a hand-edited .swipium/flows file.
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse as parseYaml, stringify } from 'yaml';
 import { waitForVisibleGuard } from '../flows/waitGuards.js';
 import { capSlug } from '../lib/stableHash.js';
+import { mkdirNoFollow, rmNoFollow, writeFileNoFollow } from '../lib/noFollowFs.js';
 
 export interface CompiledFlow {
   name: string;
@@ -203,8 +204,9 @@ export function flowSlug(name: string): string {
 export function writeCompiledFlow(root: string, slug: string, yaml: string, opts: { force?: boolean } = {}): WrittenCompiledFlow {
   const flowsDir = join(root, '.swipium', 'flows');
   const compiledDir = join(root, '.swipium', 'compiled');
-  mkdirSync(flowsDir, { recursive: true });
-  mkdirSync(compiledDir, { recursive: true });
+  // No-follow: a cloned repo can commit .swipium/, flows/ or compiled/ as a symlink out of the project.
+  mkdirNoFollow(root, flowsDir);
+  mkdirNoFollow(root, compiledDir);
   const flowPath = join(flowsDir, `${slug}.yaml`);
   const compiledPath = join(compiledDir, `${slug}.flow.yaml`);
   const read = (p: string): string | undefined => {
@@ -220,14 +222,14 @@ export function writeCompiledFlow(root: string, slug: string, yaml: string, opts
   if (current !== undefined && current !== yaml && current !== previousCompiled && !opts.force) {
     out.kept = true;
     out.newPath = `${flowPath}.new`;
-    writeFileSync(out.newPath, yaml);
+    writeFileNoFollow(root, out.newPath, yaml);
   } else {
     if (current !== undefined && current !== yaml) out.replaced = true;
-    writeFileSync(flowPath, yaml);
+    writeFileNoFollow(root, flowPath, yaml);
     // A `.new` left by an earlier "kept your edit" run is stale once flows/ holds the new output.
-    rmSync(`${flowPath}.new`, { force: true });
+    rmNoFollow(root, `${flowPath}.new`);
   }
-  writeFileSync(compiledPath, yaml);
+  writeFileNoFollow(root, compiledPath, yaml);
   return out;
 }
 

@@ -9,6 +9,7 @@ import { isAbsolute, resolve, sep } from 'node:path';
 import { makeRedactor } from '../lib/redact.js';
 import { gitScopeViolation, run } from '../lib/spawn.js';
 import { displayArgv, shellSplit } from '../lib/commandTemplate.js';
+import { currentSignal, isAbortError } from '../lib/abortScope.js';
 import type { Driver } from '../drivers/Driver.js';
 import type { FixtureSeedAction, Session, SessionStore } from '../session/store.js';
 
@@ -41,6 +42,9 @@ export function outsideRoot(argv: string[], root: string): string | null {
   }
   return null;
 }
+
+/** Upper bound for an API seed request. */
+export const SEED_API_TIMEOUT_MS = 30000;
 
 export interface SeedExecResult {
   ok: boolean;
@@ -90,7 +94,8 @@ export async function executeSeed(
           detail: `seed script references a path outside the project root ("${bad}"). Seed scripts must live under the project root`,
           warnings,
         };
-      const r = await run(argv[0], argv.slice(1), { cwd: session.root, timeoutMs: 60000 });
+      // A seed script is the project's own code and may sign in with the configured test account.
+      const r = await run(argv[0], argv.slice(1), { cwd: session.root, timeoutMs: 60000, inheritSecretEnv: true, signal: currentSignal() });
       const log = redact([r.stdout, r.stderr].filter(Boolean).join('\n').slice(0, 8000)) ?? '';
       if (log)
         sessions.saveArtifact(
@@ -104,10 +109,22 @@ export async function executeSeed(
       if (r.code !== 0) return { ok: false, detail: `script exited ${r.code}: ${redact(r.stderr.trim().slice(0, 300)) ?? ''}`, warnings };
     } else {
       if (!seed.url) return { ok: false, detail: 'no url in seed', warnings };
-      const res = await fetch(seed.url, { method: seed.method ?? 'POST', headers: seed.headers, body: seed.body });
+      // Bounded and cancellable: a hung seed endpoint must not hold the flow (or a cancelled call) open.
+      const signal = currentSignal();
+      const timeout = AbortSignal.timeout(SEED_API_TIMEOUT_MS);
+      const res = await fetch(seed.url, {
+        method: seed.method ?? 'POST',
+        headers: seed.headers,
+        body: seed.body,
+        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+      });
       if (!res.ok) return { ok: false, detail: `API responded ${res.status} ${res.statusText}`, warnings };
     }
   } catch (e) {
+    // Cancellation is not a seed failure: the flow runner classifies it CANCELLED.
+    if (isAbortError(e)) throw e;
+    if ((e as { name?: string })?.name === 'TimeoutError')
+      return { ok: false, detail: `API seed timed out after ${SEED_API_TIMEOUT_MS / 1000}s`, warnings };
     return { ok: false, detail: String(e), warnings };
   }
 

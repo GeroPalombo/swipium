@@ -13,17 +13,18 @@ import { resolveArtifact } from '../artifacts/resolve.js';
 import { convertAabToApk, findBundletool, buildAndInstallApkSet } from '../artifacts/bundletool.js';
 import { startProgress } from '../session/progress.js';
 import { log } from '../lib/logger.js';
+import { failCrashedJob } from '../orchestration/jobCrash.js';
 import type { Session, SessionStore, JobRecord } from '../session/store.js';
 import { runWithSignal } from '../lib/abortScope.js';
-import { adbDevices } from '../lib/android.js';
+import { adbDevices, deviceAbis } from '../lib/android.js';
 import {
   DEVICE_PIN_ENV,
   devicePinConflict,
   isSimulatorUdid,
-  onlineSerialForAvd,
   operatorDevicePin,
   pinFixStep,
-  pinMatches,
+  resolveDevice,
+  verifiedEmulatorSerials,
 } from '../session/attach.js';
 
 function isFile(p: string): boolean {
@@ -94,36 +95,18 @@ export function registerBundletool(server: McpServer, sessions: SessionStore): v
       // installed. Mirrors qa_prepare_target / qa_prepare_ios_target.
       // The device the APK set is built for / installed on follows the same rule as
       // qa_prepare_target: SWIPIUM_DEVICE refuses any other device before consent, and with no
-      // device the session's own emulator (else the pinned one) is used, never "any connected device".
-      let deviceId = device;
+      // device the session's own emulator (else the pinned one, else the only one online) is used.
+      // bundletool always gets --device-id, never "whatever adb device is attached", and a
+      // physical phone is refused before consent (Swipium never targets physical devices).
+      let deviceId: string | undefined;
       if (connectedDevice) {
-        const online = await adbDevices();
-        const pinConflict = await devicePinConflict(device, online);
-        if (pinConflict)
-          return qaError({
-            what: pinConflict,
-            changedState: false,
-            retrySafe: false,
-            failureCode: 'DEVICE_PINNED',
-            nextSteps: ['Re-call without device: the pinned device is used.'],
-          });
-        const pin = operatorDevicePin();
-        if (!deviceId && session.device && !isSimulatorUdid(session.device)) deviceId = session.device;
-        if (!deviceId && pin) {
-          deviceId = online.find((s) => pinMatches(pin, s)) ?? (await onlineSerialForAvd(pin, online));
-          if (!deviceId)
-            return qaError({
-              what: `${DEVICE_PIN_ENV}=${pin} (server env) matches no online Android device, so no other device was used.`,
-              changedState: false,
-              retrySafe: true,
-              failureCode: 'NO_DEVICE',
-              nextSteps: ['Boot the pinned emulator (qa_prepare_target { bindOnly:true }), then retry.', pinFixStep()],
-            });
-        }
+        const resolved = await resolveApkSetDevice(session, device);
+        if ('error' in resolved) return resolved.error;
+        deviceId = resolved.deviceId;
       }
       let mutationConsent: { required: boolean; consentId?: string; approved: boolean; payloadHash?: string } | undefined;
       if (connectedDevice && install) {
-        const affects = { aab: aabPath, device: deviceId ?? '(only connected device)' };
+        const affects = { aab: aabPath, device: deviceId ?? null };
         const gate = consumeConsent(consentId, approve, { action: 'install_app', affects });
         if (!gate.approved) {
           sessions.recordMutation(session, {
@@ -137,9 +120,9 @@ export function registerBundletool(server: McpServer, sessions: SessionStore): v
           return requireConsent({
             action: 'install_app',
             risk: 'medium',
-            exactCommand: `bundletool build-apks --connected-device${deviceId ? ` --device-id ${deviceId}` : ''} --bundle ${aabPath} && bundletool install-apks --apks <set>`,
+            exactCommand: `bundletool build-apks --connected-device --device-id ${deviceId} --bundle ${aabPath} && bundletool install-apks --apks <set> --device-id ${deviceId}`,
             affects,
-            explain: `Build a device-specific APK set from ${aabPath} and INSTALL it on ${deviceId ?? 'the connected device'}? It pushes app code to the device.`,
+            explain: `Build a device-specific APK set from ${aabPath} and INSTALL it on ${deviceId}? It pushes app code to the device.`,
           });
         }
         mutationConsent = { required: true, consentId, approved: true };
@@ -163,7 +146,7 @@ export function registerBundletool(server: McpServer, sessions: SessionStore): v
         // Jobs run in their own cancellation scope (abortScope), not the starting call's.
         void runWithSignal(sessions.abortSignal(session, job.jobId), () =>
           runDeviceApkSet(sessions, session, job, aabPath, { install: !!install, deviceId, force: !!force, mutationConsent }),
-        );
+        ).catch((e: unknown) => failCrashedJob(sessions, session, job, 'bundletool device APK set', e));
         return qaOk(
           {
             jobId: job.jobId,
@@ -177,13 +160,79 @@ export function registerBundletool(server: McpServer, sessions: SessionStore): v
           `Building${install ? ' + installing' : ''} a device-specific APK set from ${aabPath} as job ${job.jobId} (${launcher.describe}). Poll qa_job_status.`,
         );
       }
-      void runWithSignal(sessions.abortSignal(session, job.jobId), () => runConvert(sessions, session, job, aabPath, !!force));
+      void runWithSignal(sessions.abortSignal(session, job.jobId), () => runConvert(sessions, session, job, aabPath, !!force)).catch(
+        (e: unknown) => failCrashedJob(sessions, session, job, 'bundletool conversion', e),
+      );
       return qaOk(
         { jobId: job.jobId, status: 'running', kind: job.kind, aab: aabPath, mode: 'universal', bundletool: launcher.describe },
         `Converting ${aabPath} > universal APK as job ${job.jobId} (${launcher.describe}). Poll qa_job_status.`,
       );
     },
   );
+}
+
+/** The one device a connected-device APK set targets (shared resolver: explicit serial, else the
+ *  session's device, else the SWIPIUM_DEVICE pin, else the only online device), or the typed
+ *  refusal. Physical devices are refused. Exported for tests. */
+export async function resolveApkSetDevice(
+  session: Session,
+  device: string | undefined,
+): Promise<{ deviceId: string } | { error: ReturnType<typeof qaError> }> {
+  const online = await adbDevices();
+  const pinConflict = await devicePinConflict(device, online);
+  if (pinConflict)
+    return {
+      error: qaError({
+        what: pinConflict,
+        changedState: false,
+        retrySafe: false,
+        failureCode: 'DEVICE_PINNED',
+        nextSteps: ['Re-call without device: the pinned device is used.'],
+      }),
+    };
+  // An iOS simulator bound to the session is not a bundletool target: only an explicit serial is.
+  const iosSession = !!session.device && isSimulatorUdid(session.device);
+  const res = iosSession && !device ? undefined : await resolveDevice(session, device);
+  const deviceId = res?.effective;
+  if (!deviceId) {
+    const pin = operatorDevicePin();
+    const why =
+      iosSession && !device
+        ? `This session is bound to iOS simulator ${session.device}; an APK set needs an Android emulator.`
+        : device
+          ? `Android device ${device} is not online.`
+          : res?.needSelection
+            ? `Several Android devices are online (${res.available.join(', ')}) and this session has none, so none was picked.`
+            : session.device
+              ? `This session's device ${session.device} is not online; no other device was used.`
+              : pin
+                ? `${DEVICE_PIN_ENV}=${pin} (server env) matches no online Android device, so no other device was used.`
+                : 'No Android emulator is online.';
+    return {
+      error: qaError({
+        what: why,
+        changedState: false,
+        retrySafe: true,
+        failureCode: res?.needSelection ? 'MULTIPLE_DEVICES' : 'NO_DEVICE',
+        nextSteps: [
+          res?.needSelection
+            ? 'Pass device="<emulator serial>" to choose one.'
+            : 'Boot an emulator (qa_prepare_target { bindOnly:true }) or pass device="<emulator serial>", then retry.',
+          ...(pin ? [pinFixStep()] : []),
+        ],
+      }),
+    };
+  }
+  if (!(await verifiedEmulatorSerials([deviceId])).includes(deviceId))
+    return {
+      error: qaFail('PHYSICAL_DEVICE_UNSUPPORTED', {
+        what: `${deviceId} is not an Android emulator. Swipium never builds for or installs on physical devices (docs/physical-devices.md).`,
+        nextSteps: [
+          'Boot an emulator (qa_prepare_target { bindOnly:true }) and pass its serial as device=, or omit connectedDevice for a universal APK.',
+        ],
+      }),
+    };
+  return { deviceId };
 }
 
 async function runDeviceApkSet(
@@ -205,8 +254,10 @@ async function runDeviceApkSet(
     nextExpected: opts.install ? 'Install the APK set on the device.' : 'Cache the APK set.',
   });
   try {
+    const abi = opts.deviceId ? (await deviceAbis(opts.deviceId))[0] : undefined;
     const result = await buildAndInstallApkSet(aabPath, session.root, {
       deviceId: opts.deviceId,
+      abi,
       install: opts.install,
       signal,
       force: opts.force,

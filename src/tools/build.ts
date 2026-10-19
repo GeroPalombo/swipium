@@ -18,6 +18,7 @@ import { buildPlan, type BuildPlan, type BuildPlatform } from '../build/plan.js'
 import { executeBuild } from '../services/build.js';
 import type { Session, SessionStore, JobRecord } from '../session/store.js';
 import { runWithSignal } from '../lib/abortScope.js';
+import { failCrashedJob } from '../orchestration/jobCrash.js';
 
 const DEFAULT_BUILD_TIMEOUT_MS = 20 * 60_000; // 20 min, native builds are slow
 
@@ -163,7 +164,7 @@ export function registerBuild(server: McpServer, sessions: SessionStore): void {
       // The job runs in its own cancellation scope (abortScope), not the starting call's.
       void runWithSignal(sessions.abortSignal(session, job.jobId), () =>
         runBuild(sessions, session, job, plan, timeoutMs ?? DEFAULT_BUILD_TIMEOUT_MS, { affects, consentId }),
-      );
+      ).catch((e: unknown) => failCrashedJob(sessions, session, job, `${platform} build`, e));
       return qaAnnotate(
         qaOk(
           { jobId: job.jobId, status: 'running', kind: job.kind, plan },

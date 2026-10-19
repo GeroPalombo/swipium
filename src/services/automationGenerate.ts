@@ -3,8 +3,9 @@
 // intermediate model, build the cross-platform Appium model, and emit JS/TS or Python suite files
 // (+ README, optional CI example). Writing to disk is the caller's job (so plan/preview stay pure).
 
-import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { writeFileNoFollow } from '../lib/noFollowFs.js';
 import type { GeneratedFile } from '../suite/pom.js';
 import { pomForSession, appIdOf } from './suiteGenerate.js';
 import { buildProjectProfile, type AutomationProjectProfile, type ProfileInputs } from '../automationGen/projectProfile.js';
@@ -81,8 +82,9 @@ export function writeAutomationFiles(root: string, outputDir: string, files: Gen
   const written: string[] = [];
   for (const f of files) {
     const abs = join(base, f.path);
-    mkdirSync(dirname(abs), { recursive: true });
-    writeFileSync(abs, f.content);
+    // outputDir is under .swipium/ (regenerated output, overwrite intended): no-follow, so a
+    // committed symlink there never redirects the write out of the project
+    writeFileNoFollow(root, abs, f.content);
     written.push(abs);
   }
   return written;

@@ -10,8 +10,9 @@
 // CLI path, not the MCP server, so writing to stdout is fine here, and defaulting to cwd is
 // fine (the no-cwd rule is for the stdio server, which has no meaningful working directory).
 
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { mkdirNoFollow, writeFileAtomicNoFollow } from '../lib/noFollowFs.js';
 import { scanProject, type ProjectScan } from '../context/scan.js';
 
 const FIXTURES_TEMPLATE = {
@@ -99,7 +100,7 @@ export async function runScan(args: string[]): Promise<number> {
   const rootArg = args.find((arg) => arg.trim() && !arg.startsWith('-'));
   const root = resolve(rootArg?.trim() || process.cwd());
   if (!existsSync(root)) {
-    process.stdout.write(`Path not found: ${root}\n`);
+    process.stderr.write(`Path not found: ${root}\n`);
     return 2;
   }
 
@@ -125,23 +126,30 @@ export async function runScan(args: string[]): Promise<number> {
       ? `scan result merged${userKeys.length ? `, kept your keys: ${userKeys.join(', ')}` : ''}`
       : 'created';
   if (write) {
-    mkdirSync(swipiumDir, { recursive: true });
+    try {
+      // Every write is no-follow (a cloned repo can commit .swipium/ or one of these files as a
+      // symlink out of the project) and atomic (a crash never leaves a truncated config.json).
+      mkdirNoFollow(root, swipiumDir);
 
-    // config.json: the scan result is MERGED in. It is also the user's configuration
-    // (ios.wda.*, ocrCommand, visualMaskCommand…, read via loadProjectConfig), so their keys are kept,
-    // and a file that doesn't parse is never overwritten.
-    if (!existing.error) writeFileSync(configPath, JSON.stringify(mergeScanIntoConfig(existing.value, scan), null, 2));
+      // config.json: the scan result is MERGED in. It is also the user's configuration
+      // (ios.wda.*, ocrCommand, visualMaskCommand…, read via loadProjectConfig), so their keys are kept,
+      // and a file that doesn't parse is never overwritten.
+      if (!existing.error) writeFileAtomicNoFollow(root, configPath, JSON.stringify(mergeScanIntoConfig(existing.value, scan), null, 2));
 
-    // fixtures.json: scaffold only if absent (don't clobber the user's declared preconditions).
-    if (!existsSync(fixturesPath)) {
-      writeFileSync(fixturesPath, JSON.stringify(FIXTURES_TEMPLATE, null, 2));
+      // fixtures.json: scaffold only if absent (don't clobber the user's declared preconditions).
+      if (!existsSync(fixturesPath)) {
+        writeFileAtomicNoFollow(root, fixturesPath, JSON.stringify(FIXTURES_TEMPLATE, null, 2));
+      }
+
+      // flows/: scaffold the directory + a README if empty.
+      mkdirNoFollow(root, flowsDir);
+      mkdirNoFollow(root, join(swipiumDir, 'packs')); // flow packs (release suites)
+      const flowsReadme = join(flowsDir, 'README.md');
+      if (!existsSync(flowsReadme)) writeFileAtomicNoFollow(root, flowsReadme, FLOWS_README);
+    } catch (e) {
+      process.stderr.write(`swipium scan: could not write ${swipiumDir}: ${e instanceof Error ? e.message : String(e)}\n`);
+      return 2;
     }
-
-    // flows/: scaffold the directory + a README if empty.
-    mkdirSync(flowsDir, { recursive: true });
-    mkdirSync(join(swipiumDir, 'packs'), { recursive: true }); // flow packs (release suites)
-    const flowsReadme = join(flowsDir, 'README.md');
-    if (!existsSync(flowsReadme)) writeFileSync(flowsReadme, FLOWS_README);
   }
 
   const icon = scan.readiness === 'ready' ? '✅' : scan.readiness === 'partial' ? '⚠️' : '⛔';

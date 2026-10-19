@@ -12,6 +12,7 @@ import { qaNeedsInput } from '../lib/needsInput.js';
 import { getDriver } from '../session/attach.js';
 import { startProgress } from '../session/progress.js';
 import { log } from '../lib/logger.js';
+import { failCrashedJob } from '../orchestration/jobCrash.js';
 import { runExplore } from '../explore/runner.js';
 import { generateSessionReport } from '../services/report.js';
 import { buildFeatureIndex, type FeatureIndex } from '../appMap/featureIndex.js';
@@ -123,7 +124,10 @@ export function registerFeatureTesting(server: McpServer, sessions: SessionStore
         allowAdversarial: z.boolean().optional(),
         maxScreens: z.number().optional().describe('Default 8.'),
         maxActions: z.number().optional().describe('Default 20.'),
-        timeoutMs: z.number().optional(),
+        timeoutMs: z
+          .number()
+          .optional()
+          .describe('Ignored (kept for compatibility): the run is bounded by maxScreens / maxActions; poll qa_job_status.'),
         generateCases: z.boolean().optional().describe('Generate test cases (default true).'),
         includeCode: z.boolean().optional(),
         limit: z.number().optional(),
@@ -192,14 +196,18 @@ export function registerFeatureTesting(server: McpServer, sessions: SessionStore
       if (sessionId && !session) {
         return unknownSessionError(sessionId, ['Omit sessionId to bootstrap from projectRoot, or pass a valid session.']);
       }
-      let driver = session ? (await getDriver(session)).driver : undefined;
+      // A consent re-call finishes the bootstrap it was asked for: never adopt some online device
+      // into the session instead of preparing the consented one.
+      let driver = session ? (await getDriver(session, { autoBind: !args.consentId })).driver : undefined;
       // Device boot/install from a bootstrap runs inside the job below (it can take minutes).
       let pendingPrepare: (() => Promise<BootstrapResult>) | undefined;
       if (!session || !driver) {
+        // A valid session without a driver is prepared in place (its own root), never replaced.
         const boot = await bootstrapFeatureExecution({
           server,
           sessions,
           projectRoot,
+          ...(session ? { session } : {}),
           feature,
           platform,
           device: args.device as string | undefined,
@@ -253,7 +261,7 @@ export function registerFeatureTesting(server: McpServer, sessions: SessionStore
           stopOnAuth: effectiveMode === 'interactive',
           prepare: pendingPrepare,
         }),
-      );
+      ).catch((e: unknown) => failCrashedJob(sessions, session, job, 'feature test', e));
       return qaOk(
         {
           sessionId: session.id,

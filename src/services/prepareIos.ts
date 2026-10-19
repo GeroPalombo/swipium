@@ -80,8 +80,9 @@ export interface PrepareIosResult {
 
 export interface PrepareIosCtx {
   onProgress?: (text: string) => void;
-  /** A background job's signal: checked after the (uncancellable) boot wait so a cancelled job
-   *  does not go on to install/launch. */
+  /** A background job's signal: checked after the (uncancellable) boot wait and between the
+   *  install, launch and WDA session steps so a cancelled job stops there; it also kills an
+   *  in-flight simctl install. */
   signal?: AbortSignal;
 }
 
@@ -222,6 +223,12 @@ export async function prepareIos(
   // ---- install .app (if provided) ----
   let bundleId = args.bundleId ?? session.appId ?? undefined;
   let installed = false;
+  let launched = false;
+  // Checked between steps: a cancelled job never goes on to the next install / launch / WDA step.
+  const cancelled = (): PrepareIosResult | undefined =>
+    ctx.signal?.aborted
+      ? { ok: false, failureCode: 'CANCELLED', error: 'cancelled', udid: pick.udid, name: pick.name, bundleId, installed, launched }
+      : undefined;
   let bundleIdNote = '';
   const gateMetro = (args.launch ?? true) && !args.allowLaunchWithoutMetro;
   if (args.app) {
@@ -245,10 +252,13 @@ export async function prepareIos(
     try {
       sessions.milestone(session, 'app_install_start');
       invalidateWdaPageSource(pick.udid); // screen changes outside WDA
-      await sim.installApp(pick.udid, appPath);
+      await sim.installApp(pick.udid, appPath, { signal: ctx.signal });
       sessions.milestone(session, 'app_install_end');
       installed = true;
     } catch (err) {
+      // Killed by the job's cancel: not an install failure (no blocked ledger row).
+      if (ctx.signal?.aborted || isAbortError(err))
+        return { ok: false, failureCode: 'CANCELLED', error: 'cancelled', udid: pick.udid, name: pick.name };
       const failureCode = sim.classifyIosInstallFailure(String(err));
       sessions.recordMutation(session, {
         tool: 'qa_prepare_ios_target',
@@ -295,7 +305,8 @@ export async function prepareIos(
   }
 
   // ---- launch ----
-  let launched = false;
+  const beforeLaunch = cancelled();
+  if (beforeLaunch) return beforeLaunch;
   if ((args.launch ?? true) && bundleId) {
     progress('launching');
     try {
@@ -346,6 +357,8 @@ export async function prepareIos(
   }
 
   // ---- WDA readiness (structured vs visual-only) ----
+  const beforeWda = cancelled();
+  if (beforeWda) return beforeWda;
   const wdaCfg = loadWdaConfig(session.root);
   const configuredWdaUrl = wdaCfg?.url ?? 'http://127.0.0.1:8100';
   // The WDA this session already started / reused / attached FOR THIS simulator (a managed WDA may
@@ -473,6 +486,8 @@ export async function prepareIos(
       const failed = markHung(hungOwn);
       if (failed) return failed;
     } else if (status.reachable) {
+      const beforeSession = cancelled();
+      if (beforeSession) return beforeSession;
       try {
         const sessionOptions = {
           bundleId: bundleId ?? undefined,

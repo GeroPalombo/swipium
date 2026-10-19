@@ -3,7 +3,7 @@
 // Fast path (device online + app installed + !force): run synchronously, return the result.
 // Long-op path (needs emulator boot or an install): create a JOB, run async, return a
 // `jobId` immediately (poll with qa_job_status), so client tool-call timeouts don't hit
-// the slow paths (review #2). Interactive consent (boot, external-APK) is resolved
+// the slow paths. Interactive consent (boot, external-APK) is resolved
 // synchronously BEFORE the job is kicked off.
 
 import { z } from 'zod';
@@ -36,6 +36,7 @@ import { launchFailureCode, prepareAndroid } from '../services/prepareAndroid.js
 import { planTarget } from '../core/targetPlan.js';
 import type { Session, SessionStore, JobRecord } from '../session/store.js';
 import { isAbortError, runWithSignal } from '../lib/abortScope.js';
+import { failCrashedJob } from '../orchestration/jobCrash.js';
 import { waitForLaunch } from '../lib/launchWait.js';
 import { noteScreenMutation } from '../snapshot/fresh.js';
 import { isMetroRequiredFinding } from '../oracle/health.js';
@@ -533,7 +534,9 @@ function startJob(sessions: SessionStore, session: Session, driver: DirectDriver
   const job = sessions.createJob(session, a.needBoot ? 'boot+install' : 'install');
   // Driver calls inside the job inherit the job's cancellation signal (abortScope), never a
   // mutable slot on the shared driver that a concurrent qa_snapshot/qa_act could swap.
-  void runWithSignal(sessions.abortSignal(session, job.jobId), () => runHeavy(sessions, session, driver, job, a));
+  void runWithSignal(sessions.abortSignal(session, job.jobId), () => runHeavy(sessions, session, driver, job, a)).catch((e: unknown) =>
+    failCrashedJob(sessions, session, job, job.kind, e),
+  );
   return qaOk(
     { jobId: job.jobId, status: 'running', kind: job.kind },
     `Started ${job.kind} as job ${job.jobId}. Poll with qa_job_status { sessionId:"${session.id}", jobId:"${job.jobId}" }.`,

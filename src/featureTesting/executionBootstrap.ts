@@ -11,7 +11,7 @@ import { sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { McpServer, CallToolResult } from '@modelcontextprotocol/server';
 import { qaError } from '../lib/result.js';
-import { requireConsent, consumeConsent } from '../consent/consent.js';
+import { requireConsent, consumeConsent, runWithConsentScope } from '../consent/consent.js';
 import { scanProject } from '../context/scan.js';
 import { resolveArtifact } from '../artifacts/resolve.js';
 import { planTarget, type TargetInputs, type TargetSelection } from '../core/targetPlan.js';
@@ -47,6 +47,9 @@ export interface BootstrapArgs {
   server: McpServer;
   sessions: SessionStore;
   projectRoot?: string;
+  /** An existing session (no driver yet) to prepare: reused as is (its root wins over projectRoot),
+   *  never replaced by a new session. */
+  session?: Session;
   feature: string;
   platform?: 'android' | 'ios';
   device?: string;
@@ -63,17 +66,21 @@ export type BootstrapResult =
   | { ok: true; session: Session; driver?: undefined; prepare: () => Promise<BootstrapResult> }
   | { ok: false; result: CallToolResult };
 
-/** Resolve project > create session > resolve artifact/target > (consent) prepare the device. */
+/** Resolve project > create (or reuse) session > resolve artifact/target > (consent) prepare the device. */
 export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<BootstrapResult> {
-  const { resolveProjectRoot, unresolvedProjectRootError } = await import('../context/projectRoot.js');
-  const resolved = await resolveProjectRoot(a.server, a.projectRoot);
-  if (!resolved.root) {
-    return {
-      ok: false,
-      result: unresolvedProjectRootError(resolved, { what: 'Could not resolve a project root for feature execution' }),
-    };
+  let session: Session;
+  if (a.session) session = a.session;
+  else {
+    const { resolveProjectRoot, unresolvedProjectRootError } = await import('../context/projectRoot.js');
+    const resolved = await resolveProjectRoot(a.server, a.projectRoot);
+    if (!resolved.root) {
+      return {
+        ok: false,
+        result: unresolvedProjectRootError(resolved, { what: 'Could not resolve a project root for feature execution' }),
+      };
+    }
+    session = a.sessions.create(resolved.root, undefined, {});
   }
-  const session = a.sessions.create(resolved.root, undefined, {});
   const root = session.root;
   const scan = await scanProject(root);
 
@@ -200,7 +207,10 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
   });
   let mutationConsent: { required: boolean; consentId?: string; approved: boolean } | undefined;
   if (preflight.consentRequired) {
-    const gate = consumeConsent(a.consentId, a.approve, { action: 'test_this_plan', affects: preflight.consentAffects });
+    // Minted and consumed in THIS session's consent scope (the call may have just created it): the
+    // approving re-call must name the same session (the envelope carries sessionId).
+    const inSession = <T>(fn: () => T): T => runWithConsentScope(session.id, fn);
+    const gate = inSession(() => consumeConsent(a.consentId, a.approve, { action: 'test_this_plan', affects: preflight.consentAffects }));
     if (!gate.approved) {
       a.sessions.recordMutation(session, {
         tool: 'qa_test_feature',
@@ -210,16 +220,26 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
         consent: { required: true, approved: false },
         status: 'requested',
       });
-      return {
-        ok: false,
-        result: requireConsent({
+      const consentResult = inSession(() =>
+        requireConsent({
           action: 'test_this_plan',
           risk: preflight.risk,
           exactCommand: preflight.exactCommand,
           affects: preflight.consentAffects,
           explain: `Preparing a device to test "${a.feature}" needs these privileged steps (approved together):\n${preflight.exactCommand}\nApprove to boot/install/launch, then Swipium runs the focused feature test.`,
         }),
-      };
+      );
+      // sessionId rides on the consent result so the approving re-call reuses THIS session.
+      const sc = (consentResult.structuredContent ?? {}) as Record<string, unknown>;
+      consentResult.structuredContent = { ...sc, sessionId: session.id };
+      consentResult.content = [
+        ...(consentResult.content ?? []),
+        {
+          type: 'text' as const,
+          text: `Re-call with sessionId="${session.id}" (plus consentId and approve:true) so this session is reused.`,
+        },
+      ];
+      return { ok: false, result: consentResult };
     }
     mutationConsent = { required: true, consentId: a.consentId, approved: true };
     a.sessions.recordMutation(session, {
@@ -301,7 +321,7 @@ export async function bootstrapFeatureExecution(a: BootstrapArgs): Promise<Boots
             attachWda: 'auto',
             mutationConsent,
           },
-          {},
+          { signal },
         );
         if (!res.ok)
           return {

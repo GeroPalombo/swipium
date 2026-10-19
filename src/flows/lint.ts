@@ -1,4 +1,4 @@
-import type { Flow, FlowStep } from './schema.js';
+import { nameSegments, STRONG_SECRET_WORDS, type Flow, type FlowStep } from './schema.js';
 import { ciMutationAllowed, type Policy } from '../report/policy.js';
 
 export type FlowLintSeverity = 'warn' | 'error';
@@ -19,7 +19,19 @@ export interface FlowLintOptions {
 }
 
 const MUTATING = new Set<FlowStep['kind']>(['networkOffline', 'networkOnline', 'seed', 'restartApp']);
-const SECRET_LITERAL = /password|passwd|secret|token|otp|api[_-]?key/i;
+
+/** An inline inputText value that looks like a credential: one whitespace-free token carrying a
+ *  credential word (hunter2Password, my_api_key, sk-secret-123), or a `password: x` / `token=x`
+ *  pair. Sentences ("secret santa") and words that merely contain a short one ("hotpot" holds
+ *  "otp") are ordinary text. */
+function looksLikeInlineSecret(value: string): boolean {
+  if (/\b(?:password|passwd|secret|token|otp|api[_-]?key)\s*[:=]/i.test(value)) return true;
+  if (/\s/.test(value.trim())) return false;
+  const segs = nameSegments(value);
+  return segs.some(
+    (seg, i) => seg === 'otp' || (seg === 'key' && segs[i - 1] === 'api') || STRONG_SECRET_WORDS.some((w) => seg.includes(w)),
+  );
+}
 
 function stepText(step: FlowStep): string {
   switch (step.kind) {
@@ -124,7 +136,7 @@ export function lintFlowObjectWithOptions(
         message: 'iOS-specific locator in an Android flow; prefer resource-id, content-desc, or stable text.',
       });
     }
-    if (step.kind === 'inputText' && !/\$\{[^}]+}/.test(step.value) && (step.secret || SECRET_LITERAL.test(step.value))) {
+    if (step.kind === 'inputText' && !/\$\{[^}]+}/.test(step.value) && (step.secret || looksLikeInlineSecret(step.value))) {
       findings.push({
         file,
         flow: flow.name,

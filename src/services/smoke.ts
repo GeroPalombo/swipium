@@ -91,7 +91,7 @@ const LOCATOR_STEP_KINDS = new Set(['waitForVisible', 'tap', 'inputText', 'scrol
 /** How a saved flow's failure is filed:
  *  - missing variables / fixtures (missing_data bucket) > blocked + missing_test_data, never a fail;
  *  - the flow's app is not installed (BUNDLE_ID_NOT_FOUND) > blocked + other: a setup problem, not a
- *    Swipium limitation (round-4 Android note: it read "limited by Swipium/MCP capabilities");
+ *    Swipium limitation (it read "limited by Swipium/MCP capabilities");
  *  - tool-side codes (mcp_limitation / environment bucket) > fail + mcp_limitation;
  *  - a Swipium-GENERATED flow failing on a locator step (selector timeout / not found) > fail +
  *    'other' (automation / flaky locator), not app_bug;

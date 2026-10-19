@@ -6,7 +6,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, invalidArgumentError, isInvalidArgumentError, unknownSessionError, cancelledResult } from '../lib/result.js';
 import { isAbortError } from '../lib/abortScope.js';
-import { waitForForeground } from '../lib/launchWait.js';
+import { isForegroundOf, waitForForeground } from '../lib/launchWait.js';
 import { assertAndroidAppId } from '../drivers/DirectDriver.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { blockedDeviceResult, getDriver, prepareFirstStep } from '../session/attach.js';
@@ -204,7 +204,7 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
             // The home transition takes a moment (iOS reported the app as foreground 800 ms after
             // the press): poll until the foreground actually changes, bounded at ~3 s.
             foreground = pkg;
-            for (let waited = 0; waited < 3000 && foreground.startsWith(pkg); waited += 300) {
+            for (let waited = 0; waited < 3000 && isForegroundOf(foreground, pkg); waited += 300) {
               await new Promise((r) => setTimeout(r, 300));
               foreground = await d.foregroundOwner().catch(() => 'unknown');
             }
@@ -263,7 +263,7 @@ export function registerAppControl(server: McpServer, sessions: SessionStore): v
         });
       }
 
-      const launchedOk = foreground.startsWith(pkg);
+      const launchedOk = isForegroundOf(foreground, pkg);
       sessions.recordMutation(session, {
         tool: 'qa_app_control',
         action: `app_${action}`,

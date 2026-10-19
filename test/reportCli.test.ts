@@ -128,14 +128,48 @@ describe('swipium report', () => {
   });
 
   it('--fail-on-gate returns 1 when the gate blocks, 0 when policy lets it through', async () => {
-    expect(await runReport(['--root', root, '--format', 'github-summary', '--fail-on-gate'], capture())).toBe(1);
+    // --max-age accepts new00002's recent report although the newer empty003 saved none.
+    const gate = ['--root', root, '--max-age', '60', '--fail-on-gate'];
+    expect(await runReport([...gate, '--format', 'github-summary'], capture())).toBe(1);
     mkdirSync(join(root, '.swipium'), { recursive: true });
     writeFileSync(join(root, '.swipium', 'policy.json'), JSON.stringify({ ignoreKnown: ['NATIVE_CRASH'] }));
     try {
-      expect(await runReport(['--root', root, '--format', 'junit', '--fail-on-gate'], capture())).toBe(0);
+      expect(await runReport([...gate, '--format', 'junit'], capture())).toBe(0);
     } finally {
       rmSync(join(root, '.swipium', 'policy.json'));
     }
+  });
+
+  it('--latest --fail-on-gate refuses (exit 2) when a newer session saved no report', async () => {
+    const io = capture();
+    expect(await runReport(['--root', root, '--latest', '--format', 'junit', '--fail-on-gate'], io)).toBe(2);
+    expect(io.err).toContain('empty003');
+    expect(io.err).toContain('new00002');
+    expect(io.out).toBe('');
+    // Without --fail-on-gate it still renders the older report, with a warning.
+    const warn = capture();
+    expect(await runReport(['--root', root, '--latest', '--format', 'junit'], warn)).toBe(0);
+    expect(warn.err).toContain('Warning: 1 newer session(s) (empty003) saved no report');
+  });
+
+  it('boolean flags reject a value', async () => {
+    const io = capture();
+    expect(await runReport(['--root', root, '--format', 'junit', '--fail-on-gate=false'], io)).toBe(2);
+    expect(io.err).toContain('--fail-on-gate takes no value');
+    expect(await runReport(['--root', root, '--format', 'junit', '--latest=yes'], capture())).toBe(2);
+  });
+
+  it('a failed --out write exits 2, never 1 (gate blocked)', async () => {
+    const blocker = join(root, 'not-a-dir');
+    writeFileSync(blocker, 'x');
+    const io = capture();
+    expect(
+      await runReport(
+        ['--root', root, '--session', 'new00002', '--format', 'junit', '--fail-on-gate', '--out', join(blocker, 'junit.xml')],
+        io,
+      ),
+    ).toBe(2);
+    expect(io.err).toContain('Could not write');
   });
 
   it('--session selects a specific session; SARIF goes to stdout anchored to the project manifest', async () => {

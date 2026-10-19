@@ -29,6 +29,7 @@ import { waitForAppRender } from '../snapshot/renderWait.js';
 import { metroListening } from '../lib/metroState.js';
 import { isMetroRequiredFinding, type Finding } from '../oracle/health.js';
 import { checkLaunchErrorSurface, launchErrorText } from '../oracle/record.js';
+import { failCrashedJob } from '../orchestration/jobCrash.js';
 
 /** How long one qa_prepare_ios_target call waits for a simulator boot. Lower than qa_ios boot's
  *  wait because install/launch/WDA still run in the same call after a boot that made it in time.
@@ -67,7 +68,7 @@ export function registerPrepareIosTarget(server: McpServer, sessions: SessionSto
         sessionId: z.string(),
         app: z.string().optional().describe('Simulator .app path (absolute or project-relative).'),
         bundleId: z.string().optional(),
-        device: z.string().optional().describe('Simulator UDID or name substring.'),
+        device: z.string().optional().describe('Simulator UDID or exact name (ignoring case).'),
         launch: z.boolean().optional(),
         attachWda: z
           .enum(['auto', 'required', 'skip'])
@@ -181,7 +182,9 @@ export function registerPrepareIosTarget(server: McpServer, sessions: SessionSto
       if (res.ok && res.booting) {
         const job = sessions.createJob(session, 'prepare_ios');
         const rest: PrepareIosArgs = { ...prepArgs, simulator: res.udid };
-        void runWithSignal(sessions.abortSignal(session, job.jobId), () => runPrepareIosJob(sessions, session, job, rest, installAffects));
+        void runWithSignal(sessions.abortSignal(session, job.jobId), () =>
+          runPrepareIosJob(sessions, session, job, rest, installAffects),
+        ).catch((e: unknown) => failCrashedJob(sessions, session, job, 'iOS prepare', e));
         return qaOk(
           {
             status: 'booting',

@@ -95,12 +95,16 @@ export function psEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv 
   return { ...base, LC_ALL: 'C', LANG: 'C' };
 }
 
+/** Bound on every `ps`/`lsof` we run synchronously: a wedged one (hung NFS mount, overloaded host)
+ *  would otherwise freeze the single-threaded server. A timeout reads as "unknown". */
+const PROBE_SPAWN_OPTS = { timeout: 4000, killSignal: 'SIGKILL' } as const;
+
 /** A `ps -o <field>=` value for `pid`, or null when it is gone / unreadable (POSIX `ps`). */
 function psField(pid: number, field: string): string | null {
   if (process.platform === 'win32') return null;
   try {
-    const out = spawnSync('ps', ['-o', `${field}=`, '-p', String(pid)], { encoding: 'utf8', env: psEnv() });
-    if (out.status !== 0 || !out.stdout?.trim()) return null;
+    const out = spawnSync('ps', ['-o', `${field}=`, '-p', String(pid)], { encoding: 'utf8', env: psEnv(), ...PROBE_SPAWN_OPTS });
+    if (out.error || out.status !== 0 || !out.stdout?.trim()) return null;
     return out.stdout.trim();
   } catch {
     return null;
@@ -179,7 +183,7 @@ export function registerManagedProcess(
     const spawned = norm(extra.spawnCommand);
     if (spawned) fp.command = spawned;
   }
-  // Round-4 note: a dead child's entry (its server lives on, so the startup sweep never runs) is
+  // A dead child's entry (its server lives on, so the startup sweep never runs) is
   // dropped on the next registration; a dead pid can't be signalled, so no owner needs it.
   mutateEntries((entries) => [
     ...entries.filter((e) => e.pid !== pid && pidAlive(e.pid)),
@@ -279,7 +283,7 @@ const REAL_OPS: ProcessOps = { pidAlive, psCommand, psStartTime, psPgid, killTre
  *  entries without a recorded server start fall back to the old node/swipium command check.
  *  A live pid whose start time / command can't be read (a `ps` failure or timeout under load)
  *  counts as alive: the startup sweep must never re-own or reap a live server's entry on a
- *  failed read (round-3 note: another server's WDA entry got this server's serverPid). */
+ *  failed read (another server's WDA entry got this server's serverPid). */
 function serverStillAlive(entry: Pick<ManagedProcessEntry, 'serverPid' | 'serverStart'>, ops: ProcessOps = REAL_OPS): boolean {
   const { serverPid } = entry;
   if (serverPid === process.pid) return false; // our pid at startup = a recycled dead server's
@@ -502,7 +506,8 @@ export interface WdaScanOps {
 function lsofListeners(port: number): number[] {
   if (process.platform === 'win32') return [];
   try {
-    const out = spawnSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fp'], { encoding: 'utf8', env: psEnv() });
+    const out = spawnSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fp'], { encoding: 'utf8', env: psEnv(), ...PROBE_SPAWN_OPTS });
+    if (out.error) return [];
     return (out.stdout ?? '')
       .split('\n')
       .filter((l) => l.startsWith('p'))
@@ -516,8 +521,13 @@ function lsofListeners(port: number): number[] {
 function psAll(): Array<{ pid: number; command: string }> {
   if (process.platform === 'win32') return [];
   try {
-    const out = spawnSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8', env: psEnv(), maxBuffer: 16 * 1024 * 1024 });
-    if (out.status !== 0) return [];
+    const out = spawnSync('ps', ['-axo', 'pid=,command='], {
+      encoding: 'utf8',
+      env: psEnv(),
+      maxBuffer: 16 * 1024 * 1024,
+      ...PROBE_SPAWN_OPTS,
+    });
+    if (out.error || out.status !== 0) return [];
     return (out.stdout ?? '')
       .split('\n')
       .map((l) => /^\s*(\d+)\s+(.*)$/.exec(l))

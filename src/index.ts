@@ -27,7 +27,8 @@ async function main(): Promise<void> {
     return;
   }
   if (parsed.kind === 'unknown') {
-    process.stderr.write(`swipium: unknown command "${parsed.cmd}"\n\n${USAGE}`);
+    const hint = parsed.suggestion ? ` (did you mean "swipium ${parsed.suggestion}"?)` : '';
+    process.stderr.write(`swipium: unknown command "${parsed.cmd}"${hint}\n\n${USAGE}`);
     process.exitCode = 2;
     return;
   }

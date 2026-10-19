@@ -50,6 +50,7 @@ import type { FailureCode } from '../oracle/failures.js';
 import { isAbortError, runWithSignal, sleepOrCancel, throwIfCancelled } from '../lib/abortScope.js';
 import { SECRET_VAR_NAME } from '../flows/schema.js';
 import { withWdaCall } from '../lib/wda.js';
+import { isForegroundOf } from '../lib/launchWait.js';
 
 /** The iOS home screen's bundle id, as WDA's active app info reports it. */
 const IOS_SPRINGBOARD = 'com.apple.springboard';
@@ -1237,7 +1238,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
             // WDA's active app lags the home transition by a few hundred ms: poll until the
             // app under test is no longer in front (or, with no app id, until SpringBoard is), up
             // to ~2 s. Each read is capped so a WDA busy settling SpringBoard can't stall the call.
-            const inApp = (fg: string) => !!session.appId && fg.startsWith(session.appId);
+            const inApp = (fg: string) => isForegroundOf(fg, session.appId);
             const onHome = (fg: string) => fg === IOS_SPRINGBOARD;
             const pending = (fg: string) => fg !== 'unknown' && !onHome(fg) && (inApp(fg) || !session.appId);
             const readForeground = () => withWdaCall({ timeoutMs: 1000 }, () => d.foregroundOwner()).catch(() => 'unknown');
@@ -1392,8 +1393,7 @@ export function registerAct(server: McpServer, sessions: SessionStore): void {
           // was in front after it (not a tap on SpringBoard / another app, not a press home).
           // Exact package / bundle id (an Android ":process" suffix allowed): `com.example.app` must not
           // match `com.example.app2`.
-          const fgOwner = health.foreground.split('/')[0];
-          if (recorded && session.appId && !health.deviceGone && (fgOwner === session.appId || fgOwner.startsWith(`${session.appId}:`))) {
+          if (recorded && session.appId && !health.deviceGone && isForegroundOf(health.foreground, session.appId)) {
             recorded.appForeground = true;
             sessions.persist(session);
           }

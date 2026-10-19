@@ -10,8 +10,9 @@
 // are emitted on top so they can't drift. Project-file mutation (integrateIntoProject) is consent-gated.
 // Both cores are registered through qa_generate (src/tools/generate.ts). This module registers no tool.
 
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { writeFileExclusiveContained } from '../lib/noFollowFs.js';
 import type { McpServer, CallToolResult } from '@modelcontextprotocol/server';
 import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { unresolvedProjectRootError } from '../context/projectRoot.js';
@@ -216,6 +217,8 @@ export async function runAutomationGenerate(
       const boot = await bootstrapFeatureExecution({
         server,
         sessions,
+        // Reuse the caller's session (and its root) unless a different projectRoot was asked for.
+        session: session && !projectRoot?.trim() ? session : undefined,
         projectRoot: projectRoot?.trim() ?? session!.root,
         feature: feature ?? 'create automation suite',
         platform: platform === 'android' || platform === 'ios' ? platform : undefined,
@@ -464,12 +467,20 @@ function writeProjectFilesNoOverwrite(root: string, dir: string, files: Generate
   const skipped: string[] = [];
   for (const f of files) {
     const abs = join(root, dir, f.path);
-    if (existsSync(abs)) {
+    // Exclusive create ('wx': an existing file or symlink is never overwritten or followed) inside
+    // the real project root (a symlinked test dir cannot redirect it), with no check-then-write gap.
+    let outcome: 'written' | 'exists';
+    try {
+      outcome = writeFileExclusiveContained(root, abs, f.content);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ELOOP') throw e;
+      skipped.push(`${f.path} (resolves outside the project, not written)`);
+      continue;
+    }
+    if (outcome === 'exists') {
       skipped.push(f.path);
       continue;
     }
-    mkdirSync(dirname(abs), { recursive: true });
-    writeFileSync(abs, f.content);
     written.push(abs);
   }
   return { written, skipped };

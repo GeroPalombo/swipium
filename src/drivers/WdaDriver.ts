@@ -1,7 +1,7 @@
 import type { DumpOptions, Driver, ImeState, NativeSelectorStrategy } from './Driver.js';
 import { currentScreenSizeEpoch } from './DirectDriver.js';
 import * as sim from '../lib/simctl.js';
-import { currentSignal } from '../lib/abortScope.js';
+import { currentSignal, isAbortError, sleepOrCancel } from '../lib/abortScope.js';
 import { parseSnapshot } from '../snapshot/parse.js';
 import {
   acceptWdaAlert,
@@ -31,6 +31,7 @@ import {
   wdaSessionUdidMismatch,
   wdaSource,
   wdaWindowSize,
+  WdaHttpError,
   type WdaSessionOptions,
 } from '../lib/wda.js';
 
@@ -72,6 +73,17 @@ type SimulatorControl = Pick<typeof sim, 'launchApp' | 'terminateApp' | 'openUrl
 function tailLines(text: string, lines: number): string {
   const all = text.split(/\r?\n/);
   return all.slice(Math.max(0, all.length - lines)).join('\n');
+}
+
+/** PURE: did a failed WDA typing request provably type nothing? WDA rejects a gone or stale
+ *  element (404 no such element / stale element reference) or an element without keyboard focus
+ *  before sending a single key, so typing again elsewhere is safe. A timeout, a dropped connection
+ *  or a 5xx mid-typing may have delivered some or all of the text: retyping would double it. */
+export function wdaTypeFailedBeforeTyping(e: unknown): boolean {
+  if (e instanceof WdaHttpError && e.status === 404) return true;
+  const text = e instanceof WdaHttpError ? `${e.message} ${e.body}` : String((e as Error)?.message ?? e);
+  if (/timed out|aborted|cancel/i.test(text)) return false;
+  return /no such element|stale element|not attached to the page|has keyboard focus/i.test(text);
 }
 
 function errorSummary(e: unknown): string {
@@ -373,7 +385,7 @@ export class WdaDriver implements Driver {
         const info = await this.withSession((sid) => wdaActiveAppInfo(this.baseUrl, sid));
         return info.bundleId || info.name || 'unknown';
       } catch {
-        if (attempt === 0) await new Promise((r) => setTimeout(r, 300));
+        if (attempt === 0) await sleepOrCancel(300); // a cancel unwinds instead of retrying
       }
     }
     return 'unknown';
@@ -428,15 +440,27 @@ export class WdaDriver implements Driver {
         await this.timed('type', () => typeWdaElement(this.baseUrl, sid, reuse.elementId, text));
         return;
       } catch (e) {
-        if (isInvalidWdaSession(e)) throw e;
+        // Only a request WDA rejected up front (stale element) may be retried; anything else
+        // (timeout, dropped connection) may have typed the text already.
+        if (isInvalidWdaSession(e) || !wdaTypeFailedBeforeTyping(e)) throw e;
       }
     }
+    let el: { elementId: string } | undefined;
     try {
-      const el = await this.timed('find_element', () => findFocusedWdaElement(this.baseUrl, sid));
-      await this.timed('type', () => typeWdaElement(this.baseUrl, sid, el.elementId, text));
-      return;
+      el = await this.timed('find_element', () => findFocusedWdaElement(this.baseUrl, sid));
     } catch (e) {
-      focusedError = e;
+      if (isInvalidWdaSession(e) || isAbortError(e)) throw e;
+      focusedError = e; // the lookup types nothing: /wda/keys below is safe
+    }
+    if (el) {
+      const found = el;
+      try {
+        await this.timed('type', () => typeWdaElement(this.baseUrl, sid, found.elementId, text));
+        return;
+      } catch (e) {
+        if (isInvalidWdaSession(e) || !wdaTypeFailedBeforeTyping(e)) throw e;
+        focusedError = e;
+      }
     }
     try {
       await this.timed('type', () => typeWdaKeys(this.baseUrl, sid, text));

@@ -207,7 +207,9 @@ export function toPlaywrightJson(r: ReportData): string {
   const generatedAt = new Date().toISOString();
   const evidenceTaxonomy = r.evidenceTaxonomy ?? evidenceTaxonomyForNotes(r.testOutcomes);
   const evidenceByWorkflow = new Map(evidenceTaxonomy.assessments.map((a) => [a.workflow, a]));
-  const specs = r.testOutcomes.map((n) => {
+  // The not-tested marker is a failed case, as in JUnit and SARIF: a run that tested nothing is red.
+  const outcomes = [...r.testOutcomes, ...notReachedOutcomes(r)];
+  const specs = outcomes.map((n) => {
     const status = n.unverified ? 'skipped' : playwrightStatus(n.outcome); // a claim is not a pass
     const message =
       (n.unverified ? 'unverified manual claim: ' : '') +
@@ -287,7 +289,7 @@ export function toPlaywrightJson(r: ReportData): string {
   }));
   const allSpecs = [...specs, ...findingSpecs];
   const failed = allSpecs.filter((s) => !s.ok).length;
-  const skipped = r.testOutcomes.filter((n) => playwrightStatus(n.outcome) === 'skipped').length;
+  const skipped = specs.filter((s) => s.tests[0].status === 'skipped').length;
   const payload = {
     schema: 'swipium.playwright.report.v1',
     generatedAt,
@@ -478,22 +480,26 @@ export function toMarkdown(r: ReportData): string {
   L.push(`# QA report: ${r.appId ?? 'app'}`);
   L.push('');
   L.push('## PR summary', '');
-  L.push('```text');
-  L.push(inlinePrSummary(r));
-  L.push('```');
+  // The one fenced block. Its fence is longer than any backtick run in the summary, so run text
+  // (a reason with a newline and ```) can never close it early.
+  const prText = inlinePrSummary(r);
+  const fence = codeFence(prText);
+  L.push(`${fence}text`);
+  const fencedEntry = L.push(prText) - 1;
+  L.push(fence);
   L.push('');
   L.push(`**Release risk: ${RISK_BADGE[r.executiveSummary.risk] ?? r.executiveSummary.risk.toUpperCase()}**`);
   if (r.appVerdict || r.coverageVerdict || r.toolVerdict) {
     L.push('');
-    if (r.appVerdict) L.push(`**App status:** ${r.appVerdict.status} - ${r.appVerdict.summary}`);
-    if (r.coverageVerdict) L.push(`**Coverage status:** ${r.coverageVerdict.status} - ${r.coverageVerdict.summary}`);
-    if (r.toolVerdict) L.push(`**Tool status:** ${r.toolVerdict.status} - ${r.toolVerdict.summary}`);
+    if (r.appVerdict) L.push(`**App status:** ${r.appVerdict.status} - ${mdLine(r.appVerdict.summary)}`);
+    if (r.coverageVerdict) L.push(`**Coverage status:** ${r.coverageVerdict.status} - ${mdLine(r.coverageVerdict.summary)}`);
+    if (r.toolVerdict) L.push(`**Tool status:** ${r.toolVerdict.status} - ${mdLine(r.toolVerdict.summary)}`);
   }
   L.push('');
-  L.push(`**Next action:** ${r.executiveSummary.nextAction}`);
+  L.push(`**Next action:** ${mdLine(r.executiveSummary.nextAction)}`);
   if (r.executiveSummary.reasons.length) {
     L.push('');
-    for (const reason of r.executiveSummary.reasons) L.push(`- ${reason}`);
+    for (const reason of r.executiveSummary.reasons) L.push(`- ${mdLine(reason)}`);
   }
   // Issue memory: durable, cross-run issue ledger summary + recurrence warnings.
   if (r.issuesMarkdown) {
@@ -535,7 +541,7 @@ export function toMarkdown(r: ReportData): string {
     L.push(`- Labels: ${ar.labels.length ? ar.labels.join(', ') : 'none'}.`);
     if (ar.topFixes.length) {
       L.push('- Top fixes:');
-      for (const fix of ar.topFixes.slice(0, 10)) L.push(`  - ${fix}`);
+      for (const fix of ar.topFixes.slice(0, 10)) L.push(`  - ${mdLine(fix)}`);
     }
     if (ar.workflowGrades.length) {
       L.push('', '| Workflow | Grade | Outcome | Evidence | Fix |');
@@ -551,7 +557,7 @@ export function toMarkdown(r: ReportData): string {
     }
     if (ar.prComments.length) {
       L.push('', '### Suggested PR comments', '');
-      for (const c of ar.prComments) L.push(`- [${c.severity}] ${c.body}`);
+      for (const c of ar.prComments) L.push(`- [${c.severity}] ${mdLine(c.body)}`);
     }
   }
 
@@ -595,8 +601,8 @@ export function toMarkdown(r: ReportData): string {
     const f = r.flakeClassification;
     L.push('', '## Flake classification', '');
     L.push(`- ${f.classification}: ${f.passed}/${f.repeat} passed (${f.passRate}%).`);
-    L.push(`- Triage: ${f.triage.likelyCause} (${f.triage.confidence} confidence). ${f.triage.nextStep}`);
-    for (const ev of f.triage.evidence) L.push(`  - ${ev}`);
+    L.push(`- Triage: ${mdLine(f.triage.likelyCause)} (${f.triage.confidence} confidence). ${mdLine(f.triage.nextStep)}`);
+    for (const ev of f.triage.evidence) L.push(`  - ${mdLine(ev)}`);
   }
 
   if (r.generatedValues?.length) {
@@ -616,9 +622,9 @@ export function toMarkdown(r: ReportData): string {
       const code = f.failureCode ? ` \`${f.failureCode}\`` : '';
       const bucket = f.bucket ? ` ${f.bucket}` : '';
       const retry = f.retrySafe == null ? '' : ` retrySafe=${f.retrySafe}`;
-      const next = f.nextStep ? ` Next: ${f.nextStep}` : '';
+      const next = f.nextStep ? ` Next: ${mdLine(f.nextStep)}` : '';
       L.push(
-        `- **[${f.severity}]**${code}${bucket}${retry} ${isToolReportFinding(f) ? 'tool' : (f.layer ?? '?')}/${f.kind}:${f.detail}${f.count && f.count > 1 ? ` (×${f.count})` : ''}${f.evidence ? `: _"${f.evidence}"_` : ''}${f.screenshotUri ? ` ([screenshot](${f.screenshotUri}))` : ''}${next}`,
+        `- **[${f.severity}]**${code}${bucket}${retry} ${isToolReportFinding(f) ? 'tool' : (f.layer ?? '?')}/${f.kind}:${mdLine(f.detail)}${f.count && f.count > 1 ? ` (×${f.count})` : ''}${f.evidence ? `: _"${mdLine(f.evidence)}"_` : ''}${f.screenshotUri ? ` ([screenshot](${f.screenshotUri}))` : ''}${next}`,
       );
     }
   }
@@ -627,12 +633,12 @@ export function toMarkdown(r: ReportData): string {
     L.push('', '## Environment', '');
     L.push(`- Network at end: ${r.finalNetwork} (${r.networkRestore})`);
     if (r.guardrailOverrides.length) L.push(`- ⚠️ Guardrail overrides: ${r.guardrailOverrides.length}`);
-    for (const c of r.environmentChanges) L.push(`  - ${c}`);
+    for (const c of r.environmentChanges) L.push(`  - ${mdLine(c)}`);
   }
 
   if (r.ciMutations?.length) {
     L.push('', '## CI mutations', '');
-    for (const c of r.ciMutations) L.push(`- ${c}`);
+    for (const c of r.ciMutations) L.push(`- ${mdLine(c)}`);
   }
 
   if (r.mutationLedger?.length) {
@@ -684,27 +690,26 @@ export function toMarkdown(r: ReportData): string {
     if (parts.length) L.push(`- Diagnostics: ${parts.join(' · ')}`);
   }
   L.push(`- ${r.artifacts.length} artifact(s):`);
-  for (const a of r.artifacts) L.push(`  - \`${a.uri}\` (${a.kind}${a.label ? `: ${a.label}` : ''})`);
+  for (const a of r.artifacts) L.push(`  - ${mdCode(a.uri)} (${a.kind}${a.label ? `: ${mdLine(a.label)}` : ''})`);
 
   L.push('', '---', '_Generated by Swipium._');
-  return neutralizeMarkdownHtml(stripControls(L.join('\n')));
+  // Run text (note reasons, app text, logs) is not trusted HTML: "<" becomes "&lt;" in every entry
+  // but the PR-summary fence, so `<img onerror>` / `<script>` render as text. This is per entry,
+  // never by scanning for fences, so a fence line smuggled in by run text cannot switch it off.
+  return stripControls(L.map((entry, i) => (i === fencedEntry ? entry : entry.replace(/</g, '&lt;'))).join('\n'));
 }
 
-/** Run text in the Markdown export (note reasons, app text, logs) is not trusted HTML.
- *  Outside fenced code blocks "<" becomes "&lt;", so `<img onerror>` / `<script>` render as text;
- *  the export's own Markdown (blockquotes, tables) uses no raw HTML, so nothing else changes. */
-function neutralizeMarkdownHtml(md: string): string {
-  let inFence = false;
-  return md
-    .split('\n')
-    .map((line) => {
-      if (/^\s*```/.test(line)) {
-        inFence = !inFence;
-        return line;
-      }
-      return inFence ? line : line.replace(/</g, '&lt;');
-    })
-    .join('\n');
+/** A single-line Markdown field: newlines flattened, so run text cannot start a line of its own
+ *  (a heading, a list item or a code fence). */
+function mdLine(s: string): string {
+  return s.replace(/\r?\n/g, ' ');
+}
+
+/** A backtick fence longer than any backtick run in `content` (at least three), so no line of the
+ *  content can close it. */
+function codeFence(content: string): string {
+  const longest = Math.max(0, ...(content.match(/`+/g) ?? []).map((run) => run.length));
+  return '`'.repeat(Math.max(3, longest + 1));
 }
 
 /** Characters XML 1.0 forbids even as character references (https://www.w3.org/TR/xml/#charsets):
@@ -740,11 +745,29 @@ export function reportPolicyVerdicts(r: ReportData): FlowVerdict[] {
     passed: n.outcome !== 'fail',
     failureCode: n.outcome === 'fail' ? workflowFailureCode(n) : undefined,
     outcome: n.outcome,
+    ...(isVisualFailure(n) ? { visual: true } : {}),
   }));
   for (const f of r.findings) {
     if (f.severity === 'high') verdicts.push({ flow: `finding:${f.kind}`, passed: false, failureCode: f.failureCode ?? f.kind });
   }
   return verdicts;
+}
+
+/** Flow steps whose failure is a visual comparison, not a structured UI assertion. */
+const VISUAL_STEP_KINDS = new Set(['assertImage', 'assertOcrText', 'assertDiff']);
+/** Evidence kinds Swipium records when it compared pixels or OCR text itself. */
+const VISUAL_EVIDENCE_KINDS = new Set<string>(['visual_match', 'ocr_locator', 'ocr_text']);
+
+/** A failed outcome the policy token `visual_diff` may match: the failing flow step is an image
+ *  template / OCR / screenshot-diff assertion, or (without step detail) Swipium's own visual or OCR
+ *  evidence. assertVisible / waitForVisible failures and agent verdicts (qa_note, qa_visual assert,
+ *  evidence manual_review) are never visual diffs, so a warnOn:["visual_diff"] policy cannot
+ *  downgrade them. */
+export function isVisualFailure(n: ReportNote): boolean {
+  if (n.outcome !== 'fail') return false;
+  const failedStep = n.steps?.find((s) => !s.ok);
+  if (failedStep) return VISUAL_STEP_KINDS.has(failedStep.kind);
+  return n.source !== 'qa_note' && !!n.evidenceKind && VISUAL_EVIDENCE_KINDS.has(n.evidenceKind);
 }
 
 /** A run that never reached the app, as a synthetic failed workflow: the gate and
@@ -783,6 +806,9 @@ function nonBlockingFailures(policy?: PolicyDecision): Map<string, 'warned' | 's
   const out = new Map<string, 'warned' | 'suppressed'>();
   for (const k of policy?.warned ?? []) out.set(k, 'warned');
   for (const k of policy?.suppressed ?? []) out.set(k, 'suppressed');
+  // The same key can be both blocked and let through (one workflow failing twice for different
+  // reasons); the block wins, so the exports never show a blocking failure as a warning.
+  for (const k of policy?.blocked ?? []) out.delete(k);
   return out;
 }
 
@@ -820,6 +846,8 @@ export function toJUnit(r: ReportData, policy?: PolicyDecision): string {
     lines.push('    <properties>');
     lines.push(`      <property name="swipium.releaseGate" value="${policy.block ? 'fail' : 'pass'}"></property>`);
     lines.push(`      <property name="swipium.releaseGate.reason" value="${escapeXml(policy.reason)}"></property>`);
+    // Additive, same vocabulary as SARIF run.properties.releaseGateVerdict (pass | block).
+    lines.push(`      <property name="swipium.releaseGate.verdict" value="${policy.block ? 'block' : 'pass'}"></property>`);
     lines.push('    </properties>');
   }
   for (const n of cases) {
@@ -895,6 +923,14 @@ export interface SarifOptions {
   sources?: SarifSourceMap;
 }
 
+/** An own string entry of a name-keyed lookup table: a screen or workflow named "constructor" or
+ *  "__proto__" must never resolve to an Object.prototype member. */
+function ownLookup(table: Record<string, string> | undefined, key: string): string | undefined {
+  if (!table || !Object.prototype.hasOwnProperty.call(table, key)) return undefined;
+  const v = table[key];
+  return typeof v === 'string' ? v : undefined;
+}
+
 /** Stable 16-hex digest (volatile ids/timestamps scrubbed) for SARIF partialFingerprints. */
 function stableHash(...parts: string[]): string {
   return createHash('sha256')
@@ -942,13 +978,21 @@ export function toSarif(r: ReportData, policy?: PolicyDecision, options: SarifOp
     seen.set(base, n);
     return { primaryLocationLineHash: `${base}:${n}`, 'swipium/v1': `${base}:${n}` };
   };
+  // Like JUnit: a failure the policy only warns on is a warning, one it ignores is a note.
+  const lenient = nonBlockingFailures(policy);
+  const policyLevel = (key: string, level: SarifLevel): SarifLevel => {
+    const how = lenient.get(key);
+    if (how === 'suppressed') return 'note';
+    if (how === 'warned' && level === 'error') return 'warning';
+    return level;
+  };
   const results: SarifResult[] = r.findings.map((f) => {
     const ruleId = f.failureCode ?? f.kind;
-    const file = (f.screen && sources.byScreen?.[f.screen.toLowerCase()]) || sources.defaultUri;
+    const file = (f.screen && ownLookup(sources.byScreen, f.screen.toLowerCase())) || sources.defaultUri;
     return {
       ruleId,
       // A tool / environment failure is not a defect in the code: a note, like mcp_limitation.
-      level: isToolReportFinding(f) ? 'note' : sarifLevel(f.severity),
+      level: isToolReportFinding(f) ? 'note' : f.severity === 'high' ? policyLevel(findingPolicyKey(f), 'error') : sarifLevel(f.severity),
       message: { text: `${f.detail}${f.evidence ? `: "${f.evidence}"` : ''}${f.nextStep ? ` Next: ${f.nextStep}` : ''}` },
       locations: [anchor(file)],
       partialFingerprints: fingerprints(ruleId, f.kind, f.screen ?? '', f.detail),
@@ -963,14 +1007,14 @@ export function toSarif(r: ReportData, policy?: PolicyDecision, options: SarifOp
       },
     };
   });
-  for (const n of r.testOutcomes) {
+  for (const n of [...r.testOutcomes, ...notReachedOutcomes(r)]) {
     if (n.outcome !== 'fail') continue;
     const ruleId = n.steps?.find((s) => s.failureCode)?.failureCode ?? n.category ?? 'WORKFLOW_FAILED';
-    const file = sources.byWorkflow?.[n.workflow.toLowerCase()] ?? sources.defaultUri;
+    const file = ownLookup(sources.byWorkflow, n.workflow.toLowerCase()) ?? sources.defaultUri;
     results.push({
       ruleId,
       // A Swipium/tool limitation is not an app defect: a note, not a code-scanning error.
-      level: n.category === 'mcp_limitation' ? 'note' : 'error',
+      level: n.category === 'mcp_limitation' ? 'note' : policyLevel(workflowPolicyKey(n), 'error'),
       message: { text: `${n.workflow}: ${[n.reason, n.missingPrecondition].filter(Boolean).join('; ') || 'workflow failed'}` },
       locations: [anchor(file)],
       partialFingerprints: fingerprints(ruleId, 'workflow', n.workflow),

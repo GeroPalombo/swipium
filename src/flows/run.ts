@@ -24,7 +24,7 @@ import { awaitIme, IME_HOP_FLOOR_MS } from '../core/ime.js';
 import { checkHealth } from '../oracle/health.js';
 import { recordHealthFindings } from '../oracle/record.js';
 import { isAbortError, sleepOrCancel, throwIfCancelled } from '../lib/abortScope.js';
-import { waitForForeground } from '../lib/launchWait.js';
+import { isForegroundOf, waitForForeground } from '../lib/launchWait.js';
 import {
   boundsBucket,
   FLOW_TARGET_WAIT_MS,
@@ -52,7 +52,7 @@ import {
 import { swipeVector } from '../lib/gestures.js';
 import { configuredOcrCommand, findOcrRegion, runOcr } from '../visual/ocr.js';
 import { isSecureNode, makeRedactor } from '../lib/redact.js';
-import { classifyForeground, detectTreeOverlays } from '../snapshot/overlays.js';
+import { classifyForeground, detectTreeOverlays, localResourceId } from '../snapshot/overlays.js';
 import type { RawNode } from '../snapshot/parse.js';
 import type { FailureCode } from '../oracle/failures.js';
 import { isDeviceGoneError } from '../lib/deviceGone.js';
@@ -157,11 +157,19 @@ async function snapshot(session: Session, d: Driver, reuse = false) {
     };
   return snapshotNow(session, d);
 }
-function visible(parsed: { allNodes: { text: string; desc: string; id: string }[] }, query: string): boolean {
+/** Text / desc / id substring match. The id is matched without its Android package prefix
+ *  (`com.acme.checkout:id/pay` > `pay`): otherwise every node of com.acme.checkout "contains"
+ *  "checkout" and an assertion on that word passes (or assertNotVisible fails) on every screen.
+ *  iOS accessibility identifiers carry no prefix and are matched whole. */
+export function visible(parsed: { allNodes: { text: string; desc: string; id: string }[] }, query: string): boolean {
   // Typographic quotes fold to ASCII, as in selector matching.
   const q = foldText(query);
   return parsed.allNodes.some(
-    (n) => (!!n.text && foldText(n.text).includes(q)) || (!!n.desc && foldText(n.desc).includes(q)) || n.id?.toLowerCase().includes(q),
+    (n) =>
+      (!!n.text && foldText(n.text).includes(q)) ||
+      (!!n.desc && foldText(n.desc).includes(q)) ||
+      // A query that is itself a full resource id (`com.acme:id/pay`) still matches it whole.
+      (!!n.id && (q.includes(':id/') ? n.id.toLowerCase() : localResourceId(n.id).toLowerCase()).includes(q)),
   );
 }
 
@@ -470,12 +478,12 @@ export async function runFlow(
     } catch (e) {
       if (isAbortError(e)) throw e;
     }
-    return fg === 'unknown' || fg.startsWith(pkg)
+    return fg === 'unknown' || isForegroundOf(fg, pkg)
       ? {}
       : { detail: `⚠ ${stepKind}: foreground is ${fg}, not ${pkg}; the next step may not see the app.` };
   };
 
-  // Round-4 Android note: launching an app that isn't on the device (monkey exits 252) is a setup
+  // Launching an app that isn't on the device (monkey exits 252) is a setup
   // problem (BUNDLE_ID_NOT_FOUND, environment), not an unclassified tool failure (UNKNOWN).
   const notInstalled = async (pkg: string, e: unknown): Promise<StepOutcome | undefined> => {
     if (isAbortError(e)) return undefined;
@@ -743,6 +751,7 @@ export async function runFlow(
               ? { ok: true }
               : { ok: false, detail: `"${shown(query)}" unexpectedly visible`, failureCode: 'ASSERTION_FAILED' };
         } catch (e) {
+          if (isAbortError(e)) throw e;
           return { ok: false, detail: String((e as Error).message ?? e), failureCode: 'BACKEND_UNSUPPORTED' };
         }
         const id = resourceIdSelector(query);
@@ -844,6 +853,7 @@ export async function runFlow(
         const query = resolved.out;
         const screenSize = await currentScreenSize();
         for (let n = 0; n < 8; n++) {
+          throwIfCancelled();
           try {
             const native = await nativeVisible(d, query);
             if (native === true) return { ok: true };
@@ -851,10 +861,11 @@ export async function runFlow(
               const v = swipeVector(screenSize, 'up');
               await d.swipe(v[0], v[1], v[2], v[3], 300);
               noteScreenMutation(session);
-              await new Promise((r) => setTimeout(r, 400));
+              await sleepOrCancel(400);
               continue;
             }
           } catch (e) {
+            if (isAbortError(e)) throw e;
             return { ok: false, detail: String((e as Error).message ?? e), failureCode: 'BACKEND_UNSUPPORTED' };
           }
           const id = resourceIdSelector(query);
@@ -868,7 +879,7 @@ export async function runFlow(
           const v = swipeVector(screenSize, 'up');
           await d.swipe(v[0], v[1], v[2], v[3], 300);
           noteScreenMutation(session);
-          await new Promise((r) => setTimeout(r, 400));
+          await sleepOrCancel(400);
         }
         return { ok: false, detail: `"${shown(query)}" not found after scrolling`, failureCode: 'ELEMENT_NOT_FOUND' };
       }
@@ -904,7 +915,8 @@ export async function runFlow(
         // when the target is already there); a miss falls straight through to fresh dumps.
         let reuseSettled = true;
         // A cancelled call/job stops polling at once (CancelledError > step classified CANCELLED).
-        while (Date.now() < deadline) {
+        // The screen is checked at least once, so timeoutMs:0 means "visible right now".
+        for (let first = true; first || Date.now() < deadline; first = false) {
           throwIfCancelled();
           const reuse = reuseSettled;
           reuseSettled = false;

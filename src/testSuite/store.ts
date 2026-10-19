@@ -3,8 +3,8 @@
 // mirror, and the `.swipium/test-runs/<runId>.json` ledger. Everything it persists is produced by the
 // pure modules (schema/merge/generator/history) so the on-disk format is deterministic and testable.
 
-import { mkdirSync, writeFileSync, readFileSync, existsSync, lstatSync } from 'node:fs';
-import { join, relative, resolve, sep } from 'node:path';
+import { readFileSync, existsSync } from 'node:fs';
+import { join, resolve, sep } from 'node:path';
 import { stringify } from 'yaml';
 import {
   type TestSuiteFile,
@@ -19,6 +19,11 @@ import {
 import { allocateId, mergeCases, type MergeOptions, type MergeResult } from './merge.js';
 import { normalizeCase } from './generator.js';
 import { buildRunLedger, type RunLedger } from './history.js';
+import { withFileLock } from '../lib/lockfile.js';
+import { assertNoSymlinkUnder, mkdirNoFollow, writeFileAtomicNoFollow, writeFileNoFollow } from '../lib/noFollowFs.js';
+
+// Re-exported: callers outside the store (export) write through the same no-follow helper.
+export { writeFileNoFollow };
 
 export function suiteRoot(root: string): string {
   return join(root, '.swipium');
@@ -88,15 +93,13 @@ function repairLoadedCase(raw: Record<string, unknown>, at: string): CanonicalTe
 /** loadSuite plus what it had to repair. A case id is a file name, so a stored id that is unsafe
  *  (`../../x`, a hand edit or a cloned repo) or duplicated gets a fresh TC id on read; the rename
  *  is persisted by the next save. Nothing downstream ever sees an unsafe id. */
-export function loadSuiteChecked(root: string, appId?: string): { suite: TestSuiteFile; repairs: string[] } {
+export function loadSuiteChecked(root: string, appId?: string): { suite: TestSuiteFile; repairs: string[]; corrupt?: string } {
   const path = suiteJsonPath(root);
   if (!existsSync(path)) return { suite: emptySuite(appId), repairs: [] };
-  let parsed: Partial<TestSuiteFile>;
-  try {
-    parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<TestSuiteFile>;
-  } catch {
-    return { suite: emptySuite(appId), repairs: [] };
-  }
+  const read = readSuiteJson(path);
+  // Readers get an empty view of an unparseable file; writers (saveSuite/applyMerge) refuse it.
+  if ('error' in read) return { suite: emptySuite(appId), repairs: [], corrupt: read.error };
+  const parsed = read.value;
   const updatedAt = typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date(0).toISOString();
   const retiredIds = Array.isArray(parsed.retiredIds) ? parsed.retiredIds.filter(isSafeCaseId) : [];
   const repairs: string[] = [];
@@ -122,39 +125,48 @@ export function loadSuiteChecked(root: string, appId?: string): { suite: TestSui
   };
 }
 
-/**
- * Write a file under `<root>/.swipium/` without following a symlink. A cloned repo can commit
- * `.swipium/test-suite.json`, `test-suite-export/*` or one of their folders as a symlink to a file
- * outside the project; a plain write would follow it. Every path component below the project root
- * that exists is lstat'ed and a symlink is refused (an fs error with a code, so callers report it
- * as an unwritable path). The project root itself may be a symlink (e.g. /tmp on macOS).
- */
-export function writeFileNoFollow(root: string, path: string, content: string): void {
-  const absRoot = resolve(root);
-  const abs = resolve(path);
-  const rel = relative(absRoot, abs);
-  if (!rel || rel.startsWith('..') || resolve(absRoot, rel) !== abs) throw symlinkError(abs, 'is outside the project');
-  let cur = absRoot;
-  for (const part of rel.split(sep)) {
-    cur = join(cur, part);
-    let isLink = false;
-    try {
-      isLink = lstatSync(cur).isSymbolicLink();
-    } catch {
-      break; // does not exist yet: nothing below it can be a link
-    }
-    if (isLink) throw symlinkError(cur, 'is a symlink, refusing to write through it');
+/** Parse test-suite.json. Anything but a JSON object is an error (never silently an empty suite). */
+function readSuiteJson(path: string): { value: Partial<TestSuiteFile> } | { error: string } {
+  try {
+    const v: unknown = JSON.parse(readFileSync(path, 'utf8'));
+    if (!isPlainObject(v)) return { error: 'it is not a JSON object' };
+    return { value: v as Partial<TestSuiteFile> };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
   }
-  mkdirSync(join(abs, '..'), { recursive: true });
-  writeFileSync(abs, content);
 }
 
-function symlinkError(path: string, why: string): Error {
-  return Object.assign(new Error(`${path} ${why}`), { code: 'ELOOP' });
+/** The error a write raises instead of replacing an unparseable test-suite.json. It has no errno
+ *  code on purpose: callers report it as bad suite data, not an unwritable disk. */
+function corruptSuiteError(path: string, why: string): Error {
+  return new Error(
+    `${path} exists but does not parse (${why}); refusing to overwrite it. Fix the file, or move it aside to start a new suite`,
+  );
 }
 
-/** Persist the suite JSON + the per-functionality YAML mirror. Returns absolute paths written. */
+function suiteLockPath(root: string): string {
+  return join(suiteRoot(root), 'test-suite.lock');
+}
+
+/** Run a suite read-modify-write under the cross-process suite lock (not re-entrant). */
+function withSuiteLock<T>(root: string, fn: () => T): T {
+  mkdirNoFollow(root, suiteRoot(root)); // the lock dir's parent must exist (and not be a symlink)
+  return withFileLock(suiteLockPath(root), fn);
+}
+
+/** Persist the suite JSON + the per-functionality YAML mirror. Returns absolute paths written.
+ *  Locked; refuses to replace a test-suite.json that exists but does not parse. */
 export function saveSuite(root: string, suite: TestSuiteFile): string[] {
+  return withSuiteLock(root, () => saveSuiteUnlocked(root, suite));
+}
+
+function saveSuiteUnlocked(root: string, suite: TestSuiteFile): string[] {
+  const jsonPath = suiteJsonPath(root);
+  assertNoSymlinkUnder(root, jsonPath); // before reading it: a planted link is refused as a link
+  if (existsSync(jsonPath)) {
+    const current = readSuiteJson(jsonPath);
+    if ('error' in current) throw corruptSuiteError(jsonPath, current.error);
+  }
   const written: string[] = [];
   // Mirror first, JSON last: if a mirror write fails, test-suite.json still holds the previous
   // good suite instead of a case that breaks every later save.
@@ -169,8 +181,8 @@ export function saveSuite(root: string, suite: TestSuiteFile): string[] {
     writeFileNoFollow(root, yamlPath, stringify(c));
     written.push(yamlPath);
   }
-  const jsonPath = suiteJsonPath(root);
-  writeFileNoFollow(root, jsonPath, JSON.stringify(suite, null, 2));
+  // Atomic: a crash mid-write never leaves a truncated test-suite.json.
+  writeFileAtomicNoFollow(root, jsonPath, JSON.stringify(suite, null, 2));
   written.unshift(jsonPath);
   return written;
 }
@@ -196,13 +208,21 @@ export interface ApplyMergeResult {
 /**
  * Full disk round-trip: load > merge > validate > save > record run ledger. The single entry point
  * every integration hook (qa_test_this / report / explore / feature / ticket) calls so the suite is
- * updated consistently from one place.
+ * updated consistently from one place. The whole cycle holds the cross-process suite lock, and a
+ * test-suite.json that exists but does not parse makes it throw instead of starting over.
  */
 export function applyMerge(root: string, incoming: CanonicalTestCase[], opts: MergeOptions, appId?: string): ApplyMergeResult {
-  const { suite, repairs } = loadSuiteChecked(root, appId);
+  return withSuiteLock(root, () => applyMergeUnlocked(root, incoming, opts, appId));
+}
+
+function applyMergeUnlocked(root: string, incoming: CanonicalTestCase[], opts: MergeOptions, appId?: string): ApplyMergeResult {
+  const { suite, repairs, corrupt } = loadSuiteChecked(root, appId);
+  // Never merge into an empty stand-in for a file that exists but does not parse: that would
+  // replace the user's whole suite with this run's cases.
+  if (corrupt) throw corruptSuiteError(suiteJsonPath(root), corrupt);
   const result = mergeCases(suite, incoming, opts);
   const validationErrors = validateSuite(result.suite);
-  const written = saveSuite(root, result.suite);
+  const written = saveSuiteUnlocked(root, result.suite);
   const ledger = buildRunLedger(result.suite.cases, {
     runId: opts.runId,
     at: opts.now,

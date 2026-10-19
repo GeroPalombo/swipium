@@ -856,10 +856,36 @@ interface VisibilityContext {
 /** Bars and the keyboard: they hide what lies under them, never their own content. */
 const IOS_BAR_RE = /^XCUIElementType(?:NavigationBar|TabBar|Toolbar|Keyboard)$/;
 
-function childNodes(node: Record<string, unknown>): Record<string, unknown>[] {
-  return Object.entries(node)
-    .filter(([k]) => k === 'children' || k.startsWith('XCUIElementType'))
-    .flatMap(([, v]) => (Array.isArray(v) ? v : v ? [v] : [])) as Record<string, unknown>[];
+/** A source node's child elements in document order (see sourceNode). */
+const KIDS = Symbol('children');
+type SourceNode = Record<string, unknown> & { [KIDS]?: SourceNode[] };
+
+function childNodes(node: SourceNode): SourceNode[] {
+  return node[KIDS] ?? [];
+}
+
+/** Ordered parse: a tag-grouped parse returns `Other, Other, Alert` for `Other, Alert, Other`,
+ *  which breaks window layering (what paints over what) and reading order. */
+const sourceParser = new XMLParser({ preserveOrder: true, ignoreAttributes: false, attributeNamePrefix: '' });
+
+type OrderedEntry = Record<string, unknown> & { ':@'?: Record<string, unknown> };
+
+/** The element tag of one preserveOrder entry (`{ [tag]: children, ':@': attrs }`), or undefined
+ *  for text, comments and the XML declaration. */
+function entryTag(e: OrderedEntry): string | undefined {
+  return Object.keys(e).find((k) => k !== ':@' && k !== '#text' && !k.startsWith('?'));
+}
+
+/** One element as its attributes plus its XCUIElementType child elements, in document order. */
+function sourceNode(e: OrderedEntry, tag: string): SourceNode {
+  const node: SourceNode = { ...(e[':@'] ?? {}) };
+  const kids: SourceNode[] = [];
+  for (const c of (e[tag] as OrderedEntry[] | undefined) ?? []) {
+    const t = entryTag(c);
+    if (t && (t === 'children' || t.startsWith('XCUIElementType'))) kids.push(sourceNode(c, t));
+  }
+  if (kids.length) node[KIDS] = kids;
+  return node;
 }
 
 function nodeRect(n: Record<string, unknown>): Rect {
@@ -869,7 +895,7 @@ function nodeRect(n: Record<string, unknown>): Rect {
 }
 
 /** Bars extend to the screen edge they sit on: a top bar also covers the status bar above it. */
-function barOccluders(root: Record<string, unknown>, screen: [number, number]): Rect[] {
+function barOccluders(root: SourceNode, screen: [number, number]): Rect[] {
   const out: Rect[] = [];
   const stack = [root];
   while (stack.length) {
@@ -887,7 +913,7 @@ function barOccluders(root: Record<string, unknown>, screen: [number, number]): 
 
 /** The area a window layer covers. Single-child wrappers are skipped, since a sheet's container is
  * full-screen while the sheet itself starts lower. */
-function layerRect(n: Record<string, unknown>): Rect {
+function layerRect(n: SourceNode): Rect {
   for (let kids = childNodes(n); kids.length === 1; kids = childNodes(n)) n = kids[0];
   return nodeRect(n);
 }
@@ -940,7 +966,7 @@ function scrollIndicator(type: string, node: Record<string, unknown>): boolean {
   return !label || /scroll bar/i.test(label);
 }
 
-function normalizeNode(node: Record<string, unknown>, ctx?: VisibilityContext): Record<string, unknown> {
+function normalizeNode(node: SourceNode, ctx?: VisibilityContext): Record<string, unknown> {
   const type = String(node.type ?? node.name ?? 'XCUIElementTypeOther');
   const indicator = scrollIndicator(type, node);
   const decorative = indicator || decorativeLabel(type, node);
@@ -1006,17 +1032,12 @@ function nodeXml(node: Record<string, unknown>): string {
 }
 
 export function normalizeWdaSource(xml: string): string {
-  const parser = new XMLParser({
-    ignoreAttributes: false,
-    attributeNamePrefix: '',
-    isArray: (name) => name.startsWith('XCUIElementType') || name === 'children',
-  });
-  const doc = parser.parse(xml) as Record<string, unknown>;
-  const rootKey = Object.keys(doc).find((k) => k.startsWith('XCUIElementType'));
-  if (!rootKey) return xml;
-  const rootRaw = doc[rootKey];
-  const root = (Array.isArray(rootRaw) ? rootRaw[0] : rootRaw) as Record<string, unknown>;
-  const typed = { ...root, type: root.type ?? rootKey };
+  const doc = sourceParser.parse(xml) as OrderedEntry[];
+  let rootKey: string | undefined;
+  const rootEntry = doc.find((e) => (rootKey = entryTag(e))?.startsWith('XCUIElementType'));
+  if (!rootEntry || !rootKey) return xml;
+  const root = sourceNode(rootEntry, rootKey);
+  const typed: SourceNode = { ...root, type: root.type ?? rootKey };
   const [, , w, h] = nodeRect(typed);
   // Only for sources without `visible` (the lean default); a full source keeps WDA's verdict.
   const ctx =

@@ -69,9 +69,9 @@ import { saveSuite } from '../testSuite/store.js';
 import type { IssueEnvironment, IssuePlatform } from '../issues/schema.js';
 import { pomForSession } from './suiteGenerate.js';
 import { casePlatformsFor, generateCanonicalCases } from '../testSuite/generator.js';
-import { applyMerge, loadSuite, suiteDelta, runIdFromNow } from '../testSuite/store.js';
+import { applyMerge, loadSuiteChecked, suiteDelta, runIdFromNow } from '../testSuite/store.js';
 import type { ReplayStatus } from '../testSuite/schema.js';
-import type { Session, SessionStore, TestNote } from '../session/store.js';
+import { encodeUriSegment, safeArtifactName, type Session, type SessionStore, type TestNote } from '../session/store.js';
 
 export type ReportFormat = 'summary' | 'markdown' | 'json' | 'junit' | 'sarif' | 'github-summary' | 'flow' | 'playwright';
 
@@ -272,6 +272,11 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   const appFailCount = appFailNotes.length;
   const toolLimitationNotes = notes.filter((n) => (n.outcome === 'fail' || n.outcome === 'blocked') && n.category === 'mcp_limitation');
   const toolLimitationFailCount = toolLimitationNotes.filter((n) => n.outcome === 'fail').length;
+  // A failure that is neither the app's, a tool limitation nor drift (missing_test_data,
+  // destructive_refused, intentionally_skipped) still fails the gate by default: never SHIP on it.
+  const otherFailNotes = notes.filter(
+    (n) => n.outcome === 'fail' && !appFailNotes.includes(n) && n.category !== 'mcp_limitation' && !isAutomationDriftNote(n),
+  );
   const topHigh = high.find((f) => !isToolFinding(f)) ?? high[0];
   const topAppFailNote = appFailNotes[0];
   const topBlockedNote = notes.find((n) => n.outcome === 'blocked');
@@ -280,7 +285,8 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   // whose oracle read the UI (a launch smoke with app=ok, so RedBox / blank were ruled out), or an
   // exploration that reached at least one structured (non visual-only) app screen. Agent verdicts
   // (qa_note, qa_visual assert), launches, screenshots, raw actions and findings never count, and
-  // never clear a persisted not-tested marker. A failure still counts (it can only block).
+  // never clear a persisted not-tested marker. An agent's failure claim never makes a run "tested"
+  // either: it still reaches the gate through testOutcomes, so it can block but never pass a run.
   const isOutcome = (n: TestNote) => n.outcome === 'pass' || (n.outcome === 'fail' && n.category !== 'mcp_limitation');
   // Swipium ran the check and judged it itself: not an agent note, not a qa_visual assert verdict
   // (manual_review) and not a screenshot-only pass (method visual: nothing ruled out a RedBox).
@@ -307,9 +313,9 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     appActionSince(0) ||
     healthFindings.length > 0 ||
     (ex?.summary.screensVisited ?? 0) > 0;
-  // An agent's pass claim never counts; a claimed failure always counts (it can only block).
-  const exercised =
-    swipiumOutcomeSince(0) || notes.some((n) => !swipiumJudged(n) && n.outcome === 'fail' && n.category !== 'mcp_limitation');
+  // Only Swipium-judged outcomes exercise the app. An agent's pass or fail claim does not.
+  const exercised = swipiumOutcomeSince(0);
+  const agentFailClaim = !exercised && notes.some((n) => !swipiumJudged(n) && n.outcome === 'fail' && n.category !== 'mcp_limitation');
   const unverifiedPassClaim =
     !exercised && notes.some((n) => (n.source === 'qa_note' || n.evidenceKind === 'manual_review') && n.outcome === 'pass');
   const unbackedPassClaim = unverifiedPassClaim && !appSeen;
@@ -361,11 +367,13 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
             exercised: false,
             reason: unbackedPassClaim
               ? 'only an unverified qa_note pass claim (manual claim, no device evidence): nothing was launched or exercised'
-              : topBlockedNote
-                ? `the app was never launched or exercised (recorded "${topBlockedNote.workflow}" as blocked${topBlockedNote.reason ? `: ${redact(topBlockedNote.reason)}` : ''})`
-                : consentRefusal
-                  ? `nothing ran: consent for "${consentRefusal.action}" was refused (${consentRefusal.failureCode})`
-                  : 'no app was launched or exercised and no evidence was captured',
+              : agentFailClaim
+                ? 'only an agent qa_note failure claim (no Swipium smoke, flow or exploration ran, and no device evidence): nothing was launched or exercised'
+                : topBlockedNote
+                  ? `the app was never launched or exercised (recorded "${topBlockedNote.workflow}" as blocked${topBlockedNote.reason ? `: ${redact(topBlockedNote.reason)}` : ''})`
+                  : consentRefusal
+                    ? `nothing ran: consent for "${consentRefusal.action}" was refused (${consentRefusal.failureCode})`
+                    : 'no app was launched or exercised and no evidence was captured',
             failureCode: blockerCodeOf(topBlockedNote),
           }
         : {
@@ -375,9 +383,11 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
             exercised: false,
             reason: unverifiedPassClaim
               ? 'only an unverified qa_note pass claim on a launched app (no Swipium smoke, flow or exploration, and no action with the app in front, backs it; the screen may show an error): run qa_smoke or a flow'
-              : topBlockedNote
-                ? `the app was reached but no workflow was exercised (recorded "${topBlockedNote.workflow}" as blocked${topBlockedNote.reason ? `: ${redact(topBlockedNote.reason)}` : ''})`
-                : 'the app was reached but no workflow was exercised',
+              : agentFailClaim
+                ? 'only an agent qa_note failure claim on a launched app (no Swipium smoke, flow or exploration ran): run qa_smoke or a flow'
+                : topBlockedNote
+                  ? `the app was reached but no workflow was exercised (recorded "${topBlockedNote.workflow}" as blocked${topBlockedNote.reason ? `: ${redact(topBlockedNote.reason)}` : ''})`
+                  : 'the app was reached but no workflow was exercised',
             failureCode: blockerCodeOf(topBlockedNote),
           };
   // Health was never checked when the app was never reached; "OK" would be a claim.
@@ -393,7 +403,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   ) {
     appHealth = 'unverified';
   }
-  // Round-3 notes: coverage the run planned but did not get must not leave the risk at SHIP.
+  // Coverage the run planned but did not get must not leave the risk at SHIP.
   // Flows whose latest outcome is a session-budget skip were not run; a blocked exploration
   // (unsafe actions skipped, blockers, budget stop) explored less than it set out to.
   const latestByWorkflow = new Map(notes.map((n) => [n.workflow, n]));
@@ -429,6 +439,14 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     highSeverityCount: high.filter((f) => !isToolFinding(f)).length,
     failCount: appFailCount,
     blockedCount: blockedCount + toolLimitationFailCount + driftFailCount,
+    otherFailCount: otherFailNotes.length,
+    topOtherFail: otherFailNotes[0]
+      ? {
+          workflow: otherFailNotes[0].workflow,
+          category: otherFailNotes[0].category,
+          reason: otherFailNotes[0].reason ? redact(otherFailNotes[0].reason) : undefined,
+        }
+      : undefined,
     overrideCount: session.envChanges.filter((c) => /OVERRIDE|GUARDRAIL|acknowledgeBundleRisk|allowLaunchWithoutMetro/i.test(c)).length,
     topHighFinding: topHigh ? redact(topHigh.detail) : undefined,
     topFail: topAppFailNote
@@ -512,16 +530,24 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   })();
   const coverageVerdict = (() => {
     if (notTested && !notTested.reachedApp) return { status: 'NONE', summary: `Nothing was tested: ${notTested.reason}.` };
-    if (blockedCount > 0 || toolLimitationNotes.length > 0 || driftFailCount > 0 || session.exploration?.state === 'blocked') {
+    if (
+      blockedCount > 0 ||
+      toolLimitationNotes.length > 0 ||
+      driftFailCount > 0 ||
+      otherFailNotes.length > 0 ||
+      session.exploration?.state === 'blocked'
+    ) {
       const summary =
         topBlockedNote?.recommendedSetup ??
         (toolLimitationNotes.length
           ? `A Swipium/tool limitation blocked ${toolLimitationNotes.length} workflow(s); see toolVerdict.`
           : driftFailCount
             ? `${driftFailCount} generated flow(s) failed on a locator step (automation drift, not an app defect); repair with qa_flow_repair.`
-            : explorationBlocked
-              ? `Exploration was blocked: ${session.exploration!.stoppedReason} (${session.exploration!.summary.blockers} blocker(s), ${session.exploration!.summary.unsafeActionsSkipped} unsafe action(s) skipped).`
-              : 'A setup or precondition blocker limited coverage.');
+            : otherFailNotes.length
+              ? `${otherFailNotes.length} workflow(s) failed for a non-app reason (${[...new Set(otherFailNotes.map((n) => n.category ?? 'uncategorized'))].join(', ')}); provide the missing data or setup and re-run.`
+              : explorationBlocked
+                ? `Exploration was blocked: ${session.exploration!.stoppedReason} (${session.exploration!.summary.blockers} blocker(s), ${session.exploration!.summary.unsafeActionsSkipped} unsafe action(s) skipped).`
+                : 'A setup or precondition blocker limited coverage.');
       return { status: 'BLOCKED', summary };
     }
     if (notTested) return { status: 'NOT_COVERED', summary: `Not covered: ${notTested.reason}.` };
@@ -602,6 +628,15 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   // Best-effort: a suite-merge failure must never break report generation.
   let persistentSuite: Record<string, unknown> | null = null;
   let mergedSuite: import('../testSuite/schema.js').TestSuiteFile | undefined;
+  // Why the persistent suite was not updated (a corrupt test-suite.json is refused, never
+  // overwritten). Said in the report instead of failing silently.
+  let suiteWarning: string | null = null;
+  const suiteFailure = (e: unknown) => {
+    const msg = String((e as Error)?.message ?? e);
+    suiteWarning ??= /does not parse/.test(msg)
+      ? `.swipium/test-suite.json is corrupt; the persistent suite was not updated (${redact(msg) ?? msg})`
+      : `the persistent suite was not updated: ${redact(msg) ?? msg}`;
+  };
   try {
     const now = new Date().toISOString();
     const hasKnowledge = session.recordedActions.length > 0 || notes.length > 0 || !!session.exploration;
@@ -636,8 +671,11 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
         validationErrors: applied.validationErrors,
       };
     } else {
-      const suite = loadSuite(session.root, appId ?? undefined);
-      mergedSuite = suite;
+      const checked = loadSuiteChecked(session.root, appId ?? undefined);
+      const suite = checked.suite;
+      // An unparseable file reads as an empty suite; never save that view over it.
+      if (checked.corrupt) suiteFailure(new Error(`test-suite.json does not parse (${checked.corrupt})`));
+      else mergedSuite = suite;
       persistentSuite = {
         totalCases: suite.cases.length,
         created: [],
@@ -649,8 +687,10 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
         caseIds: suite.cases.map((c) => c.id),
       };
     }
-  } catch {
+  } catch (e) {
     persistentSuite = null;
+    mergedSuite = undefined;
+    suiteFailure(e);
   }
 
   const screenshots = session.artifacts.filter((art) => art.kind === 'screenshot');
@@ -847,7 +887,12 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
         }
       }
       verifiedFixedIds = new Set(verified);
-      saveSuite(session.root, mergedSuite);
+      // Isolated: a refused save must not skip the issue section and app-map refresh below.
+      try {
+        saveSuite(session.root, mergedSuite);
+      } catch (e) {
+        suiteFailure(e);
+      }
     }
 
     // Rebuild the section honoring verified-fixed evidence (honest fix verification).
@@ -882,6 +927,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   } catch {
     /* best-effort: issue ledger is additive, never blocks the report */
   }
+  if (suiteWarning) (report as Record<string, unknown>).persistentSuiteWarning = suiteWarning;
 
   // Deep-redact the WHOLE report (steps, nextStep, missingPrecondition, workflow names, issue
   // markdown, …) with the session redactor before it is persisted or rendered into any export.
@@ -995,15 +1041,10 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     }
   }
 
-  const manifest = buildSessionArtifactManifest(session);
-  const manifestUri = sessions.saveArtifact(
-    session,
-    'manifest',
-    `manifest-${Date.now()}.json`,
-    JSON.stringify(manifest, null, 2),
-    'application/json',
-    'artifact manifest with SHA-256 hashes',
-  );
+  // The manifest is written last so it lists (and hashes) report.md too; report.md names the
+  // manifest, so its URI is fixed up front from the file name saveArtifact will use.
+  const manifestName = safeArtifactName(`manifest-${Date.now()}.json`);
+  const plannedManifestUri = `swipium://session/${encodeUriSegment(session.id)}/manifest/${encodeUriSegment(manifestName)}`;
   // An invalid policy (ignored: every failure blocks) or unknown keys are said out loud.
   let releasePolicyNotice: string | null = null;
   try {
@@ -1100,6 +1141,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     persistentSuite
       ? `persistent suite: ${persistentSuite.totalCases} case(s): +${(persistentSuite.created as string[]).length} created, ~${(persistentSuite.updated as string[]).length} updated, -${(persistentSuite.deprecated as string[]).length} deprecated, ${(persistentSuite.failed as string[]).length} failed, ${(persistentSuite.blocked as string[]).length} blocked, ${(persistentSuite.newlyAutomated as string[]).length} newly automated`
       : '',
+    suiteWarning ? `⚠ persistent suite: ${suiteWarning}` : '',
     `auth: ${authState}`,
     session.fixtures.length ? `declared preconditions: ${session.fixtures.map((f) => f.name).join(', ')}` : '',
     `timing: total=${secText(phaseTimings.totalMs)} setup=${secText(phaseTimings.setupMs)} active=${secText(phaseTimings.activeMs)}${phaseTimings.timeToLoginMs != null ? ` toLogin=${secText(phaseTimings.timeToLoginMs)}` : ''}${phaseTimings.diagnostics.waitMs != null ? ` wait=${secText(phaseTimings.diagnostics.waitMs)}` : ''}${phaseTimings.diagnostics.flowRuntimeMs != null ? ` flows=${secText(phaseTimings.diagnostics.flowRuntimeMs)}` : ''}${session.budgetProfile ? ` (profile=${session.budgetProfile})` : ''}`,
@@ -1110,7 +1152,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     ...session.artifacts.map((art) => `  ${art.uri} (${art.kind}${art.label ? `: ${art.label}` : ''})`),
     dumpUri ? `current dump: ${dumpUri}` : '',
     `report: ${reportUri}`,
-    `manifest: ${manifestUri}`,
+    `manifest: ${plannedManifestUri}`,
     exportUri && exportUri !== reportUri ? `${format} export: ${exportUri}` : '',
   ].filter(Boolean);
 
@@ -1126,6 +1168,15 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     `# Swipium report ${session.id}\n\n${summaryText}\n`,
     'text/markdown',
     'report.md (agent-readable summary)',
+  );
+  const manifest = buildSessionArtifactManifest(session);
+  const manifestUri = sessions.saveArtifact(
+    session,
+    'manifest',
+    manifestName,
+    JSON.stringify(manifest, null, 2),
+    'application/json',
+    'artifact manifest with SHA-256 hashes',
   );
 
   return {

@@ -1,8 +1,10 @@
-// Items 3 + 4 (latency): the settle loop sleeps only `interval - lastDumpDuration` and bounds each
-// dump by the remaining deadline (<= 2 attempts); checkHealth reuses parsed nodes and skips the
-// heavy `dumpsys activity activities` when the dump root already is the app under test.
+// Latency: the settle loop sleeps only `interval - lastDumpDuration` and bounds each dump by the
+// remaining deadline (<= 2 attempts); checkHealth reuses parsed nodes and skips the heavy
+// `dumpsys activity activities` when the dump root already is the app under test.
+// The timing tests run on fake timers (Date and setTimeout), so the measured durations are the
+// loop's own schedule, not the host's load.
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { settle, SETTLE_DUMP_ATTEMPTS } from '../src/snapshot/settle.js';
 import { checkHealth } from '../src/oracle/health.js';
 import { parseSnapshot } from '../src/snapshot/parse.js';
@@ -28,38 +30,53 @@ class SlowDump extends FakeDriver {
   }
 }
 
+/** Run `fn` to completion on fake time; returns its result and the virtual ms it took. */
+async function timed<T>(fn: () => Promise<T>): Promise<{ r: T; took: number }> {
+  const t0 = Date.now();
+  const p = fn();
+  await vi.runAllTimersAsync();
+  const r = await p;
+  return { r, took: Date.now() - t0 };
+}
+
 describe('settle latency', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('adaptive interval: a 300 ms dump is followed by a ~100 ms sleep, not 400 ms', async () => {
     const d = new SlowDump(buttonScreen('Home', 3), 300);
-    const t0 = Date.now();
-    const r = await settle(d, { timeoutMs: 8000 });
-    const took = Date.now() - t0;
+    const { r, took } = await timed(() => settle(d, { timeoutMs: 8000 }));
     expect(r.settled).toBe(true);
-    // 3 dumps x 300 + 2 x 100 sleep ≈ 1100 ms (fixed 400 ms sleeps: ≈ 1700 ms)
-    expect(took).toBeLessThan(1450);
+    // 3 dumps x 300 + 2 x 100 sleep = about 1100 ms (fixed 400 ms sleeps: about 1700 ms)
+    expect(d.got('dumpXml')).toHaveLength(3);
+    expect(took).toBeGreaterThanOrEqual(1100);
+    expect(took).toBeLessThan(1400);
     const opts = d.got('dumpXml').map((c) => c.a[0] as DumpOptions);
     expect(opts.every((o) => o.attempts === SETTLE_DUMP_ATTEMPTS && (o.timeoutMs ?? 0) <= 8000)).toBe(true);
   });
 
   it('a hanging dump is bounded by the settle deadline (not 5 x 20 s)', async () => {
     const d = new SlowDump('', 0, true);
-    const t0 = Date.now();
-    const r = await settle(d, { timeoutMs: 1600 });
+    const { r, took } = await timed(() => settle(d, { timeoutMs: 1600 }));
     expect(r.settled).toBe(false);
-    expect(Date.now() - t0).toBeLessThan(2600);
+    expect(took).toBeLessThan(2600);
   });
 
   it('a seed replaces the first dump', async () => {
     const xml = buttonScreen('Home', 3);
     const d = new SlowDump(xml, 0);
-    const r = await settle(d, { seed: { xml, at: Date.now() } });
+    const { r } = await timed(() => settle(d, { seed: { xml, at: Date.now() } }));
     expect(r.settled).toBe(true);
     expect(d.got('dumpXml')).toHaveLength(2); // was 3
   });
 });
 
 describe('checkHealth foreground shortcut', () => {
-  it('root package == appId → no foregroundOwner (dumpsys) call, and passed nodes are used', async () => {
+  it('root package == appId: no foregroundOwner (dumpsys) call, and passed nodes are used', async () => {
     const xml = buttonScreen('Home', 3);
     const d = new FakeDriver(xml);
     const nodes = parseSnapshot(xml).allNodes;

@@ -307,6 +307,12 @@ actions only ever run on that device ([Device pin](concepts.md#device-pin)).
 
 ## Server settings
 
+Swipium passes its environment on to the tools it starts (builds, Metro, xcodebuild, adb, OCR and
+mask commands) minus the test credentials: `SWIPIUM_TEST_*`, `SWIPIUM_SECRET_*`, and `SWIPIUM_*`
+names with a credential part by the [secret-name rule](flows.md#variables) (`SWIPIUM_API_KEY`,
+`SWIPIUM_VERIFICATION_CODE`) are left out. Fixture
+seed scripts still get them, because they may sign in with the test account.
+
 Set these in the server's `env` (the complete list of variables is in the
 [README](../README.md#configuration--environment-variables)):
 

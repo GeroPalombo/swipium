@@ -5,11 +5,12 @@
 //
 // Detection + command construction are pure/testable; execution is guarded behind tool presence.
 
-import { existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { which } from '../lib/android.js';
 import { run } from '../lib/spawn.js';
+import { isNoFollowPath, mkdirNoFollow } from '../lib/noFollowFs.js';
 import type { FailureCode } from '../oracle/failures.js';
 
 export interface BundletoolLauncher {
@@ -143,7 +144,16 @@ export interface ApkSetResult {
 export async function buildAndInstallApkSet(
   aabPath: string,
   projectRoot: string,
-  opts: { deviceId?: string; signing?: AabSigning; install?: boolean; signal?: AbortSignal; timeoutMs?: number; force?: boolean } = {},
+  opts: {
+    deviceId?: string;
+    /** The device's primary ABI: part of the cache key (one serial can be a different AVD later). */
+    abi?: string;
+    signing?: AabSigning;
+    install?: boolean;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+    force?: boolean;
+  } = {},
 ): Promise<ApkSetResult> {
   const launcher = await findBundletool();
   if (!launcher) {
@@ -154,9 +164,9 @@ export async function buildAndInstallApkSet(
       error: 'bundletool not found (install it, set $BUNDLETOOL_JAR, or build an APK directly).',
     };
   }
-  const base = basename(aabPath).replace(/\.aab$/i, '');
-  const apksOut = join(projectRoot, '.swipium', 'artifacts', `${base}-${opts.deviceId ? sanitize(opts.deviceId) : 'device'}.apks`);
-  mkdirSync(join(projectRoot, '.swipium', 'artifacts'), { recursive: true });
+  const apksOut = deviceApkSetCachePath(aabPath, projectRoot, opts.deviceId, opts.abi);
+  const refused = artifactsDirRefusal(projectRoot, [apksOut]);
+  if (refused) return { ok: false, logText: '', failureCode: 'ARTIFACT_PATH_UNWRITABLE', error: refused };
   const timeoutMs = opts.timeoutMs ?? 5 * 60_000;
   let logText = '';
 
@@ -209,6 +219,26 @@ export async function buildAndInstallApkSet(
   return { ok: true, apksPath: apksOut, logText, buildCommand, installCommand, installed: true };
 }
 
+/** PURE: where the device APK set for `aabPath` is cached. Keyed by device id and ABI, so a set
+ *  built for one device is never reused for another (an emulator serial is reused across AVDs). */
+/** Create `.swipium/artifacts` without following a symlink anywhere below the project root, and
+ *  check the paths bundletool/unzip will write. Returns the refusal reason, or undefined. */
+function artifactsDirRefusal(projectRoot: string, outputs: string[]): string | undefined {
+  try {
+    mkdirNoFollow(projectRoot, join(projectRoot, '.swipium', 'artifacts'));
+  } catch (e) {
+    return `refusing to write bundletool output: ${String(e)}`;
+  }
+  const bad = outputs.find((p) => !isNoFollowPath(projectRoot, p));
+  return bad ? `refusing to write bundletool output through a symlink: ${bad}` : undefined;
+}
+
+export function deviceApkSetCachePath(aabPath: string, projectRoot: string, deviceId?: string, abi?: string): string {
+  const base = basename(aabPath).replace(/\.aab$/i, '');
+  const key = [deviceId ? sanitize(deviceId) : 'device', ...(abi ? [sanitize(abi)] : [])].join('-');
+  return join(projectRoot, '.swipium', 'artifacts', `${base}-${key}.apks`);
+}
+
 function sanitize(s: string): string {
   return s.replace(/[^a-zA-Z0-9._-]/g, '_');
 }
@@ -241,8 +271,9 @@ export async function convertAabToApk(
     };
   }
 
-  mkdirSync(join(projectRoot, '.swipium', 'artifacts'), { recursive: true });
   const apksOut = apkPath.replace(/\.apk$/, '.apks');
+  const refused = artifactsDirRefusal(projectRoot, [apkPath, apksOut]);
+  if (refused) return { ok: false, failureCode: 'ARTIFACT_PATH_UNWRITABLE', error: refused };
   const args = buildApksArgs(launcher, aabPath, apksOut);
   const command = `${launcher.cmd} ${args.join(' ')}`;
   const timeoutMs = opts.timeoutMs ?? 5 * 60_000;

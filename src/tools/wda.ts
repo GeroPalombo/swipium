@@ -7,7 +7,8 @@ import { cancelledResult, qaError, qaOk, unknownSessionError } from '../lib/resu
 import { isAbortError, runWithSignal } from '../lib/abortScope.js';
 import { consumeConsent, isOperatorPreapproved, requireConsent } from '../consent/consent.js';
 import { sensitiveRefusal } from '../lib/sensitive.js';
-import { run } from '../lib/spawn.js';
+import { childEnv, run } from '../lib/spawn.js';
+import { failCrashedJob } from '../orchestration/jobCrash.js';
 import { ensureGitignored } from '../lib/gitignore.js';
 import {
   checkWda,
@@ -29,7 +30,15 @@ import {
   type WdaStatus,
 } from '../lib/wda.js';
 import { loadWdaConfig, wdaSigningStatus, wdaUrlAllowedByConfig } from '../lib/wdaConfig.js';
-import { findOwnSimulatorWda, freeWdaPort, managedWdaEnv, wdaDeviceOwnership, wdaUrlPort, wdaUrlWithPort } from '../lib/wdaDevice.js';
+import {
+  findOwnSimulatorWda,
+  freeWdaPort,
+  managedWdaEnv,
+  ownButUnresponsive,
+  wdaDeviceOwnership,
+  wdaUrlPort,
+  wdaUrlWithPort,
+} from '../lib/wdaDevice.js';
 import { recordWdaTiming, wdaRecommendations, wdaTimingSummary } from '../lib/wdaTune.js';
 import { WdaDriver } from '../drivers/WdaDriver.js';
 import * as sim from '../lib/simctl.js';
@@ -163,8 +172,8 @@ export function lastManagedWdaStart(session: Pick<Session, 'mutations'>): Manage
   };
 }
 
-/** Where a WDA that `qa_wda stop` found by simulator in the process registry came from (round-4
- *  note: it said "started by another server run" for a WDA this same server started from another
+/** Where a WDA that `qa_wda stop` found by simulator in the process registry came from
+ *  (it said "started by another server run" for a WDA this same server started from another
  *  session). An entry this server owns was started or adopted by it for another session (the
  *  session's own entry is matched first); any other entry belongs to another server. Exported for tests. */
 export function wdaStopOrigin(entries: Array<{ serverPid: number }>, serverPid: number = process.pid): string {
@@ -282,7 +291,12 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
           .describe(
             'build: background job, reuses a build unless rebuild:true. start: waits up to 45 s, then status:"starting" (poll qa_wait for:"wda_ready").',
           ),
-        webDriverAgentUrl: z.string().optional().describe('Default http://127.0.0.1:8100; non-loopback needs allowNonLoopback + consent.'),
+        webDriverAgentUrl: z
+          .string()
+          .optional()
+          .describe(
+            "Default: this session's WDA (attached, or the last start / reuse), else ios.wda.url (http://127.0.0.1:8100). Non-loopback needs allowNonLoopback + consent.",
+          ),
         device: z.string().optional().describe('Simulator UDID (default: session device).'),
         udid: z.string().optional().describe('Deprecated alias of device.'),
         bundleId: z.string().optional().describe('Default: the session appId.'),
@@ -554,6 +568,11 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
           // unverified: a local listener lsof / ps could not inspect (loaded host). It may be another
           // simulator's WDA on the same runtime, so it is treated like one (never reused).
           const notOurs = owner?.owner === 'other' || owner?.owner === 'unverified';
+          // This simulator's own WDA that listens but does not answer /status (hung): collected here
+          // and by the relocation lookup below, so a second WDA is never started next to it.
+          const unresponsive: string[] = [];
+          if (!existing.reachable && (await ownButUnresponsive(url, existing, targetUdid).catch(() => false)))
+            unresponsive.push(url.replace(/\/+$/, ''));
           if (notOurs && webDriverAgentUrl) {
             return qaError(
               {
@@ -586,7 +605,7 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
           if (notOurs || configPortReserved || (sharedDefault && isLoopback(url) && !usableHere)) {
             if (notOurs) relocated = { from: url, reason: owner!.reason };
             else if (configPortReserved) relocated = { from: url, reason: `another simulator's managed WDA is starting on ${url}` };
-            const own = await findOwnSimulatorWda(url, targetUdid);
+            const own = await findOwnSimulatorWda(url, targetUdid, undefined, unresponsive);
             if (own) {
               startUrl = own.url;
               existing = own.status;
@@ -606,6 +625,22 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
               existing = { reachable: false, ready: false };
               owner = undefined;
             }
+          }
+          if (!existing.reachable && unresponsive.length) {
+            const hung = unresponsive[0]!;
+            return qaError(
+              {
+                what: `This simulator's own WDA at ${hung} is listening but does not answer /status (hung); a second WDA was not started next to it.`,
+                changedState: false,
+                retrySafe: true,
+                failureCode: 'WDA_UNREACHABLE',
+                nextSteps: [
+                  `Run qa_wda { action:"stop", device:"${targetUdid}" } to stop the hung WDA, then qa_wda { action:"${action}" } again.`,
+                  'If qa_wda stop finds nothing to stop (a WDA Swipium did not start), stop it where it was started (Xcode / xcodebuild) or restart the simulator.',
+                ],
+              },
+              { webDriverAgentUrl: hung, udid: targetUdid },
+            );
           }
           const reuseCheckMs = Date.now() - reuseStartedAt;
           sessions.addMilestoneDuration(session, 'wda_reuse_check_ms', reuseCheckMs);
@@ -770,7 +805,9 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
               : undefined,
             startupTimeoutMs: configured.startupTimeoutMs,
           };
-          void runWithSignal(sessions.abortSignal(session, job.jobId), () => runWdaSetupJob(sessions, session, job, setupCtx));
+          void runWithSignal(sessions.abortSignal(session, job.jobId), () => runWdaSetupJob(sessions, session, job, setupCtx)).catch(
+            (e: unknown) => failCrashedJob(sessions, session, job, 'WDA setup', e),
+          );
           return qaOk(
             {
               jobId: job.jobId,
@@ -803,7 +840,9 @@ export function registerWda(server: McpServer, sessions: SessionStore): void {
             wdaProjectSource,
             wdaConfig: { ...effectiveConfig, url: startUrl },
           };
-          void runWithSignal(sessions.abortSignal(session, job.jobId), () => runWdaBuildJob(sessions, session, job, buildCtx));
+          void runWithSignal(sessions.abortSignal(session, job.jobId), () => runWdaBuildJob(sessions, session, job, buildCtx)).catch(
+            (e: unknown) => failCrashedJob(sessions, session, job, 'WDA build', e),
+          );
           return qaOk(
             {
               jobId: job.jobId,
@@ -1336,7 +1375,7 @@ function spawnManagedWda(sessions: SessionStore, session: Session, ctx: WdaStart
   let child: ChildProcess;
   try {
     // USE_PORT / USE_IP: listen on ctx.url's port (per-simulator), on loopback only.
-    child = spawn('xcodebuild', ctx.args, { detached: true, stdio: ['ignore', fd, fd], env: managedWdaEnv(ctx.url) });
+    child = spawn('xcodebuild', ctx.args, { detached: true, stdio: ['ignore', fd, fd], env: managedWdaEnv(ctx.url, childEnv()) });
   } finally {
     closeSync(fd); // the child holds its own duplicate; ours would leak one fd per start
   }

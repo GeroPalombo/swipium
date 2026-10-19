@@ -3,6 +3,7 @@
 
 import { spawn } from 'node:child_process';
 import { basename } from 'node:path';
+import { isSecretVarName } from '../flows/schema.js';
 
 export interface RunResult {
   code: number | null;
@@ -42,6 +43,32 @@ export interface RunOptions {
    * grandchildren (gradle under `npx expo run:android`, xcodebuild's workers) stop with it instead
    * of re-parenting to pid 1. POSIX only; ignored on Windows. For builds. */
   processGroup?: boolean;
+  /** Pass the server's test credentials (SWIPIUM_TEST_*, SWIPIUM_SECRET_* and other secret-named
+   * SWIPIUM_* vars) through to the child. Off by default: only a project's own seed scripts, which
+   * may sign in with the configured test account, opt in. */
+  inheritSecretEnv?: boolean;
+}
+
+/** Secret-bearing Swipium env names: the test-account inputs (SWIPIUM_TEST_EMAIL, _PASSWORD, _OTP,
+ *  ...), SWIPIUM_SECRET_*, and any other SWIPIUM_* name that reads like a secret by the same
+ *  whole-name-part rule flows use (password, token, key, OTP, PIN, verification code; not
+ *  SHIPPING or BARCODE). */
+const SECRET_ENV_PREFIX = /^SWIPIUM_(?:TEST|SECRET)_/i;
+
+/** True when `name` holds a test credential that a spawned tool must not see by default. */
+export function isSecretEnvName(name: string): boolean {
+  if (SECRET_ENV_PREFIX.test(name)) return true;
+  return /^SWIPIUM_/i.test(name) && isSecretVarName(name.slice('SWIPIUM_'.length));
+}
+
+/** The environment for a spawned child: `base` (the server's env) minus the secret-bearing names
+ *  above, unless `inheritSecretEnv`. adb, xcrun, builds and OCR helpers never need test
+ *  credentials, and a child that dumps its env (crash reports, verbose logs) would leak them. */
+export function childEnv(base: NodeJS.ProcessEnv = process.env, inheritSecretEnv = false): NodeJS.ProcessEnv {
+  if (inheritSecretEnv) return { ...base };
+  const out: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(base)) if (!isSecretEnvName(k)) out[k] = v;
+  return out;
 }
 
 const REDACTED_ARG = '«redacted»';
@@ -192,7 +219,10 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
     const group = !!opts.processGroup && process.platform !== 'win32';
     if (group && opts.signal?.aborted) return reject(abortError());
     // A group leader is signalled by us (killTree), not by spawn's `signal`, which only kills the child.
-    const child = group ? spawn(cmd, args, { cwd: opts.cwd, detached: true }) : spawn(cmd, args, { cwd: opts.cwd, signal: opts.signal });
+    const env = childEnv(process.env, opts.inheritSecretEnv);
+    const child = group
+      ? spawn(cmd, args, { cwd: opts.cwd, env, detached: true })
+      : spawn(cmd, args, { cwd: opts.cwd, env, signal: opts.signal });
     let stdout = '';
     let stderr = '';
     let timedOut = false;
@@ -226,8 +256,12 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
         }, timeoutMs)
       : undefined;
 
-    child.stdout.on('data', (d) => (stdout += d.toString()));
-    child.stderr.on('data', (d) => (stderr += d.toString()));
+    // Decode as a stream: a multibyte UTF-8 character split across two chunks must not turn into
+    // two U+FFFD replacement characters (per-chunk toString does that).
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (d: string) => (stdout += d));
+    child.stderr.on('data', (d: string) => (stderr += d));
 
     child.on('error', (err) => {
       if (timer) clearTimeout(timer);
@@ -282,7 +316,7 @@ export function runBinary(cmd: string, args: string[], opts: RunOptions = {}): P
     return Promise.reject(e);
   }
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { cwd: opts.cwd, signal: opts.signal });
+    const child = spawn(cmd, args, { cwd: opts.cwd, env: childEnv(process.env, opts.inheritSecretEnv), signal: opts.signal });
     const chunks: Buffer[] = [];
     let stderr = '';
     let timedOut = false;
@@ -294,7 +328,8 @@ export function runBinary(cmd: string, args: string[], opts: RunOptions = {}): P
         }, timeoutMs)
       : undefined;
     child.stdout.on('data', (d: Buffer) => chunks.push(d));
-    child.stderr.on('data', (d) => (stderr += d.toString()));
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (d: string) => (stderr += d));
     child.on('error', (err) => {
       if (timer) clearTimeout(timer);
       reject(sanitizedSpawnError(err, args, opts.redactArgs));

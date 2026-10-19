@@ -4,6 +4,14 @@
 import { sleepOrCancel } from './abortScope.js';
 import type { Driver } from '../drivers/Driver.js';
 
+/** Does the foreground owner (`pkg/.Activity` on Android, a bundle id on iOS, or 'unknown') belong
+ * to `pkg`? Exact id, optionally followed by `/activity` or an Android `:process` suffix, so
+ * `com.acme.app.debug` (or `com.acme.app2`) never counts as `com.acme.app`. */
+export function isForegroundOf(fg: string, pkg: string | undefined): boolean {
+  if (!pkg) return false;
+  return fg === pkg || fg.startsWith(`${pkg}/`) || fg.startsWith(`${pkg}:`);
+}
+
 /** Same cap as the fixed sleep it replaces. */
 export const LAUNCH_FOREGROUND_CAP_MS = 2500;
 export const LAUNCH_FOREGROUND_POLL_MS = 250;
@@ -19,7 +27,7 @@ export async function waitForForeground(
   for (;;) {
     const fg = await d.foregroundOwner();
     const left = deadline - Date.now();
-    if (fg.startsWith(pkg) || left <= 0) return fg;
+    if (isForegroundOf(fg, pkg) || left <= 0) return fg;
     await sleepOrCancel(Math.min(LAUNCH_FOREGROUND_POLL_MS, left));
   }
 }
@@ -33,7 +41,7 @@ export const LAUNCH_RECHECK_MS = 1000;
  * (later health checks catch a crash there). Returns the last owner seen. */
 export async function waitForLaunch(d: Pick<Driver, 'foregroundOwner'>, pkg: string, capMs = LAUNCH_FOREGROUND_CAP_MS): Promise<string> {
   const fg = await waitForForeground(d, pkg, capMs);
-  if (!fg.startsWith(pkg)) return fg;
+  if (!isForegroundOf(fg, pkg)) return fg;
   await sleepOrCancel(LAUNCH_RECHECK_MS);
   return d.foregroundOwner();
 }

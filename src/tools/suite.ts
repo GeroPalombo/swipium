@@ -8,8 +8,9 @@
 
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { writeFileNoFollow } from '../lib/noFollowFs.js';
 import type { McpServer, CallToolResult } from '@modelcontextprotocol/server';
 import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { resolveProjectRoot, unresolvedProjectRootError } from '../context/projectRoot.js';
@@ -17,10 +18,11 @@ import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { generatePom, mergePomFile, type GeneratedFile, type PomResult } from '../suite/pom.js';
 import { generateTestCases } from '../suite/testcase.js';
 import { compileSuite, flowSlug, writeCompiledFlow } from '../suite/compile.js';
-import { parseFlow } from '../flows/schema.js';
+import { parseFlow, type Flow } from '../flows/schema.js';
 import { runFlow } from '../flows/run.js';
+import { flowMutationAffects, flowMutationRisk, mutationCommandLines } from './flow.js';
 import { loadProjectConfig } from '../cli/scan.js';
-import { generateAndCompileSuite } from '../services/suiteGenerate.js';
+import { generateAndCompileSuite, type CompiledFlowInfo } from '../services/suiteGenerate.js';
 import { assertNoSecretLeaks, findSecretLeaks, inputBindings, secretSafeNotes, structuralLiterals } from '../suite/secretGuard.js';
 import { getDriver } from '../session/attach.js';
 import { readinessForSession } from '../report/readiness.js';
@@ -57,6 +59,66 @@ function compiledFlowIdentity(c: {
   };
 }
 
+type ReplayFlow = { name: string; path: string; flow?: Flow; errors: string[] };
+
+/** The flows a replay runs: each ok flow's compiled output for THIS run (replayPath). A hand-edited
+ *  flows/<slug>.yaml that was kept (new output in .yaml.new) is not what was just generated. */
+function replayFlows(compiled: CompiledFlowInfo[]): ReplayFlow[] {
+  const out: ReplayFlow[] = [];
+  for (const c of compiled) {
+    const path = c.replayPath ?? c.compiledPath ?? c.flowPath;
+    if (!c.ok || !path) continue;
+    try {
+      const parsed = parseFlow(readFileSync(path, 'utf8'));
+      out.push({ name: c.name, path, flow: parsed.flow ?? undefined, errors: parsed.errors });
+    } catch (e) {
+      out.push({ name: c.name, path, errors: [e instanceof Error ? e.message : String(e)] });
+    }
+  }
+  return out;
+}
+
+/** Mutating steps (seed, openUrl, network toggles...) of the flows a replay would run, in the shape
+ *  qa_flow_run's flow_mutation_run consent shows. Empty when no flow mutates. */
+function replayMutationAffects(sessions: SessionStore, session: Session, flows: ReplayFlow[]) {
+  const vars = sessions.inputVariables(session);
+  return (
+    flows
+      .filter((f): f is ReplayFlow & { flow: Flow } => !!f.flow)
+      .map((f) => flowMutationAffects(f.flow, session, f.path, 1, [], vars))
+      // A restartApp only relaunches the app under test, and generated suites contain one whenever the
+      // recording relaunched mid-session, so replay keeps running it without a prompt.
+      .map((a) => ({ ...a, mutations: a.mutations.filter((m) => m.kind !== 'restartApp') }))
+      .filter((a) => a.mutations.length > 0)
+  );
+}
+
+const RISK_ORDER = { low: 0, medium: 1, high: 2 } as const;
+function maxRisk(risks: Array<'low' | 'medium' | 'high'>): 'low' | 'medium' | 'high' {
+  return risks.reduce<'low' | 'medium' | 'high'>((a, b) => (RISK_ORDER[b] > RISK_ORDER[a] ? b : a), 'low');
+}
+
+/** Consent text for replaying mutating flows (same wording as qa_flow_run). */
+function replayMutationExplain(suite: string, flowMutations: ReturnType<typeof replayMutationAffects>): string {
+  const all = flowMutations.flatMap((a) => a.mutations);
+  return (
+    `Replay generated suite "${suite}"? Its flows have mutating steps that can change app/device/test state and will be recorded in the mutation ledger.` +
+    (all.some((m) => m.kind === 'seed')
+      ? " Seed steps run the exact command/URL shown, taken from the repo's fixture declarations. These are repo-supplied and UNREVIEWED by Swipium; approve only if you trust them."
+      : '') +
+    (all.some((m) => m.kind === 'openUrl')
+      ? ' openUrl steps interpolate variables into a URL that leaves the test harness, so check the destination.'
+      : '')
+  );
+}
+
+function replayMutationCommand(replayMode: string, flowMutations: ReturnType<typeof replayMutationAffects>): string {
+  return [
+    `qa_generate target=suite replay=${replayMode}`,
+    ...flowMutations.flatMap((a) => [`flow ${a.flow}:`, ...mutationCommandLines(a).map((l) => `  ${l}`)]),
+  ].join('\n');
+}
+
 function appIdOf(session: Session): string | undefined {
   return session.appId ?? (loadProjectConfig(session.root)?.appId as string | undefined) ?? undefined;
 }
@@ -88,9 +150,9 @@ function writeFiles(session: Session, files: GeneratedFile[]): string[] {
   const written: string[] = [];
   for (const f of files) {
     const abs = join(base, f.path);
-    mkdirSync(dirname(abs), { recursive: true });
-    // merge into existing page objects / suite files instead of dropping what earlier suites use
-    writeFileSync(abs, mergePomFile(f.path, existsSync(abs) ? readFileSync(abs, 'utf8') : undefined, f.content));
+    // merge into existing page objects / suite files instead of dropping what earlier suites use;
+    // no-follow, so a committed symlink under .swipium/ never redirects the write
+    writeFileNoFollow(session.root, abs, mergePomFile(f.path, existsSync(abs) ? readFileSync(abs, 'utf8') : undefined, f.content));
     written.push(abs);
   }
   return written;
@@ -234,14 +296,54 @@ export async function runSuiteGenerate(
         reason: 'no driver attached for same-session replay',
       });
     else {
-      for (const c of res.compiledFlows.filter((f) => f.ok && f.flowPath)) {
-        const parsed = parseFlow(readFileSync(c.flowPath!, 'utf8'));
-        if (!parsed.flow) {
-          replayResults.push({ name: c.name, mode: replayMode, status: 'failed', reason: parsed.errors.join('; ') });
+      const flows = replayFlows(res.compiledFlows);
+      // Same gate as qa_flow_run: a flow with seed/openUrl/network steps does not run unconsented.
+      const flowMutations = replayMutationAffects(sessions, session, flows);
+      let mutationConsent: { required: boolean; consentId?: string; approved: boolean; payloadHash?: string } = {
+        required: false,
+        approved: true,
+      };
+      if (flowMutations.length) {
+        const affects = { suite: res.name ?? 'suite', replayMode, flows: flowMutations };
+        const payloadHash = stableHash(affects);
+        const risk = maxRisk(flowMutations.map(flowMutationRisk));
+        replayEvidence.consentRequired = true;
+        const gate = consumeConsent(consentId, approve, { action: 'flow_mutation_run', affects });
+        if (!gate.approved) {
+          sessions.recordMutation(session, {
+            tool: 'qa_generate',
+            action: 'flow_mutation_run',
+            risk,
+            target: affects,
+            consent: { required: true, approved: false, payloadHash },
+            status: 'requested',
+          });
+          return requireConsent({
+            action: 'flow_mutation_run',
+            risk,
+            exactCommand: replayMutationCommand(replayMode, flowMutations),
+            affects,
+            explain: replayMutationExplain(res.name ?? 'suite', flowMutations),
+          });
+        }
+        replayEvidence.consentApproved = true;
+        mutationConsent = { required: true, consentId, approved: true, payloadHash };
+        sessions.recordMutation(session, {
+          tool: 'qa_generate',
+          action: 'flow_mutation_run',
+          risk,
+          target: affects,
+          consent: mutationConsent,
+          status: 'approved',
+        });
+      }
+      for (const f of flows) {
+        if (!f.flow) {
+          replayResults.push({ name: f.name, mode: replayMode, status: 'failed', reason: f.errors.join('; ') });
           continue;
         }
-        const r = await runFlow(sessions, session, driver, parsed.flow, { variables: sessions.inputVariables(session) });
-        replayResults.push({ name: c.name, mode: replayMode, status: r.passed ? 'passed' : 'failed', reason: r.reason });
+        const r = await runFlow(sessions, session, driver, f.flow, { variables: sessions.inputVariables(session), mutationConsent });
+        replayResults.push({ name: f.name, mode: replayMode, status: r.passed ? 'passed' : 'failed', reason: r.reason });
       }
     }
   } else if (replayMode === 'fresh_state') {
@@ -274,9 +376,13 @@ export async function runSuiteGenerate(
         replayEvidence.stateProfilePath = loaded.path ?? null;
         const mutatingProfile =
           hasStateProfileMutation('prepare', loaded.profile, session) || hasStateProfileMutation('teardown', loaded.profile, session);
-        replayEvidence.consentRequired = mutatingProfile;
+        const flows = replayFlows(res.compiledFlows);
+        // The replayed flows' own mutating steps (seeds etc.) are part of the same consent.
+        const flowMutations = replayMutationAffects(sessions, session, flows);
+        const needsConsent = mutatingProfile || flowMutations.length > 0;
+        replayEvidence.consentRequired = needsConsent;
         let mutationPayloadHash: string | undefined;
-        if (mutatingProfile) {
+        if (needsConsent) {
           const prepareAffects = stateProfileAffects(session, 'prepare', loaded.profile, loaded.path);
           const teardownAffects = stateProfileAffects(session, 'teardown', loaded.profile, loaded.path);
           const affects = {
@@ -287,14 +393,14 @@ export async function runSuiteGenerate(
             suiteManifestHash: hashFile(res.manifestPath),
             statePrepare: prepareAffects,
             stateTeardown: teardownAffects,
+            ...(flowMutations.length ? { flowMutations } : {}),
           };
           mutationPayloadHash = stableHash(affects);
-          const risk =
-            stateRisk('prepare', loaded.profile, session) === 'high' || stateRisk('teardown', loaded.profile, session) === 'high'
-              ? 'high'
-              : stateRisk('prepare', loaded.profile, session) === 'medium' || stateRisk('teardown', loaded.profile, session) === 'medium'
-                ? 'medium'
-                : 'low';
+          const risk = maxRisk([
+            stateRisk('prepare', loaded.profile, session),
+            stateRisk('teardown', loaded.profile, session),
+            ...flowMutations.map(flowMutationRisk),
+          ]);
           const gate = consumeConsent(consentId, approve, { action: 'suite_fresh_state_replay', affects });
           if (!gate.approved) {
             sessions.recordMutation(session, {
@@ -308,9 +414,13 @@ export async function runSuiteGenerate(
             return requireConsent({
               action: 'suite_fresh_state_replay',
               risk,
-              exactCommand: `qa_generate target=suite replay=fresh_state stateProfile=${loaded.profile.name}`,
+              exactCommand:
+                `qa_generate target=suite replay=fresh_state stateProfile=${loaded.profile.name}` +
+                (flowMutations.length ? `\n${replayMutationCommand(replayMode, flowMutations)}` : ''),
               affects,
-              explain: `Replay generated suite "${res.name ?? 'suite'}" from state profile "${loaded.profile.name}"? This can mutate app/device state through prepare/teardown before proving CI readiness.`,
+              explain:
+                `Replay generated suite "${res.name ?? 'suite'}" from state profile "${loaded.profile.name}"? This can mutate app/device state through prepare/teardown before proving CI readiness.` +
+                (flowMutations.length ? ` ${replayMutationExplain(res.name ?? 'suite', flowMutations)}` : ''),
             });
           }
           replayEvidence.consentApproved = true;
@@ -356,20 +466,22 @@ export async function runSuiteGenerate(
               reason: `state verify blocked; ledgers=${ledgers.join(',')}`,
             });
           } else {
-            for (const c of res.compiledFlows.filter((f) => f.ok && f.flowPath)) {
-              const parsed = parseFlow(readFileSync(c.flowPath!, 'utf8'));
-              if (!parsed.flow) {
-                replayResults.push({ name: c.name, mode: replayMode, status: 'failed', reason: parsed.errors.join('; ') });
+            const mutationConsent = needsConsent
+              ? { required: true, consentId, approved: true, payloadHash: mutationPayloadHash }
+              : { required: false, approved: true };
+            for (const f of flows) {
+              if (!f.flow) {
+                replayResults.push({ name: f.name, mode: replayMode, status: 'failed', reason: f.errors.join('; ') });
                 continue;
               }
-              const r = await runFlow(sessions, session, driver, parsed.flow, { variables: sessions.inputVariables(session) });
-              replayResults.push({ name: c.name, mode: replayMode, status: r.passed ? 'passed' : 'failed', reason: r.reason });
+              const r = await runFlow(sessions, session, driver, f.flow, { variables: sessions.inputVariables(session), mutationConsent });
+              replayResults.push({ name: f.name, mode: replayMode, status: r.passed ? 'passed' : 'failed', reason: r.reason });
             }
           }
         }
         const tornDown = await teardownStateProfile(sessions, session, driver, loaded.profile);
         saveLedger('teardown', tornDown);
-        if (mutatingProfile) {
+        if (needsConsent) {
           const ok = replayResults.length > 0 && replayResults.every((r) => r.status === 'passed');
           sessions.recordMutation(session, {
             tool: 'qa_generate',
@@ -407,7 +519,8 @@ export async function runSuiteGenerate(
   const readiness = readinessLabels.at(-1) ?? 'generated';
   const written = res.manifestPath ? [...res.written] : res.written;
   if (res.manifestPath) {
-    writeFileSync(
+    writeFileNoFollow(
+      session.root,
       res.manifestPath,
       JSON.stringify(
         {
@@ -437,7 +550,7 @@ export async function runSuiteGenerate(
       ),
     );
   }
-  // Plumb the ACTUAL replay outcome back into the written catalog (review item #5): the suite
+  // Plumb the ACTUAL replay outcome back into the written catalog: the suite
   // service writes the catalog before replay (honest `not_replayed`); once we have a real replay
   // result, rewrite the YAML/MD so the committed test cases reflect proven replay status.
   let finalTestCases = res.testCases;

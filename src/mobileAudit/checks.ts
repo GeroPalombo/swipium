@@ -7,7 +7,8 @@
 
 import { rankCandidates } from '../explore/candidates.js';
 import { allowsControlledLogout } from '../explore/policy.js';
-import { parseSnapshot } from '../snapshot/parse.js';
+import { isTextFieldClass, parseSnapshot, type RawNode } from '../snapshot/parse.js';
+import { screenFingerprint, settle } from '../snapshot/settle.js';
 import { waitForAppRender, type RenderWaitResult } from '../snapshot/renderWait.js';
 import type { IssueCategory, IssueSeverity } from '../issues/schema.js';
 import type { CheckStatus } from './results.js';
@@ -357,14 +358,58 @@ export async function findAndTapLogout(ctx: AuditEvidenceCtx, disposableAccount:
     return { tapped: false, loggedOutText: await snapshotText(ctx), authSurface: false };
   }
   const [x1, y1, x2, y2] = logout.bounds;
+  let preFingerprint: string | undefined;
+  try {
+    preFingerprint = screenFingerprint(parseSnapshot(xml).fullByRef.values());
+  } catch {
+    preFingerprint = undefined;
+  }
   try {
     await ctx.driver.tapXY(Math.round((x1 + x2) / 2), Math.round((y1 + y2) / 2));
   } catch {
     return { tapped: false, loggedOutText: await snapshotText(ctx), authSurface: false };
   }
-  const loggedOutText = await snapshotText(ctx);
-  const authSurface = /sign\s?in|log\s?in|email|password|username|forgot|create account/.test(loggedOutText);
-  return { tapped: true, loggedOutText, authSurface };
+  // Judge the screen the logout leads to, not the one still on screen right after the tap: let the
+  // tree settle (it changes from the logged-in screen), then wait out a loading / blank render.
+  const settled = await settle(ctx.driver, { timeoutMs: 8000, ...(preFingerprint ? { preFingerprint } : {}) }).catch((e) => {
+    if (isAbortError(e)) throw e;
+    return undefined;
+  });
+  const render = await renderWait(ctx);
+  let after: RawNode[] = [];
+  try {
+    const afterXml = render?.xml || settled?.xml || (await ctx.driver.dumpXml());
+    after = afterXml ? parseSnapshot(afterXml).allNodes : [];
+  } catch (e) {
+    if (isAbortError(e)) throw e;
+    after = [];
+  }
+  return { tapped: true, loggedOutText: visibleText(after), authSurface: looksLikeAuthSurface(after) };
+}
+
+/** Visible text and accessibility labels of a screen (lowercased). Resource ids are left out: an id
+ *  like "login_button" on a logged-in screen says nothing about what the user sees. */
+function visibleText(nodes: RawNode[]): string {
+  return nodes
+    .map((n) => `${n.text ?? ''} ${n.desc ?? ''}`)
+    .join('  ')
+    .toLowerCase();
+}
+
+const SIGN_IN_WORDING = /\b(?:sign[\s-]?in|log[\s-]?in|create (?:an )?account|sign[\s-]?up|welcome back)\b/i;
+
+const SIGN_IN_BUTTON = /^(?:sign[\s-]?in|log[\s-]?in|sign[\s-]?up|create (?:an )?account|get started)$/i;
+
+/** A logged-out auth surface: sign-in wording in the visible text AND either an editable input
+ *  field (an email / password box) or a sign-in screen made of buttons only ("Log in" / "Sign up"
+ *  as whole clickable labels). Wording alone also matches a logged-in screen's "Sign in with..."
+ *  promo, which is why a bare mention is not enough. */
+export function looksLikeAuthSurface(nodes: RawNode[]): boolean {
+  if (!SIGN_IN_WORDING.test(visibleText(nodes))) return false;
+  const hasInput = nodes.some((n) => isTextFieldClass(n.cls) && !/SearchField/.test(n.cls));
+  if (hasInput) return true;
+  const authButtons = nodes.filter((n) => n.clickable && SIGN_IN_BUTTON.test((n.text || n.desc || '').trim()));
+  return new Set(authButtons.map((n) => (n.text || n.desc).trim().toLowerCase())).size >= 2;
 }
 
 /**

@@ -6,7 +6,7 @@ import type { McpServer, CallToolResult } from '@modelcontextprotocol/server';
 import { qaOk } from '../../lib/result.js';
 import { qaNeedsInput, NeedsInput } from '../../lib/needsInput.js';
 import { buildPlan, type BuildPlatform } from '../../build/plan.js';
-import { requireConsent, consumeConsent } from '../../consent/consent.js';
+import { requireConsent, consumeConsent, runWithConsentScope } from '../../consent/consent.js';
 import { buildTestThisPreflight } from '../../services/preflight.js';
 import { androidTargetAvd } from '../../session/attach.js';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
@@ -16,6 +16,7 @@ import type { SessionStore } from '../../session/store.js';
 import type { Session } from '../../session/store.js';
 import type { ExecuteArgs } from './types.js';
 import { runExecutePipeline } from './pipeline.js';
+import { failCrashedJob } from '../jobCrash.js';
 import { hasUsableCredentials, credentialsLostOnRestart, isLoginDeclined, seedEnvCredentials } from './sessionIntent.js';
 import { currentSignal, runWithSignal, sleepOrCancel } from '../../lib/abortScope.js';
 import { jobProgressReporter } from '../../lib/progressNotify.js';
@@ -122,7 +123,11 @@ export async function runExecuteMode(server: McpServer, sessions: SessionStore, 
   let mutationConsent: ExecuteArgs['mutationConsent'];
   let testThisPlanMutation: ExecuteArgs['testThisPlanMutation'];
   if (preflight.consentRequired) {
-    const gate = consumeConsent(a.consentId, a.approve, { action: 'test_this_plan', affects: preflight.consentAffects });
+    // Minted and consumed in THIS session's consent scope (the call may have created the session):
+    // the approval is bound to it, and an approving re-call without sessionId cannot spend it in a
+    // fresh session.
+    const inSession = <T>(fn: () => T): T => runWithConsentScope(session.id, fn);
+    const gate = inSession(() => consumeConsent(a.consentId, a.approve, { action: 'test_this_plan', affects: preflight.consentAffects }));
     if (!gate.approved) {
       sessions.recordMutation(session, {
         tool: 'qa_test_this',
@@ -132,13 +137,15 @@ export async function runExecuteMode(server: McpServer, sessions: SessionStore, 
         consent: { required: true, approved: false },
         status: 'requested',
       });
-      const consentResult = requireConsent({
-        action: 'test_this_plan',
-        risk: preflight.risk,
-        exactCommand: preflight.exactCommand,
-        affects: preflight.consentAffects,
-        explain: `Running "test this" needs these privileged steps (approved together so they don't re-prompt):\n${preflight.exactCommand}\nApprove to start; Swipium then installs, smokes, reports${a.generateSuite ? ', and generates a suite' : ''}.`,
-      });
+      const consentResult = inSession(() =>
+        requireConsent({
+          action: 'test_this_plan',
+          risk: preflight.risk,
+          exactCommand: preflight.exactCommand,
+          affects: preflight.consentAffects,
+          explain: `Running "test this" needs these privileged steps (approved together so they don't re-prompt):\n${preflight.exactCommand}\nApprove to start; Swipium then installs, smokes, reports${a.generateSuite ? ', and generates a suite' : ''}.`,
+        }),
+      );
       // A supplied consentId that could not be used must be explained, never a silent re-challenge.
       const staleNote = a.consentId
         ? `consent ${a.consentId} ${/unknown|expired|already-used/i.test(gate.reason ?? '') ? 'unknown or expired' : `not applied (${gate.reason ?? 'not usable'})`}; new challenge issued`
@@ -180,7 +187,10 @@ export async function runExecuteMode(server: McpServer, sessions: SessionStore, 
   // The job's cancellation signal is scoped to its own async context (abortScope): driver calls
   // made by the pipeline are cancelled with the job, and interactive calls made concurrently on
   // the shared driver keep their own signal.
-  const run = runWithSignal(sessions.abortSignal(session, job.jobId), () => runExecutePipeline(sessions, session, job, execArgs));
+  // A crash that escapes the pipeline's own handler marks the job failed (never "running" forever).
+  const run = runWithSignal(sessions.abortSignal(session, job.jobId), () => runExecutePipeline(sessions, session, job, execArgs)).catch(
+    (e: unknown) => failCrashedJob(sessions, session, job, 'test-this', e),
+  );
 
   // Optional blocking mode for short paths. Default = return the running job.
   if (a.waitForCompletion) {

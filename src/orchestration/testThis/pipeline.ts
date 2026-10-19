@@ -331,8 +331,10 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
           attachWda: 'auto',
           mutationConsent: a.mutationConsent,
         },
-        { onProgress: (p) => prog.event(p) },
+        // The job's signal stops prepare between install / launch / WDA steps (and kills the install).
+        { signal, onProgress: (p) => prog.event(p) },
       );
+      if (signal?.aborted) return; // cancelled: the job already says so, never a prepare blocker
       if (!res.ok) {
         if (res.failureCode === 'METRO_REQUIRED' || res.failureCode === 'METRO_WRONG_PROJECT')
           prog.needsUser('Metro must be serving for this debug build.');

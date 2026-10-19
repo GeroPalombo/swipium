@@ -103,8 +103,15 @@ const CREDENTIAL_SETUP =
   /\b(create\s+(a\s+)?password|set\s+(a\s+|your\s+)?password|choose\s+(a\s+)?password|create\s+(a\s+)?username|choose\s+(a\s+)?username|set\s+up\s+(your\s+)?(login|credentials?)|credential\s+setup)\b/i;
 const OTP = /\b(verification code|one-?time|enter the code|otp|magic link|we sent|6-digit|verify your (email|phone|number))\b/i;
 const ONBOARDING = /\b(get started|next|skip|continue|welcome|let'?s go|swipe|tour|set up your)\b/i;
-const PAYWALL =
-  /\b(subscribe|free trial|start trial|restore purchase|upgrade|premium|unlock|per month|per year|\/mo\b|\$\d|monthly|annually|billed)\b/i;
+// Paywall copy: an offer (subscribe / trial / restore / billing period) or a price. "Premium",
+// "upgrade", "unlock" or "monthly" alone are not enough: a freemium home shows "Go Premium" too.
+const PAYWALL_OFFER =
+  /\b(?:subscribe|subscription|free\s+trial|start\s+(?:your\s+|a\s+)?(?:free\s+)?trial|restore\s+purchases?|per\s+(?:month|year|week)|billed\s+(?:monthly|annually|yearly|weekly))\b/i;
+const PRICE = /[$€£¥]\s?\d|\b\d+(?:[.,]\d{1,2})?\s?(?:[€£]|(?:usd|eur|gbp)\b)|\d\s?\/\s?(?:mo|month|yr|year|wk|week)\b/i;
+/** Paywall copy on a screen: an offer or a price (never premium/upgrade wording alone). Exported for tests. */
+export function hasPaywallCopy(text: string): boolean {
+  return PAYWALL_OFFER.test(text) || PRICE.test(text);
+}
 const PERMISSION = /\b(allow|don'?t allow|while using the app|location|camera|microphone|notifications?|photos|contacts|bluetooth)\b/i;
 const HOME = /\b(home|feed|dashboard|explore|search|profile|settings|library|inbox|for you)\b/i;
 const SETTINGS = /\b(settings|preferences|account settings|privacy|notifications)\b/i;
@@ -167,7 +174,8 @@ export function classifyCurrentScreen(obs: ScreenObservation): ScreenClassificat
   }
 
   // Other gates.
-  if (PAYWALL.test(text)) note('paywall', 3, 'subscribe/trial/restore/price copy');
+  const paywallCopy = hasPaywallCopy(text);
+  if (paywallCopy) note('paywall', 3, 'subscribe/trial/restore/price copy');
   if (PERMISSION.test(text) && /\b(allow|don'?t allow|while using)\b/i.test(text))
     note('permissions_prompt', 2.5, 'permission dialog copy');
   if (ONBOARDING.test(text) && !hasPassword) note('onboarding', 2, 'onboarding/get-started/next/skip copy');
@@ -176,7 +184,7 @@ export function classifyCurrentScreen(obs: ScreenObservation): ScreenClassificat
   if (obs.alert) blockedReasons.push(`an alert ("${obs.alert.title}") covers the screen`);
   else {
     if (SETTINGS.test(text)) note('settings', 1, 'settings/preferences copy');
-    if (HOME.test(text) && !hasPassword && !PAYWALL.test(text)) note('home', 1.5, 'home/feed/dashboard/tabs with no blocking gate');
+    if (HOME.test(text) && !hasPassword && !paywallCopy) note('home', 1.5, 'home/feed/dashboard/tabs with no blocking gate');
   }
 
   // Static app-map candidates corroborate a purpose.

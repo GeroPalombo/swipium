@@ -1,5 +1,6 @@
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { chmodSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { writeFileNoFollow } from '../lib/noFollowFs.js';
 
 export interface GeneratedFlowTemplate {
   path: string;
@@ -157,8 +158,7 @@ export function flowTemplateFiles(root: string): GeneratedFlowTemplate[] {
 export function initFlowTemplates(root: string, opts: { force?: boolean } = {}): FlowTemplateInitResult {
   const files = flowTemplateFiles(root).map((f) => {
     if (existsSync(f.path) && !opts.force) return { path: f.path, written: false, skipped: true };
-    mkdirSync(dirname(f.path), { recursive: true });
-    writeFileSync(f.path, f.content);
+    writeFileNoFollow(root, f.path, f.content); // never through a committed symlink
     if (f.executable) chmodSync(f.path, 0o755);
     return { path: f.path, written: true, skipped: false };
   });

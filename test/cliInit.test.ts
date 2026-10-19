@@ -249,14 +249,21 @@ describe('cli init portability + new clients', () => {
     expect(out.join('')).toContain('Refusing to modify');
   });
 
-  it('unknown clients print usage (including cursor/vscode) and exit 2', async () => {
+  it('unknown clients print the reason and usage (including cursor/vscode) to stderr and exit 2', async () => {
     const out = capture();
+    const err: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      err.push(String(chunk));
+      return true;
+    });
     const prev = process.exitCode;
     await runInit(['windsurf']);
     const code = process.exitCode;
     process.exitCode = prev;
     expect(code).toBe(2);
-    expect(out.join('')).toContain('cursor|vscode');
+    expect(out.join('')).toBe('');
+    expect(err.join('')).toContain('unknown client "windsurf"');
+    expect(err.join('')).toContain('cursor|vscode');
   });
 });
 

@@ -3,7 +3,7 @@
 // steps (image/diff/visual), device-relative gestures, waits, overlay/network/lifecycle/seed/note
 // steps, a structured|visual|auto mode, and setup/teardown. One parse, shared by check + run.
 
-import { parse as parseYaml } from 'yaml';
+import { isMap, isScalar, parseDocument, visit, type Document } from 'yaml';
 import type { SelectorProvenance } from '../session/store.js';
 
 export type FlowMode = 'structured' | 'visual' | 'auto';
@@ -63,10 +63,61 @@ export interface ParseResult {
   errors: string[];
 }
 
+/** Lower-case word segments of a name, split on `_` / `-` / digits / spaces and camelCase:
+ *  SWIPIUM_TEST_PASSWORD > [swipium, test, password], apiKey > [api, key], OTP2 > [otp]. */
+export function nameSegments(name: string): string[] {
+  return name
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .split(/[^A-Za-z]+/)
+    .filter(Boolean)
+    .map((seg) => seg.toLowerCase());
+}
+
+/** Words that are credential-like wherever they appear inside a segment (CLIENTSECRET, AUTHTOKEN). */
+export const STRONG_SECRET_WORDS = ['password', 'passwd', 'passcode', 'passphrase', 'secret', 'token', 'apikey'];
+/** Short words that only count as a whole segment: PIN yes, SHIPPING no; KEY yes, KEYWORD no. */
+const WEAK_SECRET_WORDS = new Set(['pass', 'pwd', 'otp', 'totp', 'pin', 'cvv', 'cvc', 'key', 'code']);
+/** Run-together forms of the short words seen in env names (SWIPIUM_OTPCODE, SWIPIUM_PINCODE). */
+const SECRET_COMPOUNDS = new Set([
+  'otpcode',
+  'pincode',
+  'pinnumber',
+  'smscode',
+  'authcode',
+  'mfacode',
+  'verificationcode',
+  'verifycode',
+  'securitycode',
+  'onetimecode',
+  'confirmationcode',
+  'accesskey',
+  'authkey',
+  'secretkey',
+  'privatekey',
+]);
+
+function secretSegment(seg: string): boolean {
+  const singular = seg.length > 3 && seg.endsWith('s') ? seg.slice(0, -1) : seg;
+  return (
+    WEAK_SECRET_WORDS.has(seg) ||
+    WEAK_SECRET_WORDS.has(singular) ||
+    SECRET_COMPOUNDS.has(seg) ||
+    STRONG_SECRET_WORDS.some((w) => seg.includes(w))
+  );
+}
+
+/** True for a credential-like variable name (password, secret, token, OTP, PIN, CVV, key, code),
+ *  matched per name segment so SHIPPING (pin) or KEYWORD (key) are not secrets. */
+export function isSecretVarName(name: string): boolean {
+  return nameSegments(name).some(secretSegment);
+}
+
 /** Credential-like variable names whose resolved values are registered as session secrets. The
  *  ONE shared definition: qa_act placeholder expansion, flow parsing/running and
- *  qa_continue_from_blocker all use it (`code` covers OTP vars like SWIPIUM_VERIFICATION_CODE). */
-export const SECRET_VAR_NAME = /pass|secret|token|otp|pin|cvv|key|code/i;
+ *  qa_continue_from_blocker all use it (`code` covers OTP vars like SWIPIUM_VERIFICATION_CODE).
+ *  Kept as a `{ test }` matcher so callers read like the regex it replaced. */
+export const SECRET_VAR_NAME: { test(name: string): boolean } = { test: isSecretVarName };
 const DIRECTIONS = ['up', 'down', 'left', 'right'] as const;
 const AREAS = ['center', 'top', 'bottom', 'left', 'right'] as const;
 const KEYS = ['back', 'home', 'enter'] as const;
@@ -92,6 +143,19 @@ function normalizeStep(raw: unknown, i: number, errors: string[]): FlowStep | nu
   const v = (raw as Record<string, unknown>)[k];
   const str = (x: unknown): x is string => typeof x === 'string';
   const obj = (x: unknown): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x);
+  // An optional 0..1 option (minScore, minConfidence, threshold): absent is fine, anything else
+  // that is present must be a number in range. A typo must not silently fall back to the default.
+  const BAD = Symbol('bad');
+  const fraction = (o: Record<string, unknown>, key: string, opts: { exclusiveMin?: boolean } = {}): number | undefined | typeof BAD => {
+    const x = o[key];
+    if (x == null) return undefined;
+    const lowOk = typeof x === 'number' && (opts.exclusiveMin ? x > 0 : x >= 0);
+    if (typeof x === 'number' && Number.isFinite(x) && lowOk && x <= 1) return x;
+    errors.push(
+      `step ${i}: ${k} ${key} must be a number ${opts.exclusiveMin ? 'greater than 0 and at most 1' : 'from 0 to 1'} (got ${JSON.stringify(x)}).`,
+    );
+    return BAD;
+  };
 
   switch (k) {
     case 'prepareTarget':
@@ -112,23 +176,30 @@ function normalizeStep(raw: unknown, i: number, errors: string[]): FlowStep | nu
         : err('tapAt needs [x, y].');
     case 'tapImage':
       if (str(v)) return { kind: 'tapImage', template: v };
-      if (obj(v) && str(v.template))
-        return { kind: 'tapImage', template: v.template, minScore: typeof v.minScore === 'number' ? v.minScore : undefined };
+      if (obj(v) && str(v.template)) {
+        const minScore = fraction(v, 'minScore');
+        return minScore === BAD ? null : { kind: 'tapImage', template: v.template, minScore };
+      }
       return err('tapImage needs a template path (or { template, minScore }).');
     case 'tapOcrText':
       if (str(v)) return { kind: 'tapOcrText', query: v };
-      if (obj(v) && str(v.text))
-        return { kind: 'tapOcrText', query: v.text, minConfidence: typeof v.minConfidence === 'number' ? v.minConfidence : undefined };
+      if (obj(v) && str(v.text)) {
+        const minConfidence = fraction(v, 'minConfidence');
+        return minConfidence === BAD ? null : { kind: 'tapOcrText', query: v.text, minConfidence };
+      }
       return err('tapOcrText needs text, or { text, minConfidence }.');
     case 'inputText':
       if (str(v)) return { kind: 'inputText', value: v, secret: looksSecret(v) };
-      if (obj(v) && str(v.text))
+      if (obj(v) && str(v.text)) {
+        if (v.secret != null && typeof v.secret !== 'boolean') return err('inputText secret must be true or false.');
+        if (v.into != null && !str(v.into)) return err('inputText into must be a selector string.');
         return {
           kind: 'inputText',
           value: v.text,
           secret: typeof v.secret === 'boolean' ? v.secret : looksSecret(v.text),
           into: str(v.into) ? v.into : undefined,
         };
+      }
       return err('inputText needs a string, or { into, text, secret? }.');
     case 'assertVisible':
       return str(v) ? { kind: 'assertVisible', query: v } : err('assertVisible needs a string.');
@@ -136,27 +207,35 @@ function normalizeStep(raw: unknown, i: number, errors: string[]): FlowStep | nu
       return str(v) ? { kind: 'assertNotVisible', query: v } : err('assertNotVisible needs a string.');
     case 'assertImage':
       if (str(v)) return { kind: 'assertImage', template: v };
-      if (obj(v) && str(v.template))
-        return { kind: 'assertImage', template: v.template, minScore: typeof v.minScore === 'number' ? v.minScore : undefined };
+      if (obj(v) && str(v.template)) {
+        const minScore = fraction(v, 'minScore');
+        return minScore === BAD ? null : { kind: 'assertImage', template: v.template, minScore };
+      }
       return err('assertImage needs a template path (or { template, minScore }).');
     case 'assertOcrText':
       if (str(v)) return { kind: 'assertOcrText', query: v };
-      if (obj(v) && str(v.text))
-        return { kind: 'assertOcrText', query: v.text, minConfidence: typeof v.minConfidence === 'number' ? v.minConfidence : undefined };
+      if (obj(v) && str(v.text)) {
+        const minConfidence = fraction(v, 'minConfidence');
+        return minConfidence === BAD ? null : { kind: 'assertOcrText', query: v.text, minConfidence };
+      }
       return err('assertOcrText needs text, or { text, minConfidence }.');
     case 'assertVisual':
       return str(v) ? { kind: 'assertVisual', description: v } : err('assertVisual needs a description string.');
     case 'assertDiff':
       if (str(v)) return { kind: 'assertDiff', baseline: v };
-      if (obj(v) && str(v.baseline))
-        return { kind: 'assertDiff', baseline: v.baseline, threshold: typeof v.threshold === 'number' ? v.threshold : undefined };
+      if (obj(v) && str(v.baseline)) {
+        const threshold = fraction(v, 'threshold');
+        return threshold === BAD ? null : { kind: 'assertDiff', baseline: v.baseline, threshold };
+      }
       return err('assertDiff needs a baseline name (or { baseline, threshold }).');
     case 'swipe':
       if (DIRECTIONS.includes(v as never)) return { kind: 'swipe', direction: v as 'up' };
       if (obj(v) && DIRECTIONS.includes(v.direction as never)) {
-        const area = AREAS.includes(v.area as never) ? (v.area as SwipeArea) : undefined;
-        const distance = typeof v.distance === 'number' ? v.distance : undefined;
-        return { kind: 'swipe', direction: v.direction as 'up', area, distance };
+        if (v.area != null && !AREAS.includes(v.area as never))
+          return err(`swipe area must be one of ${AREAS.join('/')} (got ${JSON.stringify(v.area)}).`);
+        const distance = fraction(v, 'distance', { exclusiveMin: true });
+        if (distance === BAD) return null;
+        return { kind: 'swipe', direction: v.direction as 'up', area: v.area as SwipeArea | undefined, distance };
       }
       return err(`swipe needs a direction (${DIRECTIONS.join('/')}) or { direction, area?, distance? }.`);
     case 'scrollTo':
@@ -190,8 +269,9 @@ function normalizeStep(raw: unknown, i: number, errors: string[]): FlowStep | nu
     case 'note':
       if (str(v)) return { kind: 'note', outcome: 'pass', reason: v };
       if (obj(v) && str(v.reason)) {
-        const outcome = OUTCOMES.includes(v.outcome as never) ? (v.outcome as NoteOutcome) : 'pass';
-        return { kind: 'note', outcome, reason: v.reason };
+        if (v.outcome != null && !OUTCOMES.includes(v.outcome as never))
+          return err(`note outcome must be one of ${OUTCOMES.join('/')} (got ${JSON.stringify(v.outcome)}).`);
+        return { kind: 'note', outcome: (v.outcome as NoteOutcome | undefined) ?? 'pass', reason: v.reason };
       }
       return err('note needs a string, or { outcome?, reason }.');
     case 'screenshot':
@@ -199,6 +279,23 @@ function normalizeStep(raw: unknown, i: number, errors: string[]): FlowStep | nu
     default:
       return err(`unknown action "${k}".`);
   }
+}
+
+/** `tap: 1` / `inputText: 123456` / `inputText: { text: 0042 }`: a plain YAML number where the
+ *  step takes text is the text the author wrote. Keep its source spelling (YAML would turn 0042
+ *  into 42 and 1.50 into 1.5, typing the wrong value) as a string. */
+const TEXT_STEP_KEYS = new Set(['tap', 'inputText']);
+function keepTypedTextAsWritten(doc: Document): void {
+  const asWritten = (node: unknown): void => {
+    if (isScalar(node) && typeof node.value === 'number' && typeof node.source === 'string') node.value = node.source;
+  };
+  visit(doc, {
+    Pair(_, pair) {
+      if (!isScalar(pair.key) || !TEXT_STEP_KEYS.has(pair.key.value as string)) return;
+      asWritten(pair.value);
+      if (pair.key.value === 'inputText' && isMap(pair.value)) asWritten(pair.value.get('text', true));
+    },
+  });
 }
 
 function normalizeStepList(raw: unknown, label: string, errors: string[]): FlowStep[] {
@@ -279,7 +376,10 @@ export function parseFlow(yamlText: string): ParseResult {
   const errors: string[] = [];
   let doc: unknown;
   try {
-    doc = parseYaml(yamlText);
+    const parsed = parseDocument(yamlText);
+    if (parsed.errors.length) throw parsed.errors[0];
+    keepTypedTextAsWritten(parsed);
+    doc = parsed.toJS();
   } catch (e) {
     return { errors: [`YAML parse error: ${String((e as Error).message ?? e)}`] };
   }
@@ -297,6 +397,8 @@ export function parseFlow(yamlText: string): ParseResult {
   const setup = normalizeStepList(d.setup, 'setup', errors);
   const teardown = normalizeStepList(d.teardown, 'teardown', errors);
   const steps = normalizeStepList(d.steps, 'steps', errors);
+  if (d.fixtures != null && (!Array.isArray(d.fixtures) || d.fixtures.some((f) => typeof f !== 'string')))
+    errors.push('`fixtures` must be a list of fixture names.');
   const fixtures = Array.isArray(d.fixtures) ? d.fixtures.filter((f): f is string => typeof f === 'string') : [];
   const provenance = normalizeProvenance(d.provenance);
 

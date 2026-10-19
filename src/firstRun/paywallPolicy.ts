@@ -11,7 +11,8 @@ const PURCHASE =
 const SAFE_DISMISS: Array<{ re: RegExp; rank: number; why: string }> = [
   { re: /\b(skip)\b/i, rank: 4, why: 'skip the paywall' },
   { re: /\b(not\s+now|maybe\s+later|no\s+thanks|dismiss)\b/i, rank: 4, why: 'dismiss the paywall' },
-  { re: /\b(close|✕|×|x)\b/i, rank: 3, why: 'close the paywall' },
+  // The close glyphs are not word characters, so they sit outside the \b group.
+  { re: /\b(?:close|x)\b|[✕×✖╳]/i, rank: 3, why: 'close the paywall' },
   { re: /\b(continue\s+(with\s+)?free|free\s+version|stay\s+free|use\s+free)\b/i, rank: 3, why: 'continue on the free tier' },
   { re: /\b(restore\s+purchase[s]?)\b/i, rank: 1, why: 'restore purchases (non-destructive)' },
 ];

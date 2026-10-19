@@ -5,6 +5,7 @@
 
 import { stringify } from 'yaml';
 import { functionalityDirName, isSafeCaseId, type CanonicalTestCase, type TestSuiteFile } from './schema.js';
+import { stripXmlIllegal } from '../report/export.js';
 
 export type ExportFormat = 'markdown' | 'yaml' | 'json' | 'junit';
 
@@ -29,8 +30,10 @@ function groupByFunctionality(cases: CanonicalTestCase[]): Map<string, Canonical
   return groups;
 }
 
+/** XML-escape suite text. Characters XML 1.0 forbids (ANSI escapes, NULs from logs, lone
+ *  surrogates) become U+FFFD first, as in the report JUnit export, so CI parsers accept the file. */
 function xmlEscape(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return stripXmlIllegal(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 export function exportMarkdown(suite: TestSuiteFile): string {
