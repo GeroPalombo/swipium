@@ -46,7 +46,8 @@ export interface ReportNote {
   /** Evidence URIs (checkpoint screenshot, failure screenshot/dump, explicit artifactUris) that resolve
    *  to this session's artifacts. */
   evidence?: string[];
-  /** Earlier attempts of the same workflow that this (latest) one replaced. */
+  /** The other attempts of the same workflow: earlier ones this one replaced, and later
+   *  blocked / skipped / not_applicable ones that could not replace it. */
   attempts?: Array<{ outcome: ReportNote['outcome']; at?: number; reason?: string }>;
   /** The attempts disagreed (a fail and a pass). */
   flaky?: boolean;
@@ -79,49 +80,63 @@ export function workflowKey(name: string): string {
   return name.trim().toLowerCase();
 }
 
-/**
- * Latest attempt wins per workflow (and per attempt kind). The ONE helper every consumer uses
- * (release gate, risk/fail counts, JUnit, markdown, html, summaries) so they always agree.
- * Order is preserved at the position of the latest attempt. Earlier attempts are folded into
- * `attempts`; `flaky` is set when the attempts include both a pass and a fail. Findings are not
- * notes and are never touched here.
- */
-export function latestAttempts<T extends ReportNote>(notes: readonly T[]): T[] {
-  const lastIdx = new Map<string, number>();
+/** A verdict that can replace an earlier attempt. Blocked / skipped / not_applicable say the
+ *  workflow did not run to a verdict, so they never hide an earlier pass or fail. */
+function isDefinitive(n: Pick<ReportNote, 'outcome'>): boolean {
+  return n.outcome === 'pass' || n.outcome === 'fail';
+}
+
+/** Per attempt group (same kind + workflow key), which note counts: the latest definitive one, else
+ *  the latest one. Returns the notes in order with the counting note annotated (attempts, flaky)
+ *  and every other note of a multi-attempt group replaced by null. */
+function resolveAttempts<T extends ReportNote>(notes: readonly T[]): Array<T | null> {
+  const groups = new Map<string, number[]>();
   notes.forEach((n, idx) => {
     const kind = attemptKind(n);
-    if (kind) lastIdx.set(`${kind}:${workflowKey(n.workflow)}`, idx);
-  });
-  const earlier = new Map<string, T[]>();
-  const out: T[] = [];
-  notes.forEach((n, idx) => {
-    const kind = attemptKind(n);
-    if (!kind) {
-      out.push(n);
-      return;
-    }
+    if (!kind) return;
     const key = `${kind}:${workflowKey(n.workflow)}`;
-    if (lastIdx.get(key) !== idx) {
-      (earlier.get(key) ?? earlier.set(key, []).get(key)!).push(n);
-      return;
-    }
-    const prev = earlier.get(key) ?? [];
-    if (!prev.length) {
-      out.push(n);
-      return;
-    }
-    const outcomes = new Set([...prev.map((p) => p.outcome), n.outcome]);
-    out.push({
-      ...n,
-      attempts: prev.map((p) => ({
+    (groups.get(key) ?? groups.set(key, []).get(key)!).push(idx);
+  });
+  const out: Array<T | null> = [...notes];
+  for (const idxs of groups.values()) {
+    if (idxs.length < 2) continue;
+    const definitive = idxs.filter((i) => isDefinitive(notes[i]));
+    const win = (definitive.length ? definitive : idxs).at(-1)!;
+    const others = idxs.filter((i) => i !== win).map((i) => notes[i]);
+    const outcomes = new Set(idxs.map((i) => notes[i].outcome));
+    for (const i of idxs) out[i] = null;
+    // attempts is rebuilt from the raw notes every time (never appended to), so re-collapsing a saved
+    // report that already carries attempts on its counting entry gives the same result.
+    out[win] = {
+      ...notes[win],
+      attempts: others.map((p) => ({
         outcome: p.outcome,
         ...(p.at !== undefined ? { at: p.at } : {}),
         ...(p.reason ? { reason: p.reason } : {}),
       })),
       ...(outcomes.has('pass') && outcomes.has('fail') ? { flaky: true } : {}),
-    });
-  });
+    };
+  }
   return out;
+}
+
+/**
+ * Latest attempt wins per workflow (and per attempt kind). The ONE helper every consumer uses
+ * (release gate, risk/fail counts, JUnit, markdown, html, summaries) so they always agree.
+ * Only a definitive verdict (pass or fail) replaces an earlier attempt: a later blocked / skipped /
+ * not_applicable (a budget skip, a cancelled smoke, an agent's n/a) keeps the latest pass or fail
+ * as the counting outcome and is listed in its `attempts`. With no definitive attempt, the latest
+ * one counts. Order is preserved at the position of the counting attempt. `flaky` is set when the
+ * attempts include both a pass and a fail. Findings are not notes and are never touched here.
+ */
+export function latestAttempts<T extends ReportNote>(notes: readonly T[]): T[] {
+  return resolveAttempts(notes).filter((n): n is T => n !== null);
+}
+
+/** Every note kept, in order, with `attempts` / `flaky` set on the one that counts per workflow
+ *  (what report.json saves; latestAttempts on the result gives the same verdicts). */
+export function annotateAttempts<T extends ReportNote>(notes: readonly T[]): T[] {
+  return resolveAttempts(notes).map((n, i) => n ?? notes[i]);
 }
 /** One step of the timeline (mirror of session StepRecord, as saved in report.json). */
 export interface ReportStep {
@@ -974,10 +989,10 @@ function notReachedOutcomes(r: ReportData): ReportNote[] {
 
 /** A failed workflow whose cause is the tool or the environment (device, WDA, install, network...),
  *  not the app: a JUnit <error>, not a <failure>. */
-export function isToolOrEnvironmentOutcome(n: ReportNote): boolean {
+export function isToolOrEnvironmentOutcome(n: ReportNote, r?: Pick<ReportData, 'steps'>): boolean {
   if (n.outcome !== 'fail') return false;
   if (n.category === 'mcp_limitation') return true;
-  const code = workflowFailureCode(n);
+  const code = outcomeFailureCode(r, n);
   const catalog = FAILURES as Record<string, { bucket: string } | undefined>;
   return catalog[code]?.bucket === 'environment';
 }
@@ -1011,6 +1026,12 @@ function uniqueCaseNames(): (base: string, hint?: string) => string {
  *  (`${flow}: ${code}`), so exporters can tell which failures the release gate did NOT block. */
 function workflowFailureCode(n: ReportNote): string {
   return n.steps?.find((s) => s.failureCode)?.failureCode ?? n.category ?? 'UNKNOWN';
+}
+/** The failure code of a failed outcome as people see it: the failing timeline step's code (flow
+ *  notes since 2.4.0 carry no legacy steps), else the note's own code / category. Not used for
+ *  policy keys, so policy matching stays as it was. */
+function outcomeFailureCode(r: Pick<ReportData, 'steps'> | undefined, n: ReportNote): string {
+  return (r ? failingStep(r, n)?.failureCode : undefined) ?? workflowFailureCode(n);
 }
 function workflowPolicyKey(n: ReportNote): string {
   return `${n.workflow}: ${workflowFailureCode(n)}`;
@@ -1050,7 +1071,7 @@ export function toJUnit(r: ReportData, policy?: PolicyDecision): string {
     if (n.outcome === 'pass') return n.unverified ? 'skipped' : 'pass'; // a claim is not a passing test
     if (n.outcome !== 'fail') return 'skipped';
     if (lenient.has(workflowPolicyKey(n))) return 'skipped';
-    return n.workflow === NOT_TESTED_WORKFLOW || isToolOrEnvironmentOutcome(n) ? 'error' : 'failure';
+    return n.workflow === NOT_TESTED_WORKFLOW || isToolOrEnvironmentOutcome(n, r) ? 'error' : 'failure';
   };
   // A tool / environment finding is not an app failure (the gate still fails on it).
   const findingVerdict = (f: ReportFinding): JUnitVerdict =>
@@ -1076,8 +1097,8 @@ export function toJUnit(r: ReportData, policy?: PolicyDecision): string {
   }
   cases.forEach((n, idx) => {
     const human = [n.reason, n.missingPrecondition].filter(Boolean).join(': ') || n.category || n.outcome;
-    const code = workflowFailureCode(n);
     const step = n.outcome === 'fail' ? failingStep(r, n) : undefined;
+    const code = step?.failureCode ?? workflowFailureCode(n);
     const body: string[] = [];
     const systemOut: string[] = [];
     if (step) systemOut.push(`failing step #${step.i}: ${step.label}${step.failureCode ? ` (${step.failureCode})` : ''}`);

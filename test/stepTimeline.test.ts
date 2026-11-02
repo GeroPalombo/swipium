@@ -439,3 +439,47 @@ describe('smoke and explore steps', () => {
     for (const n of session.notes) expect(n.origin).toBe('explore');
   }, 60_000);
 });
+
+describe('report evidence end to end', () => {
+  const manifestUris = (res: { manifest: unknown }) => new Set((res.manifest as { files: Array<{ uri: string }> }).files.map((f) => f.uri));
+  type Outcome = { workflow: string; outcome: string; evidence?: string[] };
+  const outcomesOf = (res: { report: unknown }) => (res.report as { testOutcomes: Outcome[] }).testOutcomes;
+
+  it('a qa_note pass links its checkpoint as evidence, and every evidence URI is in the manifest', async () => {
+    const { generateSessionReport } = await import('../src/services/report.js');
+    const { id, session } = await start();
+    await h.call('qa_note', { sessionId: id, workflow: 'Login', outcome: 'pass' });
+    const note = session.notes.at(-1)!;
+    expect(note.checkpointUri).toBeTruthy();
+    const res = await generateSessionReport(h.sessions, session, { includeCurrentDump: false });
+    const o = outcomesOf(res).find((n) => n.workflow === 'Login')!;
+    expect(o.evidence).toContain(note.checkpointUri);
+    const files = manifestUris(res);
+    for (const n of outcomesOf(res)) for (const u of n.evidence ?? []) expect(files.has(u)).toBe(true);
+  }, 30_000);
+
+  it('a flow failure links its failure screenshot and dump, all in the manifest', async () => {
+    const { generateSessionReport } = await import('../src/services/report.js');
+    const { id, session } = await start();
+    await h.call('qa_flow_run', { sessionId: id, flowYaml: 'name: broken\nsteps:\n  - assertVisible: "Not on this screen"\n' });
+    const failed = last(session);
+    expect(failed.result).toBe('failed');
+    const res = await generateSessionReport(h.sessions, session, { includeCurrentDump: false });
+    const o = outcomesOf(res).find((n) => n.workflow === 'broken' && n.outcome === 'fail')!;
+    expect(o.evidence).toEqual(expect.arrayContaining([failed.screenshotUri, failed.dumpUri]));
+    const files = manifestUris(res);
+    for (const n of outcomesOf(res)) for (const u of n.evidence ?? []) expect(files.has(u)).toBe(true);
+  }, 30_000);
+
+  it('a smoke session links its launch screenshot, all in the manifest', async () => {
+    const { generateSessionReport } = await import('../src/services/report.js');
+    const { runSmoke } = await import('../src/services/smoke.js');
+    const { session, fake } = await start(HOME);
+    await runSmoke(h.sessions, session, fake, { launch: true, runFlows: false });
+    const res = await generateSessionReport(h.sessions, session, { includeCurrentDump: false });
+    const launch = outcomesOf(res).find((n) => n.workflow === 'launch_smoke')!;
+    expect(launch.evidence?.length).toBeGreaterThan(0);
+    const files = manifestUris(res);
+    for (const n of outcomesOf(res)) for (const u of n.evidence ?? []) expect(files.has(u)).toBe(true);
+  }, 60_000);
+});

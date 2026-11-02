@@ -1,7 +1,8 @@
 // report.html: self-contained, escaped, failure-first, with thumbnails embedded under a size budget.
 
 import { afterAll, describe, expect, it } from 'vitest';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DOCS_ORIGIN, HTML_CSP, HTML_IMAGE_BUDGET_BYTES, renderReportHtml } from '../src/report/html.js';
@@ -149,7 +150,7 @@ describe('report.html', () => {
         step(2, {
           source: 'flow',
           action: 'assertVisible',
-          target: '"Pay"',
+          target: 'assertVisible "Pay"',
           result: 'failed',
           failureCode: 'ELEMENT_NOT_FOUND',
           screenshotUri: fail.uri,
@@ -284,6 +285,83 @@ describe('report.html', () => {
     expect(html).toContain('evidence not available');
   });
 
+  it('never reads dotfiles, .. paths, symlinks out of the folder or FIFOs named by the report', async () => {
+    const dir = sessionDir();
+    const outside = sessionDir();
+    mkdirSync(join(dir, '.git'));
+    writeFileSync(join(dir, '.git', 'config'), 'extraheader = AUTHORIZATION: basic SECRET-DOTFILE');
+    writeFileSync(join(outside, 'id_rsa'), 'SECRET-OUTSIDE');
+    symlinkSync(join(outside, 'id_rsa'), join(dir, 'logs', 'build.log'));
+    copyFileSync(IOS_PNG, join(outside, 'secret.png'));
+    symlinkSync(join(outside, 'secret.png'), join(dir, 'screenshots', 'linked.png'));
+    const fifo = process.platform !== 'win32';
+    if (fifo) execFileSync('mkfifo', [join(dir, 'logs', 'pipe.log')]);
+    const logs = [
+      { uri: 'swipium://session/s1/logs/a.log', kind: 'logs', path: '.git/config' },
+      { uri: 'swipium://session/s1/logs/b.log', kind: 'logs', path: 'logs/../.git/config' },
+      { uri: 'swipium://session/s1/logs/build.log', kind: 'logs', path: 'logs/build.log' },
+      // URI-only fallback with a dot-prefixed kind.
+      { uri: 'swipium://session/s1/.git/config', kind: 'log' },
+      ...(fifo ? [{ uri: 'swipium://session/s1/logs/pipe.log', kind: 'logs', path: 'logs/pipe.log' }] : []),
+    ];
+    const linked = { uri: shotUri('linked.png'), kind: 'screenshot', path: 'screenshots/linked.png' };
+    const r = baseReport({
+      findings: logs.map((l) => ({ severity: 'high' as const, kind: 'crash', detail: 'x', logUri: l.uri })),
+      testOutcomes: [{ workflow: 'A', outcome: 'pass', evidence: [linked.uri] }],
+      artifacts: [...logs, linked],
+    });
+    const html = await renderReportHtml(r, { sessionDir: dir });
+    expect(html).not.toContain('SECRET');
+    expect(html).not.toContain('<img ');
+    expect(html.match(/: not available<\/p>/g)?.length).toBe(logs.length);
+    // The blocked layout goes through the same lookup.
+    const blocked = await renderReportHtml(
+      baseReport({ notTested: { reachedApp: false, reason: 'build', failureCode: 'BUILD_FAILED' }, artifacts: [logs[2]] }),
+      { sessionDir: dir },
+    );
+    expect(blocked).not.toContain('SECRET');
+    expect(blocked).toContain('not available');
+  });
+
+  it('failed outcome card shows the tail of a crash log captured during its steps', async () => {
+    const dir = sessionDir();
+    writeFileSync(join(dir, 'logs', 'crash.txt'), Array.from({ length: 50 }, (_, i) => `crash line ${i}`).join('\n'));
+    const logArt = { uri: 'swipium://session/s1/logcat/crash.txt', kind: 'logcat', path: 'logs/crash.txt' };
+    const r = baseReport({
+      testOutcomes: [
+        { workflow: 'Checkout', outcome: 'fail', stepRange: [1, 2] },
+        { workflow: 'Profile', outcome: 'fail', stepRange: [3, 3] },
+      ],
+      steps: [step(1, { at: 1000 }), step(2, { at: 2000, result: 'failed', failureCode: 'ELEMENT_NOT_FOUND' }), step(3, { at: 9000 })],
+      // Logged during Checkout's steps only, and not a crash code: Profile must not show it.
+      findings: [{ severity: 'high', kind: 'crash', detail: 'FATAL', logUri: logArt.uri, at: 2050 }],
+      artifacts: [logArt],
+    });
+    const html = await renderReportHtml(r, { sessionDir: dir });
+    const cards = html.slice(html.indexOf('id="failures"'), html.indexOf('id="outcomes"')).split('<div class="card">');
+    const checkout = cards.find((c) => c.includes('Checkout'))!;
+    const profile = cards.find((c) => c.includes('Profile'))!;
+    expect(checkout).toContain('last 20 lines of <code>logs/crash.txt</code>');
+    expect(checkout).toContain('crash line 49');
+    expect(checkout).not.toContain('crash line 29');
+    expect(profile).not.toContain('crash line');
+  });
+
+  it('failed launch outcome shows the crash log even without timestamps', async () => {
+    const dir = sessionDir();
+    writeFileSync(join(dir, 'logs', 'crash.txt'), 'FATAL EXCEPTION: main');
+    const logArt = { uri: 'swipium://session/s1/logcat/crash.txt', kind: 'logcat', path: 'logs/crash.txt' };
+    const r = baseReport({
+      testOutcomes: [{ workflow: 'launch_smoke', outcome: 'fail', category: 'APP_LAUNCH_FAILED' }],
+      findings: [{ severity: 'high', kind: 'crash', detail: 'FATAL', logUri: logArt.uri }],
+      artifacts: [logArt],
+    });
+    const html = await renderReportHtml(r, { sessionDir: dir });
+    const card = html.slice(html.indexOf('id="failures"'), html.indexOf('id="outcomes"')).split('<div class="card">')[1];
+    expect(card).toContain('launch_smoke');
+    expect(card).toContain('FATAL EXCEPTION: main');
+  });
+
   it('thumbnails are 480 px wide and keep the aspect ratio', async () => {
     const dir = sessionDir();
     const a = addShot(dir, 'a.png', ANDROID_PNG);
@@ -312,6 +390,8 @@ describe('report.html', () => {
     const total = embedded.reduce((n, s) => n + s.length, 0);
     expect(total).toBeLessThanOrEqual(HTML_IMAGE_BUDGET_BYTES);
     expect(html).not.toContain('image budget');
+    // The budget is for images; the markup on top of it stays small, so the whole file is under 9 MB.
+    expect(Buffer.byteLength(html)).toBeLessThanOrEqual(9 * 1024 * 1024);
   });
 
   it('past the image budget, the rest become paths with a note; failures get the budget first', async () => {
@@ -345,5 +425,13 @@ describe('report.html', () => {
     expect(html).toContain('launch_smoke');
     expect(html).toContain('No step timeline in this report');
     expect(html).toContain('evidence not available');
+  });
+});
+
+describe('release policy notice', () => {
+  it('shows an ignored .swipium/policy.json in the banner, escaped', async () => {
+    const r = { ...baseReport(), releasePolicyNotice: '.swipium/policy.json is not valid JSON: <b>ignored</b>' } as ReportData;
+    const html = await renderReportHtml(r, { sessionDir: sessionDir() });
+    expect(html).toContain('Policy: .swipium/policy.json is not valid JSON: &lt;b&gt;ignored&lt;/b&gt;');
   });
 });

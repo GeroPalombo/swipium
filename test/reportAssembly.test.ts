@@ -15,6 +15,8 @@ const { SessionStore } = await import('../src/session/store.js');
 const { generateSessionReport, runFoldKey } = await import('../src/services/report.js');
 const { setDriverFactoryForTests } = await import('../src/session/attach.js');
 const { FakeDriver, buttonScreen } = await import('./actFixFake.js');
+const { applyPolicy } = await import('../src/report/policy.js');
+const { latestAttempts, reportPolicyVerdicts, toJUnit, workflowKey } = await import('../src/report/export.js');
 type ReportData = import('../src/report/export.js').ReportData;
 type Session = import('../src/session/store.js').Session;
 type Store = InstanceType<typeof SessionStore>;
@@ -186,6 +188,122 @@ describe('verdicts agree with the gate', () => {
     const { r } = await report(store, s);
     expect(r.highSeverityCount).toBe(1);
     expect(r.executiveSummary.reasons).toContain('1 high-severity finding(s)');
+  });
+});
+
+describe('a later skip, block or n/a never hides a failure', () => {
+  type NoteIn = Parameters<Store['addNote']>[1];
+  const t0 = Date.now() - 1000;
+  const scenarios: Array<{ name: string; workflow: string; notes: NoteIn[] }> = [
+    {
+      name: 'flow fail then smoke budget skip of the same flow',
+      workflow: 'checkout',
+      notes: [
+        { at: t0, workflow: 'checkout', outcome: 'fail', category: 'app_bug', origin: 'flow', reason: 'qa_flow_run failed' },
+        {
+          at: t0 + 1,
+          workflow: 'checkout',
+          outcome: 'skipped',
+          category: 'intentionally_skipped',
+          origin: 'smoke',
+          reason: 'budget: time',
+        },
+      ],
+    },
+    {
+      name: 'flow fail then smoke blocked',
+      workflow: 'checkout',
+      notes: [
+        { at: t0, workflow: 'checkout', outcome: 'fail', category: 'app_bug', origin: 'flow', reason: 'qa_flow_run failed' },
+        { at: t0 + 1, workflow: 'checkout', outcome: 'blocked', category: 'other', origin: 'smoke', reason: 'METRO_REQUIRED: down' },
+      ],
+    },
+    {
+      name: 'launch_smoke fail then a cancelled smoke',
+      workflow: 'launch_smoke',
+      notes: [
+        { at: t0, workflow: 'launch_smoke', outcome: 'fail', category: 'app_bug', origin: 'smoke', reason: 'app=error redbox' },
+        {
+          at: t0 + 1,
+          workflow: 'launch_smoke',
+          outcome: 'skipped',
+          category: 'intentionally_skipped',
+          origin: 'smoke',
+          reason: 'cancelled',
+        },
+      ],
+    },
+    {
+      name: 'agent fail then agent n/a',
+      workflow: 'login',
+      notes: [
+        { at: t0, workflow: 'login', outcome: 'fail', category: 'app_bug', origin: 'agent', source: 'qa_note', reason: 'wrong error text' },
+        { at: t0 + 1, workflow: 'Login ', outcome: 'not_applicable', origin: 'agent', source: 'qa_note' },
+      ],
+    },
+  ];
+  for (const sc of scenarios) {
+    it(`${sc.name}: gate, JUnit, risk banner and summary all block`, async () => {
+      const { store, s } = newSession();
+      for (const n of sc.notes) store.addNote(s, n);
+      const { r, res } = await report(store, s);
+      const gate = applyPolicy(reportPolicyVerdicts(r), null);
+      expect(gate.block).toBe(true);
+      expect(gate.blocked).toContain(`${sc.workflow}: app_bug`);
+      expect(toJUnit(r, gate)).toMatch(new RegExp(`<testcase name="${sc.workflow}"[^>]*>\\s*<failure`));
+      expect(r.executiveSummary.risk).toBe('block');
+      expect(res.summaryText).toContain('- FAIL');
+      // The later note is kept as an attempt of the failure that counts.
+      const counting = latestAttempts(r.testOutcomes).find((n) => workflowKey(n.workflow) === workflowKey(sc.workflow))!;
+      expect(counting.outcome).toBe('fail');
+      expect(counting.attempts?.map((a) => a.outcome)).toEqual([sc.notes[1].outcome]);
+    });
+  }
+
+  it('a superseded healthy smoke pass does not make the run tested', async () => {
+    const { store, s } = newSession();
+    store.addNote(s, { at: t0, workflow: 'launch_smoke', outcome: 'pass', origin: 'smoke', reason: 'app=ok' });
+    store.addNote(s, {
+      at: t0 + 1,
+      workflow: 'launch_smoke',
+      outcome: 'fail',
+      category: 'mcp_limitation',
+      origin: 'smoke',
+      reason: 'baseline failed',
+    });
+    const { r } = await report(store, s);
+    expect(r.notTested?.exercised).toBe(false);
+  });
+});
+
+describe('report.json keeps every attempt and marks the one that counts', () => {
+  it('flow fail then pass: both entries kept, the last flaky with the fail as its attempt', async () => {
+    const { store, s } = newSession();
+    store.addNote(s, {
+      at: Date.now() - 10,
+      workflow: 'login',
+      outcome: 'fail',
+      category: 'app_bug',
+      origin: 'flow',
+      reason: 'qa_flow_run failed',
+    });
+    store.addNote(s, { at: Date.now(), workflow: 'login', outcome: 'pass', origin: 'flow', reason: 'qa_flow_run: 3 steps' });
+    const { r, res } = await report(store, s);
+    expect(r.testOutcomes).toHaveLength(2);
+    const lastEntry = r.testOutcomes[1];
+    expect(lastEntry.flaky).toBe(true);
+    expect(lastEntry.attempts?.[0].outcome).toBe('fail');
+    expect(r.testOutcomes[0].attempts).toBeUndefined();
+
+    // The CLI re-gates the saved file: same verdicts, attempts not doubled.
+    const saved = JSON.parse(readFileSync(store.findArtifact(res.reportUri)!.rec.path, 'utf8')) as ReportData;
+    const once = latestAttempts(saved.testOutcomes);
+    expect(once).toHaveLength(1);
+    expect(once[0].attempts).toHaveLength(1);
+    expect(latestAttempts(once)).toEqual(once);
+    expect(latestAttempts([...saved.testOutcomes])).toEqual(latestAttempts(r.testOutcomes));
+    expect(reportPolicyVerdicts(saved)).toEqual(reportPolicyVerdicts(r));
+    expect(applyPolicy(reportPolicyVerdicts(saved), null).block).toBe(false);
   });
 });
 

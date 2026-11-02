@@ -193,3 +193,25 @@ describe('downscalePng', () => {
     expect(total).toBeLessThanOrEqual(8 * 1024 * 1024);
   });
 });
+
+describe('decompression bomb', () => {
+  // 1x1 RGB header, but the IDAT inflates to 64 MB of zeros (a few tens of KB on disk).
+  const BOMB_BYTES = 64 * 1024 * 1024;
+  const bomb = rawPng(1, 1, 8, 2, 0, 3, Buffer.alloc(BOMB_BYTES));
+
+  it('downscalePng returns null fast without inflating the whole stream', () => {
+    expect(bomb.length).toBeLessThan(BOMB_BYTES / 100);
+    const before = process.memoryUsage().arrayBuffers;
+    const t0 = performance.now();
+    expect(downscalePng(bomb, 480)).toBeNull();
+    expect(performance.now() - t0).toBeLessThan(1000);
+    expect(process.memoryUsage().arrayBuffers - before).toBeLessThan(16 * 1024 * 1024);
+  });
+
+  it('decodePng throws on a bomb and on image data shorter than the header promises', () => {
+    expect(() => decodePng(bomb)).toThrow(/corrupt PNG/);
+    expect(() => decodePng(rawPng(4, 4, 8, 2, 0, 12, Buffer.alloc(10)))).toThrow(/corrupt PNG/);
+    // An exact-size stream still decodes.
+    expect(decodePng(rawPng(4, 4, 8, 2, 0, 12)).width).toBe(4);
+  });
+});

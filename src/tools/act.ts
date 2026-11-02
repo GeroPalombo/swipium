@@ -509,7 +509,9 @@ async function recordActStep(
       durationMs: Date.now() - started,
       screen: screenTitleFromNodes(ctx.nodes) ?? currentScreenTitle(session),
     });
-    if (failed)
+    // No result means the handler threw: record the step but touch no device, so the error
+    // propagates at once instead of after a screenshot timeout.
+    if (failed && res)
       await captureFailedStepEvidence(sessions, session, ctx.driver, step.i, {
         failureCode,
         nodes: ctx.nodes,

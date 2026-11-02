@@ -26,6 +26,7 @@ import {
 } from '../oracle/failures.js';
 import {
   inlinePrSummary,
+  annotateAttempts,
   latestAttempts,
   redactReportData,
   reportPolicyVerdicts,
@@ -320,8 +321,9 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   const ex = session.exploration;
   const exploredRealScreenAt = ex && ex.summary.screensVisited - ex.summary.visualOnlyScreens > ex.summary.appErrors ? ex.at : 0;
   // Swipium's own healthy pass (or failure) or a real-screen exploration recorded after `t`.
+  // Counts the collapsed list only, so an attempt a later verdict replaced never makes a run tested.
   const swipiumOutcomeSince = (t: number) =>
-    notes.some((n) => n.at > t && swipiumJudged(n) && isOutcome(n) && (n.outcome === 'fail' || healthyPass(n))) || exploredRealScreenAt > t;
+    gated.some((n) => n.at > t && swipiumJudged(n) && isOutcome(n) && (n.outcome === 'fail' || healthyPass(n))) || exploredRealScreenAt > t;
   // An action with the app under test in front (qa_act's post-action check): proves the app was
   // reached, never that it was tested.
   const appActionSince = (t: number) => session.recordedActions.some((ra) => ra.at > t && ra.appForeground);
@@ -340,9 +342,9 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     (ex?.summary.screensVisited ?? 0) > 0;
   // Only Swipium-judged outcomes exercise the app. An agent's pass or fail claim does not.
   const exercised = swipiumOutcomeSince(0);
-  const agentFailClaim = !exercised && notes.some((n) => !swipiumJudged(n) && n.outcome === 'fail' && n.category !== 'mcp_limitation');
+  const agentFailClaim = !exercised && gated.some((n) => !swipiumJudged(n) && n.outcome === 'fail' && n.category !== 'mcp_limitation');
   const unverifiedPassClaim =
-    !exercised && notes.some((n) => (n.source === 'qa_note' || n.evidenceKind === 'manual_review') && n.outcome === 'pass');
+    !exercised && gated.some((n) => (n.source === 'qa_note' || n.evidenceKind === 'manual_review') && n.outcome === 'pass');
   const unbackedPassClaim = unverifiedPassClaim && !appSeen;
   const reachedApp = exercised || appSeen;
   // A not-tested run stays not tested for every later qa_report (same verdict, same
@@ -832,14 +834,18 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     })),
     // An agent's pass claim nothing backs is marked `unverified` (exports render it as a
     // skipped / "pass (unverified)" case, never a passing test).
-    testOutcomes: outcomeEvidence(session, notes, isToolFinding).map(({ note: n, stepRange, evidence, contradicted }) => ({
-      ...n,
-      reason: n.reason ? redact(n.reason) : undefined,
-      ...(unverifiedPassClaim && n.source === 'qa_note' && n.outcome === 'pass' ? { unverified: true } : {}),
-      ...(stepRange ? { stepRange } : {}),
-      evidence,
-      ...(contradicted ? { contradicted: true } : {}),
-    })),
+    // Every entry is kept; the one that counts per workflow also carries `attempts` / `flaky`
+    // (latestAttempts over this list gives the same verdicts, so saved reports re-gate the same).
+    testOutcomes: annotateAttempts(
+      outcomeEvidence(session, notes, isToolFinding).map(({ note: n, stepRange, evidence, contradicted }) => ({
+        ...n,
+        reason: n.reason ? redact(n.reason) : undefined,
+        ...(unverifiedPassClaim && n.source === 'qa_note' && n.outcome === 'pass' ? { unverified: true } : {}),
+        ...(stepRange ? { stepRange } : {}),
+        evidence,
+        ...(contradicted ? { contradicted: true } : {}),
+      })),
+    ),
     // The step timeline (already secret-safe in the store; the whole report is redacted again below).
     steps: (session.steps ?? []).map((st) => ({ ...st })),
     outcomeTally,

@@ -1241,12 +1241,15 @@ export async function runFlow(
         reason = outcome.detail ?? 'step failed';
         failureCode = outcome.failureCode;
         const label = `flow ${flow.name} failed at step ${index}: ${shown(stepTarget(step))}`;
-        // A sensitive session or a secure field on screen: no failure screenshot. A dead device
-        // gets no guard dump (it would only add a timeout).
+        // A dead device gets no guard dump, screenshot or UI dump: each would only add a timeout.
+        // captureFailedStepEvidence notes it as not captured for transport codes.
         const transport = !!outcome.failureCode && TRANSPORT_FAILURE_CODES.has(outcome.failureCode);
-        const guard = await canCaptureScreenshot(session, d, { refresh: !transport });
+        // A sensitive session or a secure field on screen: no failure screenshot.
+        const guard = transport ? undefined : await canCaptureScreenshot(session, d, { refresh: true });
         let screenshotSkipped: string | undefined;
-        if (!guard.ok) {
+        if (!guard) {
+          /* transport failure: nothing to capture */
+        } else if (!guard.ok) {
           rec.detail = `${rec.detail ?? 'step failed'} (${withheldText(guard)})`;
           screenshotSkipped = guard.note;
         } else {

@@ -12,6 +12,7 @@ import {
   GITHUB_SUMMARY_FULL_REPORT,
   PLAYWRIGHT_DEPRECATION,
   inlinePrSummary,
+  latestAttempts,
   likelyReportCategory,
   reportPolicyVerdicts,
   toGithubSummary,
@@ -133,6 +134,41 @@ describe('latest attempt per workflow in every export', () => {
     expect(toMarkdown(r)).toContain('flaky');
   });
 
+  it('a later skipped, blocked or n/a attempt never replaces a fail; it is kept as an attempt', () => {
+    const cases: ReportNote[][] = [
+      [flow('checkout', 'fail', { category: 'app_bug' }), flow('checkout', 'skipped', { origin: 'smoke', reason: 'budget: time' })],
+      [flow('checkout', 'fail', { category: 'app_bug' }), flow('checkout', 'blocked', { origin: 'smoke', reason: 'METRO_REQUIRED' })],
+      [flow('launch_smoke', 'fail', { origin: 'smoke', category: 'app_bug' }), flow('launch_smoke', 'skipped', { origin: 'smoke' })],
+      [agent('login', 'fail', { category: 'app_bug' }), agent('Login ', 'not_applicable')],
+    ];
+    for (const notes of cases) {
+      const r = base({ testOutcomes: notes });
+      expect(gate(r).block).toBe(true);
+      const xml = toJUnit(r, gate(r));
+      expect(casesOf(xml)).toHaveLength(1);
+      expect(casesOf(xml)[0].failure).toBeDefined();
+      const [only] = latestAttempts(notes);
+      expect(only.outcome).toBe('fail');
+      expect(only.attempts?.map((a) => a.outcome)).toEqual([notes[1].outcome]);
+      expect(only.flaky).toBeUndefined();
+    }
+  });
+
+  it('with no pass or fail, the latest non-definitive attempt counts', () => {
+    const [only] = latestAttempts([flow('pay', 'blocked', { reason: 'no card' }), flow('pay', 'skipped', { origin: 'smoke' })]);
+    expect(only.outcome).toBe('skipped');
+    expect(only.attempts?.map((a) => a.outcome)).toEqual(['blocked']);
+  });
+
+  it('pass, then fail, then skipped: the fail counts and the run is flaky', () => {
+    const r = base({
+      testOutcomes: [flow('a', 'pass'), flow('a', 'fail', { category: 'app_bug' }), flow('a', 'skipped', { origin: 'smoke' })],
+    });
+    const [only] = latestAttempts(r.testOutcomes);
+    expect(only).toMatchObject({ outcome: 'fail', flaky: true });
+    expect(gate(r).block).toBe(true);
+  });
+
   it('"Login" then "login " is one workflow', () => {
     const r = base({ testOutcomes: [flow('Login', 'fail', { category: 'app_bug' }), flow('login ', 'pass')] });
     expect(casesOf(toJUnit(r))).toHaveLength(1);
@@ -168,7 +204,7 @@ describe('JUnit semantics', () => {
       testOutcomes: [flow('login', 'fail', { category: 'app_bug', reason: 'Sign in never appeared', stepRange: [1, 2] })],
     });
     const [c] = casesOf(toJUnit(r));
-    expect(c.failure).toMatchObject({ '@_type': 'app_bug', '@_message': 'Sign in never appeared' });
+    expect(c.failure).toMatchObject({ '@_type': 'ELEMENT_NOT_FOUND', '@_message': 'Sign in never appeared' });
     expect(c['system-out']).toContain('failing step #2: tap "Sign in" (ELEMENT_NOT_FOUND)');
     expect(c['system-out']).toContain('(no evidence)');
   });
@@ -189,6 +225,19 @@ describe('JUnit semantics', () => {
     expect(casesOf(xml, 1)[0].error?.['@_type']).toBe('WDA_UNREACHABLE');
     expect(xml).not.toContain('<failure');
     expect(parse(xml).testsuites['@_errors']).toBe('4');
+  });
+
+  it('a flow whose failing timeline step is DEVICE_UNRESPONSIVE is an <error> typed with that code', () => {
+    const r = base({
+      steps: [step(1), step(2, { result: 'failed', failureCode: 'DEVICE_UNRESPONSIVE', target: 'launch' })],
+      testOutcomes: [flow('boot', 'fail', { category: 'app_bug', reason: 'device stopped answering', stepRange: [1, 2] })],
+    });
+    const xml = toJUnit(r, gate(r));
+    const [c] = casesOf(xml);
+    expect(c.failure).toBeUndefined();
+    expect(c.error).toMatchObject({ '@_type': 'DEVICE_UNRESPONSIVE', '@_message': 'device stopped answering' });
+    // Policy matching keeps the note's own code, so blockOn rules behave as before.
+    expect(gate(r).blocked).toEqual(['boot: app_bug']);
   });
 
   it('blocked, skipped and not_applicable are <skipped> with the outcome in the message', () => {

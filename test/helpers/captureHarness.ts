@@ -8,6 +8,8 @@
 import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { McpServer } from '@modelcontextprotocol/server';
+import type { CallToolResult } from '@modelcontextprotocol/client';
 import type { Driver } from '../../src/drivers/Driver.js';
 import type { Session, SessionStore } from '../../src/session/store.js';
 import { FakeDriver, dump } from '../actFixFake.js';
@@ -123,4 +125,27 @@ export interface CaptureSiteRow {
   site: string;
   run(h: CaptureHarness): Promise<string | undefined>;
   clean?: boolean;
+  /** The site records that a capture was withheld (a counter) but not which rule withheld it, so
+   *  the table only checks that something was recorded. */
+  recordsCount?: boolean;
+  /** The site grabs pixels alongside its dump (in memory) and drops them once the dump shows a
+   *  secure field: no file is ever written, but the grab count is not zero on a secure screen. */
+  grabsBeforeGuard?: boolean;
+}
+
+type ToolHandler = (args: Record<string, unknown>, extra?: unknown) => Promise<CallToolResult>;
+
+/** Register one tool module against a stub server and hand back its handler, so a row can call a
+ *  tool on the harness's own SessionStore (no MCP transport, no device attach). */
+export function toolHandler(
+  register: (server: McpServer, sessions: SessionStore) => void,
+  sessions: SessionStore,
+  name: string,
+): ToolHandler {
+  const handlers = new Map<string, ToolHandler>();
+  const server = { registerTool: (n: string, _meta: unknown, fn: ToolHandler) => handlers.set(n, fn) } as unknown as McpServer;
+  register(server, sessions);
+  const fn = handlers.get(name);
+  if (!fn) throw new Error(`tool ${name} was not registered`);
+  return fn;
 }

@@ -61,8 +61,20 @@ export function decodePng(buf: Buffer): DecodedImage {
     throw new Error(`unsupported PNG (bitDepth=${bitDepth}, colorType=${colorType}, interlace=${interlace}); expected 8-bit truecolor`);
   }
   const channels: 3 | 4 = colorType === 6 ? 4 : 3;
-  const raw = inflateSync(Buffer.concat(idat));
   const stride = width * channels;
+  // Cap the inflate at exactly what the header promises: a tiny file can otherwise inflate to
+  // hundreds of MB (decompression bomb) before we ever look at it.
+  const expected = height * (stride + 1);
+  if (width < 1 || height < 1) throw new Error(`corrupt PNG: ${width}x${height}`);
+  let raw: Buffer;
+  try {
+    raw = inflateSync(Buffer.concat(idat), { maxOutputLength: expected });
+  } catch (e) {
+    throw new Error(`corrupt PNG: image data does not inflate to ${width}x${height} (${(e as Error).message})`, {
+      cause: e,
+    });
+  }
+  if (raw.length !== expected) throw new Error(`corrupt PNG: image data is ${raw.length} bytes, expected ${expected}`);
   const out = Buffer.allocUnsafe(height * stride);
 
   // Un-filter each scanline (PNG filter types 0..4), reconstructing in place.

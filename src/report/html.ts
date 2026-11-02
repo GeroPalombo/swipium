@@ -3,12 +3,11 @@
 // broke with its screenshot and log, then outcomes, the step timeline, environment and artifacts.
 // A run that never got to test anything gets a short layout: blocker, fix, log tail, timeline.
 
-import { existsSync, readFileSync, statSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute } from 'node:path';
 import { downscalePng } from '../lib/png.js';
-import { artifactDirectoryName, decodeUriSegment, isWithinRoot } from '../session/store.js';
+import { artifactDirectoryName, decodeUriSegment } from '../session/store.js';
 import { latestAttempts, reportPolicyVerdicts, type ReportData, type ReportFinding, type ReportNote, type ReportStep } from './export.js';
-import { pickNotTestedLog, readLogTail } from './logTail.js';
+import { pickNotTestedLog, readLogTail, readRegularFile, resolveSessionFile } from './logTail.js';
 import { applyPolicy, loadPolicy, type PolicyDecision } from './policy.js';
 
 /** The only origin report.html links to. Everything else is an in-page #anchor. */
@@ -22,6 +21,8 @@ const THUMB_WIDTH = 480;
 /** Never read a "screenshot" bigger than this into memory just to thumbnail it. */
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
 const LOG_TAIL_LINES = 40;
+/** Shorter tail on a failed outcome card: it sits next to the screenshot. */
+const OUTCOME_LOG_TAIL_LINES = 20;
 
 export interface RenderHtmlOptions {
   /** Session folder; artifact paths resolve against it. Without it images show "evidence not available". */
@@ -58,15 +59,14 @@ function relativeArtifactPath(uri: string, art: Artifact | undefined): string | 
   return `${artifactDirectoryName(kind)}/${name}`;
 }
 
-/** Absolute file for an artifact URI, only when it exists inside the session folder. */
+/** Absolute file for an artifact URI, only when it is a regular file in an artifact subfolder of
+ *  the session folder. The report JSON is untrusted, so both its `path` and the URI go through
+ *  resolveSessionFile (no dotfiles, no `..`, no symlinks out, no FIFOs or devices). */
 function resolveArtifactFile(uri: string, art: Artifact | undefined, sessionDir?: string): string | undefined {
   if (!sessionDir) return undefined;
-  const candidates: string[] = [];
-  if (art?.path) candidates.push(isAbsolute(art.path) ? art.path : join(sessionDir, art.path));
-  const rel = relativeArtifactPath(uri, art);
-  if (rel) candidates.push(join(sessionDir, rel));
-  for (const c of candidates) {
-    if (isWithinRoot(c, sessionDir) && existsSync(c)) return c;
+  for (const c of [art?.path, relativeArtifactPath(uri, art)]) {
+    const file = c ? resolveSessionFile(sessionDir, c) : undefined;
+    if (file) return file;
   }
   return undefined;
 }
@@ -81,6 +81,8 @@ const yieldToLoop = () => new Promise<void>((r) => setImmediate(r));
 class ImageEmbedder {
   private used = 0;
   private seen = new Map<string, string>(); // uri > anchor id of its first embed
+  private settled = new Map<string, string>(); // uri > html already decided (failed or over budget)
+  private exhausted = false;
   private count = 0;
   overBudget = 0;
 
@@ -99,25 +101,33 @@ class ImageEmbedder {
     if (!isImageUri(uri, art)) return `<span class="file">${label}</span>`;
     const prior = this.seen.get(uri);
     if (prior) return `<a class="thumb-ref" href="#${prior}">screenshot above</a>`;
+    const settled = this.settled.get(uri);
+    if (settled) return settled;
     const file = resolveArtifactFile(uri, art, this.sessionDir);
     if (!file) return `<span class="missing">evidence not available</span> <span class="file">${label}</span>`;
+    const overBudget = `<span class="file">${label} (not embedded: report image budget of ${Math.round(this.budget / 1024 / 1024)} MB reached)</span>`;
+    // Budget spent: don't read or decode the rest just to throw the result away.
+    if (this.exhausted) return this.settle(uri, overBudget, true);
     let png: Buffer | null = null;
-    try {
-      if (statSync(file).size <= MAX_SOURCE_BYTES) png = downscalePng(readFileSync(file), THUMB_WIDTH);
-    } catch {
-      png = null;
-    }
+    const src = readRegularFile(file, MAX_SOURCE_BYTES);
+    if (src) png = downscalePng(src.buf, THUMB_WIDTH);
     await yieldToLoop();
-    if (!png) return `<span class="file">${label} (could not embed this image)</span>`;
+    if (!png) return this.settle(uri, `<span class="file">${label} (could not embed this image)</span>`, false);
     const b64 = png.toString('base64');
     if (this.used + b64.length > this.budget) {
-      this.overBudget++;
-      return `<span class="file">${label} (not embedded: report image budget of ${Math.round(this.budget / 1024 / 1024)} MB reached)</span>`;
+      this.exhausted = true;
+      return this.settle(uri, overBudget, true);
     }
     this.used += b64.length;
     const id = `ev-${++this.count}`;
     this.seen.set(uri, id);
     return `<img id="${id}" class="thumb" alt="${esc(alt)}" src="data:image/png;base64,${b64}">`;
+  }
+
+  private settle(uri: string, html: string, overBudget: boolean): string {
+    if (overBudget) this.overBudget++;
+    this.settled.set(uri, html);
+    return html;
   }
 }
 
@@ -164,20 +174,49 @@ function failingStep(n: ReportNote, steps: ReportStep[]): { label: string; failu
   if (n.stepRange) {
     const [from, to] = n.stepRange;
     const s = steps.find((x) => x.i >= from && x.i <= to && x.result === 'failed');
-    if (s)
-      return { label: `#${s.i} ${s.action}${s.target ? ` ${s.target}` : ''}`, failureCode: s.failureCode, screenshotUri: s.screenshotUri };
+    if (s) return { label: `#${s.i} ${s.target ?? s.action}`, failureCode: s.failureCode, screenshotUri: s.screenshotUri };
   }
   const fs = n.steps?.find((x) => !x.ok);
-  if (fs) return { label: `#${fs.index} ${fs.kind}${fs.summary ? ` ${fs.summary}` : ''}`, failureCode: fs.failureCode };
+  if (fs) return { label: `#${fs.index} ${fs.summary ?? fs.kind}`, failureCode: fs.failureCode };
   return undefined;
 }
 
-function logTailHtml(uri: string | undefined, byUri: Map<string, Artifact>, sessionDir: string | undefined, path?: string): string {
+const CRASH_CODES = /^(NATIVE_CRASH|ANR|APP_LAUNCH_FAILED)$/;
+
+/** The log to show on a failed outcome card: a high finding with a log captured during the
+ *  outcome's steps, or for a crash/launch failure the crash finding's log. */
+function outcomeLogUri(n: ReportNote, code: string | undefined, steps: ReportStep[], findings: ReportFinding[]): string | undefined {
+  const withLog = findings.filter((f) => f.severity === 'high' && f.logUri);
+  if (!withLog.length) return undefined;
+  if (n.stepRange) {
+    const [from, to] = n.stepRange;
+    const covered = steps.filter((s) => s.i >= from && s.i <= to);
+    if (covered.length) {
+      // Pad by the step duration both ways: `at` is a timestamp near the step, not a strict start.
+      const t0 = Math.min(...covered.map((s) => s.at - (s.durationMs ?? 0)));
+      const t1 = Math.max(...covered.map((s) => s.at + (s.durationMs ?? 0)));
+      const hit = withLog.find((f) => typeof f.at === 'number' && f.at >= t0 && f.at <= t1);
+      if (hit) return hit.logUri;
+    }
+  }
+  if (code && CRASH_CODES.test(code)) {
+    return (withLog.find((f) => f.failureCode === code || /crash|anr|launch/i.test(f.kind)) ?? withLog[0]).logUri;
+  }
+  return undefined;
+}
+
+function logTailHtml(
+  uri: string | undefined,
+  byUri: Map<string, Artifact>,
+  sessionDir: string | undefined,
+  path?: string,
+  n = LOG_TAIL_LINES,
+): string {
   if (!uri) return '';
   const art = byUri.get(uri) ?? (path ? ({ uri, kind: 'log', path } as Artifact) : undefined);
   const file = resolveArtifactFile(uri, art, sessionDir);
   const shown = relativeArtifactPath(uri, art) ?? uri;
-  const lines = file ? readLogTail(file, undefined, LOG_TAIL_LINES) : undefined;
+  const lines = file && sessionDir ? readLogTail(file, sessionDir, n) : undefined;
   if (!lines) return `<p class="muted">log <code>${esc(shown)}</code>: not available</p>`;
   return `<p class="muted">last ${lines.length} lines of <code>${esc(shown)}</code></p><pre class="log">${esc(lines.join('\n'))}</pre>`;
 }
@@ -242,9 +281,13 @@ function header(r: ReportData): string {
 }
 
 function partialLine(r: ReportData): string {
-  return r.partial?.jobId
-    ? `<p class="partial">partial: job ${esc(r.partial.jobId)} running${r.partial.kind ? ` (${esc(r.partial.kind)})` : ''}</p>`
-    : '';
+  const notice = (r as { releasePolicyNotice?: unknown }).releasePolicyNotice;
+  const policy = typeof notice === 'string' && notice ? `<p class="partial">Policy: ${esc(notice)}</p>` : '';
+  return (
+    (r.partial?.jobId
+      ? `<p class="partial">partial: job ${esc(r.partial.jobId)} running${r.partial.kind ? ` (${esc(r.partial.kind)})` : ''}</p>`
+      : '') + policy
+  );
 }
 
 async function timelineHtml(steps: ReportStep[], img: ImageEmbedder, open: boolean): Promise<string> {
@@ -332,6 +375,7 @@ export async function renderReportHtml(report: ReportData, opts: RenderHtmlOptio
   for (const n of failed) {
     const step = failingStep(n, steps);
     const code = step?.failureCode ?? n.category;
+    const logUri = outcomeLogUri(n, code, steps, findings);
     const shotUri = step?.screenshotUri ?? evidenceUris(n).find((u) => isImageUri(u, byUri.get(u)));
     const shot = shotUri ? await img.render(shotUri, `${n.workflow} failure`) : '<span class="missing">no screenshot</span>';
     const flags = outcomeFlags(n)
@@ -343,6 +387,7 @@ export async function renderReportHtml(report: ReportData, opts: RenderHtmlOptio
         (code ? `<p><strong>Code:</strong> <code>${esc(code)}</code></p>` : '') +
         (n.reason ? `<p>${esc(n.reason)}</p>` : '') +
         (n.missingPrecondition ? `<p><strong>Missing:</strong> ${esc(n.missingPrecondition)}</p>` : '') +
+        (logUri ? logTailHtml(logUri, byUri, sessionDir, undefined, OUTCOME_LOG_TAIL_LINES) : '') +
         '</div></div>',
     );
   }

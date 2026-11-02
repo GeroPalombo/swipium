@@ -2,6 +2,78 @@
 
 All notable public changes to Swipium are documented here.
 
+## 2.4.0 - 2026-11-01
+
+Swipium 2.4.0 is about reports. Every session now gets one self-contained `report.html` that a human can open offline in a browser, with the verdict first, then each failure with its screenshot, failing step and log tail, then outcomes, a step timeline and the artifacts. Every outcome points at evidence Swipium captured itself: `qa_note` pass and fail notes take a checkpoint screenshot and link the steps they cover, and failed steps keep a screenshot and UI dump. `report.md` for the agent is now at most 2 KB, the CI recipe uploads that one HTML file instead of the whole runs folder, and JUnit, SARIF and the GitHub summary were reworked so they say what actually happened. No tools were added or removed (still 55), and no tool inputs changed. Work through the upgrade checklist: some CI verdicts change.
+
+### Upgrade checklist
+
+Items tagged **You** need an action from you. Items tagged **Automatic** happen on their own and are listed so they don't surprise you.
+
+1. **You:** restart your MCP client. The schema hash changed because the `qa_report` and `qa_note` descriptions changed (no inputs changed), so update any `qa_doctor { expectedSchemaHash }` check.
+2. **You (CI reading JUnit):** JUnit semantics changed, so test checks can turn red on tool errors and case counts change:
+   - tool and environment failures (a failed workflow under `mcp_limitation` or with an environment-bucket code, a `WDA_UNREACHABLE` finding) and the synthetic `swipium: not tested` case are now `<error>` (they were `<skipped>` or `<failure>`);
+   - `blocked`, `skipped` and `not_applicable` outcomes are `<skipped message="blocked: …">` (`skipped: …`, `not applicable: …`);
+   - only high-severity findings are testcases (medium and low findings used to be passing testcases);
+   - a workflow retried in the same session is one case (latest attempt, see item 4), and case names are unique (a repeat gets its screen, then `#2`, `#3` appended);
+   - each case has a `time` taken from its steps, and `<failure>`/`<error>` carry `type="<failureCode>"` with human text in `message`.
+3. **You (scripts reading `highSeverityCount`):** it now counts unique high findings that are not tool or environment findings (`WDA_UNREACHABLE`). Before, `report.json` counted every unique high finding, tool ones included, while the release risk left tool findings out.
+4. **You (release gate):** the latest attempt per workflow wins. This relaxes the gate:
+   - the workflow name is compared trimmed and case-folded, so `"Login"` then `"login "` is one workflow;
+   - a later attempt replaces an earlier one only from the same source: Swipium runs (flows, smoke) replace Swipium runs, agent notes replace agent notes. An agent `qa_note` pass never clears a Swipium failure, and explore notes and in-flow `note` steps are never replaced;
+   - only a pass or fail replaces an earlier attempt: a later `blocked`, `skipped` or `not_applicable` (a budget skip, a cancelled smoke) keeps the last pass or fail as the outcome that counts;
+   - findings are never replaced: a crash finding still blocks after the flow passes on a retry;
+   - two separate `qa_flow_run` calls on one workflow (fail, then pass) now pass the gate, marked `flaky`. `qa_flow_run { repeat: N }` still records the first failure, as before;
+   - the CLI re-gates saved reports with the same rule, so an old report can flip to PASS when the 2.4.0 `swipium report` renders it.
+5. **You (agents passing `artifactUris` to `qa_note`):** URIs that are not artifacts of the same session are now dropped, with a warning in the result (`warnings`, and a `⚠` line in the text). The note is still recorded. A `verifiedVisually` pass whose URIs were all dropped is refused as missing evidence.
+6. **You (CI using SARIF):** SARIF is narrowed to high-severity app findings, and fingerprints are now built from content (rule, screen, scrubbed detail) instead of finding order. Failed workflows, the not-tested case, tool findings and medium or low findings are no longer SARIF results. Existing code-scanning alerts will close and reopen once. SARIF is now experimental and out of the default recipe ([opt-in snippet](docs/ci-reports.md#sarif-experimental)).
+7. **You (`format:"playwright"`):** the Playwright export is deprecated and will be removed in a future release. It still works; its JSON carries a `deprecated` note and the `qa_report` text says so. Use JUnit or `report.html`.
+8. **You (the CI recipe):** stop uploading `~/.swipium/runs`. Render `swipium report --format html --out swipium-report.html` and upload that one file ([recipe](docs/ci-reports.md#github-actions-recipe-android)). The runs folder holds raw screenshots, UI dumps and logs; keep it only as an opt-in debug step.
+9. **You (anything parsing `report.md` or the `qa_report` text):** the summary is now short (at most 2 KB, failure first) and its old lines (QA level, readiness, evidence taxonomy, mutation ledger, timing, the artifact list and others) are gone. Read `report.json` instead.
+10. **Automatic:** OCR screenshots in flows, and every other capture path (smoke, flows, explore, health evidence, first run, mobile audit, checkpoints, failed steps), now respect the secure-field guard: a capture while a password or OTP field is on screen, or in a sensitive session, is withheld and noted (`screenshot withheld (secure field)`) instead of saved.
+
+### Reports
+
+- **`report.html`**: one self-contained page per session at `<session>/report/report.html`, overwritten on every report. It has no JavaScript, a strict Content-Security-Policy (`default-src 'none'; img-src data:; style-src 'unsafe-inline'`), every string HTML-escaped, and screenshots embedded as 480 px wide thumbnails (8 MB in total; past that, images are listed as file paths). It is rendered from the already-redacted report. Layout: the gate verdict and reason; failures and findings with screenshot, failing step, failure code and log tail; the outcomes table; the step timeline (collapsed on a pass, open on a failure); environment, device and timing; artifacts with paths relative to the session folder. A run that tested nothing shows the blocker, its fix and the last 40 lines of the relevant log (build log, Metro log, crash excerpt, else the newest log) before anything else.
+- **Where to find it:** `reportHtmlPath` (absolute path) and `reportHtmlUrl` (`file://`) are returned by `qa_report`, the `qa_test_this` terminal result (so `qa_job_status` passes them through), `qa_test_feature` and `qa_mobile_audit` execute. The summary ends with `Open the report: <path>`, and the server instructions and the swipium-qa skill tell the agent to give the user that path. When the page can't be rendered, the fields are `null` and `reportHtmlError` says why; the JSON and summary are still written.
+- **Step timeline:** `report.json` has `steps` (up to 500, oldest passing steps dropped first so early failures survive). One step per `qa_act` call (with result `ok`, `failed` or `no_change`, duration, screen and failure code), per flow step (`qa_flow_run`, suite replay and saved flows in smoke), one for the smoke launch and health check, one summary step per exploration, and one per `qa_note`. Typed text never appears in a step.
+- **Checkpoint and failure screenshots:** a `qa_note` pass or fail takes one best-effort checkpoint screenshot (3 s cap; skipped with no device, after a transport failure, in a sensitive session or on a secure screen). A failed `qa_act` or flow step keeps a screenshot and, when one is at hand, the UI dump. Nothing is captured for `no_change`, validation errors (`INVALID_ARGUMENT`, `OVERLAY_OBSTRUCTION`) or a dead device. None of these count toward the screenshot budget, and a checkpoint is never evidence that the app was reached or tested.
+- **Evidence-backed outcomes:** each outcome carries `stepRange` and `evidence[]` (only this session's artifacts). An outcome with no evidence shows `(no evidence)`. Two display flags, which don't change the gate: `contradicted`, a pass whose steps include a high crash, ANR or app-error finding or a failed flow or smoke step (failed `qa_act` steps don't count), and `flaky`, when the workflow's attempts (the others are kept in `attempts[]`) include both a pass and a fail. `unverified` keeps its meaning.
+- **Partial reports:** a report made while another job of the session (an exploration, a suite replay, a second `qa_test_this`) is still running says `partial` in the HTML banner, `report.json` (`partial: {jobId, kind}`) and the summary. `qa_test_this` and `qa_test_feature` don't count their own job.
+- **`report.json`** additions (nothing removed): `schemaVersion: 2`, `steps`, `partial`, `outcomes[].stepRange/evidence/attempts/flaky/contradicted`, and `artifacts[].path` (relative to the session folder, never absolute), `createdAt` and `redaction`. The CLI and the HTML renderer still read older reports.
+- **`qa_report` inline JSON** (`format:"json"` or verbose mode) leaves `steps` out and points at the saved report with `stepsUri`, so a long run doesn't flood the context.
+- **Summary (`report.md`)**, at most 2 KB, in order: verdict and reason, health, the not-tested reason once with its fix and log, up to 8 failed or blocked outcomes (failing step `#i`, failure code, a screenshot URI or the reason there is none), up to 5 findings, the pass count with flags, and the paths to `report.html` and `report.json`. The `qa_test_this` `reportHead` uses the same builder.
+
+### CLI
+
+- `swipium report --format html` renders `report.html` from a saved report. With `--report <file>` outside a session folder, screenshots show "evidence not available" instead of failing.
+
+### CI formats
+
+- **JUnit:** see the upgrade checklist. Flaky and contradicted outcomes and the failing step are noted in `<system-out>`.
+- **SARIF:** see the upgrade checklist.
+- **GitHub summary**, failure first: verdict and reason, the not-tested reason (with the log path) or the failures (workflow, failing step, code), the next action, counts, the outcomes table with evidence paths, findings, and `Full report: the swipium-report.html artifact of this run`. No images, because artifact URLs need a login.
+
+### Security
+
+- One secure-field guard for every screenshot path (see the upgrade checklist). OCR in flows no longer sends pixels of a password screen to the OCR provider.
+- `report.html` makes no network request and links only to the Swipium docs. Its text is redacted; embedded screenshots are pixels, so its artifact record says `redaction: not-applied`.
+- Artifact paths in `report.json` are relative, so `$HOME` and the user name don't end up in CI uploads.
+- The report's UI dump goes through the XML-aware redaction, like every other dump.
+
+### Fixed
+
+- `activeMs` was 0 for runs that didn't use `qa_act`; active time now starts at the first action or recorded step.
+- "visual-only: no UI tree was read" appeared on structured runs; it is now said only when no tree was read, and other causes are named (a tool returned no UI tree, or the smoke could not judge the screen).
+- The PR summary's "Likely category" called a splash or Metro blocker an app regression; it now says `environment/setup`.
+- Smoke, flow and explore outcomes were labelled `manual_review` evidence; they are now `structured_locator` (or `visual_match` for flows with visual steps). `manual_review` is for agent notes only.
+- The PR evidence line listed a URI twice.
+- Markdown export: the missing space after the finding kind is back, and the Workflows table has an Evidence column.
+- `qa_report` called again with no new activity no longer folds the suite, the issue ledger or the app map a second time (no duplicate run history or issue events).
+- The release risk and fail counts used every attempt while the gate used one; both now use the latest attempt.
+
+## 2.3.5 - 2026-10-19
+
 ## 2.3.5 - 2026-10-19
 
 Swipium 2.3.5 is a fix release. It closes a way for a cloned repo to delete files outside the project, closes several ways the CI release gate could pass a run that tested nothing or a real failure, and fixes a crash, text corruption and wrong-device bugs in the drivers. Releases are published from CI again, with npm provenance. No tools were added or removed (still 55).

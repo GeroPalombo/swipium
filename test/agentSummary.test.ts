@@ -187,6 +187,34 @@ describe('agent summary', () => {
     expect(text).toContain('Passed: 1 of 1 outcome(s) (1 flaky)');
   });
 
+  it('the findings high count is the report count, so a tool failure is not a high app finding', () => {
+    const text = buildAgentSummary(
+      {
+        ...PASS,
+        findings: [{ severity: 'high', layer: 'native', kind: 'wda_unreachable', failureCode: 'WDA_UNREACHABLE', detail: 'no source' }],
+        highSeverityCount: 0,
+      },
+      OPTS,
+    );
+    expect(text).toContain('high: 0');
+  });
+
+  it('a later skip or n/a never hides a failure in the summary', () => {
+    const text = buildAgentSummary(
+      {
+        ...PASS,
+        testOutcomes: [
+          { workflow: 'checkout', outcome: 'fail', origin: 'flow', category: 'app_bug', reason: 'total wrong' },
+          { workflow: 'checkout', outcome: 'skipped', origin: 'smoke', reason: 'budget: session budget exhausted' },
+          { workflow: 'login', outcome: 'fail', origin: 'agent', source: 'qa_note', category: 'app_bug' },
+          { workflow: 'Login ', outcome: 'not_applicable', origin: 'agent', source: 'qa_note' },
+        ],
+      },
+      OPTS,
+    );
+    expect(text).toContain('Failures (2):');
+  });
+
   it('a partial report says which job is still running; an html failure is said instead of the open line', () => {
     const text = buildAgentSummary(
       { ...PASS, partial: { jobId: 'j1', kind: 'explore' } },
@@ -224,5 +252,17 @@ describe('report head', () => {
       expect(bytes(head)).toBeLessThanOrEqual(Math.min(AGENT_SUMMARY_MAX_BYTES, REPORT_HEAD_MAX_CHARS));
       expect(head.endsWith(`report.md: ${URI('report/x.md')}`)).toBe(true);
     }
+  });
+});
+
+describe('release policy notice', () => {
+  it('says once when .swipium/policy.json was ignored', () => {
+    const text = buildAgentSummary(
+      { ...FAIL, releasePolicyNotice: '.swipium/policy.json is not valid JSON: it was ignored, so every failure blocks' },
+      OPTS,
+    );
+    expect(text.match(/^Policy: /gm)?.length).toBe(1);
+    expect(text).toContain('it was ignored, so every failure blocks');
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(2048);
   });
 });

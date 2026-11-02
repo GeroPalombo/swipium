@@ -6,7 +6,7 @@
 import type { Driver } from '../drivers/Driver.js';
 import type { RawNode } from '../snapshot/parse.js';
 import { TRANSPORT_FAILURE_CODES, type Session, type SessionStore, type StepRecord } from '../session/store.js';
-import { captureGuardSync } from './captureGuard.js';
+import { canCaptureScreenshot } from './captureGuard.js';
 
 /** Cap for a failure screenshot / dump: a slow device must not stretch a failed call much. */
 export const STEP_CAPTURE_TIMEOUT_MS = 5000;
@@ -84,10 +84,15 @@ export async function captureFailedStepEvidence(
       if (ev.reuse.screenshotUri) patch.screenshotUri = ev.reuse.screenshotUri;
       else if (ev.reuse.screenshotSkipped) patch.screenshotSkipped = ev.reuse.screenshotSkipped;
     } else if (d) {
-      const g = captureGuardSync(session, ev.nodes);
-      if (!g.ok) patch.screenshotSkipped = g.note;
+      // A failure can land before any settle (no tree in hand, stale cache): a structured backend
+      // then re-dumps once so a just-opened login/OTP screen is still checked. Failure path only.
+      // canCaptureScreenshot never throws (a failed dump reads as unknown).
+      const g = await withTimeout(canCaptureScreenshot(session, d, { nodes: ev.nodes, refresh: true }), STEP_CAPTURE_TIMEOUT_MS);
+      // A guard that cannot answer in time withholds: a slow device is no reason to risk pixels.
+      if (g === TIMED_OUT) patch.screenshotSkipped = 'screenshot timed out';
+      else if (!g.ok) patch.screenshotSkipped = g.note;
       else {
-        // capture-guard: guarded by captureGuardSync above
+        // capture-guard: guarded by canCaptureScreenshot above
         const png = await withTimeout(d.screenshot(), STEP_CAPTURE_TIMEOUT_MS).catch(() => undefined);
         if (Buffer.isBuffer(png))
           patch.screenshotUri = sessions.saveArtifact(

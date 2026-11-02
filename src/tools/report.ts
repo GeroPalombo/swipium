@@ -97,11 +97,10 @@ export function registerReport(server: McpServer, sessions: SessionStore): void 
             highSeverity: rep.highSeverityCount,
             toolErrors: ((rep.toolErrors as unknown[] | undefined) ?? []).length,
             outcomes: rep.outcomeTally,
-            // The run test catalog (outcomes + finding/exploration-derived cases), the
-            // "test catalog: N case(s)" the summary prints; `outcomes` counts qa_note outcomes only.
+            // The run test catalog (outcomes + finding/exploration-derived cases), also in report.json;
+            // `outcomes` counts qa_note outcomes only.
             testCatalog: (rep.runTestCatalog as { counts?: unknown } | undefined)?.counts,
-            // Same count as the summary's "artifacts: N" (report.json + manifest included; report.md,
-            // which holds that summary, is saved after it).
+            // Session artifacts (report.json + manifest included), not counting report.md itself.
             artifacts: session.artifacts.filter((art) => art.uri !== r.reportMdUri).length,
           },
           ...uris,

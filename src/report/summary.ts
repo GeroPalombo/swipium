@@ -120,6 +120,10 @@ export interface AgentSummaryReport extends LogPickInput {
   findings?: Array<Partial<ReportFinding> & { severity?: string; kind?: string; detail?: string }>;
   steps?: ReportStep[];
   partial?: { jobId: string; kind: string } | null;
+  /** The report's one high count (unique app/native findings, tool failures excluded). */
+  highSeverityCount?: number;
+  /** A broken or partly unknown .swipium/policy.json (the gate ignores what it can't read). */
+  releasePolicyNotice?: string | null;
 }
 
 export interface AgentSummaryOptions {
@@ -215,6 +219,7 @@ export function buildAgentSummary(report: AgentSummaryReport, opts: AgentSummary
     if (report.partial)
       lines.push(`Partial: job ${report.partial.jobId} (${report.partial.kind}) was still running; report again when it ends.`);
     lines.push(`Health: native ${healthWord(report.nativeHealth)}, app ${healthWord(report.appHealth)}`);
+    if (report.releasePolicyNotice) lines.push(`Policy: ${clip(report.releasePolicyNotice, clipAt)}`);
     if (nt) {
       const code = nt.failureCode ?? 'NOT_TESTED';
       const info = (FAILURES as Record<string, { recovery: string } | undefined>)[code];
@@ -231,7 +236,8 @@ export function buildAgentSummary(report: AgentSummaryReport, opts: AgentSummary
       if (problems.length > nFail) lines.push(`+${problems.length - nFail} more in report.html`);
     }
     if (findings.length) {
-      const high = findings.filter((f) => f.severity === 'high').length;
+      // The report's own count leaves tool failures (WDA_UNREACHABLE) out; older inputs lack it.
+      const high = report.highSeverityCount ?? findings.filter((f) => f.severity === 'high').length;
       lines.push(`Findings (${findings.length}, high: ${high}):`);
       for (const f of findings.slice(0, nFind)) lines.push(findingLine(f, clipAt));
       if (findings.length > nFind) lines.push(`+${findings.length - nFind} more`);
