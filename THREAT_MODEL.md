@@ -1,6 +1,6 @@
 # Swipium Threat Model
 
-Last updated: 2026-10-19 (Swipium 2.3.5)
+Last updated: 2026-11-01 (Swipium 2.4.0)
 
 This document describes what Swipium protects, where its trust boundaries are, who it defends
 against, and which controls enforce each defense. Every control listed here is implemented in the
@@ -343,12 +343,32 @@ their limits.
   attribute values and text nodes only, and geometry attributes such as `bounds` are left alone.
   Reports are deep-redacted as data before any JUnit, SARIF or Markdown export is rendered, so
   escaping cannot hide a secret from the redactor.
+- **report.html** (`src/report/html.ts`). The page is rendered from the already-redacted report,
+  has no JavaScript and a strict Content-Security-Policy (`default-src 'none'; img-src data:;
+  style-src 'unsafe-inline'`), and HTML-escapes every string, so app text, agent text or OCR text
+  can't inject markup. Images are re-encoded by Swipium's own PNG encoder as `data:` URIs, and
+  decoding is capped (pixel count and inflated size) so a crafted PNG can't exhaust memory. Log
+  tails embedded in the page are redacted with the session's secrets and scrubbed of credential
+  shapes; when the `swipium report` CLI renders a page there are no secrets on disk, so only the
+  shapes are scrubbed.
+- **Reading artifacts for a report** (`src/report/logTail.ts`). A report JSON can be handed to the
+  CLI from anywhere (`--report`), so its artifact paths are untrusted. Only files under the
+  session's artifact folders (`screenshots`, `logs`, `dump`, `videos`, `baseline`) are read, after
+  `realpath` on both sides, with no dot segments, and only regular files (opened non-blocking, at
+  most the last 256 KB of a log). A dotfile, a `..` path, a symlink leaving those folders, a FIFO
+  or a device is shown as "evidence not available" instead of read.
+- **Screenshots on secure screens** (`src/lib/captureGuard.ts`). Every capture path checks for a
+  password or OTP field first (and a sensitive session) and withholds the capture, noting why.
+  Exploration takes its screenshot alongside the UI dump and discards it unsaved when the dump
+  shows a secure field; in-memory frame compares never keep pixels. A test lists every
+  `.screenshot(` caller and fails on an unguarded one.
 - **Secret guard in generation** (`src/suite/secretGuard.ts`). Generated flows, suites and Appium
   code are scanned for registered secrets, including a secret typed into a field the UI did not
   mark as secure. The literal is replaced by a `${SWIPIUM_…}` placeholder, and generation fails
   instead of writing a leak.
 - **State on disk**. Raw secret values are never written to `state.json`. Notes, findings, jobs,
-  mutations and recorded actions are redacted before they are persisted, generated secret values
+  mutations, recorded actions and timeline steps are redacted before they are persisted (a step
+  never holds typed text), generated secret values
   are stored as `<redacted>`, and fixture values are not persisted at all.
 - **Sensitive mode**. `qa_start_session { sensitive: true }` refuses every screenshot, recording,
   visual capture and device or WDA log for the session (`SENSITIVE_MODE_REFUSED`). Structured

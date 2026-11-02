@@ -175,17 +175,20 @@ export function registerMobileAudit(server: McpServer, sessions: SessionStore): 
             artifactUris: [...new Set(run.checks.flatMap((c) => c.evidenceUris))].slice(0, 10),
           });
           let reportUri: string | undefined;
+          let reportHtml: { reportHtmlPath: string; reportHtmlUrl: string } | undefined;
           try {
             const r = await generateSessionReport(sessions, session, {});
             reportUri = r.reportUri;
             run.reportUri = reportUri;
+            if (!r.reportHtmlError) reportHtml = { reportHtmlPath: r.reportHtmlPath, reportHtmlUrl: r.reportHtmlUrl };
           } catch {
             /* report is best-effort */
           }
           const passed = run.checks.filter((c) => c.status === 'pass').length;
           return qaOk(
-            { ...run, markdown: auditRunToMarkdown(run) },
-            `🔍 mobile audit ${prof}: ${run.state}, release=${run.releaseImpact}, ${passed}/${run.checks.length} pass, ${run.issueIds.length} issue(s)${run.recurrenceWarnings.length ? `, ${run.recurrenceWarnings.length} recurrence` : ''}`,
+            { ...run, ...(reportHtml ?? {}), markdown: auditRunToMarkdown(run) },
+            `🔍 mobile audit ${prof}: ${run.state}, release=${run.releaseImpact}, ${passed}/${run.checks.length} pass, ${run.issueIds.length} issue(s)${run.recurrenceWarnings.length ? `, ${run.recurrenceWarnings.length} recurrence` : ''}` +
+              (reportHtml ? `\nOpen the report: ${reportHtml.reportHtmlPath}` : ''),
           );
         } catch (e) {
           if (isAbortError(e))

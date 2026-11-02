@@ -29,11 +29,15 @@ export interface PhaseTimings {
 }
 
 export function phaseTimingsForSession(
-  session: Pick<Session, 'createdAt' | 'milestones'> & Partial<Pick<Session, 'counters'>>,
+  session: Pick<Session, 'createdAt' | 'milestones'> & Partial<Pick<Session, 'counters' | 'steps'>>,
   now = Date.now(),
 ): PhaseTimings {
   const start = session.milestones.session_start ?? session.createdAt;
-  const firstAction = session.milestones.first_action;
+  // Active time starts at the first thing done on the device: a qa_act (first_action) or the first
+  // recorded step (smoke, flow, explore), whichever came first. Runs without qa_act used to show 0.
+  const firstStep = session.steps?.length ? Math.min(...session.steps.map((st) => st.at)) : undefined;
+  const candidates = [session.milestones.first_action, firstStep].filter((t): t is number => typeof t === 'number' && t > 0);
+  const firstAction = candidates.length ? Math.min(...candidates) : undefined;
   const ms = (n: number): number => Math.max(0, Math.round(n));
   const pair = (from: string, to: string): number | null => {
     const a = session.milestones[from];

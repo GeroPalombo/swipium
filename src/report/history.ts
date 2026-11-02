@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { ReportData, ReportNote } from './export.js';
+import { SETUP_BLOCKER_RE, latestAttempts, outcomeEvidence, type ReportData, type ReportNote } from './export.js';
 import { evidenceTaxonomyForNotes } from './evidence.js';
 import { isAutomationDriftNote } from '../oracle/failures.js';
 import { findProjectSessions } from './sessions.js';
@@ -143,13 +143,13 @@ function stepDurationMs(step: NonNullable<ReportNote['steps']>[number]): number 
 }
 
 function outcomeMap(r: ReportData): Map<string, string> {
-  return new Map(r.testOutcomes.map((o) => [o.workflow, o.outcome]));
+  return new Map(latestAttempts(r.testOutcomes).map((o) => [o.workflow, o.outcome]));
 }
 
 /** A failure's identity across runs: the workflow (or finding kind) plus its reason with volatile
  *  tokens (timestamps, ids, uuids) scrubbed, so the same failure in two runs is not "new". */
 function failureKeys(r: ReportData): string[] {
-  const fromOutcomes = r.testOutcomes
+  const fromOutcomes = latestAttempts(r.testOutcomes)
     .filter((o) => o.outcome === 'fail' || o.outcome === 'blocked')
     .map((o) => `${o.workflow}: ${scrubReason(o.reason ?? o.missingPrecondition ?? o.category ?? o.outcome)}`);
   const fromFindings = r.findings.filter((f) => f.severity === 'high').map((f) => `${f.kind}: ${scrubReason(f.detail)}`);
@@ -229,13 +229,13 @@ export function compareReports(currentPath: string, baselinePath: string, opts: 
 }
 
 function firstProblem(r: ReportData): { workflow?: string; reason: string; category?: string; evidence: string[] } | null {
-  const failed = r.testOutcomes.find((o) => o.outcome === 'fail' || o.outcome === 'blocked');
+  const failed = latestAttempts(r.testOutcomes).find((o) => o.outcome === 'fail' || o.outcome === 'blocked');
   if (failed) {
     return {
       workflow: failed.workflow,
       reason: failed.reason ?? failed.missingPrecondition ?? failed.category ?? failed.outcome,
       category: failed.category,
-      evidence: failed.artifactUris ?? [],
+      evidence: outcomeEvidence(failed),
     };
   }
   const high = r.findings.find((f) => f.severity === 'high') ?? r.findings[0];
@@ -249,6 +249,8 @@ function firstProblem(r: ReportData): { workflow?: string; reason: string; categ
 
 function likelyCategory(problem: { reason: string; category?: string } | null, report: ReportData): string {
   const raw = `${problem?.category ?? ''} ${problem?.reason ?? ''}`.toLowerCase();
+  // A splash / Metro screen that never went away is the dev setup, not the app ("still visible").
+  if (SETUP_BLOCKER_RE.test(raw)) return 'environment/setup';
   if (/accessibility|identifier|locator|element|not found|continue missing/.test(raw)) return 'automation readiness';
   if (/network|device|wda|simulator|emulator|install|seed|fixture|toolchain|permission/.test(raw)) return 'environment/setup';
   // 'not checked' / 'unverified' (app never reached, visual-only) are not app regressions.
@@ -694,8 +696,9 @@ export function trendForReports(files: string[]): TrendSummary {
     if (totalMs != null) times.push(totalMs);
     if (setupMs != null) setupTimes.push(setupMs);
     if (activeMs != null) activeTimes.push(activeMs);
-    for (const o of report.testOutcomes) {
-      byFlow.set(o.workflow, [...(byFlow.get(o.workflow) ?? []), o.outcome]);
+    // Latest attempt per workflow, as the gate counts it; earlier attempts still feed flakiness.
+    for (const o of latestAttempts(report.testOutcomes)) {
+      byFlow.set(o.workflow, [...(byFlow.get(o.workflow) ?? []), ...(o.attempts ?? []).map((a) => a.outcome), o.outcome]);
       const contextKey = `${report.appId ?? 'unknown'}|${report.device ?? 'device'}|${report.automationBackend?.kind ?? 'unknown'}`;
       byContext.set(contextKey, [...(byContext.get(contextKey) ?? []), o.outcome]);
       for (const step of o.steps ?? []) {

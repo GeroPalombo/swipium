@@ -91,6 +91,7 @@ export function registerScreenshot(server: McpServer, sessions: SessionStore): v
         const foreground = appId
           ? Promise.race([driver.foregroundOwner().catch(() => ''), new Promise<string>((r) => setTimeout(() => r(''), 1500).unref())])
           : Promise.resolve('');
+        // capture-guard: qa_screenshot runs the shared secure-field rule above (CAPTURE_WITHHELD_SECURE unless force)
         const png = await driver.screenshot();
         const n = ++session.screenshotCount;
         const uri = sessions.saveArtifact(session, 'screenshot', `screenshot-${n}.png`, png, 'image/png', reason);

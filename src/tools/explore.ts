@@ -9,7 +9,7 @@ import type { McpServer } from '@modelcontextprotocol/server';
 import { qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { requireConsent, consumeConsent } from '../consent/consent.js';
 import { blockedDeviceResult, getDriver } from '../session/attach.js';
-import { runExplore } from '../explore/runner.js';
+import { linkExploreStep, runExplore } from '../explore/runner.js';
 import { appendExploreMemory } from '../explore/memory.js';
 import { buildAppMap } from '../appMap/build.js';
 import { mergeFromExploration } from '../services/testSuiteKnowledge.js';
@@ -309,6 +309,7 @@ async function runExploreJob(
       'application/json',
       'exploration screen graph',
     );
+    linkExploreStep(sessions, session, res.stepIndex, graphUri);
     const graphMdUri = sessions.saveArtifact(
       session,
       'explore',

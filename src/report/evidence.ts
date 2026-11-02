@@ -12,6 +12,12 @@ export interface EvidenceNote {
   confidence?: number;
   minConfidence?: number;
   decision?: string;
+  /** Who wrote the note (2.4.0+). Older notes have none and fall back to heuristics. */
+  origin?: string;
+  /** A flow verdict that came from a visual step. */
+  visualStep?: boolean;
+  source?: string;
+  reason?: string;
 }
 
 export interface EvidenceAssessment {
@@ -54,7 +60,9 @@ function isAiVisualWorkflow(workflow: string): boolean {
   return /(^|[_:\-\s])ai[_:\-\s]?visual/i.test(workflow);
 }
 
-export function evidenceKindForNote(note: EvidenceNote): EvidenceKind {
+/** The label the note's own fields give it (method / evidenceKind / verifiedVisually). This is the
+ *  whole rule for agent notes; Swipium's own notes are labeled by origin first. */
+function labelFromFields(note: EvidenceNote): EvidenceKind {
   if (note.evidenceKind === 'structured_locator' || note.method === 'structured') return 'structured_locator';
   if (note.evidenceKind === 'ai_visual_evidence') return 'ai_visual_evidence';
   // An explicit manual_review (qa_visual assert: an agent-asserted screenshot) stays manual
@@ -65,6 +73,31 @@ export function evidenceKindForNote(note: EvidenceNote): EvidenceKind {
     return isAiVisualWorkflow(note.workflow) ? 'ai_visual_evidence' : 'visual_match';
   if (isAiVisualWorkflow(note.workflow)) return 'ai_visual_evidence';
   return 'manual_review';
+}
+
+/** Pre-2.4.0 notes carry no origin: recognise Swipium's own checks by their shape. */
+function looksSwipiumRun(note: EvidenceNote): boolean {
+  return note.workflow === 'launch_smoke' || /^qa_flow_run\b/.test(note.reason ?? '') || /:note$/.test(note.workflow);
+}
+
+export function evidenceKindForNote(note: EvidenceNote): EvidenceKind {
+  switch (note.origin) {
+    case 'flow':
+    case 'flow_note':
+      return note.visualStep ? 'visual_match' : 'structured_locator';
+    case 'smoke':
+      // A visual-only smoke (no UI tree) judged a screenshot, not the tree.
+      return note.method === 'visual' ? labelFromFields(note) : 'structured_locator';
+    case 'explore':
+      return 'structured_locator';
+    case 'agent':
+      return labelFromFields(note);
+  }
+  const fromFields = labelFromFields(note);
+  // Old Swipium notes were filed as manual_review only because nothing labeled them. The heuristic
+  // only lifts them to structured; it never claims a visual match it can't see.
+  if (fromFields === 'manual_review' && note.source !== 'qa_note' && looksSwipiumRun(note)) return 'structured_locator';
+  return fromFields;
 }
 
 export function evidenceAuthority(kind: EvidenceKind): EvidenceAuthority {

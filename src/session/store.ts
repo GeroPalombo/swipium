@@ -143,6 +143,74 @@ export interface TestNote {
   /** 'qa_note': an agent-written claim. A pass claim only counts as testing the app when the session
    *  holds device evidence of its own. Swipium's own notes (smoke, flows, explore) have none. */
   source?: 'qa_note';
+  /** Who wrote the note (2.4.0+). Older notes have none; readers fall back to heuristics
+   *  (report/evidence.ts). 'agent' = qa_note; the others are Swipium's own checks. */
+  origin?: NoteOrigin;
+  /** A flow note whose verdict came from a visual step (assertImage / assertOcrText / assertDiff). */
+  visualStep?: boolean;
+  /** Steps this outcome covers: session.steps indexes [from, to] (inclusive), when known. */
+  stepRange?: [number, number];
+  /** The checkpoint screenshot Swipium captured for this note (artifact kind 'checkpoint'). */
+  checkpointUri?: string;
+  /** Why no checkpoint was captured (sensitive, secure field, no device, timeout, transport failure). */
+  checkpointSkipped?: string;
+}
+
+/** 'flow_note' = a `note:` step inside a flow (a checkpoint the flow author wrote, not the flow verdict). */
+export type NoteOrigin = 'smoke' | 'flow' | 'flow_note' | 'explore' | 'agent';
+
+// Step timeline (2.4.0): one ordered record per thing that happened on the device, so a report can
+// show what was done, in order, with the evidence of each step. Separate from recordedActions (the
+// replay IR for flows/POM): steps also hold failures, flow steps, smoke and notes.
+export type StepSource = 'act' | 'flow' | 'smoke' | 'explore' | 'note';
+export type StepResult = 'ok' | 'failed' | 'no_change';
+export interface StepRecord {
+  /** Monotonic step number for the session (stable across the cap; never reused). */
+  i: number;
+  at: number;
+  durationMs: number;
+  source: StepSource;
+  action: string;
+  /** Short human label: tap "Sign in", type into "Email", flow "login" step 3 ... (secret-safe). */
+  target?: string;
+  result: StepResult;
+  failureCode?: string;
+  /** Visible screen title / foreground owner when known. */
+  screen?: string;
+  screenshotUri?: string;
+  /** Failed steps only: the UI tree at the failure. */
+  dumpUri?: string;
+  /** Why a screenshot was not captured (withheld by the guard, sensitive, transport failure). */
+  screenshotSkipped?: string;
+  /** Flow steps: the flow name. Note steps: the workflow name. */
+  group?: string;
+}
+
+/** Failure codes that mean the device/transport is gone: capturing evidence would only add timeouts. */
+export const TRANSPORT_FAILURE_CODES: ReadonlySet<string> = new Set([
+  'NO_DEVICE',
+  'DEVICE_NOT_READY',
+  'DEVICE_UNRESPONSIVE',
+  'WDA_UNREACHABLE',
+  'STALE_WDA_DEVICE',
+]);
+
+/** Cap for session.steps. */
+export const STEPS_CAP = 500;
+
+/** Apply the step cap: drop the oldest passing steps first; when only failures remain, keep the
+ *  first failure and drop the oldest of the rest. Mutates and returns the list. */
+export function capSteps(steps: StepRecord[], cap = STEPS_CAP): StepRecord[] {
+  while (steps.length > cap) {
+    const passIdx = steps.findIndex((st) => st.result !== 'failed');
+    if (passIdx >= 0) {
+      steps.splice(passIdx, 1);
+      continue;
+    }
+    // Only failures left: keep the first, drop the second-oldest.
+    steps.splice(1, 1);
+  }
+  return steps;
 }
 
 // Action IR: qa_act appends a tagged step here as the agent
@@ -292,9 +360,10 @@ export function serializeGeneratedValues(records: GeneratedValueRecord[]): Gener
  *  paths and numbers are left alone. */
 export function serializeSecretSafe(
   s: Pick<Session, 'secrets' | 'recordedActions' | 'notes' | 'findings' | 'toolErrors'> &
-    Partial<Pick<Session, 'jobs' | 'envChanges' | 'mutations' | 'fixtures'>>,
+    Partial<Pick<Session, 'jobs' | 'envChanges' | 'mutations' | 'fixtures' | 'steps'>>,
 ): {
   recordedActions: RecordedAction[];
+  steps: StepRecord[];
   notes: TestNote[];
   findings: FindingRecord[];
   toolErrors: ToolErrorRecord[];
@@ -310,8 +379,19 @@ export function serializeSecretSafe(
   // Fixture values and seed specs are live config, never persisted (not even redacted): a
   // rehydrated session re-reads them from .swipium/fixtures.json (see fixtures/load.ts).
   const fixtures = fixtureMetadata(s.fixtures ?? []);
+  const steps = s.steps ?? [];
   if (!s.secrets.size)
-    return { recordedActions: s.recordedActions, notes: s.notes, findings: s.findings, toolErrors, jobs, envChanges, mutations, fixtures };
+    return {
+      recordedActions: s.recordedActions,
+      steps,
+      notes: s.notes,
+      findings: s.findings,
+      toolErrors,
+      jobs,
+      envChanges,
+      mutations,
+      fixtures,
+    };
   const redact: Redactor = makeRedactor(s.secrets);
   const r = (v?: string) => (v ? (redact(v) ?? v) : v);
   // Structured records (job results, mutation targets, fixtures): strong secrets scrubbed anywhere,
@@ -319,6 +399,7 @@ export function serializeSecretSafe(
   const structured = generatedOutputRedactor(s.secrets);
   return {
     recordedActions: secretSafeActions(s.recordedActions, s.secrets).actions,
+    steps: steps.map((st) => ({ ...st, target: r(st.target), screen: r(st.screen), group: r(st.group) })),
     notes: secretSafeNotes(s.notes, s.secrets),
     findings: s.findings.map((f) => ({ ...f, detail: r(f.detail) ?? f.detail, evidence: r(f.evidence) })),
     toolErrors: toolErrors.map((t) => ({ ...t, message: r(t.message) ?? t.message })),
@@ -422,6 +503,13 @@ export interface Session {
   notes: TestNote[]; // structured test outcomes (qa_note)
   mutations: MutationRecord[]; // central mutation ledger for consent-bound side effects
   recordedActions: RecordedAction[]; // action IR for qa_generate target:"flow"
+  /** Ordered step timeline for reports (capped by capSteps). Persisted (secret-safe). */
+  steps: StepRecord[];
+  /** Next step number (monotonic; survives the cap). */
+  stepSeq: number;
+  /** qa_report fold marker: the content key of the last run folded into the suite / issue ledger /
+   *  app map, so a re-call with no new activity does not fold again. Persisted. */
+  lastFoldKey?: string;
   toolErrors?: ToolErrorRecord[]; // tool calls that returned an error (bounded), for qa_report tool status
   fixtures: Fixture[]; // declared preconditions
   auth: AuthState; // observed auth state
@@ -518,6 +606,7 @@ export function isTextArtifactMime(mime: string): boolean {
 export function artifactDirectoryName(kind: string): string {
   switch (kind) {
     case 'screenshot':
+    case 'checkpoint': // qa_note checkpoint screenshots (never "reached the app" evidence)
       return 'screenshots';
     case 'recording':
       return 'videos';
@@ -652,6 +741,8 @@ export class SessionStore {
       notes: [],
       mutations: [],
       recordedActions: [],
+      steps: [],
+      stepSeq: 0,
       toolErrors: [],
       fixtures: opts?.fixtures ?? [],
       auth: {},
@@ -765,6 +856,9 @@ export class SessionStore {
         counts: { artifacts: s.artifacts.length, findings: safe.findings.length, notes: safe.notes.length },
         mutations: safe.mutations,
         recordedActions: safe.recordedActions,
+        steps: safe.steps,
+        stepSeq: s.stepSeq,
+        lastFoldKey: s.lastFoldKey,
         toolErrors: safe.toolErrors,
         fixtures: safe.fixtures,
         auth: s.auth,
@@ -920,6 +1014,37 @@ export class SessionStore {
     }
     s.recordedActions.push(ra);
     if (s.recordedActions.length > 300) s.recordedActions.splice(0, s.recordedActions.length - 300);
+    this.persist(s);
+  }
+  /** Append a step to the timeline (capped, failures kept first). Returns the stored record.
+   *  `target`/`screen` are redacted against the session secrets in memory too, so a typed secret
+   *  never shows up in a report even before persistence. */
+  addStep(s: Session, step: Omit<StepRecord, 'i' | 'at'> & { at?: number }): StepRecord {
+    const redact = s.secrets.size ? makeRedactor(s.secrets) : undefined;
+    const r = (v?: string) => (v && redact ? (redact(v) ?? v) : v);
+    const rec: StepRecord = {
+      ...step,
+      i: s.stepSeq ?? s.steps.length,
+      at: step.at ?? Date.now(),
+      durationMs: Math.max(0, Math.round(step.durationMs || 0)),
+      ...(step.target !== undefined ? { target: r(step.target)?.slice(0, 200) } : {}),
+      ...(step.screen !== undefined ? { screen: r(step.screen)?.slice(0, 120) } : {}),
+    };
+    s.stepSeq = rec.i + 1;
+    (s.steps ??= []).push(rec);
+    capSteps(s.steps);
+    this.persist(s);
+    return rec;
+  }
+  /** Attach evidence to a step after the fact (a failure screenshot / dump captured later). */
+  updateStep(
+    s: Session,
+    i: number,
+    patch: Partial<Pick<StepRecord, 'screenshotUri' | 'dumpUri' | 'screenshotSkipped' | 'result' | 'failureCode'>>,
+  ): void {
+    const st = (s.steps ?? []).find((x) => x.i === i);
+    if (!st) return;
+    Object.assign(st, patch);
     this.persist(s);
   }
   /** Record a phase-timing marker the first time it happens. */
@@ -1123,6 +1248,14 @@ export class SessionStore {
         notes: st.notes ?? [],
         mutations: st.mutations ?? [],
         recordedActions: st.recordedActions ?? [],
+        steps: Array.isArray(st.steps) ? st.steps : [],
+        stepSeq:
+          typeof st.stepSeq === 'number'
+            ? st.stepSeq
+            : Array.isArray(st.steps) && st.steps.length
+              ? Math.max(...st.steps.map((x: StepRecord) => x.i ?? 0)) + 1
+              : 0,
+        lastFoldKey: typeof st.lastFoldKey === 'string' ? st.lastFoldKey : undefined,
         toolErrors: st.toolErrors ?? [],
         driverKind: typeof st.driverKind === 'string' ? st.driverKind : undefined,
         wdaUrl: typeof st.wdaUrl === 'string' ? st.wdaUrl : undefined,

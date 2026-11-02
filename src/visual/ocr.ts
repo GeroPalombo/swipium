@@ -11,6 +11,9 @@ import {
   type VisualProviderCommand,
 } from './provider.js';
 import type { Driver } from '../drivers/Driver.js';
+import type { Session } from '../session/store.js';
+import type { RawNode } from '../snapshot/parse.js';
+import { CaptureWithheldError, canCaptureScreenshot } from '../lib/captureGuard.js';
 
 export interface OcrRegion {
   text: string;
@@ -108,7 +111,22 @@ export function parseOcrOutput(stdout: string): { text: string; regions: OcrRegi
   }
 }
 
-export async function runOcr(driver: Driver, root: string, command: VisualProviderCommand): Promise<OcrResult> {
+/**
+ * Screenshot > (mask) > OCR provider. The provider is an outside program, so with `guard.session`
+ * the capture guard runs first and a sensitive session / secure field throws CaptureWithheldError
+ * (no pixels captured or passed on). qa_visual runs its own check (with force:true) and omits it.
+ */
+export async function runOcr(
+  driver: Driver,
+  root: string,
+  command: VisualProviderCommand,
+  guard?: { session: Session; nodes?: RawNode[] },
+): Promise<OcrResult> {
+  if (guard) {
+    const verdict = await canCaptureScreenshot(guard.session, driver, { nodes: guard.nodes });
+    if (!verdict.ok) throw new CaptureWithheldError(verdict);
+  }
+  // capture-guard: guarded by canCaptureScreenshot above (or by the caller: qa_visual)
   const png = await driver.screenshot();
   const coordinateSpace = await captureCoordinateSpace(driver, png);
   // Real (symlink-resolved) temp path: tesseract/leptonica cannot open macOS /tmp/... paths.

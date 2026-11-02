@@ -22,6 +22,9 @@ import { isAbortError, throwIfCancelled } from '../lib/abortScope.js';
 import { AUTOMATION_DRIFT_NOTE, FAILURES } from '../oracle/failures.js';
 import { WDA_SESSION_CREATE_MS, withWdaCall } from '../lib/wda.js';
 import { isDeviceGoneError } from '../lib/deviceGone.js';
+import { captureGuardSync } from '../lib/captureGuard.js';
+import { currentScreenTitle } from '../lib/steps.js';
+import type { RawNode } from '../snapshot/parse.js';
 
 /** Per-request WDA timeout once WDA returned no UI source for the whole render wait
  *  (one re-probe, then the health check / screenshot), so a hung WDA can't stretch the baseline. */
@@ -131,7 +134,22 @@ export function classifyFlowFailure(
 }
 
 export async function runSmoke(sessions: SessionStore, session: Session, d: Driver, opts: SmokeOptions = {}): Promise<SmokeResult> {
-  const note = (n: Omit<TestNote, 'at'>) => sessions.addNote(session, { at: Date.now(), ...n });
+  // Smoke's own notes; a saved flow it replays is noted as a flow (origin 'flow') below.
+  const note = (n: Omit<TestNote, 'at'>) => sessions.addNote(session, { at: Date.now(), origin: 'smoke', ...n });
+  const smokeStarted = Date.now();
+  // One timeline step for the launch + health baseline.
+  const launchStep = (result: 'ok' | 'failed', failureCode?: string, screenshotUri?: string, screenshotSkipped?: string) =>
+    sessions.addStep(session, {
+      source: 'smoke',
+      action: 'launch',
+      target: `launch + health${session.appId ? ` ${session.appId}` : ''}`,
+      result,
+      ...(failureCode ? { failureCode } : {}),
+      durationMs: Date.now() - smokeStarted,
+      screen: currentScreenTitle(session),
+      ...(screenshotUri ? { screenshotUri } : {}),
+      ...(screenshotSkipped ? { screenshotSkipped } : {}),
+    });
   const doLaunch = opts.launch ?? !!session.appId;
   const baseline: Record<string, unknown> = {};
   let cancelled = false;
@@ -194,11 +212,13 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
     const hungForMs = Date.now() - launchedAt; // settle + render wait + re-probe: the real wait
     const boundedWda = <T>(fn: () => Promise<T>): Promise<T> => (wdaHung ? withWdaCall({ timeoutMs: WDA_HUNG_PROBE_MS }, fn) : fn());
     let quality: string | undefined;
+    let screenNodes: RawNode[] | undefined;
     if (session.mode !== 'visual-fallback' && !wdaHung) {
       try {
         // The render wait's last tree is this screen: don't pay another (slow on iOS) dump for it.
         const parsed = adoptSnapshot(session, parseSnapshot(render?.xml ?? (await d.dumpXml())));
         quality = parsed.quality.verdict;
+        screenNodes = parsed.allNodes;
       } catch {
         /* visual-only screen, health + screenshot still run */
       }
@@ -245,12 +265,15 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
       flowsBlockedTag = fatalApp ? 'launch failed' : 'app not rendered';
     }
     let shotUri: string | undefined;
-    // Sensitive mode never persists screenshots. The baseline note says so instead.
-    const screenshotSkipped = session.sensitive ? 'screenshot skipped: sensitive mode' : undefined;
+    // A sensitive session or a secure field on the launch screen: no pixels, the baseline note says
+    // so instead. The guard reads the tree just dumped (no extra device call against a hung WDA).
+    const guard = captureGuardSync(session, screenNodes);
+    const screenshotSkipped = guard.ok ? undefined : guard.note;
     if (!screenshotSkipped) {
       try {
         // A hung WDA can't screenshot either: simctl captures the simulator screen without it.
         const hungUdid = wdaHung && d.kind === 'wda' ? d.currentDevice() : undefined;
+        // capture-guard: guarded by captureGuardSync above
         const png = hungUdid ? await sim.screenshot(hungUdid) : await boundedWda(() => d.screenshot());
         shotUri = sessions.saveArtifact(
           session,
@@ -316,6 +339,24 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
             : {}),
       artifactUris: shotUri ? [shotUri] : undefined,
     });
+    const launchFailureCode =
+      outcome === 'pass'
+        ? undefined
+        : metroRequired
+          ? 'METRO_REQUIRED'
+          : toolFailure
+            ? 'WDA_UNREACHABLE'
+            : blankLaunch && outcome === 'blocked'
+              ? 'BLANK_SCREEN'
+              : outcome === 'fail'
+                ? 'APP_LAUNCH_FAILED'
+                : undefined;
+    const step = launchStep(outcome === 'pass' ? 'ok' : 'failed', launchFailureCode, shotUri, screenshotSkipped);
+    const launchNote = session.notes.at(-1);
+    if (launchNote?.workflow === 'launch_smoke') {
+      launchNote.stepRange = [step.i, step.i];
+      sessions.persist(session);
+    }
     baseline.launch = {
       outcome,
       nativeHealth: health.nativeHealthy ? 'ok' : health.nativeStatus,
@@ -336,7 +377,15 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
       note({ workflow: 'launch_smoke', outcome: 'skipped', category: 'intentionally_skipped', reason: CANCELLED_REASON });
       baseline.launch = { outcome: 'skipped', cancelled: true };
     } else {
-      note({ workflow: 'launch_smoke', outcome: 'fail', category: 'mcp_limitation', reason: `baseline failed: ${String(e)}` });
+      const offline = /NO_DEVICE/.test(String(e));
+      const step = launchStep('failed', offline ? 'NO_DEVICE' : 'UNKNOWN');
+      note({
+        workflow: 'launch_smoke',
+        outcome: 'fail',
+        category: 'mcp_limitation',
+        reason: `baseline failed: ${String(e)}`,
+        stepRange: [step.i, step.i],
+      });
       baseline.launch = { outcome: 'fail', error: String(e) };
     }
   }
@@ -445,6 +494,9 @@ export async function runSmoke(sessions: SessionStore, session: Session, d: Driv
             }
           : {}),
         artifactUris: failShot ? [failShot] : undefined,
+        origin: 'flow',
+        ...(r.visualStep ? { visualStep: true } : {}),
+        ...(r.stepRange ? { stepRange: r.stepRange } : {}),
       });
       flowResults.push({ name: f.name, passed: r.passed, failedAtStep: r.failedAtStep, reason: r.reason });
       // WDA went unreachable during this flow: the remaining flows would each wait

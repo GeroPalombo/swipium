@@ -52,7 +52,7 @@ Usage:
                               Scaffold Flow V2 templates under .swipium/flows (--force overwrites)
   swipium suite <lint|compile|init> [projectRoot] [--suite suites/smoke.yaml]
                               options: [--strict] (lint: warnings fail too) [--force] (compile: overwrite hand edits)
-  swipium report --format junit|sarif|github-summary|markdown|json
+  swipium report --format junit|sarif|github-summary|markdown|json|html
                               options: [--latest | --session <id> | --report <file>] [--root <dir>]
                                        [--out <file>] [--fail-on-gate] [--max-age <min>]
   swipium gc [--dry-run] [--days N] [--keep N]

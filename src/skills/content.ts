@@ -16,7 +16,7 @@ export const SKILL_DESCRIPTION =
 /** The canonical autopilot loop (prompts splice it in after their own first call). */
 export const LOOP_STEPS = [
   `If the result says state:"running", poll qa_job_status {sessionId, jobId, waitMs:${RECOMMENDED_JOB_WAIT_MS}} until status is not "running".`,
-  'completed: read report.md (qa_get_artifact on the report URI in nextRecommendedAction), then stop unless the user wants more.',
+  'completed: read report.md (qa_get_artifact on the report URI in nextRecommendedAction), give the user the reportHtmlPath (report.html opens in any browser, offline), then stop unless the user wants more.',
   'needs_input: relay exactly the one returned question, then make the returned `resume` call (qa_continue_from_blocker). It starts the resumed job itself when no new consent is needed; poll that jobId.',
   'blocked / unsafe: relay failureCode, owner and the fix the result carries (nextRecommendedAction). A build failure is not a test failure.',
   'requiresConsent: with MCP elicitation the user is asked directly. Otherwise show it to the user and re-call with consentId + approve:true only after they agree. CONSENT_DECLINED / _CANCELLED / _REFUSED: nothing ran, do not retry without asking.',
@@ -51,7 +51,7 @@ export const APP_CONTROL =
 export const CI_CLI =
   'CI and terminal (no MCP session needed): `npx swipium scan` (inspect the project, scaffold .swipium/), ' +
   '`npx swipium suite lint|compile` (audit or compile the generated suite into flows), `npx swipium verify` (server ' +
-  'self-check), `npx swipium report --latest --format junit|sarif|github-summary|markdown [--fail-on-gate]` (export ' +
+  'self-check), `npx swipium report --latest --format html|junit|github-summary|markdown [--fail-on-gate]` (export ' +
   'the last report).';
 
 export const SKILL_MD = `---

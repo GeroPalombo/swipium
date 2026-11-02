@@ -1,9 +1,10 @@
 // Minimal zero-dependency PNG decode. Device screenshots come from
 // `screencap -p` as non-interlaced 8-bit truecolor(+alpha) PNGs, so we support exactly that
 // (color types 2 and 6, bit depth 8, interlace 0) and error clearly on anything else. Uses
-// Node's built-in zlib. No image library, no third-party code.
+// Node's built-in zlib. No image library, no third-party code. Also a tiny RGB encoder and a
+// box-filter downscale for report thumbnails (bottom of file).
 
-import { inflateSync } from 'node:zlib';
+import { crc32, deflateSync, inflateSync } from 'node:zlib';
 
 export interface DecodedImage {
   width: number;
@@ -60,8 +61,20 @@ export function decodePng(buf: Buffer): DecodedImage {
     throw new Error(`unsupported PNG (bitDepth=${bitDepth}, colorType=${colorType}, interlace=${interlace}); expected 8-bit truecolor`);
   }
   const channels: 3 | 4 = colorType === 6 ? 4 : 3;
-  const raw = inflateSync(Buffer.concat(idat));
   const stride = width * channels;
+  // Cap the inflate at exactly what the header promises: a tiny file can otherwise inflate to
+  // hundreds of MB (decompression bomb) before we ever look at it.
+  const expected = height * (stride + 1);
+  if (width < 1 || height < 1) throw new Error(`corrupt PNG: ${width}x${height}`);
+  let raw: Buffer;
+  try {
+    raw = inflateSync(Buffer.concat(idat), { maxOutputLength: expected });
+  } catch (e) {
+    throw new Error(`corrupt PNG: image data does not inflate to ${width}x${height} (${(e as Error).message})`, {
+      cause: e,
+    });
+  }
+  if (raw.length !== expected) throw new Error(`corrupt PNG: image data is ${raw.length} bytes, expected ${expected}`);
   const out = Buffer.allocUnsafe(height * stride);
 
   // Un-filter each scanline (PNG filter types 0..4), reconstructing in place.
@@ -110,4 +123,109 @@ export function toGray(img: DecodedImage): Uint8Array {
     g[i] = (data[p] * 0.299 + data[p + 1] * 0.587 + data[p + 2] * 0.114) | 0;
   }
   return g;
+}
+
+// --- Encode + downscale (report thumbnails) ---
+
+function pngChunk(type: string, data: Buffer): Buffer {
+  const out = Buffer.allocUnsafe(12 + data.length);
+  out.writeUInt32BE(data.length, 0);
+  out.write(type, 4, 'ascii');
+  data.copy(out, 8);
+  out.writeUInt32BE(crc32(out.subarray(4, 8 + data.length)), 8 + data.length);
+  return out;
+}
+
+/** Encode 8-bit RGB pixels (row-major, 3 bytes per pixel) as a PNG. Every row uses the Sub
+ *  filter, which compresses flat UI screenshots well without per-row filter selection. */
+export function encodePngRgb(width: number, height: number, rgb: Uint8Array): Buffer {
+  const stride = width * 3;
+  if (rgb.length < stride * height) throw new Error('encodePngRgb: pixel buffer too small');
+  const raw = Buffer.allocUnsafe(height * (stride + 1));
+  for (let y = 0; y < height; y++) {
+    const o = y * (stride + 1);
+    const s = y * stride;
+    raw[o] = 1; // Sub
+    for (let x = 0; x < stride; x++) {
+      raw[o + 1 + x] = (rgb[s + x] - (x >= 3 ? rgb[s + x - 3] : 0)) & 0xff;
+    }
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // truecolor RGB
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', deflateSync(raw)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+// Refuse absurd dimensions before allocating: a real phone screenshot is well under this.
+const MAX_DOWNSCALE_PIXELS = 40_000_000;
+
+/** Box-filter (area average) downscale to at most `maxWidth` px wide, keeping the aspect ratio,
+ *  re-encoded as RGB with alpha composited on white. Images already narrow enough are still
+ *  re-encoded so the output is consistently small. Returns null for anything the decoder can't
+ *  handle (16-bit, interlaced, palette, corrupt); never throws. */
+export function downscalePng(png: Buffer, maxWidth: number): Buffer | null {
+  try {
+    const size = pngSize(png);
+    if (!size || size.width < 1 || size.height < 1 || size.width * size.height > MAX_DOWNSCALE_PIXELS) return null;
+    const img = decodePng(png);
+    const { width: w, height: h, channels, data } = img;
+    if (data.length < w * h * channels) return null;
+    const ow = Math.max(1, Math.min(Math.floor(maxWidth), w));
+    const oh = Math.max(1, Math.round((h * ow) / w));
+
+    // Source column > output column, and the number of source columns per output column.
+    const colOut = new Uint32Array(w);
+    for (let x = 0; x < w; x++) colOut[x] = Math.min(ow - 1, Math.floor((x * ow) / w));
+    const colCount = new Uint32Array(ow);
+    for (let x = 0; x < w; x++) colCount[colOut[x]]++;
+
+    const out = new Uint8Array(ow * oh * 3);
+    const acc = new Float64Array(ow * 3);
+    let sy = 0;
+    for (let oy = 0; oy < oh; oy++) {
+      const yEnd = Math.max(sy + 1, Math.min(h, Math.round(((oy + 1) * h) / oh)));
+      acc.fill(0);
+      for (let y = sy; y < yEnd; y++) {
+        let p = y * w * channels;
+        for (let x = 0; x < w; x++, p += channels) {
+          let r = data[p];
+          let g = data[p + 1];
+          let b = data[p + 2];
+          if (channels === 4) {
+            const a = data[p + 3];
+            if (a !== 255) {
+              const inv = 255 - a;
+              r = (r * a + 255 * inv) / 255;
+              g = (g * a + 255 * inv) / 255;
+              b = (b * a + 255 * inv) / 255;
+            }
+          }
+          const o = colOut[x] * 3;
+          acc[o] += r;
+          acc[o + 1] += g;
+          acc[o + 2] += b;
+        }
+      }
+      const rows = yEnd - sy;
+      const base = oy * ow * 3;
+      for (let ox = 0; ox < ow; ox++) {
+        const n = colCount[ox] * rows;
+        const o = ox * 3;
+        out[base + o] = Math.round(acc[o] / n);
+        out[base + o + 1] = Math.round(acc[o + 1] / n);
+        out[base + o + 2] = Math.round(acc[o + 2] / n);
+      }
+      sy = yEnd;
+    }
+    return encodePngRgb(ow, oh, out);
+  } catch {
+    return null;
+  }
 }

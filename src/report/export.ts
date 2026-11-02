@@ -7,6 +7,7 @@
 // any format escapes it, so XML/JSON/Markdown escaping can never hide a secret from redaction.
 
 import { createHash } from 'node:crypto';
+import { stableHash as contentHash } from '../lib/stableHash.js';
 import type { AutomationReadinessStandard, ReadinessLabel } from './readiness.js';
 import type { FlakeClassification } from './flake.js';
 import type { FlowVerdict, PolicyDecision } from './policy.js';
@@ -15,6 +16,7 @@ import { FAILURES } from '../oracle/failures.js';
 import { scrubVolatile } from '../issues/fingerprint.js';
 import { uniqueKey, type Redactor } from '../lib/redact.js';
 import type { SarifSourceMap } from './sarifSources.js';
+import { pickNotTestedLog } from './logTail.js';
 
 export interface ReportNote {
   workflow: string;
@@ -36,6 +38,136 @@ export interface ReportNote {
   /** An agent's pass claim nothing on the device backs (services/report.ts). Rendered as
    *  skipped / "pass (unverified)", never as a passing test. */
   unverified?: boolean;
+  /** Who wrote it (2.4.0+): smoke | flow | flow_note | explore | agent. Absent on older reports. */
+  origin?: string;
+  /** Flow verdict came from a visual step. */
+  visualStep?: boolean;
+  /** session.steps numbers [from, to] this outcome covers. */
+  stepRange?: [number, number];
+  /** Evidence URIs (checkpoint screenshot, failure screenshot/dump, explicit artifactUris) that resolve
+   *  to this session's artifacts. */
+  evidence?: string[];
+  /** The other attempts of the same workflow: earlier ones this one replaced, and later
+   *  blocked / skipped / not_applicable ones that could not replace it. */
+  attempts?: Array<{ outcome: ReportNote['outcome']; at?: number; reason?: string }>;
+  /** The attempts disagreed (a fail and a pass). */
+  flaky?: boolean;
+  /** A pass whose step range holds a high crash/ANR/app-error finding or a failed flow/smoke step. */
+  contradicted?: boolean;
+  at?: number;
+  /** Attempt group id, hashed from the attempt kind and the RAW workflow key before redaction, so
+   *  two workflows whose names redact to the same text still group apart. Absent on older reports. */
+  attemptKey?: string;
+  /** Another attempt of the same workflow is the one that counts (report.json keeps every attempt). */
+  superseded?: boolean;
+}
+
+/** Which attempts may replace each other: Swipium runs replace Swipium runs, agent notes replace
+ *  agent notes. Explore notes and in-flow note steps (null) never replace and are never replaced. */
+export function attemptKind(n: Pick<ReportNote, 'origin' | 'source' | 'workflow' | 'reason'>): 'swipium' | 'agent' | null {
+  switch (n.origin) {
+    case 'smoke':
+    case 'flow':
+      return 'swipium';
+    case 'agent':
+      return 'agent';
+    case 'explore':
+    case 'flow_note':
+      return null;
+  }
+  // Pre-2.4.0 notes carry no origin.
+  if (n.source === 'qa_note') return 'agent';
+  if (n.workflow === 'launch_smoke' || /^qa_flow_run\b/.test(n.reason ?? '')) return 'swipium';
+  return null;
+}
+
+/** Workflow identity for latest-wins: trimmed, case-folded name. */
+export function workflowKey(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+/** Stable attempt group id for a note, computed on the raw (unredacted) name. Undefined for notes
+ *  that never group (explore, in-flow notes). */
+export function computeAttemptKey(n: Pick<ReportNote, 'origin' | 'source' | 'workflow' | 'reason'>): string | undefined {
+  const kind = attemptKind(n);
+  return kind ? contentHash([kind, workflowKey(n.workflow)]).slice(0, 16) : undefined;
+}
+
+/** A verdict that can replace an earlier attempt. Blocked / skipped / not_applicable say the
+ *  workflow did not run to a verdict, so they never hide an earlier pass or fail. */
+function isDefinitive(n: Pick<ReportNote, 'outcome'>): boolean {
+  return n.outcome === 'pass' || n.outcome === 'fail';
+}
+
+/** Per attempt group (same kind + workflow key), which note counts: the latest definitive one, else
+ *  the latest one. Returns the notes in order with the counting note annotated (attempts, flaky)
+ *  and every other note of a multi-attempt group replaced by null. */
+function resolveAttempts<T extends ReportNote>(notes: readonly T[]): Array<T | null> {
+  const groups = new Map<string, number[]>();
+  notes.forEach((n, idx) => {
+    const kind = attemptKind(n);
+    if (!kind) return;
+    const key = n.attemptKey ? `k:${n.attemptKey}` : `${kind}:${workflowKey(n.workflow)}`;
+    (groups.get(key) ?? groups.set(key, []).get(key)!).push(idx);
+  });
+  const out: Array<T | null> = [...notes];
+  for (const idxs of groups.values()) {
+    if (idxs.length < 2) continue;
+    const definitive = idxs.filter((i) => isDefinitive(notes[i]));
+    const win = (definitive.length ? definitive : idxs).at(-1)!;
+    const others = idxs.filter((i) => i !== win).map((i) => notes[i]);
+    const outcomes = new Set(idxs.map((i) => notes[i].outcome));
+    for (const i of idxs) out[i] = null;
+    // attempts is rebuilt from the raw notes every time (never appended to), so re-collapsing a saved
+    // report that already carries attempts on its counting entry gives the same result.
+    const { superseded: _superseded, ...winner } = notes[win];
+    out[win] = {
+      ...(winner as T),
+      attempts: others.map((p) => ({
+        outcome: p.outcome,
+        ...(p.at !== undefined ? { at: p.at } : {}),
+        ...(p.reason ? { reason: p.reason } : {}),
+      })),
+      ...(outcomes.has('pass') && outcomes.has('fail') ? { flaky: true } : {}),
+    };
+  }
+  return out;
+}
+
+/**
+ * Latest attempt wins per workflow (and per attempt kind). The ONE helper every consumer uses
+ * (release gate, risk/fail counts, JUnit, markdown, html, summaries) so they always agree.
+ * Only a definitive verdict (pass or fail) replaces an earlier attempt: a later blocked / skipped /
+ * not_applicable (a budget skip, a cancelled smoke, an agent's n/a) keeps the latest pass or fail
+ * as the counting outcome and is listed in its `attempts`. With no definitive attempt, the latest
+ * one counts. Order is preserved at the position of the counting attempt. `flaky` is set when the
+ * attempts include both a pass and a fail. Findings are not notes and are never touched here.
+ */
+export function latestAttempts<T extends ReportNote>(notes: readonly T[]): T[] {
+  return resolveAttempts(notes).filter((n): n is T => n !== null);
+}
+
+/** Every note kept, in order, with `attempts` / `flaky` set on the one that counts per workflow and
+ *  `superseded: true` on the others (what report.json saves; latestAttempts on the result gives the
+ *  same verdicts). */
+export function annotateAttempts<T extends ReportNote>(notes: readonly T[]): T[] {
+  return resolveAttempts(notes).map((n, i) => n ?? { ...notes[i], superseded: true });
+}
+/** One step of the timeline (mirror of session StepRecord, as saved in report.json). */
+export interface ReportStep {
+  i: number;
+  at: number;
+  durationMs: number;
+  source: string;
+  action: string;
+  target?: string;
+  result: 'ok' | 'failed' | 'no_change' | string;
+  failureCode?: string;
+  screen?: string;
+  screenshotUri?: string;
+  dumpUri?: string;
+  screenshotSkipped?: string;
+  group?: string;
 }
 export interface ReportFinding {
   severity: string;
@@ -51,6 +183,8 @@ export interface ReportFinding {
   screenshotUri?: string;
   /** Identical occurrences this (deduplicated) finding stands for (see report/findingsDedupe.ts). */
   count?: number;
+  logUri?: string;
+  at?: number;
 }
 export interface ReportMutation {
   id?: string;
@@ -144,7 +278,17 @@ export interface ReportData {
       screenshotCount?: number | null;
     };
   };
-  artifacts: Array<{ uri: string; kind: string; label?: string }>;
+  /** 2.4.0+: `path` is relative to the session folder (never absolute: CI uploads must not carry
+   *  $HOME), `createdAt` epoch ms, `redaction` as stored ('not-applied' = pixels may be sensitive). */
+  artifacts: Array<{ uri: string; kind: string; label?: string; path?: string; createdAt?: number; redaction?: string }>;
+  /** Report JSON schema: 2 since 2.4.0; absent on older reports (treat as 1). */
+  schemaVersion?: number;
+  /** Ordered step timeline (2.4.0+). Absent on older reports and stripped from inline JSON results. */
+  steps?: ReportStep[];
+  /** URI of the saved report.json, set on inline results that leave out `steps`. */
+  stepsUri?: string;
+  /** Another job of this session was still running when the report was made. */
+  partial?: { jobId: string; kind: string } | null;
   generatedValues?: Array<{
     fixture: string;
     field: string;
@@ -175,13 +319,83 @@ export function redactReportData<T>(value: T, redact: Redactor): T {
       const out: Record<string, unknown> = {};
       // Two keys that redact to the same spelling (e.g. "hunter22" and a literal "«redacted»")
       // are disambiguated with a `#2` suffix instead of one silently overwriting the other.
-      for (const [k, val] of Object.entries(v as Record<string, unknown>)) out[uniqueKey(out, redact(k) ?? k)] = walk(val);
+      for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+        // attemptKey is a hash, not text: redacting it could split an attempt group.
+        out[uniqueKey(out, redact(k) ?? k)] = k === 'attemptKey' && typeof val === 'string' ? val : walk(val);
+      }
       return out;
     }
     return v;
   };
   return walk(value) as T;
 }
+
+/** Steps of the timeline an outcome covers (its stepRange, inclusive, by step number). Empty on
+ *  reports without steps or outcomes without a range. */
+export function stepsInRange(r: Pick<ReportData, 'steps'>, n: Pick<ReportNote, 'stepRange'>): ReportStep[] {
+  const range = n.stepRange;
+  if (!range || !r.steps?.length) return [];
+  return r.steps.filter((s) => s.i >= range[0] && s.i <= range[1]);
+}
+
+/** Where a failed outcome failed: the first failed timeline step in its range, else (older reports)
+ *  the first failed flow step the note recorded. */
+export function failingStep(
+  r: Pick<ReportData, 'steps'>,
+  n: ReportNote,
+): { i: number; label: string; failureCode?: string; screen?: string; screenshotUri?: string } | undefined {
+  const st = stepsInRange(r, n).find((s) => s.result === 'failed');
+  if (st) {
+    return {
+      i: st.i,
+      label: st.target ?? st.action,
+      ...(st.failureCode ? { failureCode: st.failureCode } : {}),
+      ...(st.screen ? { screen: st.screen } : {}),
+      ...(st.screenshotUri ? { screenshotUri: st.screenshotUri } : {}),
+    };
+  }
+  const fs = n.steps?.find((s) => !s.ok);
+  if (fs) return { i: fs.index, label: fs.summary ?? fs.kind, ...(fs.failureCode ? { failureCode: fs.failureCode } : {}) };
+  return undefined;
+}
+
+/** Duration of an outcome in ms: its timeline steps, else its recorded flow steps, else 0. */
+function outcomeDurationMs(r: Pick<ReportData, 'steps'>, n: ReportNote): number {
+  const inRange = stepsInRange(r, n);
+  const ms = inRange.length
+    ? inRange.reduce((sum, s) => sum + (s.durationMs ?? 0), 0)
+    : (n.steps?.reduce((sum, s) => sum + (s.durationMs ?? 0), 0) ?? 0);
+  return Number.isFinite(ms) ? Math.max(0, Math.round(ms)) : 0;
+}
+
+/** Evidence of an outcome: the linked evidence (2.4.0+), else the URIs the note carried. */
+export function outcomeEvidence(n: Pick<ReportNote, 'evidence' | 'artifactUris'>): string[] {
+  return n.evidence ?? n.artifactUris ?? [];
+}
+
+/** A pass or fail with nothing captured behind it renders "(no evidence)". */
+function lacksEvidence(n: ReportNote): boolean {
+  return (n.outcome === 'pass' || n.outcome === 'fail') && outcomeEvidence(n).length === 0;
+}
+
+/** "fail, pass" for a flaky outcome: earlier attempts, then the one that counts. */
+function attemptsText(n: Pick<ReportNote, 'attempts' | 'outcome'>): string {
+  return [...(n.attempts ?? []).map((a) => a.outcome), n.outcome].join(', ');
+}
+
+/** Workflow outcomes as every renderer counts them: latest attempt per workflow. */
+function latestTally(r: Pick<ReportData, 'testOutcomes'>): Array<[string, number]> {
+  const out = new Map<string, number>();
+  for (const n of latestAttempts(r.testOutcomes)) {
+    const key = n.outcome === 'pass' && n.unverified ? 'pass (unverified)' : n.outcome;
+    out.set(key, (out.get(key) ?? 0) + 1);
+  }
+  return [...out.entries()];
+}
+
+/** The playwright export is kept for compatibility only. */
+export const PLAYWRIGHT_DEPRECATION =
+  'The playwright export is deprecated and will be removed in a future release; use junit or the HTML report.';
 
 type PlaywrightStatus = 'passed' | 'failed' | 'skipped' | 'timedOut' | 'interrupted';
 
@@ -191,12 +405,8 @@ function playwrightStatus(outcome: ReportNote['outcome']): PlaywrightStatus {
   return 'skipped';
 }
 
-function playwrightDuration(n: ReportNote): number {
-  return Math.round(n.steps?.reduce((sum, s) => sum + (s.durationMs ?? 0), 0) ?? 0);
-}
-
 function playwrightAttachments(n: ReportNote): Array<{ name: string; contentType: string; path: string }> {
-  return (n.artifactUris ?? []).map((uri, i) => ({
+  return outcomeEvidence(n).map((uri, i) => ({
     name: `artifact-${i + 1}`,
     contentType: uri.match(/\.(png|jpg|jpeg|webp)$/i) ? 'image/*' : 'application/octet-stream',
     path: uri,
@@ -207,8 +417,8 @@ export function toPlaywrightJson(r: ReportData): string {
   const generatedAt = new Date().toISOString();
   const evidenceTaxonomy = r.evidenceTaxonomy ?? evidenceTaxonomyForNotes(r.testOutcomes);
   const evidenceByWorkflow = new Map(evidenceTaxonomy.assessments.map((a) => [a.workflow, a]));
-  // The not-tested marker is a failed case, as in JUnit and SARIF: a run that tested nothing is red.
-  const outcomes = [...r.testOutcomes, ...notReachedOutcomes(r)];
+  // The not-tested marker is a failed case, as in JUnit: a run that tested nothing is red.
+  const outcomes = [...latestAttempts(r.testOutcomes), ...notReachedOutcomes(r)];
   const specs = outcomes.map((n) => {
     const status = n.unverified ? 'skipped' : playwrightStatus(n.outcome); // a claim is not a pass
     const message =
@@ -228,7 +438,7 @@ export function toPlaywrightJson(r: ReportData): string {
             {
               workerIndex: 0,
               status,
-              duration: playwrightDuration(n),
+              duration: outcomeDurationMs(r, n),
               errors: status === 'failed' ? [{ message }] : [],
               attachments: playwrightAttachments(n),
               stdout: [],
@@ -241,6 +451,10 @@ export function toPlaywrightJson(r: ReportData): string {
           annotations: [
             ...(status === 'skipped' ? [{ type: n.outcome, description: message }] : []),
             ...(evidence?.warning ? [{ type: 'evidence', description: evidence.warning }] : []),
+            ...(n.flaky ? [{ type: 'flaky', description: `attempts: ${attemptsText(n)}` }] : []),
+            ...(n.contradicted
+              ? [{ type: 'contradicted', description: 'a crash, ANR, app error or failed Swipium step falls inside this pass' }]
+              : []),
           ],
         },
       ],
@@ -292,6 +506,7 @@ export function toPlaywrightJson(r: ReportData): string {
   const skipped = specs.filter((s) => s.tests[0].status === 'skipped').length;
   const payload = {
     schema: 'swipium.playwright.report.v1',
+    deprecated: PLAYWRIGHT_DEPRECATION,
     generatedAt,
     config: {
       rootDir: '.',
@@ -325,7 +540,7 @@ export function toPlaywrightJson(r: ReportData): string {
       expected: allSpecs.length - failed - skipped,
       skipped,
       unexpected: failed,
-      flaky: r.flakeClassification?.classification === 'flaky' ? 1 : 0,
+      flaky: Math.max(outcomes.filter((n) => n.flaky).length, r.flakeClassification?.classification === 'flaky' ? 1 : 0),
       duration: Math.round(r.phaseTimings.totalMs ?? 0),
     },
     errors: failed ? [{ message: r.executiveSummary.nextAction }] : [],
@@ -336,11 +551,17 @@ export function toPlaywrightJson(r: ReportData): string {
 const RISK_BADGE: Record<string, string> = { ship: '🟢 SHIP', caution: '🟡 CAUTION', block: '🔴 BLOCK' };
 const OUTCOME_MARK: Record<string, string> = { pass: '✅', fail: '❌', blocked: '⛔', skipped: '⏭️', not_applicable: '➖' };
 
-/** A workflow outcome as shown to people: an unverified pass claim reads "pass (unverified)". */
-function outcomeLabel(n: Pick<ReportNote, 'outcome' | 'unverified'>): string {
-  return n.outcome === 'pass' && n.unverified
-    ? `${OUTCOME_MARK.skipped} pass (unverified)`
-    : `${OUTCOME_MARK[n.outcome] ?? ''} ${n.outcome}`;
+/** A workflow outcome as shown to people: an unverified pass claim reads "pass (unverified)", a pass
+ *  that its own steps contradict reads "pass (contradicted)", and a retried workflow whose attempts
+ *  disagreed adds "flaky (attempts: fail, pass)". */
+function outcomeLabel(n: Pick<ReportNote, 'outcome' | 'unverified' | 'contradicted' | 'flaky' | 'attempts'>): string {
+  const base =
+    n.outcome === 'pass' && n.unverified
+      ? `${OUTCOME_MARK.skipped} pass (unverified)`
+      : n.outcome === 'pass' && n.contradicted
+        ? '⚠️ pass (contradicted)'
+        : `${OUTCOME_MARK[n.outcome] ?? ''} ${n.outcome}`;
+  return n.flaky ? `${base} flaky (attempts: ${attemptsText(n)})` : base;
 }
 
 /** WebDriverAgent returning no UI source is a tool / environment failure
@@ -350,25 +571,18 @@ export function isToolReportFinding(f: Pick<ReportFinding, 'kind' | 'failureCode
   return f.kind === 'wda_unreachable' || f.failureCode === 'WDA_UNREACHABLE';
 }
 
-/** Outcome tally with unverified pass claims counted apart (no "pass=1" for a claim). */
-function displayOutcomeTally(r: Pick<ReportData, 'outcomeTally' | 'testOutcomes'>): Array<[string, number]> {
-  const unverified = r.testOutcomes.filter((n) => n.outcome === 'pass' && n.unverified).length;
-  const out: Array<[string, number]> = Object.entries(r.outcomeTally).map(([k, v]) => [k, k === 'pass' ? v - unverified : v]);
-  return [...out.filter(([, v]) => v > 0), ...(unverified ? ([['pass (unverified)', unverified]] as Array<[string, number]>) : [])];
-}
-
 function statusWord(risk: string): string {
   return risk === 'block' ? 'BLOCK' : risk === 'caution' ? 'CAUTION' : 'SHIP';
 }
 
 function firstReportProblem(r: ReportData): { reason: string; category?: string; workflow?: string; evidence?: string[] } | null {
-  const failed = r.testOutcomes.find((o) => o.outcome === 'fail' || o.outcome === 'blocked');
+  const failed = latestAttempts(r.testOutcomes).find((o) => o.outcome === 'fail' || o.outcome === 'blocked');
   if (failed) {
     return {
       workflow: failed.workflow,
       reason: failed.reason ?? failed.missingPrecondition ?? failed.category ?? failed.outcome,
       category: failed.category,
-      evidence: failed.artifactUris,
+      evidence: outcomeEvidence(failed),
     };
   }
   const finding = r.findings.find((f) => f.severity === 'high') ?? r.findings[0];
@@ -380,8 +594,15 @@ function firstReportProblem(r: ReportData): { reason: string; category?: string;
   };
 }
 
-function likelyReportCategory(problem: ReturnType<typeof firstReportProblem>, r: ReportData): string {
+/** A blocker that is the dev setup, not the app: a splash or Metro/bundler screen that never went
+ *  away ("splash still visible"), a dev server that is down. Checked before the app-regression words,
+ *  which include "visible" and "error". */
+export const SETUP_BLOCKER_RE = /splash|metro|bundler|bundling|packager|dev[ _-]?server/;
+
+/** Rough owner of the first problem, for the PR summary line. Exported for tests. */
+export function likelyReportCategory(problem: { reason: string; category?: string } | null, r: Pick<ReportData, 'appHealth'>): string {
   const raw = `${problem?.category ?? ''} ${problem?.reason ?? ''}`.toLowerCase();
+  if (SETUP_BLOCKER_RE.test(raw)) return 'environment/setup';
   if (/accessibility|identifier|locator|element|not found|missing/.test(raw)) return 'automation readiness';
   if (/wda|simulator|emulator|device|install|network|fixture|seed|permission|toolchain/.test(raw)) return 'environment/setup';
   if (r.appHealth === 'error' || r.appHealth === 'degraded' || /assert|visible|crash|error|redbox|logbox/.test(raw))
@@ -393,7 +614,8 @@ function evidenceSummary(r: ReportData, problem: ReturnType<typeof firstReportPr
   const kinds = new Set<string>();
   // The report's own exports (report JSON/Markdown, manifest) are never evidence.
   const artifacts = r.artifacts.filter((a) => !REPORT_EXPORT_KINDS.has(a.kind));
-  const uris = [...(problem?.evidence ?? []), ...artifacts.map((a) => a.uri)];
+  // The problem's own evidence is usually also in the artifact list: list each URI once.
+  const uris = [...new Set([...(problem?.evidence ?? []), ...artifacts.map((a) => a.uri)])];
   for (const a of artifacts) {
     if (a.kind === 'screenshot') kinds.add('screenshot');
     else if (a.kind === 'recording') kinds.add('video');
@@ -476,7 +698,8 @@ export function inlinePrSummary(r: ReportData): string {
 
 export function toMarkdown(r: ReportData): string {
   const L: string[] = [];
-  const evidenceTaxonomy = r.evidenceTaxonomy ?? evidenceTaxonomyForNotes(r.testOutcomes);
+  const outcomes = latestAttempts(r.testOutcomes);
+  const evidenceTaxonomy = r.evidenceTaxonomy ?? evidenceTaxonomyForNotes(outcomes);
   L.push(`# QA report: ${r.appId ?? 'app'}`);
   L.push('');
   L.push('## PR summary', '');
@@ -566,12 +789,14 @@ export function toMarkdown(r: ReportData): string {
   L.push(`- App: ${healthMark(r.appHealth)}`);
   L.push(`- Auth: ${r.authState}`);
 
-  if (r.testOutcomes.length) {
+  if (outcomes.length) {
     L.push('', '## Workflows', '');
-    L.push('| Workflow | Outcome | Notes |');
-    L.push('| --- | --- | --- |');
-    for (const n of r.testOutcomes) {
+    L.push('| Workflow | Outcome | Notes | Evidence |');
+    L.push('| --- | --- | --- | --- |');
+    for (const n of outcomes) {
+      const step = n.outcome === 'fail' ? failingStep(r, n) : undefined;
       const detail = [
+        step ? `failed at step #${step.i} ${step.label}${step.failureCode ? ` (${step.failureCode})` : ''}` : '',
         n.category,
         n.reason,
         n.missingPrecondition ? `missing: ${n.missingPrecondition}` : '',
@@ -579,8 +804,10 @@ export function toMarkdown(r: ReportData): string {
       ]
         .filter(Boolean)
         .join('; ');
+      const evidence = outcomeEvidence(n);
+      const evidenceCell = evidence.length ? evidence.map((u) => tableCell(mdCode(u))).join(' ') : lacksEvidence(n) ? '(no evidence)' : '-';
       // A "|" or newline in a workflow name / reason must not break the table row.
-      L.push(`| ${mdCell(n.workflow)} | ${outcomeLabel(n)} | ${detail ? mdCell(detail) : '-'} |`);
+      L.push(`| ${mdCell(n.workflow)} | ${tableCell(outcomeLabel(n))} | ${detail ? mdCell(detail) : '-'} | ${evidenceCell} |`);
     }
 
     L.push('', '## Evidence quality', '');
@@ -624,7 +851,7 @@ export function toMarkdown(r: ReportData): string {
       const retry = f.retrySafe == null ? '' : ` retrySafe=${f.retrySafe}`;
       const next = f.nextStep ? ` Next: ${mdLine(f.nextStep)}` : '';
       L.push(
-        `- **[${f.severity}]**${code}${bucket}${retry} ${isToolReportFinding(f) ? 'tool' : (f.layer ?? '?')}/${f.kind}:${mdLine(f.detail)}${f.count && f.count > 1 ? ` (×${f.count})` : ''}${f.evidence ? `: _"${mdLine(f.evidence)}"_` : ''}${f.screenshotUri ? ` ([screenshot](${f.screenshotUri}))` : ''}${next}`,
+        `- **[${f.severity}]**${code}${bucket}${retry} ${isToolReportFinding(f) ? 'tool' : (f.layer ?? '?')}/${f.kind}: ${mdLine(f.detail)}${f.count && f.count > 1 ? ` (×${f.count})` : ''}${f.evidence ? `: _"${mdLine(f.evidence)}"_` : ''}${f.screenshotUri ? ` ([screenshot](${f.screenshotUri}))` : ''}${next}`,
       );
     }
   }
@@ -636,10 +863,7 @@ export function toMarkdown(r: ReportData): string {
     for (const c of r.environmentChanges) L.push(`  - ${mdLine(c)}`);
   }
 
-  if (r.ciMutations?.length) {
-    L.push('', '## CI mutations', '');
-    for (const c of r.ciMutations) L.push(`- ${mdLine(c)}`);
-  }
+  // ciMutations is the same list as environmentChanges (kept in the JSON, not rendered twice).
 
   if (r.mutationLedger?.length) {
     L.push('', '## Mutation ledger', '');
@@ -740,7 +964,7 @@ export function escapeXml(s: string): string {
  *  workflow outcome plus every high-severity finding. This is the seam that lets the release-gate
  *  policy (.swipium/policy.json blockOn/warnOn/ignoreKnown) decide the CI pass/fail verdict. */
 export function reportPolicyVerdicts(r: ReportData): FlowVerdict[] {
-  const verdicts: FlowVerdict[] = [...r.testOutcomes, ...notReachedOutcomes(r)].map((n) => ({
+  const verdicts: FlowVerdict[] = [...latestAttempts(r.testOutcomes), ...notReachedOutcomes(r)].map((n) => ({
     flow: n.workflow,
     passed: n.outcome !== 'fail',
     failureCode: n.outcome === 'fail' ? workflowFailureCode(n) : undefined,
@@ -770,29 +994,70 @@ export function isVisualFailure(n: ReportNote): boolean {
   return n.source !== 'qa_note' && !!n.evidenceKind && VISUAL_EVIDENCE_KINDS.has(n.evidenceKind);
 }
 
+/** Name of the synthetic outcome a run that tested nothing gets. */
+export const NOT_TESTED_WORKFLOW = 'swipium: not tested';
+
+/** The run counts as "not tested": it never reached the app, or reached it without exercising
+ *  anything. A notTested block with reachedApp and exercised is informational only. Every surface
+ *  (gate, html, summary.md, GitHub summary) uses this so they can't disagree. */
+export function isNotTested(r: { notTested?: { reachedApp?: boolean; exercised?: boolean } | null }): boolean {
+  const nt = r.notTested;
+  return !!nt && !(nt.reachedApp && nt.exercised !== false);
+}
+
 /** A run that never reached the app, as a synthetic failed workflow: the gate and
  *  JUnit count it, so CI can't go green on a run that tested nothing. */
 function notReachedOutcomes(r: ReportData): ReportNote[] {
   const nt = r.notTested;
-  if (!nt || (nt.reachedApp && nt.exercised !== false)) return [];
-  return [{ workflow: 'swipium: not tested', outcome: 'fail', category: nt.failureCode ?? 'NOT_TESTED', reason: nt.reason }];
+  if (!nt || !isNotTested(r)) return [];
+  return [{ workflow: NOT_TESTED_WORKFLOW, outcome: 'fail', category: nt.failureCode ?? 'NOT_TESTED', reason: nt.reason }];
 }
 
-function junitTestcase(lines: string[], name: string, classname: string, body: string[], systemOut: string[]): void {
+/** A failed workflow whose cause is the tool or the environment (device, WDA, install, network...),
+ *  not the app: a JUnit <error>, not a <failure>. */
+export function isToolOrEnvironmentOutcome(n: ReportNote, r?: Pick<ReportData, 'steps'>): boolean {
+  if (n.outcome !== 'fail') return false;
+  if (n.category === 'mcp_limitation') return true;
+  const code = outcomeFailureCode(r, n);
+  const catalog = FAILURES as Record<string, { bucket: string } | undefined>;
+  return catalog[code]?.bucket === 'environment';
+}
+
+function junitTestcase(lines: string[], name: string, classname: string, timeSec: number, body: string[], systemOut: string[]): void {
+  const open = `    <testcase name="${escapeXml(name)}" classname="${escapeXml(classname)}" time="${timeSec}"`;
   if (!body.length && !systemOut.length) {
-    lines.push(`    <testcase name="${escapeXml(name)}" classname="${escapeXml(classname)}"></testcase>`);
+    lines.push(`${open}></testcase>`);
     return;
   }
-  lines.push(`    <testcase name="${escapeXml(name)}" classname="${escapeXml(classname)}">`);
+  lines.push(`${open}>`);
   lines.push(...body);
   if (systemOut.length) lines.push(`      <system-out>${escapeXml(systemOut.join('\n'))}</system-out>`);
   lines.push(`    </testcase>`);
+}
+
+/** Unique testcase names across the report: GitLab (and others) merge cases that share a name. A
+ *  repeat gets the hint (a screen) appended, then an index. */
+function uniqueCaseNames(): (base: string, hint?: string) => string {
+  const used = new Set<string>();
+  return (base, hint) => {
+    let name = base;
+    if (used.has(name) && hint) name = `${base} [${hint}]`;
+    for (let k = 2; used.has(name); k++) name = `${base} #${k}`;
+    used.add(name);
+    return name;
+  };
 }
 
 /** The policy key reportPolicyVerdicts/applyPolicy use for a failing workflow / high finding
  *  (`${flow}: ${code}`), so exporters can tell which failures the release gate did NOT block. */
 function workflowFailureCode(n: ReportNote): string {
   return n.steps?.find((s) => s.failureCode)?.failureCode ?? n.category ?? 'UNKNOWN';
+}
+/** The failure code of a failed outcome as people see it: the failing timeline step's code (flow
+ *  notes since 2.4.0 carry no legacy steps), else the note's own code / category. Not used for
+ *  policy keys, so policy matching stays as it was. */
+function outcomeFailureCode(r: Pick<ReportData, 'steps'> | undefined, n: ReportNote): string {
+  return (r ? failingStep(r, n)?.failureCode : undefined) ?? workflowFailureCode(n);
 }
 function workflowPolicyKey(n: ReportNote): string {
   return `${n.workflow}: ${workflowFailureCode(n)}`;
@@ -812,36 +1077,42 @@ function nonBlockingFailures(policy?: PolicyDecision): Map<string, 'warned' | 's
   return out;
 }
 
-/** JUnit XML for CI test-report sinks. Two suites: recorded workflow outcomes (fail > <failure>;
- *  blocked/skipped/not_applicable > <skipped>) and findings (high > <failure>, medium/low pass with
- *  the detail in system-out). Evidence URIs are listed in each testcase's system-out. When a
- *  release-gate PolicyDecision is provided, it is recorded as testsuite <properties> AND it shapes
- *  the verdicts (D5): a failure the policy only warns on or ignores (warnOn / ignoreKnown) is
- *  emitted as <skipped message="policy …"> rather than <failure>, so "gate PASS" never fails CI. */
+type JUnitVerdict = 'failure' | 'error' | 'skipped' | 'pass';
+
+/** JUnit XML for CI test-report sinks. Two suites:
+ *   - workflows: one case per workflow (latest attempt wins, a retried workflow is one case, flaky
+ *     noted in system-out). fail > <failure type=failureCode message=human text>; a tool /
+ *     environment failure or the synthetic "swipium: not tested" case > <error>; blocked / skipped /
+ *     not_applicable > <skipped message="blocked: ...">; an unverified pass claim > <skipped>.
+ *   - findings: HIGH findings only (app > <failure>, tool / environment > <error>).
+ *  Every case has `time` (seconds) from the timeline steps in its range (0 when unknown) and a
+ *  unique name. When a release-gate PolicyDecision is provided, it is recorded as testsuite
+ *  <properties> AND shapes the verdicts: a failure the policy only warns on or ignores (warnOn /
+ *  ignoreKnown) is <skipped message="policy ..."> rather than <failure>, so "gate PASS" never fails CI. */
 export function toJUnit(r: ReportData, policy?: PolicyDecision): string {
-  const cases = [...r.testOutcomes, ...notReachedOutcomes(r)];
+  const cases = [...latestAttempts(r.testOutcomes), ...notReachedOutcomes(r)];
+  const findings = r.findings.filter((f) => f.severity === 'high');
   const lenient = nonBlockingFailures(policy);
-  const caseVerdict = (n: ReportNote): 'failure' | 'skipped' | 'pass' => {
+  const caseVerdict = (n: ReportNote): JUnitVerdict => {
     if (n.outcome === 'pass') return n.unverified ? 'skipped' : 'pass'; // a claim is not a passing test
     if (n.outcome !== 'fail') return 'skipped';
-    return lenient.has(workflowPolicyKey(n)) ? 'skipped' : 'failure';
+    if (lenient.has(workflowPolicyKey(n))) return 'skipped';
+    return n.workflow === NOT_TESTED_WORKFLOW || isToolOrEnvironmentOutcome(n, r) ? 'error' : 'failure';
   };
   // A tool / environment finding is not an app failure (the gate still fails on it).
-  const findingVerdict = (f: ReportFinding): 'failure' | 'skipped' | 'pass' =>
-    f.severity !== 'high' ? 'pass' : lenient.has(findingPolicyKey(f)) || isToolReportFinding(f) ? 'skipped' : 'failure';
-  const failures = cases.filter((n) => caseVerdict(n) === 'failure').length;
-  const skipped = cases.filter((n) => caseVerdict(n) === 'skipped').length;
-  const findingFailures = r.findings.filter((f) => findingVerdict(f) === 'failure').length;
-  const findingSkipped = r.findings.filter((f) => findingVerdict(f) === 'skipped').length;
+  const findingVerdict = (f: ReportFinding): JUnitVerdict =>
+    lenient.has(findingPolicyKey(f)) ? 'skipped' : isToolReportFinding(f) ? 'error' : 'failure';
+  const caseVerdicts = cases.map(caseVerdict);
+  const findingVerdicts = findings.map(findingVerdict);
+  const count = (vs: JUnitVerdict[], v: JUnitVerdict) => vs.filter((x) => x === v).length;
+  const tally = (vs: JUnitVerdict[]) =>
+    `tests="${vs.length}" failures="${count(vs, 'failure')}" errors="${count(vs, 'error')}" skipped="${count(vs, 'skipped')}"`;
   const suiteName = `swipium.${r.appId ?? 'app'}`;
   const timeSec = (r.phaseTimings.totalMs ?? 0) / 1000;
+  const name = uniqueCaseNames();
   const lines: string[] = ['<?xml version="1.0" encoding="UTF-8"?>'];
-  lines.push(
-    `<testsuites name="${escapeXml(suiteName)}" tests="${cases.length + r.findings.length}" failures="${failures + findingFailures}" skipped="${skipped + findingSkipped}" time="${timeSec}">`,
-  );
-  lines.push(
-    `  <testsuite name="${escapeXml(suiteName)}" tests="${cases.length}" failures="${failures}" skipped="${skipped}" time="${timeSec}">`,
-  );
+  lines.push(`<testsuites name="${escapeXml(suiteName)}" ${tally([...caseVerdicts, ...findingVerdicts])} time="${timeSec}">`);
+  lines.push(`  <testsuite name="${escapeXml(suiteName)}" ${tally(caseVerdicts)} time="${timeSec}">`);
   if (policy) {
     lines.push('    <properties>');
     lines.push(`      <property name="swipium.releaseGate" value="${policy.block ? 'fail' : 'pass'}"></property>`);
@@ -850,55 +1121,69 @@ export function toJUnit(r: ReportData, policy?: PolicyDecision): string {
     lines.push(`      <property name="swipium.releaseGate.verdict" value="${policy.block ? 'block' : 'pass'}"></property>`);
     lines.push('    </properties>');
   }
-  for (const n of cases) {
-    const text = [n.category, n.reason, n.missingPrecondition].filter(Boolean).join(': ') || n.outcome;
+  cases.forEach((n, idx) => {
+    const human = [n.reason, n.missingPrecondition].filter(Boolean).join(': ') || n.category || n.outcome;
+    const step = n.outcome === 'fail' ? failingStep(r, n) : undefined;
+    const code = step?.failureCode ?? workflowFailureCode(n);
     const body: string[] = [];
-    const verdict = caseVerdict(n);
-    if (verdict === 'failure') body.push(`      <failure message="${escapeXml(text)}">${escapeXml(text)}</failure>`);
-    else if (verdict === 'skipped') {
+    const systemOut: string[] = [];
+    if (step) systemOut.push(`failing step #${step.i}: ${step.label}${step.failureCode ? ` (${step.failureCode})` : ''}`);
+    if (n.flaky) systemOut.push(`flaky: attempts ${attemptsText(n)} (the latest attempt counts)`);
+    if (n.contradicted) systemOut.push('contradicted: a crash, ANR, app error or failed Swipium step falls inside this pass');
+    const evidence = outcomeEvidence(n);
+    if (evidence.length) systemOut.push(...evidence);
+    else if (lacksEvidence(n)) systemOut.push('(no evidence)');
+    const verdict = caseVerdicts[idx];
+    if (verdict === 'failure' || verdict === 'error') {
+      const detail = step ? `${human}\nfailing step #${step.i}: ${step.label}` : human;
+      body.push(`      <${verdict} message="${escapeXml(human)}" type="${escapeXml(code)}">${escapeXml(detail)}</${verdict}>`);
+    } else if (verdict === 'skipped') {
       const why =
         n.outcome === 'fail'
-          ? `policy ${lenient.get(workflowPolicyKey(n))} (release gate not blocked): ${text}`
+          ? `policy ${lenient.get(workflowPolicyKey(n))} (release gate not blocked): ${code}: ${human}`
           : n.outcome === 'pass'
-            ? `unverified manual claim (qa_note pass that no Swipium check or device evidence backs): ${text}`
-            : text;
+            ? `unverified manual claim (qa_note pass that no Swipium check or device evidence backs): ${human}`
+            : `${n.outcome.replace(/_/g, ' ')}: ${human}`;
       body.push(`      <skipped message="${escapeXml(why)}"></skipped>`);
     }
-    junitTestcase(lines, n.workflow, suiteName, body, n.artifactUris ?? []);
-  }
+    junitTestcase(lines, name(n.workflow, step?.screen), suiteName, outcomeDurationMs(r, n) / 1000, body, systemOut);
+  });
   lines.push('  </testsuite>');
-  // Always two suites (docs/ci-reports.md), the findings suite empty when nothing was found.
+  // Always two suites (docs/ci-reports.md), the findings suite empty when nothing high was found.
   const findingsSuite = `${suiteName}.findings`;
-  lines.push(
-    `  <testsuite name="${escapeXml(findingsSuite)}" tests="${r.findings.length}" failures="${findingFailures}" skipped="${findingSkipped}" time="0">`,
-  );
-  for (const f of r.findings) {
+  lines.push(`  <testsuite name="${escapeXml(findingsSuite)}" ${tally(findingVerdicts)} time="0">`);
+  findings.forEach((f, idx) => {
     const tool = isToolReportFinding(f);
-    const name = `[${f.severity}] ${tool ? 'tool' : (f.layer ?? '?')}/${f.kind}`;
+    const code = f.failureCode ?? f.kind;
     const detail = `${f.detail}${f.evidence ? `: "${f.evidence}"` : ''}${f.nextStep ? ` Next: ${f.nextStep}` : ''}`;
     const body: string[] = [];
-    const systemOut: string[] = f.screenshotUri ? [f.screenshotUri] : [];
-    const verdict = findingVerdict(f);
-    if (verdict === 'failure') body.push(`      <failure message="${escapeXml(f.failureCode ?? f.kind)}">${escapeXml(detail)}</failure>`);
-    else if (verdict === 'skipped') {
-      const why = lenient.has(findingPolicyKey(f))
-        ? `policy ${lenient.get(findingPolicyKey(f))} (release gate not blocked): ${f.failureCode ?? f.kind}`
-        : `tool / environment failure, not an app defect (the app was not judged): ${f.failureCode ?? f.kind}`;
-      body.push(`      <skipped message="${escapeXml(why)}"></skipped>`);
-      systemOut.unshift(detail);
-    } else systemOut.unshift(detail);
-    junitTestcase(lines, name, findingsSuite, body, systemOut);
-  }
+    const systemOut: string[] = [];
+    const verdict = findingVerdicts[idx];
+    if (verdict === 'failure' || verdict === 'error') {
+      body.push(`      <${verdict} message="${escapeXml(f.detail)}" type="${escapeXml(code)}">${escapeXml(detail)}</${verdict}>`);
+    } else {
+      body.push(
+        `      <skipped message="${escapeXml(`policy ${lenient.get(findingPolicyKey(f))} (release gate not blocked): ${code}`)}"></skipped>`,
+      );
+      systemOut.push(detail);
+    }
+    if (f.screenshotUri) systemOut.push(f.screenshotUri);
+    if (f.logUri) systemOut.push(f.logUri);
+    junitTestcase(
+      lines,
+      name(`[${f.severity}] ${tool ? 'tool' : (f.layer ?? '?')}/${f.kind}`, f.screen),
+      findingsSuite,
+      0,
+      body,
+      systemOut,
+    );
+  });
   lines.push('  </testsuite>');
   lines.push('</testsuites>');
   return lines.join('\n');
 }
 
 type SarifLevel = 'error' | 'warning' | 'note';
-
-function sarifLevel(severity: string): SarifLevel {
-  return severity === 'high' ? 'error' : severity === 'medium' ? 'warning' : 'note';
-}
 
 interface SarifPhysicalLocation {
   physicalLocation: {
@@ -939,16 +1224,18 @@ function stableHash(...parts: string[]): string {
     .slice(0, 16);
 }
 
-/** SARIF 2.1.0 for code-scanning sinks (GitHub `upload-sarif`). Findings > results with
- *  ruleId = failureCode/kind and level from severity (high > error, medium > warning, low > note); failed
- *  workflows are results too. Per GitHub's SARIF requirements
+/** SARIF 2.1.0 for code-scanning sinks (GitHub `upload-sarif`). Experimental. Only HIGH-severity app
+ *  findings become results (ruleId = failureCode/kind, level error, or warning / note when the policy
+ *  only warns on / ignores it). Workflow failures, tool / environment findings and medium / low
+ *  findings are not code alerts and stay in JUnit and the report. Per GitHub's SARIF requirements
  *  (https://docs.github.com/en/code-security/code-scanning/integrating-with-code-scanning/sarif-support-for-code-scanning):
  *   - every result has locations[0] > a REAL repo-relative file (`uriBaseId: %SRCROOT%`, full
  *     region at line 1): the app-map source of the screen/workflow when known, else the project
  *     manifest (`options.sources`, built by resolveSarifSources). Results without one are dropped
  *     by code scanning ("at least one location is required").
- *   - partialFingerprints carry a stable per-result hash (own `primaryLocationLineHash`, so results
- *     anchored to the same manifest line don't collapse into one alert) plus `swipium/v1`.
+ *   - partialFingerprints are built from content only (rule, screen, scrubbed detail), never from
+ *     the result's position, so reordered findings keep their alerts (`primaryLocationLineHash`
+ *     plus `swipium/v1`).
  *   - rules carry short/full descriptions + help from the failure catalog.
  *  swipium:// evidence URIs stay in relatedLocations / properties. invocations[0].executionSuccessful
  *  means "the tool ran" (always true here); the release-gate verdict lives in run.properties. */
@@ -970,13 +1257,10 @@ export function toSarif(r: ReportData, policy?: PolicyDecision, options: SarifOp
           })),
         }
       : {};
-  const seen = new Map<string, number>();
-  const fingerprints = (ruleId: string, ...identity: string[]) => {
-    const base = stableHash(ruleId, ...identity);
-    // Two genuinely identical results in one run still need distinct alerts-per-occurrence ids.
-    const n = (seen.get(base) ?? 0) + 1;
-    seen.set(base, n);
-    return { primaryLocationLineHash: `${base}:${n}`, 'swipium/v1': `${base}:${n}` };
+  // Identical findings are already collapsed into one (findingsDedupe), so content alone is unique.
+  const fingerprints = (ruleId: string, screen: string, detail: string) => {
+    const hash = stableHash(ruleId, screen, detail);
+    return { primaryLocationLineHash: hash, 'swipium/v1': hash };
   };
   // Like JUnit: a failure the policy only warns on is a warning, one it ignores is a note.
   const lenient = nonBlockingFailures(policy);
@@ -986,20 +1270,20 @@ export function toSarif(r: ReportData, policy?: PolicyDecision, options: SarifOp
     if (how === 'warned' && level === 'error') return 'warning';
     return level;
   };
-  const results: SarifResult[] = r.findings.map((f) => {
+  const appFindings = r.findings.filter((f) => f.severity === 'high' && !isToolReportFinding(f));
+  const results: SarifResult[] = appFindings.map((f) => {
     const ruleId = f.failureCode ?? f.kind;
     const file = (f.screen && ownLookup(sources.byScreen, f.screen.toLowerCase())) || sources.defaultUri;
     return {
       ruleId,
-      // A tool / environment failure is not a defect in the code: a note, like mcp_limitation.
-      level: isToolReportFinding(f) ? 'note' : f.severity === 'high' ? policyLevel(findingPolicyKey(f), 'error') : sarifLevel(f.severity),
+      level: policyLevel(findingPolicyKey(f), 'error'),
       message: { text: `${f.detail}${f.evidence ? `: "${f.evidence}"` : ''}${f.nextStep ? ` Next: ${f.nextStep}` : ''}` },
       locations: [anchor(file)],
-      partialFingerprints: fingerprints(ruleId, f.kind, f.screen ?? '', f.detail),
+      partialFingerprints: fingerprints(ruleId, f.screen ?? '', f.detail),
       ...evidenceLocations(f.screenshotUri ? [f.screenshotUri] : []),
       properties: {
         severity: f.severity,
-        ...(isToolReportFinding(f) ? { layer: 'tool' } : f.layer ? { layer: f.layer } : {}),
+        ...(f.layer ? { layer: f.layer } : {}),
         ...(f.bucket ? { bucket: f.bucket } : {}),
         ...(f.screen ? { screen: f.screen } : {}),
         ...(f.retrySafe == null ? {} : { retrySafe: f.retrySafe }),
@@ -1007,26 +1291,6 @@ export function toSarif(r: ReportData, policy?: PolicyDecision, options: SarifOp
       },
     };
   });
-  for (const n of [...r.testOutcomes, ...notReachedOutcomes(r)]) {
-    if (n.outcome !== 'fail') continue;
-    const ruleId = n.steps?.find((s) => s.failureCode)?.failureCode ?? n.category ?? 'WORKFLOW_FAILED';
-    const file = ownLookup(sources.byWorkflow, n.workflow.toLowerCase()) ?? sources.defaultUri;
-    results.push({
-      ruleId,
-      // A Swipium/tool limitation is not an app defect: a note, not a code-scanning error.
-      level: n.category === 'mcp_limitation' ? 'note' : policyLevel(workflowPolicyKey(n), 'error'),
-      message: { text: `${n.workflow}: ${[n.reason, n.missingPrecondition].filter(Boolean).join('; ') || 'workflow failed'}` },
-      locations: [anchor(file)],
-      partialFingerprints: fingerprints(ruleId, 'workflow', n.workflow),
-      ...evidenceLocations(n.artifactUris ?? []),
-      properties: {
-        workflow: n.workflow,
-        outcome: n.outcome,
-        ...(n.category ? { category: n.category } : {}),
-        ...(n.artifactUris?.length ? { evidenceUris: n.artifactUris } : {}),
-      },
-    });
-  }
   const catalog = FAILURES as Record<string, { summary: string; recovery: string; bucket: string } | undefined>;
   const rules = [...new Set(results.map((res) => res.ruleId))].map((id) => {
     const info = catalog[id];
@@ -1062,6 +1326,8 @@ export function toSarif(r: ReportData, policy?: PolicyDecision, options: SarifOp
           nextAction: r.executiveSummary.nextAction,
           releaseGateVerdict: policy ? (policy.block ? 'block' : 'pass') : r.executiveSummary.risk === 'block' ? 'block' : 'pass',
           ...(policy ? { releaseGate: policy } : {}),
+          // Not a code alert, but a reader of the SARIF alone must still see that nothing was tested.
+          ...(isNotTested(r) ? { notTested: r.notTested } : {}),
         },
       },
     ],
@@ -1111,65 +1377,90 @@ function mdCode(s: string): string {
  *  stop at ~900 KB so the verdict survives, and say so. */
 export const GITHUB_SUMMARY_MAX_BYTES = 900 * 1024;
 
-/** Concise GitHub Actions job-summary Markdown (write it to $GITHUB_STEP_SUMMARY): verdict,
- *  counts by severity, top findings table, workflow outcomes, and evidence links. Capped at
- *  GITHUB_SUMMARY_MAX_BYTES with a truncation note. */
+/** Failures listed by name in the job summary before "+N more". */
+const SUMMARY_MAX_FAILURES = 20;
+
+/** The last line of the job summary: where the human report is. */
+export const GITHUB_SUMMARY_FULL_REPORT = 'Full report: the swipium-report.html artifact of this run';
+
+/** GitHub Actions job-summary Markdown (write it to $GITHUB_STEP_SUMMARY), failure first:
+ *   1. verdict and reason;
+ *   2. the not-tested reason (with the log to read, path only) or the failures (workflow, failing
+ *      step, failureCode);
+ *   3. the outcomes table; 4. findings; 5. a pointer to the HTML report artifact.
+ *  No images (artifact URLs need a login). Capped at GITHUB_SUMMARY_MAX_BYTES with a truncation note. */
 export function toGithubSummary(r: ReportData, policy?: PolicyDecision): string {
   const L: string[] = [];
+  const outcomes = latestAttempts(r.testOutcomes);
   L.push(`## Swipium QA: ${RISK_BADGE[r.executiveSummary.risk] ?? mdText(r.executiveSummary.risk.toUpperCase())}`);
   L.push('');
-  // Say what is missing instead of printing placeholder words as if they were values.
-  L.push(
-    `App ${r.appId ? mdCode(r.appId) : '(not resolved)'} ${r.device ? `on ${mdCode(r.device)}` : '(no device bound)'}, session ${mdCode(r.sessionId)}.`,
-  );
+  if (policy) L.push(`**Release gate (policy):** ${policy.block ? '❌ BLOCK' : '✅ PASS'}: ${mdText(policy.reason)}`);
+  else L.push(`**Verdict:** ${mdText(r.executiveSummary.reasons[0] ?? r.executiveSummary.nextAction)}`);
   L.push('');
-  if (policy) L.push(`**Release gate (policy):** ${policy.block ? '❌ BLOCK' : '✅ PASS'}: ${mdText(policy.reason)}`, '');
+
+  const nt = isNotTested(r) ? r.notTested : undefined;
+  if (nt) {
+    const log = pickNotTestedLog(r);
+    const where = log ? `Log: ${mdCode(log.path ?? log.uri)}` : 'No log captured.';
+    L.push(`**Not tested:** ${mdText(nt.reason)} (${mdCode(nt.failureCode ?? 'NOT_TESTED')}). ${where}`);
+    L.push('');
+  }
+  const failures = outcomes.filter((n) => n.outcome === 'fail');
+  if (failures.length) {
+    L.push('### Failures', '');
+    for (const n of failures.slice(0, SUMMARY_MAX_FAILURES)) {
+      const step = failingStep(r, n);
+      const code = step?.failureCode ?? workflowFailureCode(n);
+      const where = step ? `step #${step.i} ${summaryCell(step.label)}` : 'no failing step recorded';
+      const why = [n.reason, n.missingPrecondition].filter(Boolean).join(': ');
+      L.push(
+        `- **${summaryCell(n.workflow)}**: ${where} (${mdCode(code)})${why ? `: ${summaryCell(why)}` : ''}${n.flaky ? ' (flaky)' : ''}`,
+      );
+    }
+    if (failures.length > SUMMARY_MAX_FAILURES) L.push(`- +${failures.length - SUMMARY_MAX_FAILURES} more in the full report`);
+    L.push('');
+  }
   L.push(`**Next action:** ${mdText(r.executiveSummary.nextAction)}`);
   L.push('');
+
   // Tool / environment findings (WDA_UNREACHABLE) are counted apart from app findings.
   const toolCount = r.findings.filter(isToolReportFinding).length;
   const sevCount = (sev: string) => r.findings.filter((f) => f.severity === sev && !isToolReportFinding(f)).length;
-  const outcomes = displayOutcomeTally(r)
+  const tally = latestTally(r)
     .map(([k, v]) => `${k === 'pass (unverified)' ? OUTCOME_MARK.skipped : (OUTCOME_MARK[k] ?? '')} ${mdText(k)}=${v}`)
     .join(' · ');
   L.push(
-    `Findings: **${sevCount('high')} high** · ${sevCount('medium')} medium · ${sevCount('low')} low${toolCount ? ` · ${toolCount} tool/environment` : ''}. Workflows: ${outcomes || 'none recorded'}.`,
+    `Findings: **${r.highSeverityCount} high** · ${sevCount('medium')} medium · ${sevCount('low')} low${toolCount ? ` · ${toolCount} tool/environment` : ''}. Workflows: ${tally || 'none recorded'}.`,
   );
+  if (outcomes.length) {
+    L.push('', '### Outcomes', '', '| Workflow | Outcome | Reason | Evidence |', '| --- | --- | --- | --- |');
+    for (const n of outcomes) {
+      const reason = [n.category, n.reason, n.missingPrecondition].filter(Boolean).join(': ') || '-';
+      // swipium:// URIs are not browsable on GitHub: show them as artifact paths, not dead links.
+      const uris = outcomeEvidence(n);
+      const evidence = uris.length ? uris.map((uri) => tableCell(mdCode(uri))).join(' ') : lacksEvidence(n) ? '(no evidence)' : '-';
+      L.push(`| ${summaryCell(n.workflow)} | ${tableCell(outcomeLabel(n))} | ${summaryCell(reason)} | ${evidence} |`);
+    }
+  }
   if (r.findings.length) {
-    L.push('', '### Top findings', '', '| Severity | Code | Detail | Evidence |', '| --- | --- | --- | --- |');
+    L.push('', '### Findings', '', '| Severity | Code | Detail | Evidence |', '| --- | --- | --- | --- |');
     const bySeverity = { high: 0, medium: 1, low: 2 } as Record<string, number>;
     const top = [...r.findings].sort((a, b) => (bySeverity[a.severity] ?? 3) - (bySeverity[b.severity] ?? 3)).slice(0, 10);
     for (const f of top) {
-      // swipium:// URIs are not browsable on GitHub: show them as artifact paths, not dead links.
       const evidence = f.screenshotUri ? tableCell(mdCode(f.screenshotUri)) : '-';
       const times = f.count && f.count > 1 ? ` (×${f.count})` : '';
       L.push(
         `| ${summaryCell(isToolReportFinding(f) ? `${f.severity} (tool/environment)` : f.severity)} | ${tableCell(mdCode(f.failureCode ?? f.kind))} | ${summaryCell(f.detail)}${times} | ${evidence} |`,
       );
     }
+    if (r.findings.length > top.length) L.push('', `+${r.findings.length - top.length} more in the full report.`);
   }
-  const problems = r.testOutcomes.filter((n) => n.outcome !== 'pass' || n.unverified);
-  if (problems.length) {
-    L.push('', '### Failed / blocked workflows', '', '| Workflow | Outcome | Reason | Evidence |', '| --- | --- | --- | --- |');
-    for (const n of problems) {
-      const reason = [n.category, n.reason, n.missingPrecondition].filter(Boolean).join(': ') || '-';
-      const evidence = (n.artifactUris ?? []).map((uri) => tableCell(mdCode(uri))).join(' ') || '-';
-      L.push(`| ${summaryCell(n.workflow)} | ${outcomeLabel(n)} | ${summaryCell(reason)} | ${evidence} |`);
-    }
-  }
-  // Swipium's own report exports are not evidence of the run: screenshots and recordings only.
-  const evidenceArtifacts = r.artifacts.filter((a) => ['screenshot', 'recording'].includes(a.kind)).slice(0, 10);
-  if (evidenceArtifacts.length) {
-    L.push(
-      '',
-      '### Evidence',
-      '',
-      '_`swipium://` URIs: read them with `qa_get_artifact`, or find the files under the session folder in `~/.swipium/runs/` (upload it as a build artifact to keep them)._',
-      '',
-    );
-    for (const a of evidenceArtifacts) L.push(`- ${mdCode(a.uri)} (${mdText(a.kind)}${a.label ? `: ${mdText(a.label)}` : ''})`);
-  }
-  L.push('', '_Generated by Swipium._');
+  // Say what is missing instead of printing placeholder words as if they were values.
+  L.push(
+    '',
+    `App ${r.appId ? mdCode(r.appId) : '(not resolved)'} ${r.device ? `on ${mdCode(r.device)}` : '(no device bound)'}, session ${mdCode(r.sessionId)}.`,
+  );
+  L.push('', GITHUB_SUMMARY_FULL_REPORT);
   return capSummary(L);
 }
 

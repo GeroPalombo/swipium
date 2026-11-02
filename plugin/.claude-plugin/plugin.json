@@ -1,6 +1,6 @@
 {
   "name": "swipium",
-  "version": "2.3.5",
+  "version": "2.4.0",
   "description": "Mobile QA on local Android Emulators and iOS Simulators: the Swipium MCP server plus the swipium-qa skill.",
   "author": {
     "name": "Swipium",

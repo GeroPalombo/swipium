@@ -1,8 +1,8 @@
 # Concepts
 
-The ideas that cut across Swipium's tools: sessions and jobs, how the project root is found, consent, secret handling, how Swipium reads the screen (refs and settling), iOS modes, and device policy. Per-tool parameters and failure codes are in the [Tool Reference](tools.md); flow files are in [Flows](flows.md); environment variables are in the [README](../README.md#configuration--environment-variables).
+The ideas that cut across Swipium's tools: sessions and jobs, how the project root is found, consent, secret handling, how Swipium reads the screen (refs and settling), iOS modes, device policy, and what a report contains and how its evidence is collected. Per-tool parameters and failure codes are in the [Tool Reference](tools.md); flow files are in [Flows](flows.md); environment variables are in the [README](../README.md#configuration--environment-variables).
 
-**Contents**: [Sessions and jobs](#sessions-and-jobs) · [Project root](#project-root) · [Consent](#consent) · [Secrets and redaction](#secrets-and-redaction) · [Screens, refs, and settling](#screens-refs-and-settling) · [iOS modes](#ios-modes) · [Devices](#devices) · [Glossary](#glossary)
+**Contents**: [Sessions and jobs](#sessions-and-jobs) · [Project root](#project-root) · [Consent](#consent) · [Secrets and redaction](#secrets-and-redaction) · [Screens, refs, and settling](#screens-refs-and-settling) · [iOS modes](#ios-modes) · [Devices](#devices) · [What's in a report](#whats-in-a-report) · [How evidence works](#how-evidence-works) · [Glossary](#glossary)
 
 ## Sessions and jobs
 
@@ -165,7 +165,7 @@ Booting a simulator with `qa_ios boot` is not gated (low-risk and reversible). I
 - Log artifacts (logcat, Metro, WDA, and other files in a session's `logs/` folder) are also scrubbed of credential-looking values that were never registered: `Bearer` and `Basic` tokens, JWTs, `password=`, `token:`, `api_key=`-style pairs, and AWS, Google, Stripe, GitHub, and Slack key formats. The live log Metro writes itself is not covered.
 - Values of 4 or more characters are matched anywhere. A 3-character value, or an all-digit value shorter than 8 characters, is matched only as a standalone token, so a PIN does not scrub unrelated numbers.
 - **Values shorter than 3 characters are not scrubbed.** A text artifact written while such a secret was registered reports `redaction:"partial"` with a `redactionNote`; other artifacts report `applied`, and binary files `not-applied`.
-- **Screenshots and recordings are pixels and are never redacted.** `qa_screenshot` and `qa_visual` withhold captures while a password or OTP field is on screen (`CAPTURE_WITHHELD_SECURE`, unless `force:true`).
+- **Screenshots and recordings are pixels and are never redacted.** So every screenshot path withholds the capture while a password or OTP field is on screen (see [the secure-field guard](#the-secure-field-guard)); `qa_screenshot` and `qa_visual` refuse with `CAPTURE_WITHHELD_SECURE`, unless `force:true`.
 - `qa_act type` never echoes the typed value. `redacted:true` and `secret:true` appear only when the value was treated as a secret; ordinary text omits both, and the recorded step keeps the text, so a generated suite contains it.
 - **Placeholders in `qa_act`**: `${SWIPIUM_*}` names are expanded (only that prefix), from session inputs first, then the server environment. The value is typed but never echoed (`placeholders` lists the names), and the action is recorded with the placeholder. A typed literal that equals a stored session input is recorded as that input's placeholder. An unresolvable placeholder returns `MISSING_TEST_DATA` before anything is tapped.
 
@@ -253,6 +253,150 @@ A session with no device binds one in three ways: explicitly (`qa_prepare_target
 - An explicit `device`, `avd`, or simulator that is a different device is refused with `DEVICE_PINNED` by `qa_test_this`, `qa_prepare_target`, `qa_prepare_ios_target`, `qa_ios` (`boot`, `install`, `privacy_reset`, `erase`) and `qa_wda` (`build`, `start`, `setup`, `attach`, `stop`; a `device` given as a simulator name is resolved to its UDID first), and by `qa_bundletool {connectedDevice:true, install:true}`, before any consent prompt. The AVD name and serial of the same emulator, or a simulator's name and UDID, count as the same device. With an Android pin, every simulator boot or erase is refused.
 - A pin that matches no available simulator makes `qa_prepare_ios_target` fail with `NO_DEVICE` naming `SWIPIUM_DEVICE`, before consent. A `platform` the pin overrides in `qa_test_this` is reported in `targetPlan.reason` and as a workaround.
 - `SWIPIUM_CONSENT_PREAPPROVE` then only ever approves actions on the pinned device, `erase_device` included. Set both on shared CI runners.
+
+## What's in a report
+
+Every `qa_report` call, and the end of every `qa_test_this` run, writes three files to the session's
+`report/` folder under `~/.swipium/runs/<project-hash>/<session>/`:
+
+| File | For | What it holds |
+| --- | --- | --- |
+| `report.html` | A person | One self-contained page: the verdict, what failed and why, with screenshots. One stable path per session, overwritten on every report. Its path comes back as `reportHtmlPath`. |
+| `report-<timestamp>-summary.md` (`report.md`) | The agent | At most 2 KB, failure first: verdict, health, the not-tested reason, up to 8 failures with their failing step and screenshot URI, up to 5 findings, the pass count, and where the other two files are. |
+| `report-<timestamp>.json` | CI and scripts | Everything: verdicts, outcomes, findings, the step timeline, environment changes, the mutation ledger, readiness, timing, and the artifact list. `swipium report` renders every CI format from it. |
+
+**`report.html`** is laid out failure first:
+
+1. a banner with the release-gate verdict and a one-line reason (plus `partial: job <id> running` when
+   another job of the session hadn't finished, and a notice when `.swipium/policy.json` was ignored);
+2. failures and findings, each with its screenshot, failing step, failure code, and a log tail when
+   there is one;
+3. the outcomes table: workflow, result with its flags, and an evidence thumbnail;
+4. the [step timeline](#steps), collapsed when the run passed and open when it failed;
+5. environment changes, device and app, and timing;
+6. the artifacts, with paths relative to the session folder.
+
+A run that tested nothing gets a short page instead (only when it really counts as not tested, by the
+same rule as the [release gate](ci-reports.md#release-gate-policy)): the blocker and its fix, the last
+40 lines of the log that explains it (the build log for `BUILD_FAILED`, the Metro log for
+`METRO_REQUIRED` and `METRO_WRONG_PROJECT`, the crash excerpt for `NATIVE_CRASH`, `ANR` and
+`APP_LAUNCH_FAILED`, else the newest log, or "no log captured"), any failures and findings, then the
+timeline.
+
+**It is safe to open and to share as a file.** It has no JavaScript, and a Content-Security-Policy
+(`default-src 'none'; img-src data:; style-src 'unsafe-inline'`) that stops it from loading anything:
+it works offline and makes no network request. Its only link goes to the Swipium docs. Every string
+from the run (workflow names, finding details, screen text) is HTML-escaped, and the page is rendered
+from the already-redacted report. Log tails are redacted with the session's secrets and scrubbed of
+credential shapes (Bearer tokens, JWTs, API keys, passwords); when the CLI renders the page, only the
+credential shapes are scrubbed, since the session's secrets are never written to disk. Screenshots are embedded as 480 px wide thumbnails, up to 8 MB in
+total; past that, or for a PNG it can't decode, an image is listed as a file path instead. The text is
+redacted, but **screenshots are pixels and are never redacted**, so don't share the page of an app
+that shows real secrets on screen (the [secure-field guard](#the-secure-field-guard) keeps password
+and OTP screens out).
+
+**Paths are relative.** The artifacts list in `report.html` and `artifacts[].path` in `report.json`
+are relative to the session folder (`screenshots/step-12-fail-….png`), never absolute, so a report
+uploaded from CI doesn't carry `$HOME` or the user name. Each artifact also has `createdAt` and its
+`redaction` status (`not-applied` for screenshots).
+
+`npx swipium report --format html` renders the same page from a saved report, for CI (see
+[ci-reports.md](ci-reports.md)). Reports saved before 2.4.0 still render; they just have no timeline.
+
+## How evidence works
+
+The rule is that every outcome points at evidence Swipium captured itself.
+
+### Steps
+
+The report's timeline (`steps` in `report.json`) lists what happened, in order. Each step has a
+number, a time, a duration, its source, a short target label (`tap "Sign in"`, `type into "Email"`;
+typed text never appears), its result (`ok`, `failed` or `no_change`), the failure code, and the
+screen. The writers are:
+
+- `qa_act`: one step per call, including calls that return an error;
+- flows (`qa_flow_run`, suite replay, saved flows in `qa_smoke`): one step per flow step;
+- `qa_smoke`: one step for the launch and health check;
+- `qa_explore`: one summary step, linked to the screen graph;
+- `qa_note`: one `note` step per recorded outcome.
+
+At most 500 steps are kept. Past that the oldest passing steps are dropped first, so an early failure
+survives a long run.
+
+### Screenshots at checkpoints and failures
+
+Swipium doesn't screenshot every action (that would add a device round trip to each one). It
+captures at two moments:
+
+- **Checkpoints**: a `qa_note` with outcome `pass` or `fail` takes one screenshot, best-effort, within
+  3 s. It is skipped when no device is attached, after a transport failure (`NO_DEVICE`,
+  `DEVICE_UNRESPONSIVE`, `WDA_UNREACHABLE`, ...), in a sensitive session, or on a secure screen, and
+  it never fails the note.
+- **Failures**: a failed `qa_act` or flow step keeps a screenshot and the UI dump at the failure (a
+  flow takes one fresh dump; `qa_act` saves the raw XML it already holds, if any). Nothing is
+  captured for a `no_change` result, a validation error (`INVALID_ARGUMENT`, `OVERLAY_OBSTRUCTION`)
+  or a device that is gone.
+
+None of these count against the session's screenshot budget. When a capture is skipped, the step
+says why (`screenshotSkipped`), and the report shows that instead of an image.
+
+**A checkpoint is not proof that the app was tested.** It is saved as artifact kind `checkpoint`,
+which never counts as reaching or exercising the app, and it never satisfies a `verifiedVisually`
+pass (that still needs an explicit `artifactUris` entry). An agent's pass note plus its checkpoint is
+still an unverified claim.
+
+### Outcomes and their flags
+
+Each outcome covers a range of steps (`stepRange`): a note's range is the steps since the previous
+note. Its `evidence[]` is the checkpoint, the screenshot and dump of failed steps in that range, and
+any `artifactUris` the agent attached. Only artifacts of the same session count: `qa_note` drops
+other URIs with a warning. An outcome with nothing behind it reads `(no evidence)`.
+
+Three flags qualify a result. They change how it is shown, not the release gate:
+
+| Flag | Meaning |
+| --- | --- |
+| `unverified` | An agent's pass claim that no Swipium check or device evidence backs. It shows as `pass (unverified)` and is a skipped JUnit case. |
+| `contradicted` | A pass whose step range holds a high crash, ANR or app-error finding, or a failed flow or smoke step. A failed `qa_act` step doesn't count: agents often miss an element and retry. |
+| `flaky` | The workflow's attempts include both a pass and a fail (`attempts[]` lists them). A fail followed by a blocked attempt is not flaky. |
+
+Evidence is labelled by who judged it: Swipium's smoke, flow and explore results are
+`structured_locator` (`visual_match` for a flow decided by a visual step), and `manual_review` is for
+agent notes that name no method.
+
+### Latest attempt wins
+
+When a workflow was run more than once, the report, the release gate and JUnit count only the latest
+attempt. The name is compared trimmed and case-folded. A later attempt replaces an earlier one only
+from the same kind of source: a Swipium run (flow, smoke) replaces a Swipium run, an agent note
+replaces an agent note. Only a pass or fail replaces anything: a later `blocked`, `skipped` or
+`not_applicable` attempt keeps the last pass or fail as the outcome that counts. So an agent's pass
+note never clears a Swipium failure, and a budget skip never hides an earlier failure. Findings are never
+replaced: a crash recorded on the first attempt still blocks after a passing retry. Details and
+examples: [Release-gate policy](ci-reports.md#release-gate-policy).
+
+`report.json` still keeps every attempt in `testOutcomes[]`: the one that counts carries `attempts`
+and `flaky`, and the others carry `superseded: true`, so a script counting outcomes should skip
+those (`qa_report`'s `counts.outcomes` already does). Each outcome may also carry `attemptKey`, the
+grouping id. It is computed before redaction, so two workflows whose names redact to the same text
+are never merged into one.
+
+### The secure-field guard
+
+Pixels can't be redacted, so every screenshot path (smoke, flows and their OCR steps, exploration,
+health evidence, first run, mobile audit, checkpoints, failed steps, `qa_screenshot`, `qa_visual`)
+runs the same check first:
+
+- a [sensitive session](#sensitive-sessions) never captures;
+- a [secure field](#what-becomes-a-secret) (password, OTP and similar) on the current screen withholds
+  the capture, and the step or result says `screenshot withheld (secure field)`;
+- a screen Swipium can't read (no fresh UI tree, as on an iOS Simulator without WebDriverAgent) is
+  allowed, as before.
+
+OCR steps in flows run the check before the screenshot is taken, so a password screen is never sent to
+an OCR provider. Exploration grabs the screenshot alongside the UI dump and, when the dump shows a
+secure field, discards it without saving it. Frames compared in memory (the render wait, the
+`qa_act` pixel-change check, flow template matching and image diff) are never kept.
 
 ## Glossary
 

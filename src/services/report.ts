@@ -3,14 +3,19 @@
 // state (completed or blocked), not just tell the agent to call qa_report. qa_report is now a thin
 // wrapper around generateSessionReport().
 
-import { existsSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { isAbsolute, join, relative } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { makeRedactor, redactDeep } from '../lib/redact.js';
 import { inputBindings } from '../suite/secretGuard.js';
-import { dedupeFindings, repeatSuffix } from '../report/findingsDedupe.js';
+import { dedupeFindings } from '../report/findingsDedupe.js';
 import { toolVerdictFor } from '../report/toolHealth.js';
 import { getDriver } from '../session/attach.js';
 import { restoreNetwork } from '../tools/network.js';
-import { releaseAssessment } from '../report/summary.js';
+import { buildAgentSummary, releaseAssessment } from '../report/summary.js';
+import { renderReportHtml } from '../report/html.js';
+import { log } from '../lib/logger.js';
 import {
   FAILURES,
   failureForFindingKind,
@@ -21,6 +26,11 @@ import {
 } from '../oracle/failures.js';
 import {
   inlinePrSummary,
+  annotateAttempts,
+  computeAttemptKey,
+  isNotTested,
+  workflowKey,
+  latestAttempts,
   redactReportData,
   reportPolicyVerdicts,
   toGithubSummary,
@@ -71,14 +81,17 @@ import { pomForSession } from './suiteGenerate.js';
 import { casePlatformsFor, generateCanonicalCases } from '../testSuite/generator.js';
 import { applyMerge, loadSuiteChecked, suiteDelta, runIdFromNow } from '../testSuite/store.js';
 import type { ReplayStatus } from '../testSuite/schema.js';
-import { encodeUriSegment, safeArtifactName, type Session, type SessionStore, type TestNote } from '../session/store.js';
+import {
+  encodeUriSegment,
+  PRIVATE_FILE_MODE,
+  safeArtifactName,
+  type Session,
+  type SessionStore,
+  type StepRecord,
+  type TestNote,
+} from '../session/store.js';
 
 export type ReportFormat = 'summary' | 'markdown' | 'json' | 'junit' | 'sarif' | 'github-summary' | 'flow' | 'playwright';
-
-/** Render an *Ms structured value as human-readable seconds for text summaries. */
-function secText(ms: number | null | undefined): string {
-  return `${Math.round((ms ?? 0) / 1000)}s`;
-}
 
 export interface ReportOptions {
   format?: ReportFormat;
@@ -101,6 +114,9 @@ export interface ReportOptions {
    * the release risk off SHIP: BLOCK when nothing in the session exercised the app, else CAUTION.
    */
   notTested?: { reason: string; failureCode?: string; reachedApp?: boolean };
+  /** The job generating this report (qa_test_this, qa_test_feature): it is running by definition,
+   *  so it never marks its own report partial. */
+  excludeJobId?: string;
 }
 
 export interface ReportResult {
@@ -119,6 +135,11 @@ export interface ReportResult {
   summaryText: string;
   /** Present when format:"flow" was requested but no actions were recorded. */
   flowExportSkipped?: boolean;
+  /** report.html (absolute path) and its file:// URL: what the human opens. Overwritten per call. */
+  reportHtmlPath: string;
+  reportHtmlUrl: string;
+  /** Set when report.html could not be rendered (the JSON report and summary still exist). */
+  reportHtmlError?: string;
 }
 
 export async function generateSessionReport(sessions: SessionStore, session: Session, options: ReportOptions = {}): Promise<ReportResult> {
@@ -153,8 +174,10 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   let dumpUri: string | undefined;
   if (driver && includeCurrentDump) {
     try {
+      // Raw XML on purpose: saveArtifact redacts XML structurally (attribute values / text nodes),
+      // while a plain-text pass first could rewrite markup a short secret happens to match.
       const xml = await driver.dumpXml();
-      dumpUri = sessions.saveArtifact(session, 'dump', `dump-${Date.now()}.xml`, redact(xml) ?? '', 'application/xml');
+      dumpUri = sessions.saveArtifact(session, 'dump', `dump-${Date.now()}.xml`, xml ?? '', 'application/xml');
     } catch {
       /* best-effort (animated/idle-fail) */
     }
@@ -168,6 +191,9 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   // a tool / environment failure (WDA_UNREACHABLE). It still fails the gate as a high finding, but it
   // is not native/app health, not an app failure and not evidence that the app was exercised.
   const isToolFinding = (f: { kind: string; failureCode?: string }) => f.kind === 'wda_unreachable' || f.failureCode === 'WDA_UNREACHABLE';
+  // The one high-severity count every consumer uses: unique (deduplicated) app/native findings, tool
+  // failures excluded (they still gate, as findings, but are not an app verdict).
+  const highSeverityCount = uniqueFindings.filter((f) => f.severity === 'high' && !isToolFinding(f)).length;
   const healthFindings = session.findings.filter((f) => !isToolFinding(f));
   const nativeFindings = healthFindings.filter((f) => f.layer === 'native');
   const appFindings = healthFindings.filter((f) => f.layer === 'app');
@@ -201,7 +227,6 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
       artifactUris: n.artifactUris ?? [],
     }));
   const evidenceTaxonomy = evidenceTaxonomyForNotes(notes);
-  const evidenceByWorkflow = new Map(evidenceTaxonomy.assessments.map((a) => [a.workflow, a]));
 
   const a = session.auth;
   const authState = a.loginPerformed
@@ -261,25 +286,29 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     examples: bucketExamples,
   };
 
-  const blockedCount = outcomeTally.blocked ?? 0;
+  // Verdicts (risk banner, fail counts, app/coverage status) count the latest attempt per workflow,
+  // the same collapse the release gate and JUnit use (report/export.ts latestAttempts), so a flow that
+  // failed and then passed on a separate run never blocks the banner while the gate passes.
+  const gated = latestAttempts(notes);
+  const blockedCount = gated.filter((n) => n.outcome === 'blocked').length;
   const APP_OWNED_FAIL_CATEGORIES = new Set(['app_bug', 'other']);
   // A Swipium-generated flow failing on a locator step is automation drift (category
   // 'other' + AUTOMATION_DRIFT_NOTE): a caution to repair the flow, never an app FAIL / BLOCK.
-  const driftFailCount = notes.filter(isAutomationDriftNote).length;
-  const appFailNotes = notes.filter(
+  const driftFailCount = gated.filter(isAutomationDriftNote).length;
+  const appFailNotes = gated.filter(
     (n) => n.outcome === 'fail' && (n.category == null || APP_OWNED_FAIL_CATEGORIES.has(n.category)) && !isAutomationDriftNote(n),
   );
   const appFailCount = appFailNotes.length;
-  const toolLimitationNotes = notes.filter((n) => (n.outcome === 'fail' || n.outcome === 'blocked') && n.category === 'mcp_limitation');
+  const toolLimitationNotes = gated.filter((n) => (n.outcome === 'fail' || n.outcome === 'blocked') && n.category === 'mcp_limitation');
   const toolLimitationFailCount = toolLimitationNotes.filter((n) => n.outcome === 'fail').length;
   // A failure that is neither the app's, a tool limitation nor drift (missing_test_data,
   // destructive_refused, intentionally_skipped) still fails the gate by default: never SHIP on it.
-  const otherFailNotes = notes.filter(
+  const otherFailNotes = gated.filter(
     (n) => n.outcome === 'fail' && !appFailNotes.includes(n) && n.category !== 'mcp_limitation' && !isAutomationDriftNote(n),
   );
   const topHigh = high.find((f) => !isToolFinding(f)) ?? high[0];
   const topAppFailNote = appFailNotes[0];
-  const topBlockedNote = notes.find((n) => n.outcome === 'blocked');
+  const topBlockedNote = gated.find((n) => n.outcome === 'blocked');
   // No evidence => never SHIP. Only a Swipium-run check that
   // looked at the app's UI and found it healthy counts as exercising the app: a smoke or flow pass
   // whose oracle read the UI (a launch smoke with app=ok, so RedBox / blank were ruled out), or an
@@ -295,8 +324,9 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   const ex = session.exploration;
   const exploredRealScreenAt = ex && ex.summary.screensVisited - ex.summary.visualOnlyScreens > ex.summary.appErrors ? ex.at : 0;
   // Swipium's own healthy pass (or failure) or a real-screen exploration recorded after `t`.
+  // Counts the collapsed list only, so an attempt a later verdict replaced never makes a run tested.
   const swipiumOutcomeSince = (t: number) =>
-    notes.some((n) => n.at > t && swipiumJudged(n) && isOutcome(n) && (n.outcome === 'fail' || healthyPass(n))) || exploredRealScreenAt > t;
+    gated.some((n) => n.at > t && swipiumJudged(n) && isOutcome(n) && (n.outcome === 'fail' || healthyPass(n))) || exploredRealScreenAt > t;
   // An action with the app under test in front (qa_act's post-action check): proves the app was
   // reached, never that it was tested.
   const appActionSince = (t: number) => session.recordedActions.some((ra) => ra.at > t && ra.appForeground);
@@ -315,9 +345,9 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     (ex?.summary.screensVisited ?? 0) > 0;
   // Only Swipium-judged outcomes exercise the app. An agent's pass or fail claim does not.
   const exercised = swipiumOutcomeSince(0);
-  const agentFailClaim = !exercised && notes.some((n) => !swipiumJudged(n) && n.outcome === 'fail' && n.category !== 'mcp_limitation');
+  const agentFailClaim = !exercised && gated.some((n) => !swipiumJudged(n) && n.outcome === 'fail' && n.category !== 'mcp_limitation');
   const unverifiedPassClaim =
-    !exercised && notes.some((n) => (n.source === 'qa_note' || n.evidenceKind === 'manual_review') && n.outcome === 'pass');
+    !exercised && gated.some((n) => (n.source === 'qa_note' || n.evidenceKind === 'manual_review') && n.outcome === 'pass');
   const unbackedPassClaim = unverifiedPassClaim && !appSeen;
   const reachedApp = exercised || appSeen;
   // A not-tested run stays not tested for every later qa_report (same verdict, same
@@ -390,6 +420,8 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
                   : 'the app was reached but no workflow was exercised',
             failureCode: blockerCodeOf(topBlockedNote),
           };
+  // Same rule as the gate (isNotTested): a reached and exercised app is informational, not "not tested".
+  const countsAsNotTested = !!notTested && isNotTested({ notTested });
   // Health was never checked when the app was never reached; "OK" would be a claim.
   // A visual-only smoke (no UI tree read) left app-layer health "unverified", never OK.
   const healthUnchecked = !!notTested && !notTested.reachedApp && healthFindings.length === 0;
@@ -403,13 +435,41 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   ) {
     appHealth = 'unverified';
   }
+  // "Visual-only" is only true when no UI tree was read at all this session. A tool failure (WDA
+  // returning no source) or a smoke that could not judge the screen is unverified for another reason.
+  const treeRead =
+    !!session.lastSnapshot ||
+    !!dumpUri ||
+    session.artifacts.some((art) => art.kind === 'dump') ||
+    (session.steps ?? []).some((st) => !!st.dumpUri) ||
+    notes.some((n) => n.method === 'structured' || (n.workflow === 'launch_smoke' && /\bapp=ok\b/.test(n.reason ?? ''))) ||
+    (ex ? ex.summary.screensVisited - ex.summary.visualOnlyScreens > 0 : false);
+  const appHealthUnverifiedReason =
+    appHealth !== 'unverified' || !treeRead
+      ? undefined
+      : session.findings.some(isToolFinding)
+        ? 'the automation backend returned no UI tree (tool failure)'
+        : 'the launch smoke could not judge the app screen';
   // Coverage the run planned but did not get must not leave the risk at SHIP.
   // Flows whose latest outcome is a session-budget skip were not run; a blocked exploration
   // (unsafe actions skipped, blockers, budget stop) explored less than it set out to.
-  const latestByWorkflow = new Map(notes.map((n) => [n.workflow, n]));
-  const budgetSkipped = [...latestByWorkflow.values()]
-    .filter((n) => n.outcome === 'skipped' && /^budget:|BUDGET_EXHAUSTED/.test(n.reason ?? ''))
-    .map((n) => n.workflow);
+  // Same collapse as the gate: a pass followed by a budget skip still counts as the pass. Notes
+  // with no attempt kind (older notes) never collapse, so a later pass/fail by name also covers them.
+  const isBudgetSkip = (n: TestNote) => n.outcome === 'skipped' && /^budget:|BUDGET_EXHAUSTED/.test(n.reason ?? '');
+  const annotatedNotes = annotateAttempts(notes);
+  const budgetSkipped = [
+    ...new Set(
+      annotatedNotes.flatMap((n, idx) =>
+        !(n as { superseded?: boolean }).superseded &&
+        isBudgetSkip(n) &&
+        !annotatedNotes
+          .slice(idx + 1)
+          .some((l) => workflowKey(l.workflow) === workflowKey(n.workflow) && (l.outcome === 'pass' || l.outcome === 'fail'))
+          ? [n.workflow]
+          : [],
+      ),
+    ),
+  ];
   const explorationBlocked = session.exploration?.state === 'blocked';
   const coverageGaps = [
     ...(budgetSkipped.length
@@ -431,12 +491,13 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   ];
   const executiveSummary = releaseAssessment({
     coverageGaps,
-    notTested,
+    ...(countsAsNotTested ? { notTested } : {}),
     nativeHealth,
     appHealth,
+    ...(appHealthUnverifiedReason ? { appHealthUnverifiedReason } : {}),
     // A WDA_UNREACHABLE finding is a tool / environment failure, not an app verdict: it keeps the risk
     // off SHIP (tool status, app health unverified) and still fails the gate, but is no app BLOCK.
-    highSeverityCount: high.filter((f) => !isToolFinding(f)).length,
+    highSeverityCount,
     failCount: appFailCount,
     blockedCount: blockedCount + toolLimitationFailCount + driftFailCount,
     otherFailCount: otherFailNotes.length,
@@ -497,7 +558,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
 
   const coverage = coverageForSession(session);
   const automationBackend = automationBackendForSession(session);
-  const passNotes = notes.filter((n) => n.outcome === 'pass').length;
+  const passNotes = gated.filter((n) => n.outcome === 'pass').length;
   const appVerdict = (() => {
     if (
       nativeHealth === 'error' ||
@@ -524,7 +585,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     if (appHealth === 'unverified')
       return {
         status: 'UNVERIFIED',
-        summary: 'App launched, but app-layer health was not verified (visual-only: no UI tree was read). Check the screenshot.',
+        summary: `App launched, but app-layer health was not verified (${appHealthUnverifiedReason ?? 'visual-only: no UI tree was read'}). Check the screenshot.`,
       };
     return { status: 'PASS', summary: 'No high-severity app/native finding observed in this run.' };
   })();
@@ -550,7 +611,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
                 : 'A setup or precondition blocker limited coverage.');
       return { status: 'BLOCKED', summary };
     }
-    if (notTested) return { status: 'NOT_COVERED', summary: `Not covered: ${notTested.reason}.` };
+    if (notTested && countsAsNotTested) return { status: 'NOT_COVERED', summary: `Not covered: ${notTested.reason}.` };
     if (budgetSkipped.length)
       return {
         status: 'PARTIAL',
@@ -578,7 +639,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     smokePassed:
       nativeHealth === 'OK' &&
       (appHealth === 'OK' || appHealth === 'degraded') &&
-      high.length === 0 &&
+      highSeverityCount === 0 &&
       (passNotes > 0 || !!session.exploration || session.recordedActions.length > 0),
     suiteGenerated: readiness.includes('generated'),
     suiteRunnable: readiness.includes('compiled'),
@@ -637,66 +698,87 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
       ? `.swipium/test-suite.json is corrupt; the persistent suite was not updated (${redact(msg) ?? msg})`
       : `the persistent suite was not updated: ${redact(msg) ?? msg}`;
   };
-  try {
-    const now = new Date().toISOString();
-    const hasKnowledge = session.recordedActions.length > 0 || notes.length > 0 || !!session.exploration;
-    // Actions/exploration recorded on a fatal error surface (RedBox, crash) are not app
-    // knowledge; only the recorded outcomes are folded into the canonical suite then.
-    const fatalSurface = nativeHealth === 'error' || appHealth === 'error';
-    if (hasKnowledge) {
-      const { pom } = session.recordedActions.length && !fatalSurface ? pomForSession(session) : { pom: undefined };
-      const incoming = generateCanonicalCases({
-        pom,
-        appId: appId ?? undefined,
-        fixtures: session.fixtures,
-        notes: session.notes,
-        exploration: fatalSurface ? undefined : session.exploration,
-        platforms: casePlatformsFor(session), // the observed platform, not a default "android"
-        source: 'report',
-        now,
-        replayStatus: suiteReplayStatus as ReplayStatus,
-      });
-      const applied = applyMerge(
-        session.root,
-        redactDeep(incoming, redact), // defense in depth: no registered secret reaches test-suite.json / TC-*.yaml
-        { source: 'report', mode: 'update', now, runId: runIdFromNow(now) },
-        appId ?? undefined,
-      );
-      mergedSuite = applied.result.suite;
-      const delta = suiteDelta(applied.result.suite, applied.result);
-      persistentSuite = {
-        ...delta,
-        caseIds: applied.result.suite.cases.map((c) => c.id),
-        runLedgerPath: applied.runPath,
-        validationErrors: applied.validationErrors,
-      };
-    } else {
-      const checked = loadSuiteChecked(session.root, appId ?? undefined);
-      const suite = checked.suite;
-      // An unparseable file reads as an empty suite; never save that view over it.
-      if (checked.corrupt) suiteFailure(new Error(`test-suite.json does not parse (${checked.corrupt})`));
-      else mergedSuite = suite;
-      persistentSuite = {
-        totalCases: suite.cases.length,
-        created: [],
-        updated: [],
-        deprecated: [],
-        failed: [],
-        blocked: [],
-        newlyAutomated: [],
-        caseIds: suite.cases.map((c) => c.id),
-      };
+  // Idempotent fold: a qa_report re-call with no new activity must not merge the suite, the issue
+  // ledger or the app map again (duplicate run history, duplicate issue events). The key is computed
+  // from the run's content, not a counter: the report's own artifact saves persist the session too.
+  const foldKey = runFoldKey(session);
+  const previousFold = session.lastFoldKey === foldKey ? lastFoldedReport(session) : undefined;
+  if (previousFold) {
+    persistentSuite = (previousFold.persistentSuite as Record<string, unknown> | null | undefined) ?? null;
+    if (typeof previousFold.persistentSuiteWarning === 'string') suiteWarning = previousFold.persistentSuiteWarning;
+  } else
+    try {
+      const now = new Date().toISOString();
+      const hasKnowledge = session.recordedActions.length > 0 || notes.length > 0 || !!session.exploration;
+      // Actions/exploration recorded on a fatal error surface (RedBox, crash) are not app
+      // knowledge; only the recorded outcomes are folded into the canonical suite then.
+      const fatalSurface = nativeHealth === 'error' || appHealth === 'error';
+      if (hasKnowledge) {
+        const { pom } = session.recordedActions.length && !fatalSurface ? pomForSession(session) : { pom: undefined };
+        const incoming = generateCanonicalCases({
+          pom,
+          appId: appId ?? undefined,
+          fixtures: session.fixtures,
+          notes: session.notes,
+          exploration: fatalSurface ? undefined : session.exploration,
+          platforms: casePlatformsFor(session), // the observed platform, not a default "android"
+          source: 'report',
+          now,
+          replayStatus: suiteReplayStatus as ReplayStatus,
+        });
+        const applied = applyMerge(
+          session.root,
+          redactDeep(incoming, redact), // defense in depth: no registered secret reaches test-suite.json / TC-*.yaml
+          { source: 'report', mode: 'update', now, runId: runIdFromNow(now) },
+          appId ?? undefined,
+        );
+        mergedSuite = applied.result.suite;
+        const delta = suiteDelta(applied.result.suite, applied.result);
+        persistentSuite = {
+          ...delta,
+          caseIds: applied.result.suite.cases.map((c) => c.id),
+          runLedgerPath: applied.runPath,
+          validationErrors: applied.validationErrors,
+        };
+      } else {
+        const checked = loadSuiteChecked(session.root, appId ?? undefined);
+        const suite = checked.suite;
+        // An unparseable file reads as an empty suite; never save that view over it.
+        if (checked.corrupt) suiteFailure(new Error(`test-suite.json does not parse (${checked.corrupt})`));
+        else mergedSuite = suite;
+        persistentSuite = {
+          totalCases: suite.cases.length,
+          created: [],
+          updated: [],
+          deprecated: [],
+          failed: [],
+          blocked: [],
+          newlyAutomated: [],
+          caseIds: suite.cases.map((c) => c.id),
+        };
+      }
+    } catch (e) {
+      persistentSuite = null;
+      mergedSuite = undefined;
+      suiteFailure(e);
     }
-  } catch (e) {
-    persistentSuite = null;
-    mergedSuite = undefined;
-    suiteFailure(e);
-  }
 
-  const screenshots = session.artifacts.filter((art) => art.kind === 'screenshot');
   const toolErrors = session.toolErrors ?? [];
+  // Another job of this session still running (an explore, a suite replay, a second qa_test_this):
+  // this report is a snapshot of an unfinished run. The reporting job itself is excluded.
+  const runningJob = [...session.jobs.values()].find((j) => j.status === 'running' && j.jobId !== options.excludeJobId);
+  const partial = runningJob ? { jobId: runningJob.jobId, kind: runningJob.kind } : null;
+  // An invalid policy (ignored: every failure blocks) or unknown keys are said in the report.
+  let releasePolicyNotice: string | null = null;
+  try {
+    releasePolicyNotice = policyNotice(session.root);
+  } catch {
+    /* best-effort */
+  }
   const report = {
+    schemaVersion: 2,
     sessionId: session.id,
+    partial,
     executiveSummary,
     ...(notTested ? { notTested } : {}),
     appId,
@@ -719,6 +801,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
         : session.headless
           ? 'headless'
           : 'visible window',
+    releasePolicyNotice,
     environmentChanges: session.envChanges,
     ciMutations: session.envChanges,
     mutationLedger: session.mutations.map((m) => ({
@@ -757,7 +840,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     }),
     findingOccurrences: session.findings.length,
     toolErrors: toolErrors.slice(-50).map((t) => ({ ...t, message: redact(t.message) ?? t.message })),
-    highSeverityCount: high.length,
+    highSeverityCount,
     nativeHealth,
     appHealth,
     appHealthFindings: appFindings.map((f) => ({
@@ -769,11 +852,24 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     })),
     // An agent's pass claim nothing backs is marked `unverified` (exports render it as a
     // skipped / "pass (unverified)" case, never a passing test).
-    testOutcomes: notes.map((n) => ({
-      ...n,
-      reason: n.reason ? redact(n.reason) : undefined,
-      ...(unverifiedPassClaim && n.source === 'qa_note' && n.outcome === 'pass' ? { unverified: true } : {}),
-    })),
+    // Every entry is kept; the one that counts per workflow also carries `attempts` / `flaky`
+    // (latestAttempts over this list gives the same verdicts, so saved reports re-gate the same).
+    testOutcomes: annotateAttempts(
+      outcomeEvidence(session, notes, isToolFinding).map(({ note: n, stepRange, evidence, contradicted }) => {
+        const attemptKey = computeAttemptKey(n);
+        return {
+          ...n,
+          ...(attemptKey ? { attemptKey } : {}),
+          reason: n.reason ? redact(n.reason) : undefined,
+          ...(unverifiedPassClaim && n.source === 'qa_note' && n.outcome === 'pass' ? { unverified: true } : {}),
+          ...(stepRange ? { stepRange } : {}),
+          evidence,
+          ...(contradicted ? { contradicted: true } : {}),
+        };
+      }),
+    ),
+    // The step timeline (already secret-safe in the store; the whole report is redacted again below).
+    steps: (session.steps ?? []).map((st) => ({ ...st })),
     outcomeTally,
     categoryTally,
     outcomeByCategory,
@@ -806,126 +902,147 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
           blockers: session.exploration.summary.blockers,
         }
       : null,
-    artifacts: session.artifacts.map((art) => ({ uri: art.uri, kind: art.kind, mime: art.mime, label: art.label })),
+    // `path` is relative to the session folder, never absolute: report.json gets uploaded from CI and
+    // must not carry $HOME or the username.
+    artifacts: session.artifacts.map((art) => {
+      const rel = relativeArtifactPath(session.dir, art.path);
+      return {
+        uri: art.uri,
+        kind: art.kind,
+        mime: art.mime,
+        label: art.label,
+        ...(rel ? { path: rel } : {}),
+        createdAt: art.createdAt,
+        ...(art.redaction ? { redaction: art.redaction } : {}),
+      };
+    }),
     counters: session.counters,
   };
   // Issue memory: fold this run's findings + app-bug outcomes into the durable
   // `.swipium/issues-log.jsonl`, reopen previously-fixed fingerprints, and attach the issue-memory
   // section (+ recurrence markdown) to the report. Best-effort: the ledger never breaks a report.
-  try {
-    const platform: IssuePlatform = driver instanceof WdaDriver ? 'ios' : driver ? 'android' : 'unknown';
-    const environment: IssueEnvironment =
-      session.headless !== undefined ? (platform === 'ios' ? 'simulator' : 'emulator') : process.env.CI ? 'ci' : 'unknown';
-    const issuePolicy = loadIssuePolicy(session.root);
-    const sourceRevision = resolveSourceRevision({
-      env: process.env,
-      allowGitMetadataRead: issuePolicy.allowGitMetadataRead,
-      root: session.root,
-    });
-    const bridgeFindings: BridgeFinding[] = session.findings.map((f) => ({
-      severity: f.severity,
-      kind: f.kind,
-      detail: redact(f.detail) ?? f.detail,
-      layer: f.layer,
-      evidence: f.evidence ? redact(f.evidence) : undefined,
-      screen: f.screen,
-      screenshotUri: f.screenshotUri,
-      logUri: f.logUri,
-      failureCode: f.failureCode,
-    }));
-    const bridgeNotes: BridgeNote[] = notes.map((n) => ({
-      workflow: n.workflow,
-      outcome: n.outcome,
-      category: n.category,
-      reason: n.reason ? redact(n.reason) : undefined,
-      failureCode: (n as { failureCode?: string }).failureCode,
-      artifactUris: n.artifactUris,
-    }));
-    const issuesNow = new Date().toISOString();
-    const bridge = foldRunIntoLedger(session.root, bridgeFindings, bridgeNotes, issuesNow, {
-      appId: appId ?? undefined,
-      platform,
-      environment,
-      sessionId: session.id,
-      sourceRevision,
-    });
+  if (previousFold) {
+    for (const k of ['issues', 'issuesMarkdown', 'issueRecurrences', 'issueMetrics'] as const)
+      if (previousFold[k] !== undefined) (report as Record<string, unknown>)[k] = previousFold[k];
+  } else
+    try {
+      const platform: IssuePlatform = driver instanceof WdaDriver ? 'ios' : driver ? 'android' : 'unknown';
+      const environment: IssueEnvironment =
+        session.headless !== undefined ? (platform === 'ios' ? 'simulator' : 'emulator') : process.env.CI ? 'ci' : 'unknown';
+      const issuePolicy = loadIssuePolicy(session.root);
+      const sourceRevision = resolveSourceRevision({
+        env: process.env,
+        allowGitMetadataRead: issuePolicy.allowGitMetadataRead,
+        root: session.root,
+      });
+      const bridgeFindings: BridgeFinding[] = session.findings.map((f) => ({
+        severity: f.severity,
+        kind: f.kind,
+        detail: redact(f.detail) ?? f.detail,
+        layer: f.layer,
+        evidence: f.evidence ? redact(f.evidence) : undefined,
+        screen: f.screen,
+        screenshotUri: f.screenshotUri,
+        logUri: f.logUri,
+        failureCode: f.failureCode,
+      }));
+      const bridgeNotes: BridgeNote[] = notes.map((n) => ({
+        workflow: n.workflow,
+        outcome: n.outcome,
+        category: n.category,
+        reason: n.reason ? redact(n.reason) : undefined,
+        failureCode: (n as { failureCode?: string }).failureCode,
+        artifactUris: n.artifactUris,
+      }));
+      const issuesNow = new Date().toISOString();
+      const bridge = foldRunIntoLedger(session.root, bridgeFindings, bridgeNotes, issuesNow, {
+        appId: appId ?? undefined,
+        platform,
+        environment,
+        sessionId: session.id,
+        sourceRevision,
+      });
 
-    // Link recorded issues to persistent test cases, and verify fixed issues that a PASSING case
-    // covers this run. The case > workflow key is the workflow string the suite generator
-    // folds into actualResult.summary.
-    let verifiedFixedIds = new Set<string>();
-    if (mergedSuite) {
-      const idx = getIssueIndex(session.root, issuesNow, appId ?? undefined);
-      const recordById = new Map(idx.records.map((r) => [r.issueId, r]));
-      const matchCase = (workflow?: string) =>
-        workflow
-          ? mergedSuite!.cases.filter(
-              (c) =>
-                c.actualResult.summary?.toLowerCase().includes(workflow.toLowerCase()) ||
-                c.functionality.toLowerCase() === workflow.toLowerCase() ||
-                c.title.toLowerCase().includes(workflow.toLowerCase()),
-            )
-          : [];
-      for (const rec of bridge.recorded) {
-        const record = recordById.get(rec.issueId);
-        if (!record) continue;
-        for (const c of matchCase(rec.workflow)) {
-          linkIssueToCase(c, record, relationshipForCase(rec.category), issuesNow);
-          const lastRun = c.history[c.history.length - 1];
-          if (lastRun) linkRunIssue(lastRun, record, runRelationshipFor(record, rec.reopened));
+      // Link recorded issues to persistent test cases, and verify fixed issues that a PASSING case
+      // covers this run. The case > workflow key is the workflow string the suite generator
+      // folds into actualResult.summary.
+      let verifiedFixedIds = new Set<string>();
+      if (mergedSuite) {
+        const idx = getIssueIndex(session.root, issuesNow, appId ?? undefined);
+        const recordById = new Map(idx.records.map((r) => [r.issueId, r]));
+        const matchCase = (workflow?: string) =>
+          workflow
+            ? mergedSuite!.cases.filter(
+                (c) =>
+                  c.actualResult.summary?.toLowerCase().includes(workflow.toLowerCase()) ||
+                  c.functionality.toLowerCase() === workflow.toLowerCase() ||
+                  c.title.toLowerCase().includes(workflow.toLowerCase()),
+              )
+            : [];
+        for (const rec of bridge.recorded) {
+          const record = recordById.get(rec.issueId);
+          if (!record) continue;
+          for (const c of matchCase(rec.workflow)) {
+            linkIssueToCase(c, record, relationshipForCase(rec.category), issuesNow);
+            const lastRun = c.history[c.history.length - 1];
+            if (lastRun) linkRunIssue(lastRun, record, runRelationshipFor(record, rec.reopened));
+          }
+        }
+        const passingCaseIds = new Set(mergedSuite.cases.filter((c) => c.actualResult.status === 'pass').map((c) => c.id));
+        const stateById = new Map(idx.records.map((r) => [r.issueId, r.state as string]));
+        const verified = verifiedFixedIssuesForRun(mergedSuite.cases, passingCaseIds, stateById);
+        for (const issueId of verified) {
+          verifyFixed(session.root, { issueId }, { testCaseId: 'persistent-suite', evidenceUris: [] }, issuesNow);
+          const rec = recordById.get(issueId);
+          for (const c of mergedSuite.cases) {
+            if (passingCaseIds.has(c.id) && c.issueRefs?.some((r) => r.issueId === issueId) && rec)
+              linkIssueToCase(c, rec, 'verified_fixed', issuesNow);
+          }
+        }
+        verifiedFixedIds = new Set(verified);
+        // Isolated: a refused save must not skip the issue section and app-map refresh below.
+        try {
+          saveSuite(session.root, mergedSuite);
+        } catch (e) {
+          suiteFailure(e);
         }
       }
-      const passingCaseIds = new Set(mergedSuite.cases.filter((c) => c.actualResult.status === 'pass').map((c) => c.id));
-      const stateById = new Map(idx.records.map((r) => [r.issueId, r.state as string]));
-      const verified = verifiedFixedIssuesForRun(mergedSuite.cases, passingCaseIds, stateById);
-      for (const issueId of verified) {
-        verifyFixed(session.root, { issueId }, { testCaseId: 'persistent-suite', evidenceUris: [] }, issuesNow);
-        const rec = recordById.get(issueId);
-        for (const c of mergedSuite.cases) {
-          if (passingCaseIds.has(c.id) && c.issueRefs?.some((r) => r.issueId === issueId) && rec)
-            linkIssueToCase(c, rec, 'verified_fixed', issuesNow);
-        }
+
+      // Rebuild the section honoring verified-fixed evidence (honest fix verification).
+      const finalIdx = getIssueIndex(session.root, issuesNow, appId ?? undefined);
+      const finalSection = buildReportIssuesSection(finalIdx.records, new Set(bridge.recordedIssueIds), verifiedFixedIds);
+      (report as Record<string, unknown>).issues = finalSection;
+      (report as Record<string, unknown>).issuesMarkdown = issuesSectionToMarkdown(finalSection);
+      if (bridge.recurrences.length) (report as Record<string, unknown>).issueRecurrences = bridge.recurrences;
+
+      // Compact quality metrics when enough history exists: this run's new/reopened/verified
+      // counts + open blocker/high totals + reopen/fix-verification rates.
+      const allEvents = readIssueEvents(session.root);
+      if (allEvents.length >= 2) {
+        const metrics = computeIssueMetrics(allEvents, {});
+        (report as Record<string, unknown>).issueMetrics = {
+          newThisRun: finalSection.newIssues.length,
+          reopenedThisRun: finalSection.recurringIssues.length,
+          fixedVerifiedThisRun: verifiedFixedIds.size,
+          openBlocker: metrics.blockerOpenCount,
+          openHigh: metrics.highOpenCount,
+          reopenRatePct: metrics.reopenRatePct,
+          fixVerificationRatePct: metrics.fixVerificationRatePct,
+          avgAgeDays: metrics.avgAgeDays,
+        };
       }
-      verifiedFixedIds = new Set(verified);
-      // Isolated: a refused save must not skip the issue section and app-map refresh below.
-      try {
-        saveSuite(session.root, mergedSuite);
-      } catch (e) {
-        suiteFailure(e);
+
+      // Refresh app-map issue summaries from the freshly-updated ledger, only when a map
+      // already exists, and WITHOUT a static rescan (runtime_merge load > apply summaries > save).
+      if (existsSync(appMapPath(session.root))) {
+        buildAppMap(session.root, { mode: 'runtime_merge', at: issuesNow, includeCodeIndex: false, persist: true });
       }
+    } catch {
+      /* best-effort: issue ledger is additive, never blocks the report */
     }
-
-    // Rebuild the section honoring verified-fixed evidence (honest fix verification).
-    const finalIdx = getIssueIndex(session.root, issuesNow, appId ?? undefined);
-    const finalSection = buildReportIssuesSection(finalIdx.records, new Set(bridge.recordedIssueIds), verifiedFixedIds);
-    (report as Record<string, unknown>).issues = finalSection;
-    (report as Record<string, unknown>).issuesMarkdown = issuesSectionToMarkdown(finalSection);
-    if (bridge.recurrences.length) (report as Record<string, unknown>).issueRecurrences = bridge.recurrences;
-
-    // Compact quality metrics when enough history exists: this run's new/reopened/verified
-    // counts + open blocker/high totals + reopen/fix-verification rates.
-    const allEvents = readIssueEvents(session.root);
-    if (allEvents.length >= 2) {
-      const metrics = computeIssueMetrics(allEvents, {});
-      (report as Record<string, unknown>).issueMetrics = {
-        newThisRun: finalSection.newIssues.length,
-        reopenedThisRun: finalSection.recurringIssues.length,
-        fixedVerifiedThisRun: verifiedFixedIds.size,
-        openBlocker: metrics.blockerOpenCount,
-        openHigh: metrics.highOpenCount,
-        reopenRatePct: metrics.reopenRatePct,
-        fixVerificationRatePct: metrics.fixVerificationRatePct,
-        avgAgeDays: metrics.avgAgeDays,
-      };
-    }
-
-    // Refresh app-map issue summaries from the freshly-updated ledger, only when a map
-    // already exists, and WITHOUT a static rescan (runtime_merge load > apply summaries > save).
-    if (existsSync(appMapPath(session.root))) {
-      buildAppMap(session.root, { mode: 'runtime_merge', at: issuesNow, includeCodeIndex: false, persist: true });
-    }
-  } catch {
-    /* best-effort: issue ledger is additive, never blocks the report */
+  if (session.lastFoldKey !== foldKey) {
+    session.lastFoldKey = foldKey;
+    sessions.persist(session);
   }
   if (suiteWarning) (report as Record<string, unknown>).persistentSuiteWarning = suiteWarning;
 
@@ -1041,134 +1158,48 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     }
   }
 
-  // The manifest is written last so it lists (and hashes) report.md too; report.md names the
-  // manifest, so its URI is fixed up front from the file name saveArtifact will use.
-  const manifestName = safeArtifactName(`manifest-${Date.now()}.json`);
-  const plannedManifestUri = `swipium://session/${encodeUriSegment(session.id)}/manifest/${encodeUriSegment(manifestName)}`;
-  // An invalid policy (ignored: every failure blocks) or unknown keys are said out loud.
-  let releasePolicyNotice: string | null = null;
+  // report.html: one stable file per session, overwritten on every call, rendered from the already
+  // redacted report. Written directly (not through saveArtifact's text redactor, which could rewrite
+  // base64 image data), with the private file mode, and ONE artifact record upserted.
+  const reportHtmlPath = join(session.dir, 'report', 'report.html');
+  const reportHtmlUrl = pathToFileURL(reportHtmlPath).href;
+  let reportHtmlError: string | undefined;
   try {
-    releasePolicyNotice = policyNotice(session.root);
-  } catch {
-    /* best-effort */
+    const html = await renderReportHtml(report as unknown as ReportData, {
+      sessionDir: session.dir,
+      root: session.root,
+      redact: (s) => redact(s) ?? s,
+    });
+    mkdirSync(join(session.dir, 'report'), { recursive: true, mode: 0o700 });
+    writeFileSync(reportHtmlPath, html, { mode: PRIVATE_FILE_MODE });
+    upsertReportHtmlArtifact(sessions, session, reportHtmlPath);
+  } catch (e) {
+    reportHtmlError = String((e as Error)?.message ?? e);
+    log('warn', 'report.html could not be rendered; the JSON report and summary are still written', { err: reportHtmlError });
   }
-  const noteSummaryLines = notes.map((n) => {
-    const ev = evidenceByWorkflow.get(n.workflow);
-    return `  • ${n.workflow}: ${n.outcome}${ev ? ` (evidence=${ev.kind}/${ev.authority})` : ''}${n.category ? ` [${n.category}]` : ''}${n.missingPrecondition ? ` (missing: ${n.missingPrecondition})` : n.reason ? `: ${redact(n.reason)}` : ''}${n.recommendedSetup ? ` · setup: ${n.recommendedSetup}` : ''}`;
-  });
 
-  const lines = [
-    `Report for ${session.id}: app=${report.appId} device=${report.device}`,
-    `RELEASE RISK: ${executiveSummary.risk.toUpperCase()}: ${executiveSummary.nextAction}`,
-    `App status: ${appVerdict.status} - ${appVerdict.summary}`,
-    `Coverage status: ${coverageVerdict.status} - ${coverageVerdict.summary}`,
-    `Tool status: ${toolVerdict.status} - ${toolVerdict.summary}`,
-    releasePolicyNotice ? `⚠ release-gate policy: ${releasePolicyNotice}` : '',
-    `PR summary:\n${prSummary.text}`,
-    `backend: ${report.automationBackend.description} (${report.automationBackend.mode})`,
-    `QA level: ${qaLevel.level.toUpperCase()}: ${qaLevel.rationale}${qaLevel.next ? ` · next: ${qaLevel.next} (${qaLevel.nextRequirement})` : ''}`,
-    qaLevel.notes.length ? `QA level notes:\n  ${qaLevel.notes.join('\n  ')}` : '',
-    `automation readiness: ${automationReadiness.grade} (${automationReadiness.score}/100, durable locators ${automationReadiness.locatorCoverage.durablePct}%)`,
-    `test catalog: ${runTestCatalog.total} case(s): ${
-      Object.entries(runTestCatalog.counts)
-        .filter(([, v]) => v)
-        .map(([k, v]) => `${k}=${v}`)
-        .join(' ') || 'none'
-    }`,
-    automationReadiness.topFixes.length
-      ? `top readiness fixes:\n  ${automationReadiness.topFixes.join('\n  ')}`
-      : 'top readiness fixes: none',
-    `${report.coverage}${report.visualOnly ? ' · VISUAL-ONLY (structured snapshots were poor, see screenshots)' : ''}`,
-    report.device ? `emulator display: ${report.emulatorDisplay}` : '', // no device, no display line
-    `network: ${finalNetwork}${networkRestore ? ` (${networkRestore})` : session.network?.changed ? ' ⚠ Swipium changed it and did NOT restore' : ''}`,
-    report.activeRecording
-      ? `A screen recording is still active (${report.activeRecording.backend}, ~${report.activeRecording.seconds}s). It will be stopped on shutdown.`
-      : '',
-    session.envChanges.length ? `environment changes:\n  ${session.envChanges.join('\n  ')}` : 'environment changes: none',
-    session.mutations.length
-      ? `mutation ledger: ${session.mutations.length} record(s), ${session.mutations.filter((m) => m.status === 'executed').length} executed, ${session.mutations.filter((m) => m.status === 'refused' || m.status === 'blocked').length} refused/blocked`
-      : 'mutation ledger: none',
-    report.guardrailOverrides.length
-      ? `⚠ guardrail overrides used:\n  ${report.guardrailOverrides.join('\n  ')}`
-      : 'guardrail overrides: none',
-    session.workarounds.length ? `workarounds attempted:\n  ${session.workarounds.join('\n  ')}` : '',
-    session.inputs.length
-      ? `inputs provided (redacted): ${session.inputs.map((i) => `${i.varName}${i.secret ? '🔒' : ''}`).join(', ')}`
-      : '',
-    session.redactionDegraded
-      ? '⚠ redaction degraded: this session was restored after a server restart. Secrets registered before the restart are no longer in the redaction set, so artifacts written since may contain those values unredacted'
-      : '',
-    session.generatedValues.length
-      ? `generated test data: ${session.generatedValues.map((g) => `${g.fixture}.${g.field}=${g.secret ? '<redacted>' : redact(g.value)} (${g.generator})`).join(', ')}`
-      : '',
-    options.suite
-      ? options.suite.generated
-        ? `generated suite "${options.suite.name}": ${(options.suite.compiledFlows ?? []).filter((c) => c.ok).length}/${(options.suite.compiledFlows ?? []).length} runnable flow(s), runnable=${options.suite.suiteRunnable}, readiness=${(options.suite.readinessLabels ?? []).join(' > ') || 'unknown'} (${(options.suite.written ?? []).length} files)`
-        : `suite generation skipped: ${options.suite.skippedReason}`
-      : '',
-    session.exploration
-      ? `exploration: ${session.exploration.summary.screensVisited} screens, ${session.exploration.summary.workflowsFound} transitions, ${session.exploration.summary.visualOnlyScreens} visual-only, ${session.exploration.summary.unsafeActionsSkipped} unsafe skipped, ${session.exploration.summary.appErrors} app errors (graph: ${session.exploration.graphUri})`
-      : '',
-    `destructive/bundle-risk guardrail: ${destructiveGuardrail.status}`,
-    `health: native: ${nativeHealth === 'OK' ? '✅ OK' : nativeHealth === 'error' ? '❌ error' : nativeHealth} · app: ${appHealth === 'OK' ? '✅ OK' : appHealth === 'degraded' ? '⚠ degraded' : appHealth === 'error' ? '❌ error' : appHealth === 'unverified' ? '⚠ unverified (visual-only)' : appHealth}`,
-    wdaReport
-      ? `wda: ${wdaReport.status.reachable ? 'reachable' : 'unreachable'} ${wdaReport.webDriverAgentUrl} device=${wdaReport.device ?? 'unknown'}`
-      : '',
-    `findings: ${uniqueFindings.length} unique (${session.findings.length} occurrence(s), high: ${high.length})`,
-    toolErrors.length
-      ? `tool errors: ${toolVerdict.toolErrorCount}: ${Object.entries(toolVerdict.toolErrorsByCode)
-          .map(([c, n]) => `${c}×${n}`)
-          .join(', ')}`
-      : '',
-    totalFailures
-      ? `failures by bucket: ${ALL_BUCKETS.filter((b) => bucketCounts[b])
-          .map((b) => `${b}=${bucketCounts[b]}`)
-          .join(' ')} (${failureBuckets.classifiedPct}% classified${dominantBucket ? `, mostly ${dominantBucket}` : ''})`
-      : '',
-    notes.length
-      ? `evidence taxonomy: structured=${evidenceTaxonomy.counts.structured_locator} ocr=${evidenceTaxonomy.counts.ocr_locator} visual=${evidenceTaxonomy.counts.visual_match} ai_visual=${evidenceTaxonomy.counts.ai_visual_evidence} manual=${evidenceTaxonomy.counts.manual_review} calibration=${evidenceTaxonomy.calibration.status}`
-      : '',
-    ...uniqueFindings.map(
-      (f) =>
-        `  [${f.severity}] ${f.layer ?? '?'}/${f.kind}: ${redact(f.detail)}${f.evidence ? `: "${redact(f.evidence)}"` : ''}${f.screenshotUri ? ` (${f.screenshotUri})` : ''}${repeatSuffix(f)}`,
-    ),
-    notes.length
-      ? `test outcomes: ${Object.entries(outcomeTally)
-          .map(([k, v]) => `${k}=${v}`)
-          .join(' ')}`
-      : 'test outcomes: none recorded (qa_note)',
-    ...noteSummaryLines,
-    persistentSuite
-      ? `persistent suite: ${persistentSuite.totalCases} case(s): +${(persistentSuite.created as string[]).length} created, ~${(persistentSuite.updated as string[]).length} updated, -${(persistentSuite.deprecated as string[]).length} deprecated, ${(persistentSuite.failed as string[]).length} failed, ${(persistentSuite.blocked as string[]).length} blocked, ${(persistentSuite.newlyAutomated as string[]).length} newly automated`
-      : '',
-    suiteWarning ? `⚠ persistent suite: ${suiteWarning}` : '',
-    `auth: ${authState}`,
-    session.fixtures.length ? `declared preconditions: ${session.fixtures.map((f) => f.name).join(', ')}` : '',
-    `timing: total=${secText(phaseTimings.totalMs)} setup=${secText(phaseTimings.setupMs)} active=${secText(phaseTimings.activeMs)}${phaseTimings.timeToLoginMs != null ? ` toLogin=${secText(phaseTimings.timeToLoginMs)}` : ''}${phaseTimings.diagnostics.waitMs != null ? ` wait=${secText(phaseTimings.diagnostics.waitMs)}` : ''}${phaseTimings.diagnostics.flowRuntimeMs != null ? ` flows=${secText(phaseTimings.diagnostics.flowRuntimeMs)}` : ''}${session.budgetProfile ? ` (profile=${session.budgetProfile})` : ''}`,
-    reportLinks
-      ? `report links: baseline=${baseline ?? 'none'} trend=${trendRoot ?? session.root}${typeof reportLinks.comparison === 'string' ? ` comparison=${reportLinks.comparison}` : ''}`
-      : '',
-    `artifacts: ${session.artifacts.length} (${screenshots.length} screenshots)`,
-    ...session.artifacts.map((art) => `  ${art.uri} (${art.kind}${art.label ? `: ${art.label}` : ''})`),
-    dumpUri ? `current dump: ${dumpUri}` : '',
-    `report: ${reportUri}`,
-    `manifest: ${plannedManifestUri}`,
-    exportUri && exportUri !== reportUri ? `${format} export: ${exportUri}` : '',
-  ].filter(Boolean);
-
-  // report.md: the agent-readable report (this summary), what terminal results and the server
-  // instructions point at. report.json stays the machine/CI copy.
-  // Run text (note reasons, logcat, Metro output) can carry ANSI escapes / NULs; neither the
-  // qa_report text nor report.md keeps them.
-  const summaryText = stripControls(redact(lines.join('\n')) ?? '');
+  // summary.md: the agent-readable report (<= 2 KB, failure first). report.json and report.html hold
+  // everything else. Run text (note reasons, logcat, Metro output) can carry ANSI escapes / NULs;
+  // neither the qa_report text nor summary.md keeps them.
+  const summaryText = stripControls(
+    redact(
+      buildAgentSummary(report as unknown as Parameters<typeof buildAgentSummary>[0], {
+        reportHtmlPath,
+        reportHtmlError,
+        reportJsonPath: reportRec?.path ?? reportUri,
+      }),
+    ) ?? '',
+  );
   const reportMdUri = sessions.saveArtifact(
     session,
     'report',
     `report-${Date.now()}-summary.md`,
-    `# Swipium report ${session.id}\n\n${summaryText}\n`,
+    `${summaryText}\n`,
     'text/markdown',
     'report.md (agent-readable summary)',
   );
+  // Written last so it lists (and hashes) report.md and report.html too.
+  const manifestName = safeArtifactName(`manifest-${Date.now()}.json`);
   const manifest = buildSessionArtifactManifest(session);
   const manifestUri = sessions.saveArtifact(
     session,
@@ -1183,7 +1214,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     report,
     reportUri,
     reportMdUri,
-    reportHead: buildReportHead(report as Record<string, unknown>, { reportMdUri, reportUri }),
+    reportHead: buildReportHead(report as Record<string, unknown>, { reportMdUri, reportUri, reportHtmlPath, reportHtmlError }),
     manifestUri,
     manifest,
     dumpUri,
@@ -1192,5 +1223,119 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     exportFormat: exportUri ? format : undefined,
     summaryText: `${summaryText}\nreport.md: ${reportMdUri}`,
     flowExportSkipped,
+    reportHtmlPath,
+    reportHtmlUrl,
+    ...(reportHtmlError ? { reportHtmlError } : {}),
   };
+}
+
+/** An artifact path relative to the session folder, or undefined when it lives outside it. */
+function relativeArtifactPath(sessionDir: string, path: string): string | undefined {
+  if (!path) return undefined;
+  const rel = relative(sessionDir, path);
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) return undefined;
+  return rel.split('\\').join('/');
+}
+
+/** High findings that contradict a pass inside its step range: crashes, ANRs, app error surfaces. */
+function contradictsPass(f: { severity: string; kind: string; layer?: string; failureCode?: string }): boolean {
+  return f.severity === 'high' && (f.layer === 'native' || f.layer === 'app' || /crash|anr|error/i.test(f.kind));
+}
+
+/**
+ * Per outcome: the steps it covers, the evidence Swipium holds for it, and whether a pass is
+ * contradicted. The step range is the note's own, else the steps since the previous note. Evidence
+ * is the checkpoint, failed steps' screenshot/dump inside the range, and explicit artifactUris, kept
+ * only when they resolve to this session's artifacts. A pass is contradicted by a high crash / ANR /
+ * app-error finding inside its range (by time) or a failed flow or smoke step in it. Failed qa_act
+ * steps never count: agents routinely miss an element and retry. Display only; the gate is unchanged.
+ */
+export function outcomeEvidence(
+  session: Pick<Session, 'artifacts' | 'findings'> & { steps?: StepRecord[] },
+  notes: TestNote[],
+  isToolFinding: (f: { kind: string; failureCode?: string }) => boolean = () => false,
+): Array<{ note: TestNote; stepRange?: [number, number]; evidence: string[]; contradicted: boolean }> {
+  const known = new Set(session.artifacts.map((a) => a.uri));
+  const steps = session.steps ?? [];
+  const against = session.findings.filter((f) => contradictsPass(f) && !isToolFinding(f));
+  return notes.map((n, idx) => {
+    const prevAt = idx > 0 ? notes[idx - 1].at : Number.NEGATIVE_INFINITY;
+    let stepRange = n.stepRange;
+    if (!stepRange) {
+      const since = steps.filter((st) => st.at > prevAt && st.at <= n.at);
+      if (since.length) stepRange = [since[0].i, since[since.length - 1].i];
+    }
+    const range = stepRange;
+    const inRange = range ? steps.filter((st) => st.i >= range[0] && st.i <= range[1]) : [];
+    const candidates = [
+      n.checkpointUri,
+      ...inRange.filter((st) => st.result === 'failed').flatMap((st) => [st.screenshotUri, st.dumpUri]),
+      ...(n.artifactUris ?? []),
+    ];
+    const evidence = [...new Set(candidates.filter((u): u is string => !!u && known.has(u)))];
+    let contradicted = false;
+    if (n.outcome === 'pass' && inRange.length) {
+      const from = Math.min(...inRange.map((st) => st.at));
+      contradicted =
+        inRange.some((st) => st.result === 'failed' && (st.source === 'flow' || st.source === 'smoke')) ||
+        against.some((f) => f.at >= from && f.at <= n.at);
+    }
+    return { note: n, ...(stepRange ? { stepRange } : {}), evidence, contradicted };
+  });
+}
+
+/** Content key of what a report folds into the suite / issue ledger / app map: activity counts plus
+ *  the newest note and exploration times. Report, dump, manifest and summary artifacts are not part
+ *  of it, so a report re-call with nothing new gives the same key. stepSeq and the last recorded
+ *  action's time stand in for the list lengths once those lists hit their caps. */
+export function runFoldKey(
+  session: Pick<Session, 'notes' | 'findings' | 'recordedActions' | 'exploration'> & { steps?: StepRecord[]; stepSeq?: number },
+): string {
+  const parts = [
+    session.notes.length,
+    session.findings.length,
+    session.steps?.length ?? 0,
+    session.stepSeq ?? 0,
+    session.recordedActions.length,
+    session.recordedActions[session.recordedActions.length - 1]?.at ?? 0,
+    session.notes[session.notes.length - 1]?.at ?? 0,
+    session.exploration?.at ?? 0,
+  ];
+  return createHash('sha256').update(parts.join('|')).digest('hex').slice(0, 16);
+}
+
+/** The newest report.json this session saved (the fold it already made), or undefined. */
+function lastFoldedReport(session: Session): Record<string, unknown> | undefined {
+  const rec = [...session.artifacts]
+    .reverse()
+    .find((a) => a.kind === 'report' && /^report-\d+\.json$/.test(a.path.split(/[\\/]/).pop() ?? ''));
+  if (!rec) return undefined;
+  try {
+    return JSON.parse(readFileSync(rec.path, 'utf8')) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+}
+
+/** One artifact record for report.html, refreshed in place on every report (no pile-up). */
+function upsertReportHtmlArtifact(sessions: SessionStore, session: Session, path: string): void {
+  const uri = `swipium://session/${encodeUriSegment(session.id)}/report/report.html`;
+  const existing = session.artifacts.find((a) => a.uri === uri);
+  if (existing) {
+    existing.createdAt = Date.now();
+    existing.path = path;
+  } else {
+    session.artifacts.push({
+      uri,
+      path,
+      mime: 'text/html',
+      kind: 'report',
+      createdAt: Date.now(),
+      label: 'report.html (open in a browser)',
+      // Text is the redacted report; embedded screenshots are pixels, which redaction can't touch.
+      redaction: 'not-applied',
+      redactionNote: 'text is redacted; embedded screenshots may show sensitive on-screen content',
+    });
+  }
+  sessions.persist(session);
 }

@@ -11,7 +11,7 @@ Swipium is an MCP server that tests mobile apps on local Android Emulators and i
 
 1. Call `qa_test_this {waitForCompletion:true}` (mode defaults to "execute"). Add `goal` when the user asks for something specific: `smoke` (fastest), `release_gate`, `test_login`, `explore`, `create_automation_suite`, or `reproduce_bug` with `goalText`. Pass `projectRoot:"/abs/path"` when the client exposes no workspace root.
 2. If the result says state:"running", poll qa_job_status {sessionId, jobId, waitMs:45000} until status is not "running".
-3. completed: read report.md (qa_get_artifact on the report URI in nextRecommendedAction), then stop unless the user wants more.
+3. completed: read report.md (qa_get_artifact on the report URI in nextRecommendedAction), give the user the reportHtmlPath (report.html opens in any browser, offline), then stop unless the user wants more.
 4. needs_input: relay exactly the one returned question, then make the returned `resume` call (qa_continue_from_blocker). It starts the resumed job itself when no new consent is needed; poll that jobId.
 5. blocked / unsafe: relay failureCode, owner and the fix the result carries (nextRecommendedAction). A build failure is not a test failure.
 6. requiresConsent: with MCP elicitation the user is asked directly. Otherwise show it to the user and re-call with consentId + approve:true only after they agree. CONSENT_DECLINED / _CANCELLED / _REFUSED: nothing ran, do not retry without asking.
@@ -58,4 +58,4 @@ With `SWIPIUM_TOOLS=core`, qa_flow_check, qa_network, qa_suite_generate and qa_s
 
 ## CI
 
-CI and terminal (no MCP session needed): `npx swipium scan` (inspect the project, scaffold .swipium/), `npx swipium suite lint|compile` (audit or compile the generated suite into flows), `npx swipium verify` (server self-check), `npx swipium report --latest --format junit|sarif|github-summary|markdown [--fail-on-gate]` (export the last report).
+CI and terminal (no MCP session needed): `npx swipium scan` (inspect the project, scaffold .swipium/), `npx swipium suite lint|compile` (audit or compile the generated suite into flows), `npx swipium verify` (server self-check), `npx swipium report --latest --format html|junit|github-summary|markdown [--fail-on-gate]` (export the last report).
