@@ -133,6 +133,23 @@ describe('coverage gaps are never SHIP (release_gate notes)', () => {
     expect(text).toMatch(/qa_start_session \{ budget \}/);
   });
 
+  it('a flow that passed and was then skipped by the budget still counts as the pass (no coverage gap)', async () => {
+    const { store, s } = launched();
+    store.addNote(s, { at: Date.now() - 10, workflow: 'fo-search', outcome: 'pass', origin: 'flow', reason: 'qa_flow_run: 12 steps' });
+    store.addNote(s, {
+      at: Date.now(),
+      workflow: 'fo-search',
+      outcome: 'skipped',
+      category: 'intentionally_skipped',
+      origin: 'flow',
+      reason: 'budget: actions 40/40',
+    });
+    const { r } = await report(store, s);
+    expect(r.executiveSummary.risk).toBe('ship');
+    expect(r.executiveSummary.reasons.join(' ')).not.toMatch(/budget/);
+    expect(r.coverageVerdict?.summary).not.toMatch(/budget/);
+  });
+
   it('a flow skipped by the budget and later run to a pass is covered again', async () => {
     const { store, s } = launched();
     store.addNote(s, {

@@ -59,7 +59,7 @@ import { isDeviceGoneError } from '../lib/deviceGone.js';
 import type { Driver, NativeSelectorStrategy } from '../drivers/Driver.js';
 import { TRANSPORT_FAILURE_CODES, type MutationRecord, type Session, type SessionStore } from '../session/store.js';
 import { CaptureWithheldError, canCaptureScreenshot } from '../lib/captureGuard.js';
-import { captureFailedStepEvidence, currentScreenTitle } from '../lib/steps.js';
+import { captureFailedStepEvidence, currentScreenTitle, STEP_CAPTURE_TIMEOUT_MS, TIMED_OUT, withTimeout } from '../lib/steps.js';
 
 export interface FlowStepResult {
   index: number;
@@ -1245,25 +1245,34 @@ export async function runFlow(
         // captureFailedStepEvidence notes it as not captured for transport codes.
         const transport = !!outcome.failureCode && TRANSPORT_FAILURE_CODES.has(outcome.failureCode);
         // A sensitive session or a secure field on screen: no failure screenshot.
-        const guard = transport ? undefined : await canCaptureScreenshot(session, d, { refresh: true });
+        // Bounded like every other failure capture: a hung dump must not hang the failed flow.
+        const guard = transport
+          ? undefined
+          : await withTimeout(canCaptureScreenshot(session, d, { refresh: true }), STEP_CAPTURE_TIMEOUT_MS);
         let screenshotSkipped: string | undefined;
         if (!guard) {
           /* transport failure: nothing to capture */
+        } else if (guard === TIMED_OUT) {
+          // A guard that cannot answer in time withholds: a slow device is no reason to risk pixels.
+          rec.detail = `${rec.detail ?? 'step failed'} (screenshot timed out)`;
+          screenshotSkipped = 'screenshot timed out';
         } else if (!guard.ok) {
           rec.detail = `${rec.detail ?? 'step failed'} (${withheldText(guard)})`;
           screenshotSkipped = guard.note;
         } else {
           try {
             // capture-guard: guarded by canCaptureScreenshot above
-            const png = await d.screenshot();
-            rec.screenshotUri = sessions.saveArtifact(
-              session,
-              'screenshot',
-              `flow-fail-${index}-${Date.now()}.png`,
-              png,
-              'image/png',
-              label,
-            );
+            const png = await withTimeout(d.screenshot(), STEP_CAPTURE_TIMEOUT_MS);
+            if (png === TIMED_OUT) screenshotSkipped = 'screenshot timed out';
+            else
+              rec.screenshotUri = sessions.saveArtifact(
+                session,
+                'screenshot',
+                `flow-fail-${index}-${Date.now()}.png`,
+                png,
+                'image/png',
+                label,
+              );
           } catch {
             /* best-effort */
           }

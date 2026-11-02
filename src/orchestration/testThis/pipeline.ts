@@ -12,7 +12,7 @@ import { prepareAndroid } from '../../services/prepareAndroid.js';
 import { prepareIos } from '../../services/prepareIos.js';
 import { androidTargetAvd } from '../../session/attach.js';
 import { runSmoke } from '../../services/smoke.js';
-import { runExplore } from '../../explore/runner.js';
+import { linkExploreStep, runExplore } from '../../explore/runner.js';
 import { runFirstRun, resolveFirstRunPolicy, observeScreen } from '../../firstRun/firstRunRunner.js';
 import { planFirstRun } from '../../firstRun/firstRunPlanner.js';
 import type { AppMapPatch, ScreenPurpose } from '../../firstRun/types.js';
@@ -541,6 +541,7 @@ export async function runExecutePipeline(sessions: SessionStore, session: Sessio
           'application/json',
           'exploration screen graph',
         );
+        linkExploreStep(sessions, session, ex.stepIndex, graphUri);
         const graphMdUri = sessions.saveArtifact(
           session,
           'explore',

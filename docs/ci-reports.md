@@ -348,7 +348,11 @@ Keep the list as short as the prompt needs:
 finding with its screenshot, failing step, failure code and log tail, the outcomes table with an
 evidence thumbnail per outcome, the step timeline (collapsed on a pass), environment changes, device,
 app and timing, and the artifacts with paths relative to the session folder. A run that tested
-nothing shows the blocker, its fix and the last 40 lines of the relevant log, then the timeline. It
+nothing (by the same rule as the [release gate](#release-gate-policy)) shows the blocker, its fix and
+the last 40 lines of the relevant log, then its failures and findings and the timeline. The banner
+says so when `.swipium/policy.json` was ignored. Log tails are redacted with the session's secrets
+and scrubbed of credential shapes (Bearer tokens, JWTs, API keys, passwords); `swipium report` has no
+session secrets (they are never on disk), so it scrubs only the credential shapes. It
 has no JavaScript and a strict Content-Security-Policy, loads nothing from the network, and links
 only to the Swipium docs. Screenshots are 480 px wide thumbnails, 8 MB in total; past that, or for a
 PNG it can't decode, an image is listed as a file path instead. See

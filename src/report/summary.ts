@@ -4,7 +4,7 @@
 // Also builds the agent summary (summary.md / the report head): a <= 2 KB, failure-first text.
 
 import { FAILURES } from '../oracle/failures.js';
-import { latestAttempts, type ReportFinding, type ReportNote, type ReportStep } from './export.js';
+import { isNotTested, latestAttempts, type ReportFinding, type ReportNote, type ReportStep } from './export.js';
 import { pickNotTestedLog, type LogPickInput } from './logTail.js';
 
 export type ReleaseRisk = 'ship' | 'caution' | 'block';
@@ -113,7 +113,7 @@ type SummaryOutcome = ReportNote & { checkpointUri?: string; checkpointSkipped?:
 /** What the agent summary reads from the (already redacted) report. */
 export interface AgentSummaryReport extends LogPickInput {
   executiveSummary?: { risk?: string; reasons?: string[]; nextAction?: string };
-  notTested?: { reason: string; failureCode?: string; reachedApp?: boolean } | null;
+  notTested?: { reason: string; failureCode?: string; reachedApp?: boolean; exercised?: boolean } | null;
   nativeHealth?: string;
   appHealth?: string;
   testOutcomes?: SummaryOutcome[];
@@ -203,7 +203,8 @@ export function buildAgentSummary(report: AgentSummaryReport, opts: AgentSummary
     .slice()
     .sort((a, b) => (SEVERITY_ORDER[a.severity ?? ''] ?? 3) - (SEVERITY_ORDER[b.severity ?? ''] ?? 3));
   const steps = report.steps ?? [];
-  const nt = report.notTested ?? undefined;
+  // Same rule as the gate: a reached and exercised app is not "not tested".
+  const nt = isNotTested(report) ? (report.notTested ?? undefined) : undefined;
   const risk = (report.executiveSummary?.risk ?? 'unknown').toUpperCase();
   const passes = outcomes.filter((n) => n.outcome === 'pass');
   const flaky = outcomes.filter((n) => n.flaky).length;

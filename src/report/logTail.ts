@@ -96,7 +96,7 @@ const READABLE_DIRS = new Set(READABLE_KINDS.map(artifactDirectoryName));
  * Absolute real path of a regular file inside the session folder, or undefined. `path` is relative
  * to `sessionDir` (or absolute inside it, as reports before 2.4.0 stored it). Rejects `..`, empty or
  * dot-prefixed segments, folders that are not artifact folders, symlinks whose target leaves the
- * folder, and anything that is not a regular file (FIFOs, devices, directories).
+ * folder or lands outside the artifact folders, and anything that is not a regular file (FIFOs, devices, directories).
  */
 export function resolveSessionFile(sessionDir: string, path: string): string | undefined {
   try {
@@ -113,6 +113,10 @@ export function resolveSessionFile(sessionDir: string, path: string): string | u
     if (segs.some((s) => !s || s.startsWith('.'))) return undefined;
     const real = realpathSync(join(realRoot, ...segs));
     if (!real.startsWith(realRoot + sep)) return undefined;
+    // The target must sit in an artifact folder too: a symlink in screenshots/ pointing at
+    // state.json stays inside the session but is not an artifact.
+    const realSegs = relative(realRoot, real).split(/[\\/]/);
+    if (realSegs.length < 2 || !READABLE_DIRS.has(realSegs[0]) || realSegs.some((s) => !s || s.startsWith('.'))) return undefined;
     return statSync(real).isFile() ? real : undefined;
   } catch {
     return undefined;

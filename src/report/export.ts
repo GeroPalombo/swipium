@@ -7,6 +7,7 @@
 // any format escapes it, so XML/JSON/Markdown escaping can never hide a secret from redaction.
 
 import { createHash } from 'node:crypto';
+import { stableHash as contentHash } from '../lib/stableHash.js';
 import type { AutomationReadinessStandard, ReadinessLabel } from './readiness.js';
 import type { FlakeClassification } from './flake.js';
 import type { FlowVerdict, PolicyDecision } from './policy.js';
@@ -54,6 +55,11 @@ export interface ReportNote {
   /** A pass whose step range holds a high crash/ANR/app-error finding or a failed flow/smoke step. */
   contradicted?: boolean;
   at?: number;
+  /** Attempt group id, hashed from the attempt kind and the RAW workflow key before redaction, so
+   *  two workflows whose names redact to the same text still group apart. Absent on older reports. */
+  attemptKey?: string;
+  /** Another attempt of the same workflow is the one that counts (report.json keeps every attempt). */
+  superseded?: boolean;
 }
 
 /** Which attempts may replace each other: Swipium runs replace Swipium runs, agent notes replace
@@ -80,6 +86,13 @@ export function workflowKey(name: string): string {
   return name.trim().toLowerCase();
 }
 
+/** Stable attempt group id for a note, computed on the raw (unredacted) name. Undefined for notes
+ *  that never group (explore, in-flow notes). */
+export function computeAttemptKey(n: Pick<ReportNote, 'origin' | 'source' | 'workflow' | 'reason'>): string | undefined {
+  const kind = attemptKind(n);
+  return kind ? contentHash([kind, workflowKey(n.workflow)]).slice(0, 16) : undefined;
+}
+
 /** A verdict that can replace an earlier attempt. Blocked / skipped / not_applicable say the
  *  workflow did not run to a verdict, so they never hide an earlier pass or fail. */
 function isDefinitive(n: Pick<ReportNote, 'outcome'>): boolean {
@@ -94,7 +107,7 @@ function resolveAttempts<T extends ReportNote>(notes: readonly T[]): Array<T | n
   notes.forEach((n, idx) => {
     const kind = attemptKind(n);
     if (!kind) return;
-    const key = `${kind}:${workflowKey(n.workflow)}`;
+    const key = n.attemptKey ? `k:${n.attemptKey}` : `${kind}:${workflowKey(n.workflow)}`;
     (groups.get(key) ?? groups.set(key, []).get(key)!).push(idx);
   });
   const out: Array<T | null> = [...notes];
@@ -107,8 +120,9 @@ function resolveAttempts<T extends ReportNote>(notes: readonly T[]): Array<T | n
     for (const i of idxs) out[i] = null;
     // attempts is rebuilt from the raw notes every time (never appended to), so re-collapsing a saved
     // report that already carries attempts on its counting entry gives the same result.
+    const { superseded: _superseded, ...winner } = notes[win];
     out[win] = {
-      ...notes[win],
+      ...(winner as T),
       attempts: others.map((p) => ({
         outcome: p.outcome,
         ...(p.at !== undefined ? { at: p.at } : {}),
@@ -133,10 +147,11 @@ export function latestAttempts<T extends ReportNote>(notes: readonly T[]): T[] {
   return resolveAttempts(notes).filter((n): n is T => n !== null);
 }
 
-/** Every note kept, in order, with `attempts` / `flaky` set on the one that counts per workflow
- *  (what report.json saves; latestAttempts on the result gives the same verdicts). */
+/** Every note kept, in order, with `attempts` / `flaky` set on the one that counts per workflow and
+ *  `superseded: true` on the others (what report.json saves; latestAttempts on the result gives the
+ *  same verdicts). */
 export function annotateAttempts<T extends ReportNote>(notes: readonly T[]): T[] {
-  return resolveAttempts(notes).map((n, i) => n ?? notes[i]);
+  return resolveAttempts(notes).map((n, i) => n ?? { ...notes[i], superseded: true });
 }
 /** One step of the timeline (mirror of session StepRecord, as saved in report.json). */
 export interface ReportStep {
@@ -304,7 +319,10 @@ export function redactReportData<T>(value: T, redact: Redactor): T {
       const out: Record<string, unknown> = {};
       // Two keys that redact to the same spelling (e.g. "hunter22" and a literal "«redacted»")
       // are disambiguated with a `#2` suffix instead of one silently overwriting the other.
-      for (const [k, val] of Object.entries(v as Record<string, unknown>)) out[uniqueKey(out, redact(k) ?? k)] = walk(val);
+      for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+        // attemptKey is a hash, not text: redacting it could split an attempt group.
+        out[uniqueKey(out, redact(k) ?? k)] = k === 'attemptKey' && typeof val === 'string' ? val : walk(val);
+      }
       return out;
     }
     return v;
@@ -979,11 +997,19 @@ export function isVisualFailure(n: ReportNote): boolean {
 /** Name of the synthetic outcome a run that tested nothing gets. */
 export const NOT_TESTED_WORKFLOW = 'swipium: not tested';
 
+/** The run counts as "not tested": it never reached the app, or reached it without exercising
+ *  anything. A notTested block with reachedApp and exercised is informational only. Every surface
+ *  (gate, html, summary.md, GitHub summary) uses this so they can't disagree. */
+export function isNotTested(r: { notTested?: { reachedApp?: boolean; exercised?: boolean } | null }): boolean {
+  const nt = r.notTested;
+  return !!nt && !(nt.reachedApp && nt.exercised !== false);
+}
+
 /** A run that never reached the app, as a synthetic failed workflow: the gate and
  *  JUnit count it, so CI can't go green on a run that tested nothing. */
 function notReachedOutcomes(r: ReportData): ReportNote[] {
   const nt = r.notTested;
-  if (!nt || (nt.reachedApp && nt.exercised !== false)) return [];
+  if (!nt || !isNotTested(r)) return [];
   return [{ workflow: NOT_TESTED_WORKFLOW, outcome: 'fail', category: nt.failureCode ?? 'NOT_TESTED', reason: nt.reason }];
 }
 
@@ -1301,7 +1327,7 @@ export function toSarif(r: ReportData, policy?: PolicyDecision, options: SarifOp
           releaseGateVerdict: policy ? (policy.block ? 'block' : 'pass') : r.executiveSummary.risk === 'block' ? 'block' : 'pass',
           ...(policy ? { releaseGate: policy } : {}),
           // Not a code alert, but a reader of the SARIF alone must still see that nothing was tested.
-          ...(notReachedOutcomes(r).length ? { notTested: r.notTested } : {}),
+          ...(isNotTested(r) ? { notTested: r.notTested } : {}),
         },
       },
     ],
@@ -1372,7 +1398,7 @@ export function toGithubSummary(r: ReportData, policy?: PolicyDecision): string 
   else L.push(`**Verdict:** ${mdText(r.executiveSummary.reasons[0] ?? r.executiveSummary.nextAction)}`);
   L.push('');
 
-  const nt = notReachedOutcomes(r).length ? r.notTested : undefined;
+  const nt = isNotTested(r) ? r.notTested : undefined;
   if (nt) {
     const log = pickNotTestedLog(r);
     const where = log ? `Log: ${mdCode(log.path ?? log.uri)}` : 'No log captured.';

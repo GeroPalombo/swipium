@@ -141,6 +141,15 @@ describe('readLogTail', () => {
     expect(readLogTail('logs/build.log', dir)).toBeUndefined();
   });
 
+  it('refuses a symlink in an artifact folder that points at a non-artifact file in the session', () => {
+    const dir = session();
+    mkdirSync(join(dir, 'screenshots'), { recursive: true });
+    writeFileSync(join(dir, 'state.json'), '{"secrets":["hunter2secret"]}');
+    symlinkSync(join(dir, 'state.json'), join(dir, 'screenshots', 'shot.png'));
+    expect(resolveSessionFile(dir, 'screenshots/shot.png')).toBeUndefined();
+    expect(readLogTail('screenshots/shot.png', dir)).toBeUndefined();
+  });
+
   it('follows a symlink that stays inside the session folder', () => {
     const dir = session();
     writeFileSync(join(dir, 'logs', 'real.log'), 'a\nb');

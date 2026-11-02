@@ -27,6 +27,9 @@ import {
 import {
   inlinePrSummary,
   annotateAttempts,
+  computeAttemptKey,
+  isNotTested,
+  workflowKey,
   latestAttempts,
   redactReportData,
   reportPolicyVerdicts,
@@ -417,6 +420,8 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
                   : 'the app was reached but no workflow was exercised',
             failureCode: blockerCodeOf(topBlockedNote),
           };
+  // Same rule as the gate (isNotTested): a reached and exercised app is informational, not "not tested".
+  const countsAsNotTested = !!notTested && isNotTested({ notTested });
   // Health was never checked when the app was never reached; "OK" would be a claim.
   // A visual-only smoke (no UI tree read) left app-layer health "unverified", never OK.
   const healthUnchecked = !!notTested && !notTested.reachedApp && healthFindings.length === 0;
@@ -448,10 +453,23 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   // Coverage the run planned but did not get must not leave the risk at SHIP.
   // Flows whose latest outcome is a session-budget skip were not run; a blocked exploration
   // (unsafe actions skipped, blockers, budget stop) explored less than it set out to.
-  const latestByWorkflow = new Map(notes.map((n) => [n.workflow, n]));
-  const budgetSkipped = [...latestByWorkflow.values()]
-    .filter((n) => n.outcome === 'skipped' && /^budget:|BUDGET_EXHAUSTED/.test(n.reason ?? ''))
-    .map((n) => n.workflow);
+  // Same collapse as the gate: a pass followed by a budget skip still counts as the pass. Notes
+  // with no attempt kind (older notes) never collapse, so a later pass/fail by name also covers them.
+  const isBudgetSkip = (n: TestNote) => n.outcome === 'skipped' && /^budget:|BUDGET_EXHAUSTED/.test(n.reason ?? '');
+  const annotatedNotes = annotateAttempts(notes);
+  const budgetSkipped = [
+    ...new Set(
+      annotatedNotes.flatMap((n, idx) =>
+        !(n as { superseded?: boolean }).superseded &&
+        isBudgetSkip(n) &&
+        !annotatedNotes
+          .slice(idx + 1)
+          .some((l) => workflowKey(l.workflow) === workflowKey(n.workflow) && (l.outcome === 'pass' || l.outcome === 'fail'))
+          ? [n.workflow]
+          : [],
+      ),
+    ),
+  ];
   const explorationBlocked = session.exploration?.state === 'blocked';
   const coverageGaps = [
     ...(budgetSkipped.length
@@ -473,7 +491,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   ];
   const executiveSummary = releaseAssessment({
     coverageGaps,
-    notTested,
+    ...(countsAsNotTested ? { notTested } : {}),
     nativeHealth,
     appHealth,
     ...(appHealthUnverifiedReason ? { appHealthUnverifiedReason } : {}),
@@ -593,7 +611,7 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
                 : 'A setup or precondition blocker limited coverage.');
       return { status: 'BLOCKED', summary };
     }
-    if (notTested) return { status: 'NOT_COVERED', summary: `Not covered: ${notTested.reason}.` };
+    if (notTested && countsAsNotTested) return { status: 'NOT_COVERED', summary: `Not covered: ${notTested.reason}.` };
     if (budgetSkipped.length)
       return {
         status: 'PARTIAL',
@@ -837,14 +855,18 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
     // Every entry is kept; the one that counts per workflow also carries `attempts` / `flaky`
     // (latestAttempts over this list gives the same verdicts, so saved reports re-gate the same).
     testOutcomes: annotateAttempts(
-      outcomeEvidence(session, notes, isToolFinding).map(({ note: n, stepRange, evidence, contradicted }) => ({
-        ...n,
-        reason: n.reason ? redact(n.reason) : undefined,
-        ...(unverifiedPassClaim && n.source === 'qa_note' && n.outcome === 'pass' ? { unverified: true } : {}),
-        ...(stepRange ? { stepRange } : {}),
-        evidence,
-        ...(contradicted ? { contradicted: true } : {}),
-      })),
+      outcomeEvidence(session, notes, isToolFinding).map(({ note: n, stepRange, evidence, contradicted }) => {
+        const attemptKey = computeAttemptKey(n);
+        return {
+          ...n,
+          ...(attemptKey ? { attemptKey } : {}),
+          reason: n.reason ? redact(n.reason) : undefined,
+          ...(unverifiedPassClaim && n.source === 'qa_note' && n.outcome === 'pass' ? { unverified: true } : {}),
+          ...(stepRange ? { stepRange } : {}),
+          evidence,
+          ...(contradicted ? { contradicted: true } : {}),
+        };
+      }),
     ),
     // The step timeline (already secret-safe in the store; the whole report is redacted again below).
     steps: (session.steps ?? []).map((st) => ({ ...st })),
@@ -1143,7 +1165,11 @@ export async function generateSessionReport(sessions: SessionStore, session: Ses
   const reportHtmlUrl = pathToFileURL(reportHtmlPath).href;
   let reportHtmlError: string | undefined;
   try {
-    const html = await renderReportHtml(report as unknown as ReportData, { sessionDir: session.dir, root: session.root });
+    const html = await renderReportHtml(report as unknown as ReportData, {
+      sessionDir: session.dir,
+      root: session.root,
+      redact: (s) => redact(s) ?? s,
+    });
     mkdirSync(join(session.dir, 'report'), { recursive: true, mode: 0o700 });
     writeFileSync(reportHtmlPath, html, { mode: PRIVATE_FILE_MODE });
     upsertReportHtmlArtifact(sessions, session, reportHtmlPath);

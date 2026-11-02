@@ -6,7 +6,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { buttonScreen, FakeDriver, harness, structured } from './actFixFake.js';
+import { buttonScreen, FakeDriver, harness, structured, textOf } from './actFixFake.js';
+import { PLAYWRIGHT_DEPRECATION } from '../src/report/export.js';
 import { createFinisher } from '../src/orchestration/testThis/terminal.js';
 import type { ExecuteArgs } from '../src/orchestration/testThis/types.js';
 
@@ -54,6 +55,31 @@ describe('qa_report', () => {
     const inline =
       (res.content as Array<{ type: string; text?: string }>).map((c) => c.text ?? '').join('') + JSON.stringify(res.structuredContent);
     expect(Buffer.byteLength(inline)).toBeLessThan(40 * 1024);
+  });
+});
+
+describe('qa_report text and counts', () => {
+  it('format:"playwright" carries the deprecation line in the text result', async () => {
+    const id = await h.start(new FakeDriver(buttonScreen('Home', 3)));
+    const res = await h.call('qa_report', { sessionId: id, format: 'playwright' });
+    expect(textOf(res)).toContain(PLAYWRIGHT_DEPRECATION);
+  });
+
+  it('counts.outcomes counts one outcome per workflow: fail then pass is pass:1', async () => {
+    const id = await h.start(new FakeDriver(buttonScreen('Home', 3)));
+    const session = h.sessions.get(id)!;
+    h.sessions.addNote(session, { at: Date.now(), workflow: 'checkout', outcome: 'fail', reason: 'qa_flow_run: step 2', origin: 'flow' });
+    h.sessions.addNote(session, {
+      at: Date.now() + 1,
+      workflow: 'checkout',
+      outcome: 'pass',
+      reason: 'qa_flow_run: all steps',
+      origin: 'flow',
+    });
+    const s = structured(await h.call('qa_report', { sessionId: id }));
+    const outcomes = (s.counts as { outcomes: Record<string, number> }).outcomes;
+    expect(outcomes.pass).toBe(1);
+    expect(outcomes.fail ?? 0).toBe(0);
   });
 });
 

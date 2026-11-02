@@ -198,8 +198,8 @@ describe('report.html', () => {
     const r = baseReport({
       executiveSummary: { risk: 'block', reasons: ['Metro not running'], nextAction: 'Start Metro with npx expo start.' },
       notTested: { reachedApp: false, reason: 'Metro bundler is not running', failureCode: 'METRO_REQUIRED' },
-      findings: [{ severity: 'high', kind: 'other', detail: 'should not render here' }],
-      testOutcomes: [{ workflow: 'should not render', outcome: 'blocked' }],
+      findings: [{ severity: 'low', kind: 'other', detail: 'should not render here' }],
+      testOutcomes: [{ workflow: 'should not render', outcome: 'skipped' }],
       steps: [step(1, { source: 'smoke', action: 'launch', result: 'failed', failureCode: 'METRO_REQUIRED' })],
       artifacts: [{ uri: 'swipium://session/s1/metro/metro.log', kind: 'metro', createdAt: 5 }],
     });
@@ -216,6 +216,36 @@ describe('report.html', () => {
     expect(html).not.toContain('id="outcomes"');
     expect(html).not.toContain('id="artifacts"');
     expect(html).toContain('<details id="timeline" open>');
+  });
+
+  it('blocked run with a high finding: banner, log tail, then the finding, then the timeline', async () => {
+    const dir = sessionDir();
+    writeFileSync(join(dir, 'logs', 'metro.log'), 'metro tail line');
+    const r = baseReport({
+      executiveSummary: { risk: 'block', reasons: ['Metro not running'], nextAction: 'Start Metro.' },
+      notTested: { reachedApp: false, reason: 'Metro bundler is not running', failureCode: 'METRO_REQUIRED' },
+      findings: [{ severity: 'high', kind: 'native_crash', detail: 'FATAL EXCEPTION in main before the blocker' }],
+      steps: [step(1, { source: 'smoke', action: 'launch', result: 'failed', failureCode: 'METRO_REQUIRED' })],
+      artifacts: [{ uri: 'swipium://session/s1/metro/metro.log', kind: 'metro', createdAt: 5 }],
+    });
+    const html = await renderReportHtml(r, { sessionDir: dir });
+    const at = (needle: string) => html.indexOf(needle);
+    expect(at('NOT TESTED')).toBeGreaterThan(-1);
+    expect(at('metro tail line')).toBeGreaterThan(at('NOT TESTED'));
+    expect(at('id="failures"')).toBeGreaterThan(at('metro tail line'));
+    expect(at('FATAL EXCEPTION in main before the blocker')).toBeGreaterThan(at('id="failures"'));
+    expect(at('id="timeline"')).toBeGreaterThan(at('FATAL EXCEPTION in main before the blocker'));
+  });
+
+  it('notTested on a reached and exercised app renders the normal layout', async () => {
+    const r = baseReport({
+      notTested: { reachedApp: true, exercised: true, reason: 'informational only', failureCode: 'NOT_TESTED' },
+      testOutcomes: [{ workflow: 'launch_smoke', outcome: 'pass', origin: 'smoke' }],
+    });
+    const html = await renderReportHtml(r, {});
+    expect(html).toContain('Release gate: SHIP');
+    expect(html).toContain('id="outcomes"');
+    expect(html).not.toMatch(/not tested/i);
   });
 
   it('blocked run without a log says no log captured', async () => {

@@ -13,7 +13,7 @@ import { getDriver } from '../session/attach.js';
 import { startProgress } from '../session/progress.js';
 import { log } from '../lib/logger.js';
 import { failCrashedJob } from '../orchestration/jobCrash.js';
-import { runExplore } from '../explore/runner.js';
+import { linkExploreStep, runExplore } from '../explore/runner.js';
 import { generateSessionReport } from '../services/report.js';
 import { buildFeatureIndex, type FeatureIndex } from '../appMap/featureIndex.js';
 import { buildFeatureScope, type FeatureScopeResult } from '../featureTesting/featureScope.js';
@@ -346,6 +346,7 @@ async function runFeatureTestJob(sessions: SessionStore, session: Session, job: 
       'application/json',
       `feature graph: ${scope.title}`,
     );
+    linkExploreStep(sessions, session, ex.stepIndex, graphUri);
     sessions.setExploration(session, { at, graphUri, state: ex.state, stoppedReason: ex.stoppedReason, summary: ex.summary });
     prog.done(`explored ${ex.summary.screensVisited} screens for ${scope.title}`);
 

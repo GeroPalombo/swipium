@@ -6,7 +6,16 @@
 import { isAbsolute } from 'node:path';
 import { downscalePng } from '../lib/png.js';
 import { artifactDirectoryName, decodeUriSegment } from '../session/store.js';
-import { latestAttempts, reportPolicyVerdicts, type ReportData, type ReportFinding, type ReportNote, type ReportStep } from './export.js';
+import {
+  isNotTested,
+  latestAttempts,
+  reportPolicyVerdicts,
+  type ReportData,
+  type ReportFinding,
+  type ReportNote,
+  type ReportStep,
+} from './export.js';
+import { scrubLogCredentials } from '../lib/redact.js';
 import { pickNotTestedLog, readLogTail, readRegularFile, resolveSessionFile } from './logTail.js';
 import { applyPolicy, loadPolicy, type PolicyDecision } from './policy.js';
 
@@ -33,6 +42,9 @@ export interface RenderHtmlOptions {
   root?: string;
   /** Override the embedded image budget (tests). */
   imageBudgetBytes?: number;
+  /** Extra scrub for embedded log lines (the session's registered secrets). Log files are written
+   *  outside artifact redaction, so every tail also goes through scrubLogCredentials. */
+  redact?: (s: string) => string;
 }
 
 export function escapeHtml(value: unknown): string {
@@ -209,6 +221,7 @@ function logTailHtml(
   uri: string | undefined,
   byUri: Map<string, Artifact>,
   sessionDir: string | undefined,
+  redact: ((s: string) => string) | undefined,
   path?: string,
   n = LOG_TAIL_LINES,
 ): string {
@@ -218,7 +231,12 @@ function logTailHtml(
   const shown = relativeArtifactPath(uri, art) ?? uri;
   const lines = file && sessionDir ? readLogTail(file, sessionDir, n) : undefined;
   if (!lines) return `<p class="muted">log <code>${esc(shown)}</code>: not available</p>`;
-  return `<p class="muted">last ${lines.length} lines of <code>${esc(shown)}</code></p><pre class="log">${esc(lines.join('\n'))}</pre>`;
+  // Metro and WDA logs are appended raw, never through artifact redaction: scrub here.
+  const clean = lines.map((l) => {
+    const scrubbed = scrubLogCredentials(l);
+    return redact ? redact(scrubbed) : scrubbed;
+  });
+  return `<p class="muted">last ${clean.length} lines of <code>${esc(shown)}</code></p><pre class="log">${esc(clean.join('\n'))}</pre>`;
 }
 
 const CSS = `
@@ -315,63 +333,27 @@ async function timelineHtml(steps: ReportStep[], img: ImageEmbedder, open: boole
   return out.join('\n');
 }
 
-async function renderNotTested(
-  r: ReportData,
-  gate: Gate,
-  steps: ReportStep[],
-  img: ImageEmbedder,
-  byUri: Map<string, Artifact>,
-  sessionDir?: string,
-): Promise<string> {
-  const nt = r.notTested!;
-  const out: string[] = [header(r)];
-  out.push(
-    `<section class="banner bad" id="verdict"><div class="verdict">NOT TESTED</div>` +
-      `<p><strong>Blocker:</strong> ${esc(nt.reason)}${nt.failureCode ? ` <code>${esc(nt.failureCode)}</code>` : ''}</p>` +
-      `<p><strong>Fix:</strong> ${esc(r.executiveSummary?.nextAction ?? '')}</p>` +
-      `<p class="muted">Release gate: ${esc(gate.verdict)}: ${esc(gate.reason)}</p>${partialLine(r)}</section>`,
-  );
-  out.push('<h2 id="log">Log</h2>');
-  const picked = pickNotTestedLog(r);
-  out.push(picked ? logTailHtml(picked.uri, byUri, sessionDir, picked.path) : '<p class="muted">no log captured</p>');
-  out.push(await timelineHtml(steps, img, true));
-  return page(`Swipium: not tested ${r.appId ?? ''}`.trim(), out.join('\n'));
+interface RenderCtx {
+  img: ImageEmbedder;
+  byUri: Map<string, Artifact>;
+  sessionDir?: string;
+  redact?: (s: string) => string;
 }
 
-/** Render report.html. Async because it yields to the event loop between images. */
-export async function renderReportHtml(report: ReportData, opts: RenderHtmlOptions = {}): Promise<string> {
-  const r = report;
-  const sessionDir = opts.sessionDir;
-  const artifacts = Array.isArray(r.artifacts) ? r.artifacts : [];
-  const byUri = new Map(artifacts.map((a) => [a.uri, a]));
-  const steps = Array.isArray(r.steps) ? r.steps : [];
-  const img = new ImageEmbedder(byUri, sessionDir, opts.imageBudgetBytes ?? HTML_IMAGE_BUDGET_BYTES);
-  const gate = gateFor(r, opts);
-
-  if (r.notTested) return renderNotTested(r, gate, steps, img, byUri, sessionDir);
-
+/** Failed outcomes and findings, failure first. Shared by the normal and the not-tested layout. */
+function failuresOf(r: ReportData): { outcomes: ReportNote[]; failed: ReportNote[]; findings: ReportFinding[] } {
   const outcomes = latestAttempts(Array.isArray(r.testOutcomes) ? r.testOutcomes : []);
-  const findings: ReportFinding[] = Array.isArray(r.findings) ? r.findings : [];
+  const all: ReportFinding[] = Array.isArray(r.findings) ? r.findings : [];
   const failed = outcomes.filter((n) => n.outcome === 'fail' || n.outcome === 'blocked' || n.contradicted);
   const sevRank: Record<string, number> = { high: 0, medium: 1, low: 2 };
-  const sortedFindings = [...findings].sort((a, b) => (sevRank[a.severity] ?? 3) - (sevRank[b.severity] ?? 3));
-  const anyFailure = gate.tone === 'bad' || failed.length > 0 || steps.some((s) => s.result === 'failed');
+  const findings = [...all].sort((a, b) => (sevRank[a.severity] ?? 3) - (sevRank[b.severity] ?? 3));
+  return { outcomes, failed, findings };
+}
 
-  const out: string[] = [header(r)];
-  // (1) Banner.
-  out.push(
-    `<section class="banner ${gate.tone}" id="verdict"><div class="verdict">Release gate: ${esc(gate.verdict)}</div>` +
-      `<p>${esc(gate.reason)}</p>${partialLine(r)}` +
-      (r.executiveSummary?.nextAction ? `<p><strong>Next action:</strong> ${esc(r.executiveSummary.nextAction)}</p>` : '') +
-      '</section>',
-  );
-  out.push(
-    '<nav><a href="#failures">Failures</a><a href="#outcomes">Outcomes</a><a href="#timeline">Timeline</a><a href="#env">Environment</a><a href="#artifacts">Artifacts</a></nav>',
-  );
-
-  // (2) Failures and findings.
-  out.push(`<h2 id="failures">Failures and findings (${failed.length + sortedFindings.length})</h2>`);
-  if (!failed.length && !sortedFindings.length) out.push('<p class="muted">No failed workflows and no findings.</p>');
+async function failuresHtml(ctx: RenderCtx, steps: ReportStep[], failed: ReportNote[], findings: ReportFinding[]): Promise<string[]> {
+  const { img, byUri, sessionDir } = ctx;
+  const out: string[] = [`<h2 id="failures">Failures and findings (${failed.length + findings.length})</h2>`];
+  if (!failed.length && !findings.length) out.push('<p class="muted">No failed workflows and no findings.</p>');
   for (const n of failed) {
     const step = failingStep(n, steps);
     const code = step?.failureCode ?? n.category;
@@ -387,11 +369,11 @@ export async function renderReportHtml(report: ReportData, opts: RenderHtmlOptio
         (code ? `<p><strong>Code:</strong> <code>${esc(code)}</code></p>` : '') +
         (n.reason ? `<p>${esc(n.reason)}</p>` : '') +
         (n.missingPrecondition ? `<p><strong>Missing:</strong> ${esc(n.missingPrecondition)}</p>` : '') +
-        (logUri ? logTailHtml(logUri, byUri, sessionDir, undefined, OUTCOME_LOG_TAIL_LINES) : '') +
+        (logUri ? logTailHtml(logUri, byUri, sessionDir, ctx.redact, undefined, OUTCOME_LOG_TAIL_LINES) : '') +
         '</div></div>',
     );
   }
-  for (const f of sortedFindings) {
+  for (const f of findings) {
     const shot = f.screenshotUri ? await img.render(f.screenshotUri, `${f.kind} finding`) : '<span class="missing">no screenshot</span>';
     const tone = f.severity === 'high' ? 'bad' : f.severity === 'medium' ? 'warn' : '';
     out.push(
@@ -401,10 +383,62 @@ export async function renderReportHtml(report: ReportData, opts: RenderHtmlOptio
         (f.screen ? `<p class="muted">screen: ${esc(f.screen)}</p>` : '') +
         (f.evidence ? `<pre class="log">${esc(f.evidence)}</pre>` : '') +
         (f.nextStep ? `<p><strong>Next:</strong> ${esc(f.nextStep)}</p>` : '') +
-        (f.logUri ? logTailHtml(f.logUri, byUri, sessionDir) : '') +
+        (f.logUri ? logTailHtml(f.logUri, byUri, sessionDir, ctx.redact) : '') +
         '</div></div>',
     );
   }
+  return out;
+}
+
+async function renderNotTested(ctx: RenderCtx, r: ReportData, gate: Gate, steps: ReportStep[]): Promise<string> {
+  const nt = r.notTested!;
+  const out: string[] = [header(r)];
+  out.push(
+    `<section class="banner bad" id="verdict"><div class="verdict">NOT TESTED</div>` +
+      `<p><strong>Blocker:</strong> ${esc(nt.reason)}${nt.failureCode ? ` <code>${esc(nt.failureCode)}</code>` : ''}</p>` +
+      `<p><strong>Fix:</strong> ${esc(r.executiveSummary?.nextAction ?? '')}</p>` +
+      `<p class="muted">Release gate: ${esc(gate.verdict)}: ${esc(gate.reason)}</p>${partialLine(r)}</section>`,
+  );
+  out.push('<h2 id="log">Log</h2>');
+  const picked = pickNotTestedLog(r);
+  out.push(picked ? logTailHtml(picked.uri, ctx.byUri, ctx.sessionDir, ctx.redact, picked.path) : '<p class="muted">no log captured</p>');
+  // A crash or a failed workflow before the blocker still matters: show it, just after the log.
+  const { failed, findings } = failuresOf(r);
+  if (failed.length || findings.some((f) => f.severity === 'high')) out.push(...(await failuresHtml(ctx, steps, failed, findings)));
+  out.push(await timelineHtml(steps, ctx.img, true));
+  return page(`Swipium: not tested ${r.appId ?? ''}`.trim(), out.join('\n'));
+}
+
+/** Render report.html. Async because it yields to the event loop between images. */
+export async function renderReportHtml(report: ReportData, opts: RenderHtmlOptions = {}): Promise<string> {
+  const r = report;
+  const sessionDir = opts.sessionDir;
+  const artifacts = Array.isArray(r.artifacts) ? r.artifacts : [];
+  const byUri = new Map(artifacts.map((a) => [a.uri, a]));
+  const steps = Array.isArray(r.steps) ? r.steps : [];
+  const img = new ImageEmbedder(byUri, sessionDir, opts.imageBudgetBytes ?? HTML_IMAGE_BUDGET_BYTES);
+  const gate = gateFor(r, opts);
+  const ctx: RenderCtx = { img, byUri, sessionDir, redact: opts.redact };
+
+  if (isNotTested(r)) return renderNotTested(ctx, r, gate, steps);
+
+  const { outcomes, failed, findings: sortedFindings } = failuresOf(r);
+  const anyFailure = gate.tone === 'bad' || failed.length > 0 || steps.some((s) => s.result === 'failed');
+
+  const out: string[] = [header(r)];
+  // (1) Banner.
+  out.push(
+    `<section class="banner ${gate.tone}" id="verdict"><div class="verdict">Release gate: ${esc(gate.verdict)}</div>` +
+      `<p>${esc(gate.reason)}</p>${partialLine(r)}` +
+      (r.executiveSummary?.nextAction ? `<p><strong>Next action:</strong> ${esc(r.executiveSummary.nextAction)}</p>` : '') +
+      '</section>',
+  );
+  out.push(
+    '<nav><a href="#failures">Failures</a><a href="#outcomes">Outcomes</a><a href="#timeline">Timeline</a><a href="#env">Environment</a><a href="#artifacts">Artifacts</a></nav>',
+  );
+
+  // (2) Failures and findings.
+  out.push(...(await failuresHtml(ctx, steps, failed, sortedFindings)));
 
   // (3) Outcomes.
   out.push(`<h2 id="outcomes">Outcomes (${outcomes.length})</h2>`);

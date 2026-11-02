@@ -75,6 +75,35 @@ describe('flow failure on a dead device', () => {
   }, 30_000);
 });
 
+describe('flow failure capture on a hung device', () => {
+  it('a guard dump that never answers withholds the screenshot as timed out instead of hanging', async () => {
+    const { fake, id, session } = await start();
+    // The tap fails (not a transport error), and the next dump (the capture guard's refresh) hangs.
+    let hangNext = false;
+    const realDump = fake.dumpXml.bind(fake);
+    fake.dumpXml = (opts) => {
+      if (hangNext) {
+        hangNext = false;
+        return new Promise<string>(() => undefined);
+      }
+      return realDump(opts);
+    };
+    fake.onTap = () => {
+      hangNext = true;
+      session.lastSnapshot = undefined; // no cached tree: the guard has to dump
+      throw new Error('boom: tap rejected by the app');
+    };
+    const t0 = Date.now();
+    const run = structured(await h.call('qa_flow_run', { sessionId: id, flowYaml: 'name: hung\nsteps:\n  - tap: "Sign in"\n' }));
+    expect(Date.now() - t0).toBeLessThan(15_000);
+    expect(run.passed).toBe(false);
+    const st = (session.steps ?? []).find((x) => x.source === 'flow' && x.result === 'failed')!;
+    expect(st.screenshotSkipped).toBe('screenshot timed out');
+    expect(st.screenshotUri).toBeUndefined();
+    expect(fake.shots).toBe(0);
+  }, 30_000);
+});
+
 describe('qa_act failure evidence edges', () => {
   it('a handler that throws records a failed step with no device capture and still surfaces the error', async () => {
     const { fake, id, session } = await start();

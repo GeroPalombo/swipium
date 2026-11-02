@@ -6,7 +6,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
 import { currentResponseMode, qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { generateSessionReport } from '../services/report.js';
-import { PLAYWRIGHT_DEPRECATION } from '../report/export.js';
+import { latestAttempts, PLAYWRIGHT_DEPRECATION, type ReportNote } from '../report/export.js';
 import type { SessionStore } from '../session/store.js';
 
 export function registerReport(server: McpServer, sessions: SessionStore): void {
@@ -96,9 +96,13 @@ export function registerReport(server: McpServer, sessions: SessionStore): void 
             findingOccurrences: rep.findingOccurrences,
             highSeverity: rep.highSeverityCount,
             toolErrors: ((rep.toolErrors as unknown[] | undefined) ?? []).length,
-            outcomes: rep.outcomeTally,
-            // The run test catalog (outcomes + finding/exploration-derived cases), also in report.json;
-            // `outcomes` counts qa_note outcomes only.
+            // One per workflow (latest attempt wins, as the gate counts), not every attempt.
+            outcomes: latestAttempts((rep.testOutcomes as ReportNote[] | undefined) ?? []).reduce<Record<string, number>>(
+              (a, n) => ((a[n.outcome] = (a[n.outcome] ?? 0) + 1), a),
+              {},
+            ),
+            // The run test catalog (outcomes + finding/exploration-derived cases), also in report.json.
+            // `outcomes` above is one per workflow (latest attempt), superseded attempts left out.
             testCatalog: (rep.runTestCatalog as { counts?: unknown } | undefined)?.counts,
             // Session artifacts (report.json + manifest included), not counting report.md itself.
             artifacts: session.artifacts.filter((art) => art.uri !== r.reportMdUri).length,

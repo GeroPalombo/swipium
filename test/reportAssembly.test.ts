@@ -294,6 +294,8 @@ describe('report.json keeps every attempt and marks the one that counts', () => 
     expect(lastEntry.flaky).toBe(true);
     expect(lastEntry.attempts?.[0].outcome).toBe('fail');
     expect(r.testOutcomes[0].attempts).toBeUndefined();
+    expect(r.testOutcomes[0].superseded).toBe(true);
+    expect(lastEntry.superseded).toBeUndefined();
 
     // The CLI re-gates the saved file: same verdicts, attempts not doubled.
     const saved = JSON.parse(readFileSync(store.findArtifact(res.reportUri)!.rec.path, 'utf8')) as ReportData;

@@ -268,7 +268,7 @@ Every `qa_report` call, and the end of every `qa_test_this` run, writes three fi
 **`report.html`** is laid out failure first:
 
 1. a banner with the release-gate verdict and a one-line reason (plus `partial: job <id> running` when
-   another job of the session hadn't finished);
+   another job of the session hadn't finished, and a notice when `.swipium/policy.json` was ignored);
 2. failures and findings, each with its screenshot, failing step, failure code, and a log tail when
    there is one;
 3. the outcomes table: workflow, result with its flags, and an evidence thumbnail;
@@ -276,16 +276,20 @@ Every `qa_report` call, and the end of every `qa_test_this` run, writes three fi
 5. environment changes, device and app, and timing;
 6. the artifacts, with paths relative to the session folder.
 
-A run that tested nothing (`notTested`) gets a short page instead: the blocker and its fix, the last
+A run that tested nothing gets a short page instead (only when it really counts as not tested, by the
+same rule as the [release gate](ci-reports.md#release-gate-policy)): the blocker and its fix, the last
 40 lines of the log that explains it (the build log for `BUILD_FAILED`, the Metro log for
 `METRO_REQUIRED` and `METRO_WRONG_PROJECT`, the crash excerpt for `NATIVE_CRASH`, `ANR` and
-`APP_LAUNCH_FAILED`, else the newest log, or "no log captured"), then the timeline.
+`APP_LAUNCH_FAILED`, else the newest log, or "no log captured"), any failures and findings, then the
+timeline.
 
 **It is safe to open and to share as a file.** It has no JavaScript, and a Content-Security-Policy
 (`default-src 'none'; img-src data:; style-src 'unsafe-inline'`) that stops it from loading anything:
 it works offline and makes no network request. Its only link goes to the Swipium docs. Every string
 from the run (workflow names, finding details, screen text) is HTML-escaped, and the page is rendered
-from the already-redacted report. Screenshots are embedded as 480 px wide thumbnails, up to 8 MB in
+from the already-redacted report. Log tails are redacted with the session's secrets and scrubbed of
+credential shapes (Bearer tokens, JWTs, API keys, passwords); when the CLI renders the page, only the
+credential shapes are scrubbed, since the session's secrets are never written to disk. Screenshots are embedded as 480 px wide thumbnails, up to 8 MB in
 total; past that, or for a PNG it can't decode, an image is listed as a file path instead. The text is
 redacted, but **screenshots are pixels and are never redacted**, so don't share the page of an app
 that shows real secrets on screen (the [secure-field guard](#the-secure-field-guard) keeps password
@@ -354,7 +358,7 @@ Three flags qualify a result. They change how it is shown, not the release gate:
 | --- | --- |
 | `unverified` | An agent's pass claim that no Swipium check or device evidence backs. It shows as `pass (unverified)` and is a skipped JUnit case. |
 | `contradicted` | A pass whose step range holds a high crash, ANR or app-error finding, or a failed flow or smoke step. A failed `qa_act` step doesn't count: agents often miss an element and retry. |
-| `flaky` | The workflow was attempted more than once with different results (`attempts[]` lists the other attempts). |
+| `flaky` | The workflow's attempts include both a pass and a fail (`attempts[]` lists them). A fail followed by a blocked attempt is not flaky. |
 
 Evidence is labelled by who judged it: Swipium's smoke, flow and explore results are
 `structured_locator` (`visual_match` for a flow decided by a visual step), and `manual_review` is for
@@ -371,6 +375,12 @@ note never clears a Swipium failure, and a budget skip never hides an earlier fa
 replaced: a crash recorded on the first attempt still blocks after a passing retry. Details and
 examples: [Release-gate policy](ci-reports.md#release-gate-policy).
 
+`report.json` still keeps every attempt in `testOutcomes[]`: the one that counts carries `attempts`
+and `flaky`, and the others carry `superseded: true`, so a script counting outcomes should skip
+those (`qa_report`'s `counts.outcomes` already does). Each outcome may also carry `attemptKey`, the
+grouping id. It is computed before redaction, so two workflows whose names redact to the same text
+are never merged into one.
+
 ### The secure-field guard
 
 Pixels can't be redacted, so every screenshot path (smoke, flows and their OCR steps, exploration,
@@ -384,7 +394,9 @@ runs the same check first:
   allowed, as before.
 
 OCR steps in flows run the check before the screenshot is taken, so a password screen is never sent to
-an OCR provider.
+an OCR provider. Exploration grabs the screenshot alongside the UI dump and, when the dump shows a
+secure field, discards it without saving it. Frames compared in memory (the render wait, the
+`qa_act` pixel-change check, flow template matching and image diff) are never kept.
 
 ## Glossary
 
