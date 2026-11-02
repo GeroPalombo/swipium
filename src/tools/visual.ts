@@ -22,9 +22,9 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFile
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import type { McpServer, CallToolResult } from '@modelcontextprotocol/server';
 import { qaOk, qaError, qaStop, unknownSessionError } from '../lib/result.js';
-import { isSecureNode, makeRedactor, type Redactor } from '../lib/redact.js';
-import { parseSnapshot, type RawNode } from '../snapshot/parse.js';
-import { freshSnapshot } from '../snapshot/fresh.js';
+import { makeRedactor, type Redactor } from '../lib/redact.js';
+import type { RawNode } from '../snapshot/parse.js';
+import { secureStateCached, secureStateRefreshed, type SecureScreenState } from '../lib/captureGuard.js';
 import { displayArgv } from '../lib/commandTemplate.js';
 import { GitScopeForbiddenError, run } from '../lib/spawn.js';
 import { which } from '../lib/android.js';
@@ -124,35 +124,23 @@ export function resolveTemplatePath(
 // ---------------------------------------------------------------------------------------------
 // B8: secure-screen detection.
 
-export type SecureScreenState = 'secure' | 'clear' | 'unknown';
+export type { SecureScreenState };
 
 /** secure/clear from a FRESH UI tree; unknown when there is none (WDA-less simulator, no
  * qa_snapshot yet) or it predates any action or screen change since (a visual tap, qa_app_control,
- * qa_clear_overlay, ...: the shared freshness rule in snapshot/fresh.ts, without an age limit). */
+ * qa_clear_overlay, ...: the shared freshness rule in snapshot/fresh.ts, without an age limit).
+ * The rule itself lives in lib/captureGuard.ts, shared with every other capture path. */
 export function secureScreenState(session: Session, seen?: { nodes?: RawNode[] }): SecureScreenState {
-  const snap = freshSnapshot(session, Number.POSITIVE_INFINITY);
-  if (!snap) return 'unknown';
-  if (seen) seen.nodes = snap.allNodes;
-  return [...snap.fullByRef.values()].some((n) => isSecureNode(n)) ? 'secure' : 'clear';
+  return secureStateCached(session, seen);
 }
 
 /** When the cached tree is missing or stale (e.g. after a qa_visual tap), a structured backend
  * (Android adb / WDA) can simply re-dump it: a qa_visual tap must not, by itself, turn the next
- * qa_visual call into an "unverified" one there. The fresh dump only informs the secure gate:
- * session.lastSnapshot (the agent's @ref numbering) is left untouched. WDA-less simulators
- * cannot dump a tree, so they stay 'unknown'. `seen.nodes` receives the tree the answer came from
- * (qa_screenshot checks it for a RedBox at no extra cost). */
+ * qa_visual call into an "unverified" one there. See secureStateRefreshed (lib/captureGuard.ts).
+ * `seen.nodes` receives the tree the answer came from (qa_screenshot checks it for a RedBox at no
+ * extra cost). */
 export async function refreshSecureState(session: Session, driver: Driver, seen?: { nodes?: RawNode[] }): Promise<SecureScreenState> {
-  const cached = secureScreenState(session, seen);
-  if (cached !== 'unknown' || driver.kind === 'simulator') return cached;
-  try {
-    const parsed = parseSnapshot(await driver.dumpXml());
-    if (parsed.allNodes.length === 0) return 'unknown';
-    if (seen) seen.nodes = parsed.allNodes;
-    return parsed.allNodes.some((n) => isSecureNode(n)) ? 'secure' : 'clear';
-  } catch {
-    return 'unknown';
-  }
+  return secureStateRefreshed(session, driver, seen);
 }
 
 /** The session has handled credentials (typed secrets, secret inputs, a login, or a
@@ -321,6 +309,7 @@ async function tapAndRecord(
 async function capture(ctx: VisualContext): Promise<{ png: Buffer; coordinateSpace: CoordinateSpace } | { error: CallToolResult }> {
   let png: Buffer;
   try {
+    // capture-guard: qa_visual runs the shared secure-field rule (refreshSecureState) before any mode
     png = await ctx.driver.screenshot();
   } catch (e) {
     return {

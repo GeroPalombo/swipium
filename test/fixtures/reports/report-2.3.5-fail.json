@@ -1,0 +1,679 @@
+{
+  "sessionId": "d8e10222",
+  "executiveSummary": {
+    "risk": "block",
+    "reasons": ["app-level error surface (ErrorBoundary/RedBox)", "1 high-severity finding(s)", "1 workflow(s) failed"],
+    "nextAction": "Fix \"launch_smoke\": native=ok app=error quality=partial before shipping."
+  },
+  "appId": "com.example.DemoApp",
+  "device": "emulator-5556",
+  "coverage": "Android Emulator only",
+  "appVerdict": {
+    "status": "BLOCKED",
+    "summary": "Expo/RN fatal error screen: the app JS crashed at load (entry point not registered)"
+  },
+  "coverageVerdict": {
+    "status": "BLOCKED",
+    "summary": "A setup or precondition blocker limited coverage."
+  },
+  "toolVerdict": {
+    "status": "PASS",
+    "summary": "No Swipium/MCP limitations or tool-side failures recorded. 1 non-degrading error result(s) (METRO_REQUIRED×1: 0 uncoded refusal/guard message(s), 0 agent-probing miss(es), 1 environment/setup gate refusal(s)). See toolErrors.",
+    "toolErrorCount": 1,
+    "toolErrorsByCode": {
+      "METRO_REQUIRED": 1
+    },
+    "degradingCount": 0,
+    "uncodedCount": 0,
+    "probingCount": 0,
+    "environmentCount": 1
+  },
+  "automationBackend": {
+    "kind": "direct",
+    "mode": "android-emulator-structured-adb",
+    "structured": true,
+    "description": "Android structured ADB/UIAutomator on an emulator"
+  },
+  "readiness": ["observed", "verified"],
+  "automationReadiness": {
+    "grade": "D",
+    "score": 8,
+    "labels": ["observed", "verified"],
+    "scoreBreakdown": {
+      "durableLocators": 0,
+      "workflowEvidence": 0,
+      "stateProfiles": 0,
+      "idling": 0,
+      "safeDestructiveBoundaries": 8,
+      "replayEvidence": 0
+    },
+    "locatorCoverage": {
+      "totalActions": 0,
+      "durableActions": 0,
+      "nativeFallbackActions": 0,
+      "textActions": 0,
+      "coordinateActions": 0,
+      "durablePct": 0,
+      "nativeOrDurablePct": 0,
+      "byKind": {}
+    },
+    "locatorCoverageTrend": [
+      {
+        "label": "current_session",
+        "durablePct": 0,
+        "totalActions": 0
+      }
+    ],
+    "workflowGrades": [
+      {
+        "workflow": "launch_smoke",
+        "grade": "D",
+        "outcome": "fail",
+        "evidence": "manual_review",
+        "fix": "launch_smoke: resolve native=ok app=error quality=partial"
+      },
+      {
+        "workflow": "demoapp-signup-suite",
+        "grade": "C",
+        "outcome": "blocked",
+        "evidence": "manual_review",
+        "fix": "demoapp-signup-suite: add fixture/state profile for missing precondition \"an app that launches without a fatal error screen\""
+      },
+      {
+        "workflow": "demoapp-signup-to-home",
+        "grade": "C",
+        "outcome": "blocked",
+        "evidence": "manual_review",
+        "fix": "demoapp-signup-to-home: add fixture/state profile for missing precondition \"an app that launches without a fatal error screen\""
+      }
+    ],
+    "screenGrades": [],
+    "topFixes": [
+      "launch_smoke: resolve native=ok app=error quality=partial",
+      "demoapp-signup-suite: add fixture/state profile for missing precondition \"an app that launches without a fatal error screen\"",
+      "demoapp-signup-to-home: add fixture/state profile for missing precondition \"an app that launches without a fatal error screen\"",
+      "rn_redbox: Expo/RN fatal error screen: the app JS crashed at load (entry point not registered)",
+      "Add a declared state profile for repeatable setup and teardown.",
+      "Add an app-declared idling hook for stable waits."
+    ],
+    "prComments": [
+      {
+        "severity": "blocker",
+        "body": "Swipium automation readiness: launch_smoke: resolve native=ok app=error quality=partial"
+      },
+      {
+        "severity": "warning",
+        "body": "Swipium automation readiness: demoapp-signup-suite: add fixture/state profile for missing precondition \"an app that launches without a fatal error screen\""
+      },
+      {
+        "severity": "warning",
+        "body": "Swipium automation readiness: demoapp-signup-to-home: add fixture/state profile for missing precondition \"an app that launches without a fatal error screen\""
+      },
+      {
+        "severity": "warning",
+        "body": "Swipium automation readiness: rn_redbox: Expo/RN fatal error screen: the app JS crashed at load (entry point not registered)"
+      },
+      {
+        "severity": "warning",
+        "body": "Swipium automation readiness: Add a declared state profile for repeatable setup and teardown."
+      }
+    ]
+  },
+  "qaLevel": {
+    "level": "observed",
+    "achieved": ["observed"],
+    "next": "smoke_tested",
+    "nextRequirement": "Pass launch + health guardrails (no crash, no fatal error surface, no high-severity finding).",
+    "skipped": [],
+    "rationale": "Reached observed: Swipium launched the app and captured evidence.",
+    "notes": ["Launch/health was not confirmed passing, so smoke level not reached."]
+  },
+  "runTestCatalog": {
+    "entries": [
+      {
+        "id": "RTC-001",
+        "objective": "Verify the \"launch_smoke\" workflow.",
+        "status": "fail",
+        "preconditions": ["app installed"],
+        "steps": ["Exercise the launch_smoke workflow"],
+        "expectedResult": "Workflow completes without an error surface.",
+        "actualResult": "launch_smoke: fail: native=ok app=error quality=partial",
+        "evidence": ["swipium://session/d8e10222/screenshot/smoke-baseline-1791771296453.png"],
+        "blockers": ["native=ok app=error quality=partial"],
+        "cleanup": ["return to home/initial screen"],
+        "automationReadiness": "manual",
+        "replayStatus": "not_replayed",
+        "source": "note"
+      },
+      {
+        "id": "RTC-002",
+        "objective": "Verify the \"demoapp-signup-suite\" workflow.",
+        "status": "blocked",
+        "preconditions": ["app installed"],
+        "steps": ["Exercise the demoapp-signup-suite workflow"],
+        "expectedResult": "Workflow completes without an error surface.",
+        "actualResult": "demoapp-signup-suite: blocked: launch failed: Expo/RN fatal error screen: the app JS crashed at load (entry point not registered) (\"Exception in HostObject::get for prop 'AudioModule': com.facebook.react.in\"); flows not run",
+        "evidence": [],
+        "blockers": [
+          "missing precondition: an app that launches without a fatal error screen",
+          "launch failed: Expo/RN fatal error screen: the app JS crashed at load (entry point not registered) (\"Exception in HostObject::get for prop 'AudioModule': com.facebook.react.in\"); flows not run"
+        ],
+        "cleanup": ["return to home/initial screen"],
+        "automationReadiness": "manual",
+        "replayStatus": "not_replayed",
+        "source": "note"
+      },
+      {
+        "id": "RTC-003",
+        "objective": "Verify the \"demoapp-signup-to-home\" workflow.",
+        "status": "blocked",
+        "preconditions": ["app installed"],
+        "steps": ["Exercise the demoapp-signup-to-home workflow"],
+        "expectedResult": "Workflow completes without an error surface.",
+        "actualResult": "demoapp-signup-to-home: blocked: launch failed: Expo/RN fatal error screen: the app JS crashed at load (entry point not registered) (\"Exception in HostObject::get for prop 'AudioModule': com.facebook.react.in\"); flows not run",
+        "evidence": [],
+        "blockers": [
+          "missing precondition: an app that launches without a fatal error screen",
+          "launch failed: Expo/RN fatal error screen: the app JS crashed at load (entry point not registered) (\"Exception in HostObject::get for prop 'AudioModule': com.facebook.react.in\"); flows not run"
+        ],
+        "cleanup": ["return to home/initial screen"],
+        "automationReadiness": "manual",
+        "replayStatus": "not_replayed",
+        "source": "note"
+      }
+    ],
+    "counts": {
+      "pass": 0,
+      "fail": 1,
+      "blocked": 2,
+      "skipped": 0,
+      "not_applicable": 0,
+      "observed": 0
+    },
+    "total": 3
+  },
+  "persistentSuite": {
+    "totalCases": 19,
+    "created": [],
+    "updated": [],
+    "deprecated": [],
+    "failed": [],
+    "blocked": [],
+    "newlyAutomated": [],
+    "caseIds": [
+      "TC-STOIC-001",
+      "TC-NAVIGATION-001",
+      "TC-AUTH-001",
+      "TC-SEARCH-001",
+      "TC-CREATE-001",
+      "TC-EDIT-001",
+      "TC-DELETE-001",
+      "TC-SHARE-001",
+      "TC-SETTINGS-001",
+      "TC-MEDIA-001",
+      "TC-MAP-001",
+      "TC-PURCHASE-001",
+      "TC-PROFILE-001",
+      "TC-NOTIFICATI-001",
+      "TC-STOIC-002",
+      "TC-STOIC-003",
+      "TC-CONTACTS-001",
+      "TC-APP-001",
+      "TC-CONTACTS-002"
+    ],
+    "runLedgerPath": "/tmp/project/DemoApp/.swipium/test-runs/2026-10-12T02-14-58-564Z.json",
+    "validationErrors": []
+  },
+  "mode": "structured",
+  "emulatorDisplay": "pre-existing device",
+  "environmentChanges": ["2026-10-12T02:14:42.712Z set adb reverse tcp:8081"],
+  "ciMutations": ["2026-10-12T02:14:42.712Z set adb reverse tcp:8081"],
+  "mutationLedger": [
+    {
+      "id": "f150010f",
+      "at": 1791771279150,
+      "tool": "qa_prepare_target",
+      "action": "bind_emulator",
+      "risk": "low",
+      "target": {
+        "avd": "Pixel_9XL",
+        "device": "emulator-5556"
+      },
+      "consent": {
+        "required": false,
+        "approved": true
+      },
+      "status": "executed",
+      "detail": "bound emulator-5556 (AVD Pixel_9XL)"
+    },
+    {
+      "id": "908ff6c5",
+      "at": 1791771279374,
+      "tool": "qa_metro",
+      "action": "start_metro",
+      "risk": "medium",
+      "target": {
+        "device": "emulator-5556",
+        "port": 8081,
+        "framework": "expo"
+      },
+      "consent": {
+        "required": true,
+        "approved": false
+      },
+      "status": "requested"
+    },
+    {
+      "id": "6fe39a9f",
+      "at": 1791771279425,
+      "tool": "qa_metro",
+      "action": "start_metro",
+      "risk": "medium",
+      "target": {
+        "device": "emulator-5556",
+        "port": 8081,
+        "framework": "expo"
+      },
+      "consent": {
+        "required": true,
+        "consentId": "6505356c",
+        "approved": true,
+        "approvalMechanism": "elicitation"
+      },
+      "status": "approved"
+    },
+    {
+      "id": "6e838c62",
+      "at": 1791771279463,
+      "tool": "qa_metro",
+      "action": "start_metro",
+      "risk": "medium",
+      "target": {
+        "device": "emulator-5556",
+        "port": 8081,
+        "framework": "expo",
+        "pid": 62220
+      },
+      "consent": {
+        "required": true,
+        "consentId": "6505356c",
+        "approved": true,
+        "approvalMechanism": "elicitation"
+      },
+      "status": "executed",
+      "ledgerUri": "swipium://session/d8e10222/metro/metro.log"
+    },
+    {
+      "id": "57e07467",
+      "at": 1791771281868,
+      "tool": "qa_test_this",
+      "action": "test_this_plan",
+      "risk": "low",
+      "target": {
+        "steps": [
+          {
+            "kind": "install_apk",
+            "affects": {
+              "path": "/tmp/project/DemoApp/android/app/build/outputs/apk/debug/app-debug.apk",
+              "device": "emulator-5556"
+            }
+          }
+        ]
+      },
+      "consent": {
+        "required": true,
+        "approved": false
+      },
+      "status": "requested"
+    },
+    {
+      "id": "5a947dbe",
+      "at": 1791771282547,
+      "tool": "qa_test_this",
+      "action": "test_this_plan",
+      "risk": "low",
+      "target": {
+        "steps": [
+          {
+            "kind": "install_apk",
+            "affects": {
+              "path": "/tmp/project/DemoApp/android/app/build/outputs/apk/debug/app-debug.apk",
+              "device": "emulator-5556"
+            }
+          }
+        ]
+      },
+      "consent": {
+        "required": true,
+        "consentId": "41664e21",
+        "approved": true,
+        "approvalMechanism": "elicitation"
+      },
+      "status": "approved"
+    },
+    {
+      "id": "223d0ac0",
+      "at": 1791771284823,
+      "tool": "qa_prepare_target",
+      "action": "launch_app",
+      "risk": "low",
+      "target": {
+        "device": "emulator-5556",
+        "appId": "com.example.DemoApp",
+        "foreground": "com.example.DemoApp/com.example.DemoApp.MainActivity"
+      },
+      "consent": {
+        "required": false,
+        "approved": true
+      },
+      "status": "executed"
+    },
+    {
+      "id": "6d303513",
+      "at": 1791771296461,
+      "tool": "qa_test_this",
+      "action": "test_this_plan",
+      "risk": "low",
+      "target": {
+        "steps": [
+          {
+            "kind": "install_apk",
+            "affects": {
+              "path": "/tmp/project/DemoApp/android/app/build/outputs/apk/debug/app-debug.apk",
+              "device": "emulator-5556"
+            }
+          }
+        ]
+      },
+      "consent": {
+        "required": true,
+        "consentId": "41664e21",
+        "approved": true,
+        "approvalMechanism": "elicitation"
+      },
+      "status": "executed"
+    }
+  ],
+  "workaroundsAttempted": [
+    "app likely has a login: will test pre-login coverage; authenticated flows are blocked until credentials are provided",
+    "debug RN/Expo build likely needs Metro/dev server serving before launch"
+  ],
+  "inputsProvided": [],
+  "redactionDegraded": false,
+  "generatedValues": [],
+  "guardrailOverrides": [],
+  "launchedWithoutMetroReady": false,
+  "destructiveGuardrail": {
+    "bundleRiskRefused": 0,
+    "bundleRiskOverrideApproved": 0,
+    "destructiveExecuted": 0,
+    "status": "no destructive action attempted"
+  },
+  "finalNetwork": "online",
+  "networkRestore": "unchanged",
+  "activeRecording": null,
+  "findings": [
+    {
+      "at": 1791771296257,
+      "severity": "high",
+      "kind": "rn_redbox",
+      "detail": "Expo/RN fatal error screen: the app JS crashed at load (entry point not registered)",
+      "layer": "app",
+      "evidence": "Exception in HostObject::get for prop 'AudioModule': com.facebook.react.internal.turbomodule.core.TurboModuleInteropUtils$ParsingException: Unable to pars",
+      "screen": "com.example.DemoApp/com.example.DemoApp.MainActivity",
+      "screenshotUri": "swipium://session/d8e10222/screenshot/app-error-1791771296256.png",
+      "count": 1,
+      "firstAt": 1791771296257,
+      "lastAt": 1791771296257,
+      "screenshotUris": ["swipium://session/d8e10222/screenshot/app-error-1791771296256.png"],
+      "failureCode": "REDBOX",
+      "bucket": "app_bug",
+      "retrySafe": false,
+      "nextStep": "A fatal JS/runtime error. Read the error text; often a bad bundle or thrown error."
+    }
+  ],
+  "findingOccurrences": 1,
+  "toolErrors": [
+    {
+      "at": 1791771279331,
+      "tool": "qa_prepare_target",
+      "failureCode": "METRO_REQUIRED",
+      "message": "Debug RN/Expo build; Metro is not SERVING the bundle yet (listening=false reverse=true serving=false). Launching now risks the \"Unable to load script\" RedBox."
+    }
+  ],
+  "highSeverityCount": 1,
+  "nativeHealth": "OK",
+  "appHealth": "error",
+  "appHealthFindings": [
+    {
+      "kind": "rn_redbox",
+      "severity": "high",
+      "evidence": "Exception in HostObject::get for prop 'AudioModule': com.facebook.react.internal.turbomodule.core.TurboModuleInteropUtils$ParsingException: Unable to pars",
+      "screen": "com.example.DemoApp/com.example.DemoApp.MainActivity",
+      "screenshotUri": "swipium://session/d8e10222/screenshot/app-error-1791771296256.png"
+    }
+  ],
+  "testOutcomes": [
+    {
+      "at": 1791771296453,
+      "workflow": "launch_smoke",
+      "outcome": "fail",
+      "category": "app_bug",
+      "reason": "native=ok app=error quality=partial",
+      "artifactUris": ["swipium://session/d8e10222/screenshot/smoke-baseline-1791771296453.png"]
+    },
+    {
+      "at": 1791771296454,
+      "workflow": "demoapp-signup-suite",
+      "outcome": "blocked",
+      "category": "other",
+      "reason": "launch failed: Expo/RN fatal error screen: the app JS crashed at load (entry point not registered) (\"Exception in HostObject::get for prop 'AudioModule': com.facebook.react.in\"); flows not run",
+      "missingPrecondition": "an app that launches without a fatal error screen"
+    },
+    {
+      "at": 1791771296454,
+      "workflow": "demoapp-signup-to-home",
+      "outcome": "blocked",
+      "category": "other",
+      "reason": "launch failed: Expo/RN fatal error screen: the app JS crashed at load (entry point not registered) (\"Exception in HostObject::get for prop 'AudioModule': com.facebook.react.in\"); flows not run",
+      "missingPrecondition": "an app that launches without a fatal error screen"
+    }
+  ],
+  "outcomeTally": {
+    "fail": 1,
+    "blocked": 2
+  },
+  "categoryTally": {
+    "app_bug": 1,
+    "other": 2
+  },
+  "outcomeByCategory": {
+    "fail": {
+      "app_bug": 1
+    },
+    "blocked": {
+      "other": 2
+    }
+  },
+  "outcomesByWorkflow": {
+    "launch_smoke": {
+      "outcome": "fail",
+      "category": "app_bug",
+      "reason": "native=ok app=error quality=partial",
+      "artifactUris": ["swipium://session/d8e10222/screenshot/smoke-baseline-1791771296453.png"]
+    },
+    "demoapp-signup-suite": {
+      "outcome": "blocked",
+      "category": "other",
+      "reason": "launch failed: Expo/RN fatal error screen: the app JS crashed at load (entry point not registered) (\"Exception in HostObject::get for prop 'AudioModule': com.facebook.react.in\"); flows not run",
+      "artifactUris": []
+    },
+    "demoapp-signup-to-home": {
+      "outcome": "blocked",
+      "category": "other",
+      "reason": "launch failed: Expo/RN fatal error screen: the app JS crashed at load (entry point not registered) (\"Exception in HostObject::get for prop 'AudioModule': com.facebook.react.in\"); flows not run",
+      "artifactUris": []
+    }
+  },
+  "failureBuckets": {
+    "counts": {
+      "app_bug": 2,
+      "environment": 2,
+      "missing_data": 0,
+      "mcp_limitation": 0,
+      "unsafe_refused": 0
+    },
+    "total": 4,
+    "classifiedPct": 100,
+    "dominant": "app_bug",
+    "examples": {
+      "app_bug": "REDBOX: Expo/RN fatal error screen: the app JS crashed at load (entry point not registered)",
+      "environment": "demoapp-signup-suite: launch failed: Expo/RN fatal error screen: the app JS crashed at load (entry point not registered) (\"Exception in HostObject::get for prop 'AudioModule': com.facebook.react.in\"); flows not run"
+    }
+  },
+  "visualVerifications": [],
+  "evidenceTaxonomy": {
+    "schema": "swipium.evidence.taxonomy.v1",
+    "counts": {
+      "structured_locator": 0,
+      "ocr_locator": 0,
+      "visual_match": 0,
+      "ai_visual_evidence": 0,
+      "manual_review": 3
+    },
+    "byAuthority": {
+      "deterministic": 0,
+      "probabilistic": 0,
+      "manual": 3
+    },
+    "assessments": [
+      {
+        "workflow": "launch_smoke",
+        "outcome": "fail",
+        "kind": "manual_review",
+        "authority": "manual",
+        "method": "unlabeled",
+        "artifactUris": ["swipium://session/d8e10222/screenshot/smoke-baseline-1791771296453.png"],
+        "warning": "No structured, OCR, or visual method label was recorded; review this evidence manually."
+      },
+      {
+        "workflow": "demoapp-signup-suite",
+        "outcome": "blocked",
+        "kind": "manual_review",
+        "authority": "manual",
+        "method": "unlabeled",
+        "artifactUris": [],
+        "warning": "No structured, OCR, or visual method label was recorded; review this evidence manually."
+      },
+      {
+        "workflow": "demoapp-signup-to-home",
+        "outcome": "blocked",
+        "kind": "manual_review",
+        "authority": "manual",
+        "method": "unlabeled",
+        "artifactUris": [],
+        "warning": "No structured, OCR, or visual method label was recorded; review this evidence manually."
+      }
+    ],
+    "calibration": {
+      "status": "not_required",
+      "note": "No probabilistic visual/OCR/AI visual evidence was recorded in this report."
+    }
+  },
+  "declaredPreconditions": [],
+  "authState": "unknown (no auth signal observed)",
+  "budgetProfile": null,
+  "phaseTimings": {
+    "totalMs": 19686,
+    "setupMs": 19686,
+    "activeMs": 0,
+    "timeToLoginMs": null,
+    "diagnostics": {
+      "simulatorBootMs": null,
+      "appInstallMs": null,
+      "appLaunchMs": 2053,
+      "wdaBuildMs": null,
+      "wdaStartMs": null,
+      "wdaReuseCheckMs": null,
+      "wdaStartupWaitMs": null,
+      "wdaSessionCreateMs": null,
+      "wdaSourceMs": null,
+      "wdaFindElementMs": null,
+      "wdaTapMs": null,
+      "wdaTypeMs": null,
+      "wdaClearMs": null,
+      "wdaScreenshotMs": null,
+      "flowRuntimeMs": null,
+      "waitMs": null,
+      "screenshotCount": 1
+    }
+  },
+  "wda": null,
+  "ci": {
+    "env": false
+  },
+  "visualOnly": false,
+  "generatedSuite": null,
+  "exploration": null,
+  "artifacts": [
+    {
+      "uri": "swipium://session/d8e10222/metro/metro.log",
+      "kind": "metro",
+      "mime": "text/plain"
+    },
+    {
+      "uri": "swipium://session/d8e10222/screenshot/app-error-1791771296256.png",
+      "kind": "screenshot",
+      "mime": "image/png",
+      "label": "app-health: rn_redbox"
+    },
+    {
+      "uri": "swipium://session/d8e10222/screenshot/smoke-baseline-1791771296453.png",
+      "kind": "screenshot",
+      "mime": "image/png",
+      "label": "qa_smoke baseline evidence"
+    },
+    {
+      "uri": "swipium://session/d8e10222/dump/dump-1791771298521.xml",
+      "kind": "dump",
+      "mime": "application/xml"
+    }
+  ],
+  "counters": {
+    "actions": 0,
+    "screenshots": 1,
+    "snapshotFailures": 0,
+    "noChangeActions": 0
+  },
+  "issues": {
+    "summary": {
+      "newOpen": 2,
+      "recurring": 0,
+      "fixedStillPassing": 0,
+      "suppressed": 0,
+      "environmentNoise": 0,
+      "hardGates": 0
+    },
+    "releaseImpact": "block",
+    "newIssues": [],
+    "recurringIssues": [],
+    "fixedIssuesVerified": [],
+    "knownNoise": [],
+    "hardGates": [],
+    "improvements": []
+  },
+  "issuesMarkdown": "## Issue Memory\n\n| Status | Count |\n| --- | ---: |\n| New / open issues | 2 |\n| Recurring (regressed) issues | 0 |\n| Known environment noise | 0 |\n| Suppressed | 0 |\n| Hard gates | 0 |\n| Fixed issues still passing | 0 |\n\nRelease impact: **BLOCK**",
+  "issueMetrics": {
+    "newThisRun": 0,
+    "reopenedThisRun": 0,
+    "fixedVerifiedThisRun": 0,
+    "openBlocker": 2,
+    "openHigh": 1,
+    "reopenRatePct": 0,
+    "fixVerificationRatePct": 0,
+    "avgAgeDays": 66.41
+  },
+  "prSummary": {
+    "text": "Swipium: BLOCK\nReason: launch_smoke: native=ok app=error quality=partial.\nNative health: OK. App health: error.\nBackend: Android structured ADB/UIAutomator on an emulator.\nReadiness: observed > verified.\nAutomation readiness: D (8/100).\nLikely category: app regression.\nEvidence: logs, screenshot, UI tree (swipium://session/d8e10222/screenshot/smoke-baseline-1791771296453.png, swipium://session/d8e10222/metro/metro.log, swipium://session/d8e10222/screenshot/app-error-1791771296256.png, swipium://session/d8e10222/screenshot/smoke-baseline-1791771296453.png, swipium://session/d8e10222/dump/dump-1791771298521.xml).\nNext action: Fix \"launch_smoke\": native=ok app=error quality=partial before shipping."
+  }
+}

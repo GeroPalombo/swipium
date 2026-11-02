@@ -3,11 +3,11 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { XMLParser } from 'fast-xml-parser';
-import { findProjectSessions, runReport, type ReportCliIo } from '../src/cli/report.js';
+import { findProjectSessions, REPORT_FORMATS, runReport, sessionDirForReport, type ReportCliIo } from '../src/cli/report.js';
 
 const fakeHome = mkdtempSync(join(tmpdir(), 'swipium-report-cli-home-'));
 const prevHome = process.env.HOME;
@@ -215,5 +215,65 @@ describe('swipium report', () => {
     expect(io.out).toContain('<testsuites');
     writeFileSync(file, '{"not":"a report"}');
     expect(await runReport(['--report', file, '--format', 'junit'], capture())).toBe(2);
+  });
+
+  it('--format html from a session folder embeds its screenshots', async () => {
+    const dir = persistSession('html0004', 4000, {
+      ...report('html0004', 'ship'),
+      testOutcomes: [{ workflow: 'login flow', outcome: 'pass', evidence: ['swipium://session/html0004/checkpoint/cp.png'] }],
+      artifacts: [{ uri: 'swipium://session/html0004/checkpoint/cp.png', kind: 'checkpoint', path: 'screenshots/cp.png' }],
+    } as ReturnType<typeof report>);
+    mkdirSync(join(dir, 'screenshots'), { recursive: true });
+    copyFileSync(join(__dirname, 'fixtures', 'png', 'ios-simctl-redbox-1206x2622.png'), join(dir, 'screenshots', 'cp.png'));
+    expect(sessionDirForReport(join(dir, 'report', 'report-4000.json'))).toBe(dir);
+    const out = join(root, 'out', 'report.html');
+    const io = capture();
+    expect(await runReport(['--root', root, '--session', 'html0004', '--format', 'html', '--out', out, '--fail-on-gate'], io)).toBe(0);
+    const html = readFileSync(out, 'utf8');
+    expect(html).toMatch(/^<!doctype html>/);
+    expect(html).toContain('Release gate: PASS');
+    expect(html).toContain('src="data:image/png;base64,');
+    expect(io.err).toContain('Wrote html for session html0004');
+  });
+
+  it('--format html with --report outside a session folder shows evidence not available', async () => {
+    const file = join(root, 'loose.json');
+    writeFileSync(
+      file,
+      JSON.stringify({
+        ...report('loose001', 'block'),
+        findings: [
+          {
+            severity: 'high',
+            kind: 'crash',
+            failureCode: 'NATIVE_CRASH',
+            detail: 'boom',
+            screenshotUri: 'swipium://session/loose001/screenshot/x.png',
+          },
+        ],
+      }),
+    );
+    expect(sessionDirForReport(file)).toBeUndefined();
+    const io = capture();
+    expect(await runReport(['--root', root, '--report', file, '--format', 'html', '--fail-on-gate'], io)).toBe(1);
+    expect(io.out).toContain('Release gate: BLOCK');
+    expect(io.out).toContain('evidence not available');
+    expect(io.out).not.toContain('<img ');
+  });
+
+  it('a 2.3.5 report (no schemaVersion, no steps) renders in every format', async () => {
+    const file = join(__dirname, 'fixtures', 'reports', 'report-2.3.5-fail.json');
+    expect(REPORT_FORMATS).toContain('html');
+    for (const format of REPORT_FORMATS) {
+      const io = capture();
+      expect(await runReport(['--root', root, '--report', file, '--format', format], io)).toBe(0);
+      expect(io.out.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('help lists the html format', async () => {
+    const io = capture();
+    await runReport(['--help'], io);
+    expect(io.out).toContain('junit|sarif|github-summary|markdown|json|html');
   });
 });

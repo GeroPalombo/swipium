@@ -68,6 +68,13 @@ function fixture(): ReportData {
   };
 }
 
+/** The fixture with a screenshot on the high finding (SARIF keeps evidence in relatedLocations). */
+function withShot(): ReportData {
+  const r = fixture();
+  r.findings[0].screenshotUri = 'swipium://session/sess-1/screenshot/crash.png';
+  return r;
+}
+
 const gatePolicy: Policy = { blockOn: ['native_crash'], warnOn: ['app_bug'], ignoreKnown: [], ciAllowMutations: [] };
 
 describe('reportPolicyVerdicts + applyPolicy', () => {
@@ -100,7 +107,11 @@ describe('reportPolicyVerdicts + applyPolicy', () => {
 
 interface JunitTestcase {
   '@_name': string;
-  failure?: { '#text': string; '@_message': string };
+  '@_time'?: string;
+  failure?: { '#text': string; '@_message': string; '@_type': string };
+  error?: { '#text': string; '@_message': string; '@_type': string };
+  skipped?: { '@_message': string } | '';
+  'system-out'?: string;
 }
 interface JunitSuite {
   '@_failures': string;
@@ -119,7 +130,7 @@ describe('toJUnit', () => {
   it('emits parseable XML with matching failure counts', () => {
     const doc = parse(toJUnit(fixture()));
     const root = doc.testsuites;
-    expect(root['@_tests']).toBe('5'); // 2 workflows + 3 findings
+    expect(root['@_tests']).toBe('3'); // 2 workflows + 1 high finding (medium/low are not cases)
     expect(root['@_failures']).toBe('2'); // 1 failed workflow + 1 high finding
     const suites = root.testsuite;
     expect(suites).toHaveLength(2);
@@ -131,8 +142,9 @@ describe('toJUnit', () => {
     const doc = parse(toJUnit(fixture()));
     const cases = doc.testsuites.testsuite[0].testcase;
     const failed = (Array.isArray(cases) ? cases : [cases]).find((c) => c['@_name'] === 'login flow');
-    expect(failed?.failure?.['#text']).toBe(`app_bug: ${NASTY}`);
-    expect(failed?.failure?.['@_message']).toBe(`app_bug: ${NASTY}`);
+    expect(failed?.failure?.['#text']).toBe(NASTY);
+    expect(failed?.failure?.['@_message']).toBe(NASTY);
+    expect(failed?.failure?.['@_type']).toBe('app_bug');
   });
 
   it('records the release-gate PolicyDecision as testsuite properties', () => {
@@ -178,14 +190,9 @@ describe('toSarif', () => {
     const sarif = JSON.parse(toSarif(fixture(), decision)) as SarifDoc;
     expect(sarif.version).toBe('2.1.0');
     const run = sarif.runs[0];
-    // 3 findings + 1 failed workflow.
-    expect(run.results).toHaveLength(4);
-    const levelByRule = Object.fromEntries(run.results.map((r) => [r.ruleId, r.level]));
-    expect(levelByRule.NATIVE_CRASH).toBe('error'); // high
-    expect(levelByRule.anr).toBe('warning'); // medium
-    expect(levelByRule.log_noise).toBe('note'); // low
-    // The failed workflow is app_bug, which gatePolicy only warns on: a warning, as in JUnit.
-    expect(levelByRule.app_bug).toBe('warning');
+    // Only the high app finding: medium/low findings and the failed workflow are not code alerts.
+    expect(run.results).toHaveLength(1);
+    expect(run.results[0]).toMatchObject({ ruleId: 'NATIVE_CRASH', level: 'error' });
     expect(run.results[0].message.text).toContain(NASTY); // escaping survives JSON round-trip
     // executionSuccessful means "the tool ran"; the gate verdict lives in run.properties.
     expect(run.invocations[0].executionSuccessful).toBe(true);
@@ -283,13 +290,14 @@ describe('SARIF results carry a real repo location GitHub will display', () => {
       expect(loc.artifactLocation.uriBaseId).toBe('%SRCROOT%');
       expect(loc.artifactLocation.uri).not.toMatch(/^swipium:/);
       expect(loc.region).toEqual({ startLine: 1, startColumn: 1, endLine: 1, endColumn: 2 });
-      expect(res.partialFingerprints.primaryLocationLineHash).toMatch(/^[0-9a-f]{16}:\d+$/);
+      expect(res.partialFingerprints.primaryLocationLineHash).toMatch(/^[0-9a-f]{16}$/);
       hashes.add(res.partialFingerprints.primaryLocationLineHash);
     }
     // Distinct results on the same manifest line must not collapse into one alert.
     expect(hashes.size).toBe(run.results.length);
     // Evidence stays reachable, just not as the primary location.
-    const withEvidence = run.results.find((r) => r.ruleId === 'app_bug');
+    const withEvidence = (JSON.parse(toSarif(withShot(), undefined, { sources: { defaultUri: 'app.json' } })) as SarifDoc).runs[0]
+      .results[0];
     expect(withEvidence?.relatedLocations?.[0].physicalLocation.artifactLocation.uri).toMatch(/^swipium:\/\//);
     for (const rule of run.tool.driver.rules) {
       expect(rule.shortDescription.text).toBeTruthy();
@@ -301,8 +309,8 @@ describe('SARIF results carry a real repo location GitHub will display', () => {
   it('fingerprints are stable across runs (volatile ids scrubbed)', () => {
     const a = fixture();
     const b = fixture();
-    a.findings[1].detail = 'main thread stalled 6s at 2026-09-01T10:00:00Z req=abc123';
-    b.findings[1].detail = 'main thread stalled 6s at 2026-09-02T11:00:00Z req=def456';
+    a.findings[0].detail = 'main thread stalled 6s at 2026-09-01T10:00:00Z req=abc123';
+    b.findings[0].detail = 'main thread stalled 6s at 2026-09-02T11:00:00Z req=def456';
     const fp = (r: ReportData) => (JSON.parse(toSarif(r)) as SarifDoc).runs[0].results.map((x) => x.partialFingerprints['swipium/v1']);
     expect(fp(a)).toEqual(fp(b));
   });
@@ -341,7 +349,8 @@ describe('SARIF results carry a real repo location GitHub will display', () => {
       expect(sources.byWorkflow).toEqual({ 'login flow': 'src/screens/Login.tsx' });
       const sarif = JSON.parse(toSarif(r, undefined, { sources })) as SarifDoc;
       const uris = sarif.runs[0].results.map((x) => x.locations[0].physicalLocation.artifactLocation.uri);
-      expect(uris).toEqual(['src/screens/Login.tsx', 'app.json', 'app.json', 'src/screens/Login.tsx']);
+      // Only the high finding is a result; its screen resolves to the app-map source.
+      expect(uris).toEqual(['src/screens/Login.tsx']);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -455,7 +464,7 @@ describe('policy-aware JUnit and GitHub summary limits', () => {
     const decision = applyPolicy(reportPolicyVerdicts(r), gatePolicy); // crash blocks, app_bug warns
     const xml = toJUnit(r, decision);
     expect(xml.match(/<failure /g)).toHaveLength(1);
-    expect(xml).toContain('<failure message="NATIVE_CRASH">');
+    expect(xml).toMatch(/<failure message="[^"]*" type="NATIVE_CRASH">/);
   });
 
   it('caps the GitHub summary under 1 MiB with a truncation note', () => {

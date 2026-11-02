@@ -5,7 +5,8 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseSnapshot } from '../snapshot/parse.js';
+import { parseSnapshot, type RawNode } from '../snapshot/parse.js';
+import { captureGuardSync } from '../lib/captureGuard.js';
 import { settle } from '../snapshot/settle.js';
 import { waitForAppRender } from '../snapshot/renderWait.js';
 import { isForegroundOf } from '../lib/launchWait.js';
@@ -93,6 +94,8 @@ export interface Observation {
   visibleText: string;
   screenSignature: string;
   screenshotUri?: string;
+  /** Why no evidence screenshot was taken (sensitive session / secure field on screen). */
+  screenshotWithheld?: string;
   appError: boolean;
   /** An iOS alert over the screen and its cancel button (null: no alert). */
   alert: ReturnType<typeof iosAlertCancel>;
@@ -107,17 +110,23 @@ export async function observeScreen(sessions: SessionStore, session: Session, dr
   let xml = '';
   let elements: Observation['elements'] = [];
   let alert: Observation['alert'] = null;
+  let nodes: RawNode[] | undefined;
   try {
     xml = await driver.dumpXml();
     const parsed = parseSnapshot(xml);
     elements = parsed.elements;
+    nodes = parsed.allNodes;
     alert = iosAlertCancel(parsed.allNodes);
   } catch {
     /* visual-only / no tree */
   }
   let screenshotUri: string | undefined;
-  if (!session.sensitive && session.counters.screenshots < session.budget.maxScreenshots) {
+  // The tree just dumped decides (no extra device call); without one, the cached tree if fresh.
+  const verdict = captureGuardSync(session, nodes);
+  const screenshotWithheld = verdict.ok ? undefined : verdict.note;
+  if (verdict.ok && session.counters.screenshots < session.budget.maxScreenshots) {
     try {
+      // capture-guard: guarded by captureGuardSync above
       const png = await driver.screenshot();
       screenshotUri = sessions.saveArtifact(session, 'screenshot', `firstrun-${Date.now()}.png`, png, 'image/png', 'first-run evidence');
       sessions.bump(session, 'screenshots');
@@ -130,7 +139,16 @@ export async function observeScreen(sessions: SessionStore, session: Session, dr
     .join(' ')
     .trim();
   const screenSignature = elements.length ? structuredSignature(elements, { foreground, keyboardShown: false }) : `visual:${foreground}`;
-  return { elements, foreground, visibleText, screenSignature, screenshotUri, appError: APP_ERROR_RE.test(xml), alert };
+  return {
+    elements,
+    foreground,
+    visibleText,
+    screenSignature,
+    screenshotUri,
+    ...(screenshotWithheld ? { screenshotWithheld } : {}),
+    appError: APP_ERROR_RE.test(xml),
+    alert,
+  };
 }
 
 /** Resolve policy + environment + the generated-account decision for a session (read-only). */

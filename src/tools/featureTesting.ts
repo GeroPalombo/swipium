@@ -442,16 +442,24 @@ async function runFeatureTestJob(sessions: SessionStore, session: Session, job: 
     // 5. Report.
     let reportUri: string | undefined;
     let reportMdUri: string | undefined;
+    let reportHtmlPath: string | undefined;
+    let reportHtmlUrl: string | undefined;
     try {
       // A feature run that executed none of its cases is not a pass (never SHIP / COVERED).
       const executedCases = merge.delta.casesPassed + merge.delta.casesFailed;
       const rep = await generateSessionReport(sessions, session, {
         format: 'summary',
         includeCurrentDump: true,
+        // This job is still running while it reports; it must not mark its own report partial.
+        excludeJobId: job.jobId,
         ...(executedCases === 0 ? { notTested: { reason: `0 of ${merge.cases.length} "${liveScope.title}" case(s) were executed` } } : {}),
       });
       reportUri = rep.reportUri;
       reportMdUri = rep.reportMdUri;
+      if (!rep.reportHtmlError) {
+        reportHtmlPath = rep.reportHtmlPath;
+        reportHtmlUrl = rep.reportHtmlUrl;
+      }
     } catch (e) {
       log('warn', 'feature test report generation failed', { err: String(e) });
     }
@@ -494,6 +502,8 @@ async function runFeatureTestJob(sessions: SessionStore, session: Session, job: 
         graphUri,
         casesUri,
         reportUri: reportUri ?? null,
+        reportHtmlPath: reportHtmlPath ?? null,
+        reportHtmlUrl: reportHtmlUrl ?? null,
         appMapUri: appMapUri ?? null,
         suiteWritten,
         featureCoverageCachePath: mapPath,
@@ -504,6 +514,7 @@ async function runFeatureTestJob(sessions: SessionStore, session: Session, job: 
         `🎯 feature test ${state}: ${liveScope.title}: ${merge.delta.summary}\n` +
         `cases: ${merge.cases.length} (${merge.delta.casesPassed} pass / ${merge.delta.casesFailed} fail / ${merge.delta.casesBlocked} blocked); map: ${merge.delta.statusBefore ?? 'new'} > ${merge.delta.statusAfter}\n` +
         (reportUri ? `report: ${reportUri}\n` : '') +
+        (reportHtmlPath ? `Open the report: ${reportHtmlPath}\n` : '') +
         (appMapUri ? `appMap: ${appMapUri}\n` : '') +
         `featureCoverageCache: ${mapPath}` +
         (ex.needsInput ? `\n❓ ${ex.needsInput.question}` : ''),

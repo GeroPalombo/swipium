@@ -174,6 +174,7 @@ async function waitForStableScreenshot(d: Driver, t0: number, timeoutMs: number,
   while (elapsed() < bound) {
     let png: Buffer;
     try {
+      // capture-guard: in-memory compare only (two frames byte-equal), never written or sent anywhere
       png = await d.screenshot();
     } catch (e) {
       if (isAbortError(e)) throw e;

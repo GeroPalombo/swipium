@@ -163,15 +163,14 @@ describe('report head + blocked fix', () => {
     });
     const lines = head.split('\n');
     expect(lines[0]).toBe('RELEASE RISK: BLOCK: Fix "checkout".');
-    expect(head).toContain('app: BLOCKED - Pay does nothing');
     expect(head.indexOf('native/crash')).toBeLessThan(head.indexOf('app/x'));
-    expect(head).toContain('(x3) evidence: swipium://session/s/screenshot/1.png');
-    expect(head).toContain('fail checkout: Pay does nothing evidence: swipium://session/s/screenshot/2.png');
-    expect(lines[lines.length - 1]).toBe('full report: swipium://session/s/report/r.md (JSON for CI: swipium://session/s/report/r.json)');
+    expect(head).toContain('(x3) swipium://session/s/screenshot/1.png');
+    expect(head).toContain('- FAIL checkout FAILED "Pay does nothing": swipium://session/s/screenshot/2.png');
+    expect(lines[lines.length - 1]).toBe('report.md: swipium://session/s/report/r.md');
     const many = { ...report, findings: Array.from({ length: 50 }, () => ({ severity: 'high', detail: 'd'.repeat(400) })) };
     const capped = buildReportHead(many, { reportMdUri: 'swipium://x.md' });
     expect(capped.length).toBeLessThanOrEqual(REPORT_HEAD_MAX_CHARS);
-    expect(capped.endsWith('full report: swipium://x.md')).toBe(true);
+    expect(capped.endsWith('report.md: swipium://x.md')).toBe(true);
   });
 
   it('blocked: nextRecommendedAction is the blocker fix tool when Swipium can fill it, else null', () => {
@@ -208,7 +207,8 @@ describe('report head + blocked fix', () => {
       const r = done.result as Record<string, unknown>;
       expect(String(r.reportMdUri)).toMatch(/report-\d+-summary\.md$/);
       expect(r.nextRecommendedAction).toMatchObject({ tool: 'qa_get_artifact', args: { uri: r.reportMdUri } });
-      expect(String(r.reportHead)).toContain('app: PASS');
+      expect(String(r.reportHead)).toContain('Health: native');
+      expect(String(r.reportHtmlPath)).toMatch(/report\/report\.html$/);
       expect(String(r.reportHead).length).toBeLessThanOrEqual(REPORT_HEAD_MAX_CHARS);
       expect(done.resultText).toContain(String(r.reportHead));
 

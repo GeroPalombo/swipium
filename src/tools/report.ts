@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
 import { currentResponseMode, qaOk, qaError, unknownSessionError } from '../lib/result.js';
 import { generateSessionReport } from '../services/report.js';
+import { PLAYWRIGHT_DEPRECATION } from '../report/export.js';
 import type { SessionStore } from '../session/store.js';
 
 export function registerReport(server: McpServer, sessions: SessionStore): void {
@@ -14,9 +15,9 @@ export function registerReport(server: McpServer, sessions: SessionStore): void 
     {
       title: 'Build a session report',
       description:
-        'Build the session report (release risk, health, outcomes, findings, evidence, env changes) as an artifact; returns a ' +
-        'summary + URIs (read reportMdUri, report.md; the full JSON is reportUri, inline with format:"json"). format adds an export: markdown, json, junit, sarif, github-summary, playwright, or flow. ' +
-        'qa_test_this execute calls it for you. CI: docs/ci-reports.md.',
+        'Build the session report: returns a short summary + URIs (reportMdUri = report.md to read; reportUri = full JSON, ' +
+        'inline with format:"json" minus steps; reportHtmlPath = report.html, give the user that path). format adds an export: ' +
+        'markdown, json, junit, sarif, github-summary, flow, playwright (deprecated). CI: docs/ci-reports.md.',
       inputSchema: {
         sessionId: z.string(),
         format: z.enum(['summary', 'markdown', 'json', 'junit', 'sarif', 'github-summary', 'flow', 'playwright']).optional(),
@@ -45,6 +46,8 @@ export function registerReport(server: McpServer, sessions: SessionStore): void 
         baseline,
         trendRoot,
       });
+      // The playwright export still works for one more release; say so where the agent reads it.
+      const text = format === 'playwright' ? `${r.summaryText}\n${PLAYWRIGHT_DEPRECATION}` : r.summaryText;
       // structuredContent is what Claude Code / Codex hand the model: the lean view (verdicts,
       // executive + PR summary, counts, URIs) plus the full summary text. The whole report is
       // the report.json artifact, or inline with format:"json" / verbose response mode.
@@ -54,12 +57,29 @@ export function registerReport(server: McpServer, sessions: SessionStore): void 
       const uris = {
         reportMdUri: r.reportMdUri,
         reportUri: r.reportUri,
+        // report.html: the one file a human opens (absolute path + file:// URL). Relay this path.
+        reportHtmlPath: r.reportHtmlError ? null : r.reportHtmlPath,
+        reportHtmlUrl: r.reportHtmlError ? null : r.reportHtmlUrl,
+        ...(r.reportHtmlError ? { reportHtmlError: r.reportHtmlError } : {}),
         manifestUri: r.manifestUri,
         ...(r.dumpUri ? { dumpUri: r.dumpUri } : {}),
         ...(r.exportUri ? { exportUri: r.exportUri, exportFormat: r.exportFormat } : {}),
       };
-      if (full)
-        return qaOk({ ...rep, ...uris, manifest: r.manifest, ...(r.reportLinks ? { reportLinks: r.reportLinks } : {}) }, r.summaryText);
+      if (full) {
+        // Inline JSON leaves the step timeline out (a 500-step run would flood the context); it is in
+        // the saved report.json, which stepsUri points at.
+        const { steps: _steps, ...withoutSteps } = rep;
+        return qaOk(
+          {
+            ...withoutSteps,
+            stepsUri: r.reportUri,
+            ...uris,
+            manifest: r.manifest,
+            ...(r.reportLinks ? { reportLinks: r.reportLinks } : {}),
+          },
+          text,
+        );
+      }
       const findings = (rep.findings as unknown[] | undefined) ?? [];
       return qaOk(
         {
@@ -88,7 +108,7 @@ export function registerReport(server: McpServer, sessions: SessionStore): void 
           // Always present (docs/tools.md#qa_report); null without baseline/trendRoot.
           reportLinks: links ?? null,
         },
-        r.summaryText,
+        text,
         { structuredSummary: 'full' },
       );
     },

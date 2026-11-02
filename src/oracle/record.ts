@@ -9,6 +9,7 @@ import { isMetroRequiredFinding, launchErrorSurface, type Finding } from './heal
 import { parseSnapshot, type RawNode } from '../snapshot/parse.js';
 import { iosAlertCancel } from '../snapshot/overlays.js';
 import { isAbortError } from '../lib/abortScope.js';
+import { canCaptureScreenshot } from '../lib/captureGuard.js';
 
 export async function recordHealthFindings(
   sessions: SessionStore,
@@ -16,14 +17,21 @@ export async function recordHealthFindings(
   findings: Finding[],
   driver?: Driver,
   screen?: string,
-): Promise<void> {
+  /** The current tree when the caller already holds it (qa_act's post-action snapshot): the
+   *  secure-field guard then needs no extra dump. */
+  nodes?: RawNode[],
+): Promise<{ screenshotWithheld?: string }> {
   // Capture one screenshot of an app-layer error surface (RedBox / error-boundary / etc.)
   // so the report shows WHAT broke, not just that something did. Evidence, not budgeted.
   let evidenceUri: string | undefined;
   const appError = findings.find((f) => f.layer === 'app' && (f.severity === 'high' || f.severity === 'medium'));
-  // Sensitive mode: record the finding but DON'T capture pixels.
-  if (appError && driver && !session.sensitive) {
+  // Sensitive mode or a secure field on screen: record the finding but DON'T capture pixels.
+  let screenshotWithheld: string | undefined;
+  const verdict = appError && driver ? await canCaptureScreenshot(session, driver, { nodes }) : undefined;
+  if (verdict && !verdict.ok) screenshotWithheld = verdict.note;
+  if (appError && driver && verdict?.ok) {
     try {
+      // capture-guard: guarded by canCaptureScreenshot above
       const png = await driver.screenshot();
       evidenceUri = sessions.saveArtifact(
         session,
@@ -65,6 +73,7 @@ export async function recordHealthFindings(
       ...(isMetroRequiredFinding(f) ? { failureCode: 'METRO_REQUIRED' as const } : {}),
     });
   }
+  return screenshotWithheld ? { screenshotWithheld } : {};
 }
 
 /** After a prepare launch, read ONE UI tree and look for an RN/Expo launch error
@@ -97,7 +106,7 @@ export async function checkLaunchErrorSurface(
       at: Date.now(),
     };
     sessions.persist(session);
-  } else await recordHealthFindings(sessions, session, [f], driver);
+  } else await recordHealthFindings(sessions, session, [f], driver, undefined, nodes);
   return { appError: f, ...(alert ? { alert } : {}) };
 }
 

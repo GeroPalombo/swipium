@@ -4,7 +4,8 @@
 // instead of blind coordinate crawling. Honest: unsafe actions are skipped with a note; an auth
 // wall with no credentials returns NeedsInput. Drives only the Driver interface, no MCP-over-MCP.
 
-import { parseSnapshot } from '../snapshot/parse.js';
+import { parseSnapshot, type RawNode } from '../snapshot/parse.js';
+import { captureGuardSync } from '../lib/captureGuard.js';
 import { settle } from '../snapshot/settle.js';
 import { waitForAppRender } from '../snapshot/renderWait.js';
 import { iosAlertCancel, ownsForeground, permissionDeniedNote } from '../snapshot/overlays.js';
@@ -91,6 +92,8 @@ export interface ExploreSummary {
   destructiveCandidates: number;
   promotedSuiteCandidates: number;
   testabilityBlockers: TestabilityBlocker[];
+  /** Screens whose evidence screenshot was withheld (a secure field on screen). */
+  screenshotsWithheld?: number;
 }
 
 export interface ExploreResult {
@@ -101,6 +104,8 @@ export interface ExploreResult {
   stoppedReason: string;
   suitePromotion: SuitePromotionCandidate[];
   destructiveCandidates: DestructiveCandidateSummary[];
+  /** The summary step this run wrote to session.steps. */
+  stepIndex?: number;
 }
 
 export interface ExploreCtx {
@@ -253,12 +258,52 @@ function destructiveMutationTarget(
   };
 }
 
+/** Guided exploration. Writes one summary step to the session timeline (screens visited, actions,
+ *  how it ended); the caller that saves the graph can link it (`linkExploreStep`). */
 export async function runExplore(
   sessions: SessionStore,
   session: Session,
   driver: Driver,
   opts: ExploreOptions,
   ctx: ExploreCtx = {},
+): Promise<ExploreResult> {
+  const started = Date.now();
+  let res: ExploreResult | undefined;
+  try {
+    res = await exploreInner(sessions, session, driver, opts, ctx);
+    return res;
+  } finally {
+    try {
+      const st = sessions.addStep(session, {
+        source: 'explore',
+        action: 'explore',
+        target: res
+          ? `explored ${res.summary.screensVisited} screen(s), ${res.summary.actionsTried} action(s): ${res.stoppedReason}`
+          : 'exploration error',
+        result: !res || res.state === 'blocked' ? 'failed' : 'ok',
+        durationMs: Date.now() - started,
+      });
+      if (res) res.stepIndex = st.i;
+    } catch {
+      /* the timeline never breaks exploration */
+    }
+  }
+}
+
+/** Point the exploration's summary step at the saved screen graph. */
+export function linkExploreStep(sessions: SessionStore, session: Session, stepIndex: number | undefined, graphUri: string): void {
+  const st = stepIndex === undefined ? undefined : session.steps.find((x) => x.i === stepIndex);
+  if (!st) return;
+  st.target = `${st.target ?? 'explore'} (graph: ${graphUri})`.slice(0, 300);
+  sessions.persist(session);
+}
+
+async function exploreInner(
+  sessions: SessionStore,
+  session: Session,
+  driver: Driver,
+  opts: ExploreOptions,
+  ctx: ExploreCtx,
 ): Promise<ExploreResult> {
   const platform = driver.kind === 'wda' || driver.kind === 'simulator' ? 'ios' : 'android';
   const graph = new ExploreGraph(platform);
@@ -327,7 +372,7 @@ export async function runExplore(
   }
 
   const note = (n: Parameters<SessionStore['addNote']>[1] extends infer T ? Omit<NonNullable<T>, 'at'> : never) =>
-    sessions.addNote(session, { at: Date.now(), ...(n as object) } as Parameters<SessionStore['addNote']>[1]);
+    sessions.addNote(session, { at: Date.now(), origin: 'explore', ...(n as object) } as Parameters<SessionStore['addNote']>[1]);
 
   // The last settle's final dump, consumed by the next observe() instead of dumping again (P5).
   let settledXml: string | undefined;
@@ -351,6 +396,7 @@ export async function runExplore(
     let elements: ReturnType<typeof parseSnapshot>['elements'] = [];
     let webviewDominance = 0;
     let alert: ReturnType<typeof iosAlertCancel> = null;
+    let parsedNodes: RawNode[] | undefined;
     const seeded = settledXml;
     settledXml = undefined;
     // Respect the SESSION screenshot budget (not a separate fixed counter) so two observes per
@@ -360,6 +406,7 @@ export async function runExplore(
       seeded !== undefined
         ? Promise.resolve<string | Error>(seeded)
         : driver.dumpXml().catch((e: unknown) => (e instanceof Error ? e : new Error(String(e)))),
+      // capture-guard: saved only after captureGuardSync passes on the dump taken alongside it
       wantShot ? driver.screenshot().catch(() => undefined) : Promise.resolve(undefined),
     ]);
     if (dumped instanceof Error) {
@@ -373,6 +420,7 @@ export async function runExplore(
         elements = parsed.elements;
         webviewDominance = parsed.quality.signals.webviewDominance;
         alert = iosAlertCancel(parsed.allNodes);
+        parsedNodes = parsed.allNodes;
       } catch {
         /* unparsable dump, so treated as visual-only below */
       }
@@ -422,7 +470,11 @@ export async function runExplore(
     // a slow app renders) keeps the screen's first shot and costs no screenshot budget; an app error
     // always gets fresh evidence. The capture itself still feeds the visual signature above.
     let screenshotUri: string | undefined;
-    if (png && (!graph.bySignature(signature)?.screenshotUri || healthSnap.app === 'error')) {
+    // The screenshot ran alongside the dump: a secure field in that dump means it is never saved
+    // (it still fed the visual signature, in memory only).
+    const guard = captureGuardSync(session, parsedNodes);
+    if (!guard.ok) summary.screenshotsWithheld = (summary.screenshotsWithheld ?? 0) + 1;
+    if (png && guard.ok && (!graph.bySignature(signature)?.screenshotUri || healthSnap.app === 'error')) {
       try {
         screenshotUri = sessions.saveArtifact(session, 'screenshot', `explore-${Date.now()}.png`, png, 'image/png', 'exploration evidence');
         sessions.bump(session, 'screenshots');

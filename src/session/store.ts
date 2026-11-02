@@ -1037,7 +1037,11 @@ export class SessionStore {
     return rec;
   }
   /** Attach evidence to a step after the fact (a failure screenshot / dump captured later). */
-  updateStep(s: Session, i: number, patch: Partial<Pick<StepRecord, 'screenshotUri' | 'dumpUri' | 'screenshotSkipped' | 'result' | 'failureCode'>>): void {
+  updateStep(
+    s: Session,
+    i: number,
+    patch: Partial<Pick<StepRecord, 'screenshotUri' | 'dumpUri' | 'screenshotSkipped' | 'result' | 'failureCode'>>,
+  ): void {
     const st = (s.steps ?? []).find((x) => x.i === i);
     if (!st) return;
     Object.assign(st, patch);

@@ -55,6 +55,8 @@ export function createFinisher(ctx: FinishContext): Finish {
     let reportMdUri: string | undefined;
     let reportHead: string | undefined;
     let manifestUri: string | undefined;
+    let reportHtmlPath: string | undefined;
+    let reportHtmlUrl: string | undefined;
     let appVerdict: { status: string; summary: string } | undefined;
     let coverageVerdict: { status: string; summary: string } | undefined;
     let toolVerdict: { status: string; summary: string } | undefined;
@@ -75,6 +77,8 @@ export function createFinisher(ctx: FinishContext): Finish {
     try {
       const r = await generateSessionReport(sessions, session, {
         format: 'summary',
+        // This job is still running while it reports; it must not mark its own report partial.
+        excludeJobId: job.jobId,
         // No triage dump from a WDA that just hung (one more /source would wait out
         // its 30 s timeout after the run was already decided).
         includeCurrentDump: failureCode !== 'WDA_UNREACHABLE',
@@ -98,6 +102,10 @@ export function createFinisher(ctx: FinishContext): Finish {
       reportMdUri = r.reportMdUri;
       reportHead = r.reportHead;
       manifestUri = r.manifestUri;
+      if (!r.reportHtmlError) {
+        reportHtmlPath = r.reportHtmlPath;
+        reportHtmlUrl = r.reportHtmlUrl;
+      }
       sessions.milestone(session, 'report_generated'); // persisted flag for qa_status's ladder
       for (const u of [reportUri, reportMdUri]) if (!artifacts.includes(u)) artifacts.push(u);
       appVerdict = (r.report as { appVerdict?: { status: string; summary: string } }).appVerdict;
@@ -188,6 +196,9 @@ export function createFinisher(ctx: FinishContext): Finish {
         failureCode,
         artifacts,
         reportMdUri: reportMdUri ?? null,
+        // report.html: the file the user opens (give them this path).
+        reportHtmlPath: reportHtmlPath ?? null,
+        reportHtmlUrl: reportHtmlUrl ?? null,
         manifestUri,
         health: { native, app },
         inputsProvided: session.inputs.map((i) => i.varName),
@@ -205,6 +216,7 @@ export function createFinisher(ctx: FinishContext): Finish {
       resultText:
         summary +
         (state === 'completed' && reportHead ? `\n\n${reportHead}` : readUri ? `\nreport: ${readUri}` : '') +
+        (state !== 'completed' && reportHtmlPath ? `\nOpen the report: ${reportHtmlPath}` : '') +
         (blockers[0] ? `\nfix (${blockers[0].failureCode}): ${blockers[0].howToFix}` : ''),
       endedAt: Date.now(),
     });

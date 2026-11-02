@@ -192,6 +192,9 @@ export function recordFlowRunOutcome(sessions: SessionStore, session: Session, r
       ? { missingPrecondition: r.reason, ...(failure.recommendedSetup ? { recommendedSetup: failure.recommendedSetup } : {}) }
       : {}),
     artifactUris: shot ? [shot] : undefined,
+    origin: 'flow',
+    ...(r.visualStep ? { visualStep: true } : {}),
+    ...(r.stepRange ? { stepRange: r.stepRange } : {}),
   });
 }
 

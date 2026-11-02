@@ -2,7 +2,8 @@
 //  - only Swipium-judged outcomes make a run "tested"; an agent fail note can block but never pass;
 //  - a non-app failure (missing_test_data, destructive_refused) keeps the headline off SHIP;
 //  - `visual_diff` in a policy matches visual comparisons only, never assertVisible;
-//  - SARIF / Playwright carry the not-tested case, and SARIF levels follow the policy like JUnit;
+//  - Playwright carries the not-tested case; SARIF holds high app findings only, with levels that
+//    follow the policy like JUnit, and names the not-tested run in its properties;
 //  - a screen or workflow named like an Object.prototype member resolves to the manifest anchor;
 //  - the Markdown export keeps HTML neutralized after a reason that smuggles in a code fence;
 //  - the session manifest lists report.md, and a corrupt test-suite.json is a warning, not a lost report;
@@ -171,37 +172,34 @@ describe('visual_diff matches visual comparisons only', () => {
   });
 });
 
-describe('SARIF and Playwright carry the not-tested case and follow the policy', () => {
+describe('SARIF and Playwright: the not-tested case and the policy', () => {
   const notTested = data({ notTested: { reachedApp: false, exercised: false, reason: 'Metro is down', failureCode: 'METRO_REQUIRED' } });
 
-  it('a METRO_REQUIRED run is a SARIF error result and a failed Playwright spec', () => {
+  it('a METRO_REQUIRED run is no SARIF alert but is named in its properties, and is a failed Playwright spec', () => {
     const decision = applyPolicy(reportPolicyVerdicts(notTested), null);
     const sarif = JSON.parse(toSarif(notTested, decision));
-    const results = sarif.runs[0].results as Array<{ ruleId: string; level: string; properties: { workflow?: string } }>;
-    expect(results).toHaveLength(1);
-    expect(results[0]).toMatchObject({ ruleId: 'METRO_REQUIRED', level: 'error', properties: { workflow: 'swipium: not tested' } });
+    expect(sarif.runs[0].results).toHaveLength(0);
+    expect(sarif.runs[0].properties).toMatchObject({ releaseGateVerdict: 'block', notTested: { failureCode: 'METRO_REQUIRED' } });
     const pw = JSON.parse(toPlaywrightJson(notTested));
     const spec = pw.suites[0].specs.find((sp: { title: string }) => sp.title === 'swipium: not tested');
     expect(spec.ok).toBe(false);
     expect(pw.stats.unexpected).toBe(1);
   });
 
-  it('a warned failure is a SARIF warning, a suppressed one a note, a blocking one an error', () => {
+  it('a warned finding is a SARIF warning, a suppressed one a note, a blocking one an error', () => {
     const r = data({
-      testOutcomes: [
-        { workflow: 'checkout', outcome: 'fail', category: 'missing_test_data' },
-        { workflow: 'billing', outcome: 'fail', category: 'BILLING_UNAVAILABLE' },
-        { workflow: 'login', outcome: 'fail', category: 'app_bug' },
+      testOutcomes: [{ workflow: 'login', outcome: 'fail', category: 'app_bug' }],
+      findings: [
+        { severity: 'high', layer: 'native', kind: 'crash', failureCode: 'NATIVE_CRASH', detail: 'FATAL' },
+        { severity: 'high', layer: 'app', kind: 'redbox', failureCode: 'REDBOX', detail: 'boom' },
+        { severity: 'high', layer: 'native', kind: 'anr', failureCode: 'ANR', detail: 'stalled' },
       ],
-      findings: [{ severity: 'high', layer: 'native', kind: 'crash', failureCode: 'NATIVE_CRASH', detail: 'FATAL' }],
     });
-    const decision = applyPolicy(
-      reportPolicyVerdicts(r),
-      policy({ blockOn: ['anr'], warnOn: ['missing_test_data', 'native_crash'], ignoreKnown: ['BILLING_UNAVAILABLE'] }),
-    );
+    const decision = applyPolicy(reportPolicyVerdicts(r), policy({ blockOn: ['anr'], warnOn: ['native_crash'], ignoreKnown: ['REDBOX'] }));
     const results = JSON.parse(toSarif(r, decision)).runs[0].results as Array<{ ruleId: string; level: string }>;
     const level = Object.fromEntries(results.map((x) => [x.ruleId, x.level]));
-    expect(level).toEqual({ NATIVE_CRASH: 'warning', missing_test_data: 'warning', BILLING_UNAVAILABLE: 'note', app_bug: 'error' });
+    // The failed workflow is not a code alert.
+    expect(level).toEqual({ NATIVE_CRASH: 'warning', REDBOX: 'note', ANR: 'error' });
   });
 
   it('a screen or workflow named "constructor" anchors to the manifest, never a prototype member', () => {
@@ -241,14 +239,14 @@ describe('Markdown export: a smuggled code fence cannot switch off HTML neutrali
 });
 
 describe('the session manifest lists report.md', () => {
-  it('manifest.files includes the report.md artifact and report.md names the manifest', async () => {
+  it('manifest.files includes the report.md and report.json artifacts', async () => {
     const { store, s } = fresh();
     store.addNote(s, { at: Date.now(), workflow: 'launch_smoke', outcome: 'pass', reason: 'app=ok' });
     const { res } = await report(store, s);
     const files = (res.manifest as { files: Array<{ uri: string }> }).files.map((f) => f.uri);
     expect(files).toContain(res.reportMdUri);
     expect(files).toContain(res.reportUri);
-    expect(res.summaryText).toContain(`manifest: ${res.manifestUri}`);
+    // The short summary.md no longer lists the manifest; report.json and the manifest still do.
   });
 });
 
@@ -262,11 +260,10 @@ describe('a corrupt test-suite.json never breaks the report', () => {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, '{ not json');
     store.addNote(s, { at: Date.now(), workflow: 'login', outcome: 'fail', category: 'app_bug', reason: 'crash' });
-    const { res, r } = await report(store, s);
+    const { r } = await report(store, s);
     const rec = r as unknown as Record<string, unknown>;
     expect(String(rec.persistentSuiteWarning)).toContain('test-suite.json is corrupt');
     expect(rec.issues).toBeDefined();
-    expect(res.summaryText).toContain('persistent suite: .swipium/test-suite.json is corrupt');
     expect(readFileSync(path, 'utf8')).toBe('{ not json');
   });
 });

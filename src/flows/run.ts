@@ -57,7 +57,9 @@ import type { RawNode } from '../snapshot/parse.js';
 import type { FailureCode } from '../oracle/failures.js';
 import { isDeviceGoneError } from '../lib/deviceGone.js';
 import type { Driver, NativeSelectorStrategy } from '../drivers/Driver.js';
-import type { MutationRecord, Session, SessionStore } from '../session/store.js';
+import { TRANSPORT_FAILURE_CODES, type MutationRecord, type Session, type SessionStore } from '../session/store.js';
+import { CaptureWithheldError, canCaptureScreenshot } from '../lib/captureGuard.js';
+import { captureFailedStepEvidence, currentScreenTitle } from '../lib/steps.js';
 
 export interface FlowStepResult {
   index: number;
@@ -87,6 +89,23 @@ export interface FlowRunResult {
   appHealth?: string;
   durationMs: number;
   counters: Session['counters'];
+  /** session.steps indexes [first, last] this run wrote (inclusive). */
+  stepRange?: [number, number];
+  /** The step that decided the verdict was a visual one (assertImage / assertOcrText / assertDiff). */
+  visualStep?: boolean;
+}
+
+/** Step detail for a withheld capture (keeps the "sensitive mode" wording flow results always had). */
+function withheldText(g: { reason: string; note: string }): string {
+  return g.reason === 'sensitive' ? `sensitive mode: ${g.note}` : g.note;
+}
+
+const VISUAL_VERDICT_KINDS = new Set(['assertImage', 'assertOcrText', 'assertDiff']);
+
+/** Timeline label for a flow step: describe(), except typed text never appears (secret or not). */
+function stepTarget(step: FlowStep): string {
+  if (step.kind === 'inputText') return `type into ${step.into ? `"${step.into}"` : 'focused field'}`;
+  return describe(step);
 }
 
 function describe(step: FlowStep): string {
@@ -429,6 +448,19 @@ export async function runFlow(
     failureCode: 'MISSING_FIXTURE',
   });
   const shown = (value: string): string => makeRedactor(session.secrets)(value) ?? value;
+  // OCR sends pixels to an external provider: the capture guard runs first, and a withheld capture
+  // is a step failure (the text can't be checked), never a silent skip.
+  const guardedOcr = async (
+    command: Parameters<typeof runOcr>[2],
+  ): Promise<Awaited<ReturnType<typeof runOcr>> | { withheld: StepOutcome }> => {
+    try {
+      return await runOcr(d, session.root, command, { session });
+    } catch (e) {
+      if (e instanceof CaptureWithheldError)
+        return { withheld: { ok: false, detail: `OCR not run: ${e.verdict.note}`, failureCode: 'CAPTURE_WITHHELD_SECURE' } };
+      throw e;
+    }
+  };
   const outsideRoot = (p: string): StepOutcome => ({
     ok: false,
     detail: `path "${p}" resolves outside the project root. Image templates and baselines must live under the project root`,
@@ -461,6 +493,7 @@ export async function runFlow(
   const tapImageHit = async (template: string, minScore?: number): Promise<{ x: number; y: number } | null> => {
     const tplPath = withinRootOrNull(session.root, template);
     if (!tplPath || !existsSync(tplPath)) return null;
+    // capture-guard: in-memory template match, the pixels are never saved
     const png = await d.screenshot();
     const m = findTemplate(png, readFileSync(tplPath), minScore ?? 0.85);
     if (!m.found) return null;
@@ -584,7 +617,9 @@ export async function runFlow(
           };
         const command = configuredOcrCommand(session.root);
         if (!command) return { ok: false, detail: 'OCR command is not configured', failureCode: 'VISUAL_ONLY_SCREEN' };
-        const hit = findOcrRegion(await runOcr(d, session.root, command), query, step.minConfidence ?? 0.8);
+        const ocr = await guardedOcr(command);
+        if ('withheld' in ocr) return ocr.withheld;
+        const hit = findOcrRegion(ocr, query, step.minConfidence ?? 0.8);
         if (!hit) return { ok: false, detail: `OCR text "${shown(query)}" not found`, failureCode: 'ELEMENT_NOT_FOUND' };
         await d.pressXY(hit.devicePoint.x, hit.devicePoint.y, 100);
         sessions.bump(session, 'actions');
@@ -769,6 +804,7 @@ export async function runFlow(
         const tplPath = withinRootOrNull(session.root, step.template);
         if (!tplPath) return outsideRoot(step.template);
         if (!existsSync(tplPath)) return { ok: false, detail: `template not found: ${tplPath}`, failureCode: 'ASSERTION_FAILED' };
+        // capture-guard: in-memory compare only (template match, pixels never saved)
         const m = findTemplate(await d.screenshot(), readFileSync(tplPath), step.minScore ?? 0.85);
         return m.found
           ? { ok: true }
@@ -786,22 +822,27 @@ export async function runFlow(
           };
         const command = configuredOcrCommand(session.root);
         if (!command) return { ok: false, detail: 'OCR command is not configured', failureCode: 'VISUAL_ONLY_SCREEN' };
-        const hit = findOcrRegion(await runOcr(d, session.root, command), query, step.minConfidence ?? 0.8);
+        const ocr = await guardedOcr(command);
+        if ('withheld' in ocr) return ocr.withheld;
+        const hit = findOcrRegion(ocr, query, step.minConfidence ?? 0.8);
         return hit ? { ok: true } : { ok: false, detail: `OCR text "${shown(query)}" not found`, failureCode: 'ASSERTION_FAILED' };
       }
       case 'assertVisual': {
         // human-readable visual checkpoint: capture evidence + record a visual note; passes.
-        // Sensitive mode never persists screenshots, so record an honest skipped checkpoint instead.
-        if (session.sensitive) {
+        // A sensitive session or a secure field on screen: no pixels, an honest skipped checkpoint instead.
+        const guard = await canCaptureScreenshot(session, d);
+        if (!guard.ok) {
           sessions.addNote(session, {
             at: Date.now(),
             workflow: `${flow.name}:visual`,
             outcome: 'skipped',
-            reason: `${step.description}: not captured, sensitive mode disables screenshots`,
+            reason: `${step.description}: not captured, ${guard.note}`,
             method: 'visual',
+            origin: 'flow_note',
           });
-          return { ok: true, detail: 'sensitive mode: visual checkpoint screenshot not captured' };
+          return { ok: true, detail: `visual checkpoint not captured: ${withheldText(guard)}` };
         }
+        // capture-guard: guarded by canCaptureScreenshot above
         const png = await d.screenshot();
         const uri = sessions.saveArtifact(
           session,
@@ -820,6 +861,8 @@ export async function runFlow(
           method: 'visual',
           verifiedVisually: true,
           artifactUris: [uri],
+          origin: 'flow_note',
+          visualStep: true,
         });
         return { ok: true };
       }
@@ -828,6 +871,7 @@ export async function runFlow(
         if (!basePath) return outsideRoot(step.baseline);
         if (!existsSync(basePath))
           return { ok: false, detail: `no baseline "${step.baseline}" (create a visual baseline first)`, failureCode: 'MISSING_FIXTURE' };
+        // capture-guard: in-memory compare only (image diff, pixels never saved)
         const res = imageDiff(readFileSync(basePath), await d.screenshot());
         const tol = step.threshold ?? 0.02;
         return res.comparable && res.ratio <= tol
@@ -1075,10 +1119,18 @@ export async function runFlow(
         return { ok: true };
       }
       case 'note':
-        sessions.addNote(session, { at: Date.now(), workflow: `${flow.name}:note`, outcome: step.outcome, reason: step.reason });
+        sessions.addNote(session, {
+          at: Date.now(),
+          workflow: `${flow.name}:note`,
+          outcome: step.outcome,
+          reason: step.reason,
+          origin: 'flow_note',
+        });
         return { ok: true };
       case 'screenshot': {
-        if (session.sensitive) return { ok: true, detail: 'sensitive mode: screenshot not captured' };
+        const guard = await canCaptureScreenshot(session, d);
+        if (!guard.ok) return { ok: true, detail: withheldText(guard) };
+        // capture-guard: guarded by canCaptureScreenshot above
         const png = await d.screenshot();
         sessions.saveArtifact(session, 'screenshot', `flow-shot-${Date.now()}.png`, png, 'image/png', step.reason ?? 'flow screenshot');
         sessions.bump(session, 'screenshots');
@@ -1086,6 +1138,26 @@ export async function runFlow(
       }
     }
   }
+
+  // Timeline: one session step per flow step (this is the single path for qa_flow_run, suite
+  // replay and smoke's saved flows).
+  let firstStepI: number | undefined;
+  let lastStepI: number | undefined;
+  const addFlowStep = (step: FlowStep, rec: FlowStepResult): number => {
+    const st = sessions.addStep(session, {
+      source: 'flow',
+      group: flow.name,
+      action: step.kind,
+      target: stepTarget(step),
+      result: rec.ok ? 'ok' : 'failed',
+      ...(rec.failureCode ? { failureCode: rec.failureCode } : {}),
+      durationMs: rec.durationMs ?? 0,
+      screen: currentScreenTitle(session),
+    });
+    firstStepI ??= st.i;
+    lastStepI = st.i;
+    return st.i;
+  };
 
   let recordedFlowRuntime = false;
   const finish = (): FlowRunResult => {
@@ -1104,7 +1176,14 @@ export async function runFlow(
       steps,
       durationMs: Math.round(elapsedMs),
       counters: session.counters,
+      ...(firstStepI !== undefined && lastStepI !== undefined ? { stepRange: [firstStepI, lastStepI] as [number, number] } : {}),
+      ...(decidingStepIsVisual() ? { visualStep: true } : {}),
     };
+  };
+  // The deciding step: the failed one, else the last assertion of a passing run.
+  const decidingStepIsVisual = (): boolean => {
+    const deciding = passed ? steps.filter((st) => st.kind.startsWith('assert')).at(-1) : steps.find((st) => st.index === failedAtStep);
+    return !!deciding && VISUAL_VERDICT_KINDS.has(deciding.kind);
   };
 
   // Run a list of steps; returns the failing global index, or -1 if all passed.
@@ -1115,7 +1194,18 @@ export async function runFlow(
       const summary = describe(step);
       const budget = sessions.budgetStop(session);
       if (budget && phase !== 'teardown') {
-        steps.push({ index, phase, kind: step.kind, summary, ok: false, durationMs: 0, detail: budget, failureCode: 'BUDGET_EXHAUSTED' });
+        const rec: FlowStepResult = {
+          index,
+          phase,
+          kind: step.kind,
+          summary,
+          ok: false,
+          durationMs: 0,
+          detail: budget,
+          failureCode: 'BUDGET_EXHAUSTED',
+        };
+        steps.push(rec);
+        addFlowStep(step, rec);
         passed = false;
         failedAtStep = index;
         reason = `budget: ${budget}`;
@@ -1144,29 +1234,44 @@ export async function runFlow(
         ...(outcome.nothingCleared !== undefined ? { nothingCleared: outcome.nothingCleared } : {}),
       };
       steps.push(rec);
+      const stepI = addFlowStep(step, rec);
       if (!outcome.ok && failFast) {
         passed = false;
         failedAtStep = index;
         reason = outcome.detail ?? 'step failed';
         failureCode = outcome.failureCode;
-        // Sensitive mode never persists screenshots, including failure evidence.
-        if (session.sensitive) {
-          rec.detail = `${rec.detail ?? 'step failed'} (sensitive mode: failure screenshot not captured)`;
-          return index;
+        const label = `flow ${flow.name} failed at step ${index}: ${shown(stepTarget(step))}`;
+        // A sensitive session or a secure field on screen: no failure screenshot. A dead device
+        // gets no guard dump (it would only add a timeout).
+        const transport = !!outcome.failureCode && TRANSPORT_FAILURE_CODES.has(outcome.failureCode);
+        const guard = await canCaptureScreenshot(session, d, { refresh: !transport });
+        let screenshotSkipped: string | undefined;
+        if (!guard.ok) {
+          rec.detail = `${rec.detail ?? 'step failed'} (${withheldText(guard)})`;
+          screenshotSkipped = guard.note;
+        } else {
+          try {
+            // capture-guard: guarded by canCaptureScreenshot above
+            const png = await d.screenshot();
+            rec.screenshotUri = sessions.saveArtifact(
+              session,
+              'screenshot',
+              `flow-fail-${index}-${Date.now()}.png`,
+              png,
+              'image/png',
+              label,
+            );
+          } catch {
+            /* best-effort */
+          }
         }
-        try {
-          const png = await d.screenshot();
-          rec.screenshotUri = sessions.saveArtifact(
-            session,
-            'screenshot',
-            `flow-fail-${index}-${Date.now()}.png`,
-            png,
-            'image/png',
-            `flow ${flow.name} failed at step ${index}: ${summary}`,
-          );
-        } catch {
-          /* best-effort */
-        }
+        // The timeline step reuses that screenshot and adds the UI dump.
+        await captureFailedStepEvidence(sessions, session, d, stepI, {
+          failureCode: outcome.failureCode,
+          reuse: { screenshotUri: rec.screenshotUri, screenshotSkipped },
+          freshDump: true,
+          label,
+        });
         return index;
       }
     }

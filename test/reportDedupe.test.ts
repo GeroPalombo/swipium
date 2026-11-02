@@ -124,12 +124,12 @@ describe('qa_report end-to-end', () => {
     expect(report.toolVerdict.status).toBe('DEGRADED');
     expect(report.toolErrors).toHaveLength(2);
     expect(report.appVerdict.status).not.toBe('BLOCKED');
-    expect(res.summaryText).toMatch(/Tool status: DEGRADED - 2 tool error\(s\)/);
-    expect(res.summaryText).not.toMatch(/Tool status: PASS/);
-    expect(res.summaryText).toContain('findings: 1 unique (24 occurrence(s)');
-    expect(res.summaryText.match(/\[medium\] native\/wrong_foreground/g)).toHaveLength(1);
-    expect(res.summaryText).toContain('(×24)');
-    expect(toMarkdown(res.report as never)).toContain('(×24)');
+    // The tool status and the full findings list live in the report, not the short summary.md.
+    const md = toMarkdown(res.report as never);
+    expect(md).toMatch(/\*\*Tool status:\*\* DEGRADED - 2 tool error\(s\)/);
+    expect(md).not.toMatch(/Tool status:\*\* PASS/);
+    expect(md.match(/native\/wrong_foreground: /g)).toHaveLength(1);
+    expect(md).toContain('(×24)');
 
     // Tool errors survive a restart (persisted in state.json).
     store.flushAll();

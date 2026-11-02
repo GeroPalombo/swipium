@@ -3,7 +3,7 @@
 // An agent (Claude Code headless, etc.) drives the device through the MCP server and calls
 // qa_report; that persists a deep-redacted report JSON as a session artifact under
 // ~/.swipium/runs/<project-hash>/<session>/report/. This command finds that report for the
-// project, renders junit | sarif | github-summary | markdown | json with the same exporters
+// project, renders junit | sarif | github-summary | markdown | json | html with the same exporters
 // qa_report uses, and (with --fail-on-gate) turns the release-gate policy
 // (.swipium/policy.json blockOn/warnOn/ignoreKnown) into the process exit code.
 //
@@ -13,25 +13,28 @@
 
 import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { reportPolicyVerdicts, toGithubSummary, toJUnit, toMarkdown, toSarif, type ReportData } from '../report/export.js';
 import { applyPolicy, loadPolicy as loadReleasePolicy, policyFileProblem, policyUnknownKeys } from '../report/policy.js';
 import { loadReport } from '../report/history.js';
+import { renderReportHtml } from '../report/html.js';
 import { resolveSarifSources } from '../report/sarifSources.js';
 import { findProjectSessions } from '../report/sessions.js';
 
 export { findProjectSessions } from '../report/sessions.js';
 
-export const REPORT_FORMATS = ['junit', 'sarif', 'github-summary', 'markdown', 'json'] as const;
+export const REPORT_FORMATS = ['junit', 'sarif', 'github-summary', 'markdown', 'json', 'html'] as const;
 export type CliReportFormat = (typeof REPORT_FORMATS)[number];
 
-export const REPORT_USAGE = `Usage: swipium report --format <junit|sarif|github-summary|markdown|json> [options]
+export const REPORT_USAGE = `Usage: swipium report --format <junit|sarif|github-summary|markdown|json|html> [options]
 
 Render the report a Swipium session already produced (via the qa_report MCP tool) as a CI file.
 Needs no device and no agent, only the session state Swipium persisted under ~/.swipium/runs.
 
 Options:
-  --format <fmt>     junit | sarif | github-summary | markdown | json   (required)
+  --format <fmt>     junit | sarif | github-summary | markdown | json | html   (required)
+                     html is one self-contained page with screenshots embedded; with
+                     --report outside a session folder, screenshots show "evidence not available"
   --root <dir>       project root the session ran against (default: current directory)
   --session <id>     use this session id
   --latest           use the most recent session for the project that has a report (default)
@@ -110,19 +113,36 @@ function reportSavedAt(path: string): number | undefined {
   }
 }
 
-/** Render one format from a (persisted, already-redacted) report. Exported for tests. */
-export function renderReport(data: ReportData, format: CliReportFormat, root: string): { body: string; block: boolean; reason: string } {
+/** The session folder a persisted report JSON belongs to: reports live at
+ *  <sessionDir>/report/report-*.json. Undefined for a report file kept anywhere else; html then
+ *  shows "evidence not available" for screenshots instead of failing. */
+export function sessionDirForReport(reportPath: string): string | undefined {
+  const reportDir = dirname(reportPath);
+  if (basename(reportDir) !== 'report') return undefined;
+  return dirname(reportDir);
+}
+
+/** Render one format from a (persisted, already-redacted) report. Async because html embeds
+ *  screenshots and yields between them. Exported for tests. */
+export async function renderReport(
+  data: ReportData,
+  format: CliReportFormat,
+  root: string,
+  opts: { sessionDir?: string } = {},
+): Promise<{ body: string; block: boolean; reason: string }> {
   const policy = applyPolicy(reportPolicyVerdicts(data), loadReleasePolicy(root));
   const body =
-    format === 'junit'
-      ? toJUnit(data, policy)
-      : format === 'sarif'
-        ? toSarif(data, policy, { sources: resolveSarifSources(root, data) })
-        : format === 'github-summary'
-          ? toGithubSummary(data, policy)
-          : format === 'markdown'
-            ? toMarkdown(data)
-            : JSON.stringify({ ...data, releaseGate: policy }, null, 2);
+    format === 'html'
+      ? await renderReportHtml(data, { sessionDir: opts.sessionDir, policy })
+      : format === 'junit'
+        ? toJUnit(data, policy)
+        : format === 'sarif'
+          ? toSarif(data, policy, { sources: resolveSarifSources(root, data) })
+          : format === 'github-summary'
+            ? toGithubSummary(data, policy)
+            : format === 'markdown'
+              ? toMarkdown(data)
+              : JSON.stringify({ ...data, releaseGate: policy }, null, 2);
   return { body, block: policy.block, reason: policy.reason };
 }
 
@@ -233,9 +253,9 @@ export async function runReport(args: string[], io: ReportCliIo = defaultIo): Pr
     return 2;
   }
 
-  let rendered: ReturnType<typeof renderReport>;
+  let rendered: Awaited<ReturnType<typeof renderReport>>;
   try {
-    rendered = renderReport(data, format, root);
+    rendered = await renderReport(data, format, root, { sessionDir: sessionDirForReport(reportPath) });
   } catch (e) {
     io.stderr(`Could not render ${format} from ${reportPath}: ${String((e as Error).message ?? e)}\n`);
     return 2;
