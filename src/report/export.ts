@@ -36,6 +36,103 @@ export interface ReportNote {
   /** An agent's pass claim nothing on the device backs (services/report.ts). Rendered as
    *  skipped / "pass (unverified)", never as a passing test. */
   unverified?: boolean;
+  /** Who wrote it (2.4.0+): smoke | flow | flow_note | explore | agent. Absent on older reports. */
+  origin?: string;
+  /** Flow verdict came from a visual step. */
+  visualStep?: boolean;
+  /** session.steps numbers [from, to] this outcome covers. */
+  stepRange?: [number, number];
+  /** Evidence URIs (checkpoint screenshot, failure screenshot/dump, explicit artifactUris) that resolve
+   *  to this session's artifacts. */
+  evidence?: string[];
+  /** Earlier attempts of the same workflow that this (latest) one replaced. */
+  attempts?: Array<{ outcome: ReportNote['outcome']; at?: number; reason?: string }>;
+  /** The attempts disagreed (a fail and a pass). */
+  flaky?: boolean;
+  /** A pass whose step range holds a high crash/ANR/app-error finding or a failed flow/smoke step. */
+  contradicted?: boolean;
+  at?: number;
+}
+
+/** Which attempts may replace each other: Swipium runs replace Swipium runs, agent notes replace
+ *  agent notes. Explore notes and in-flow note steps (null) never replace and are never replaced. */
+export function attemptKind(n: Pick<ReportNote, 'origin' | 'source' | 'workflow' | 'reason'>): 'swipium' | 'agent' | null {
+  switch (n.origin) {
+    case 'smoke':
+    case 'flow':
+      return 'swipium';
+    case 'agent':
+      return 'agent';
+    case 'explore':
+    case 'flow_note':
+      return null;
+  }
+  // Pre-2.4.0 notes carry no origin.
+  if (n.source === 'qa_note') return 'agent';
+  if (n.workflow === 'launch_smoke' || /^qa_flow_run\b/.test(n.reason ?? '')) return 'swipium';
+  return null;
+}
+
+/** Workflow identity for latest-wins: trimmed, case-folded name. */
+export function workflowKey(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+/**
+ * Latest attempt wins per workflow (and per attempt kind). The ONE helper every consumer uses
+ * (release gate, risk/fail counts, JUnit, markdown, html, summaries) so they always agree.
+ * Order is preserved at the position of the latest attempt. Earlier attempts are folded into
+ * `attempts`; `flaky` is set when the attempts include both a pass and a fail. Findings are not
+ * notes and are never touched here.
+ */
+export function latestAttempts<T extends ReportNote>(notes: readonly T[]): T[] {
+  const lastIdx = new Map<string, number>();
+  notes.forEach((n, idx) => {
+    const kind = attemptKind(n);
+    if (kind) lastIdx.set(`${kind}:${workflowKey(n.workflow)}`, idx);
+  });
+  const earlier = new Map<string, T[]>();
+  const out: T[] = [];
+  notes.forEach((n, idx) => {
+    const kind = attemptKind(n);
+    if (!kind) {
+      out.push(n);
+      return;
+    }
+    const key = `${kind}:${workflowKey(n.workflow)}`;
+    if (lastIdx.get(key) !== idx) {
+      (earlier.get(key) ?? earlier.set(key, []).get(key)!).push(n);
+      return;
+    }
+    const prev = earlier.get(key) ?? [];
+    if (!prev.length) {
+      out.push(n);
+      return;
+    }
+    const outcomes = new Set([...prev.map((p) => p.outcome), n.outcome]);
+    out.push({
+      ...n,
+      attempts: prev.map((p) => ({ outcome: p.outcome, ...(p.at !== undefined ? { at: p.at } : {}), ...(p.reason ? { reason: p.reason } : {}) })),
+      ...(outcomes.has('pass') && outcomes.has('fail') ? { flaky: true } : {}),
+    });
+  });
+  return out;
+}
+/** One step of the timeline (mirror of session StepRecord, as saved in report.json). */
+export interface ReportStep {
+  i: number;
+  at: number;
+  durationMs: number;
+  source: string;
+  action: string;
+  target?: string;
+  result: 'ok' | 'failed' | 'no_change' | string;
+  failureCode?: string;
+  screen?: string;
+  screenshotUri?: string;
+  dumpUri?: string;
+  screenshotSkipped?: string;
+  group?: string;
 }
 export interface ReportFinding {
   severity: string;
@@ -51,6 +148,8 @@ export interface ReportFinding {
   screenshotUri?: string;
   /** Identical occurrences this (deduplicated) finding stands for (see report/findingsDedupe.ts). */
   count?: number;
+  logUri?: string;
+  at?: number;
 }
 export interface ReportMutation {
   id?: string;
@@ -144,7 +243,17 @@ export interface ReportData {
       screenshotCount?: number | null;
     };
   };
-  artifacts: Array<{ uri: string; kind: string; label?: string }>;
+  /** 2.4.0+: `path` is relative to the session folder (never absolute: CI uploads must not carry
+   *  $HOME), `createdAt` epoch ms, `redaction` as stored ('not-applied' = pixels may be sensitive). */
+  artifacts: Array<{ uri: string; kind: string; label?: string; path?: string; createdAt?: number; redaction?: string }>;
+  /** Report JSON schema: 2 since 2.4.0; absent on older reports (treat as 1). */
+  schemaVersion?: number;
+  /** Ordered step timeline (2.4.0+). Absent on older reports and stripped from inline JSON results. */
+  steps?: ReportStep[];
+  /** URI of the saved report.json, set on inline results that leave out `steps`. */
+  stepsUri?: string;
+  /** Another job of this session was still running when the report was made. */
+  partial?: { jobId: string; kind: string } | null;
   generatedValues?: Array<{
     fixture: string;
     field: string;
@@ -740,7 +849,7 @@ export function escapeXml(s: string): string {
  *  workflow outcome plus every high-severity finding. This is the seam that lets the release-gate
  *  policy (.swipium/policy.json blockOn/warnOn/ignoreKnown) decide the CI pass/fail verdict. */
 export function reportPolicyVerdicts(r: ReportData): FlowVerdict[] {
-  const verdicts: FlowVerdict[] = [...r.testOutcomes, ...notReachedOutcomes(r)].map((n) => ({
+  const verdicts: FlowVerdict[] = [...latestAttempts(r.testOutcomes), ...notReachedOutcomes(r)].map((n) => ({
     flow: n.workflow,
     passed: n.outcome !== 'fail',
     failureCode: n.outcome === 'fail' ? workflowFailureCode(n) : undefined,
